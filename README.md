@@ -13,12 +13,45 @@ event production remain platform independent.
 
 ## Quick Start
 
-The Abyss CLI currently supports Linux x86_64 and macOS ARM64. Build the CLI and
-its runtime processes from source:
+The local environment supports Linux x86_64 and macOS ARM64 without Docker. It
+requires Git, Rust/Cargo, OpenSSL, curl, Node.js 22 or newer, and npm 10 or
+newer. Install the Abyss CLI, build the SQLite+FTS backend, install the dashboard
+package, and start the complete environment with one command:
+
+```bash
+curl --proto '=https' --tlsv1.2 -fsSL https://raw.githubusercontent.com/lexmount/abyss-rs/main/scripts/install-local.sh | bash
+```
+
+The installer keeps all services on IPv4 loopback, stores the SQLite database
+and private bearer files under `~/.abyss/local`, and prints any PATH update
+needed by the current shell. Open <http://127.0.0.1:5173>, then run an agent
+through Abyss:
+
+```bash
+abyss-local status
+abyss run -- codex
+```
+
+Manage the environment without reinstalling it:
+
+```bash
+abyss-local stop
+abyss-local start
+abyss-local logs
+```
+
+The installer refuses to replace an unrelated existing
+`~/.abyss/product-config.json`; set `ABYSS_HOME` to another absolute directory
+when the machine already has a different deployment. Linux installation uses
+the existing systemd broker integration and may request `sudo`.
+
+### Build the CLI only
+
+To build only the endpoint CLI and its runtime processes from source:
 
 ```bash
 git clone https://github.com/lexmount/abyss-rs.git
-cd abyss
+cd abyss-rs
 cargo build --release --locked \
   --package abyss-cli \
   --package abyss-broker \
@@ -26,47 +59,16 @@ cargo build --release --locked \
 export PATH="$PWD/target/release:$PATH"
 ```
 
-The CLI seeds its public broker and runtime-policy defaults automatically.
-Create `$ABYSS_HOME/product-config.json` with an event-delivery endpoint. A
-deployment that accepts events without authentication does not need an SSO or
-control-plane configuration:
+The CLI requires a deployment-supplied `product-config.json`. The local
+installer creates a profile that delivers events to its authenticated backend.
+Other distributions can provide their own delivery destination and
+authentication mode; `managed_bearer` deployments also require a control plane
+and `abyss login`.
+
+Run another AI agent without changing the parent shell:
 
 ```bash
-export ABYSS_HOME="$PWD/.abyss"
-mkdir -p "$ABYSS_HOME"
-```
-
-```json
-{
-  "schema_version": 1,
-  "product": {
-    "kind": "cli"
-  },
-  "delivery_worker": {
-    "delivery": {
-      "endpoint": "https://events.example.com/v1/agent-usage/events"
-    },
-    "authentication": {
-      "mode": "none"
-    }
-  }
-}
-```
-
-Start the local proxy:
-
-```bash
-abyss proxy start
-```
-
-When a distribution selects another authentication mode, it must also provide
-`product.control_plane`; run `abyss login` before starting the proxy in that
-configuration.
-
-Run an AI agent through Abyss without changing the parent shell:
-
-```bash
-abyss run -- codex
+abyss run -- claude
 ```
 
 Alternatively, export the proxy variables into the current shell:

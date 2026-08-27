@@ -1,0 +1,453 @@
+#!/usr/bin/env bash
+
+set -euo pipefail
+
+readonly LOCAL_CONFIG_VERSION="1"
+readonly PRODUCT_PLUGIN_ID="lexmount.abyss.local"
+readonly BACKEND_HOST="127.0.0.1"
+readonly DASHBOARD_HOST="127.0.0.1"
+
+fail() {
+  printf 'abyss-local: %s\n' "$*" >&2
+  exit 1
+}
+
+warn() {
+  printf 'abyss-local: warning: %s\n' "$*" >&2
+}
+
+info() {
+  printf 'abyss-local: %s\n' "$*"
+}
+
+require_command() {
+  command -v "$1" >/dev/null 2>&1 || fail "required command is missing: $1"
+}
+
+require_absolute_directory() {
+  local label="$1"
+  local path="$2"
+  case "${path}" in
+    /*) ;;
+    *) fail "${label} must be an absolute path: ${path}" ;;
+  esac
+}
+
+validate_port() {
+  local label="$1"
+  local value="$2"
+  case "${value}" in
+    ''|*[!0-9]*) fail "${label} must be a numeric TCP port" ;;
+  esac
+  if [[ "${value}" -lt 1 || "${value}" -gt 65535 ]]; then
+    fail "${label} must be between 1 and 65535"
+  fi
+}
+
+default_runtime_bin_dir() {
+  if [[ "$(uname -s)" == "Linux" ]]; then
+    printf '%s\n' '/usr/local/bin'
+  else
+    printf '%s\n' "${HOME}/.local/bin"
+  fi
+}
+
+ABYSS_HOME="${ABYSS_HOME:-${HOME}/.abyss}"
+LOCAL_ROOT="${ABYSS_LOCAL_ROOT:-${ABYSS_HOME}/local}"
+INSTALL_CONFIG="${LOCAL_ROOT}/install.conf"
+RUNTIME_BIN_DIR="${ABYSS_RUNTIME_BIN_DIR:-}"
+USER_BIN_DIR="${ABYSS_USER_BIN_DIR:-}"
+BACKEND_PORT="${ABYSS_LOCAL_BACKEND_PORT:-}"
+DASHBOARD_PORT="${ABYSS_LOCAL_DASHBOARD_PORT:-}"
+
+load_install_config() {
+  [[ -f "${INSTALL_CONFIG}" && ! -L "${INSTALL_CONFIG}" ]] || return 0
+
+  local line
+  local key
+  local value
+  while IFS= read -r line || [[ -n "${line}" ]]; do
+    [[ -n "${line}" ]] || continue
+    key="${line%%=*}"
+    value="${line#*=}"
+    case "${key}" in
+      config_version)
+        [[ "${value}" == "${LOCAL_CONFIG_VERSION}" ]] \
+          || fail "unsupported local install config version: ${value}"
+        ;;
+      runtime_bin_dir)
+        [[ -n "${RUNTIME_BIN_DIR}" ]] || RUNTIME_BIN_DIR="${value}"
+        ;;
+      user_bin_dir)
+        [[ -n "${USER_BIN_DIR}" ]] || USER_BIN_DIR="${value}"
+        ;;
+      backend_port)
+        [[ -n "${BACKEND_PORT}" ]] || BACKEND_PORT="${value}"
+        ;;
+      dashboard_port)
+        [[ -n "${DASHBOARD_PORT}" ]] || DASHBOARD_PORT="${value}"
+        ;;
+      *) fail "unknown setting in ${INSTALL_CONFIG}: ${key}" ;;
+    esac
+  done <"${INSTALL_CONFIG}"
+}
+
+load_install_config
+RUNTIME_BIN_DIR="${RUNTIME_BIN_DIR:-$(default_runtime_bin_dir)}"
+USER_BIN_DIR="${USER_BIN_DIR:-${HOME}/.local/bin}"
+BACKEND_PORT="${BACKEND_PORT:-8080}"
+DASHBOARD_PORT="${DASHBOARD_PORT:-5173}"
+
+require_absolute_directory "ABYSS_HOME" "${ABYSS_HOME}"
+require_absolute_directory "runtime binary directory" "${RUNTIME_BIN_DIR}"
+require_absolute_directory "user binary directory" "${USER_BIN_DIR}"
+validate_port "backend port" "${BACKEND_PORT}"
+validate_port "dashboard port" "${DASHBOARD_PORT}"
+[[ "${BACKEND_PORT}" != "${DASHBOARD_PORT}" ]] \
+  || fail "backend and dashboard ports must differ"
+
+STATE_DIR="${LOCAL_ROOT}/run"
+LOG_DIR="${LOCAL_ROOT}/logs"
+DATA_DIR="${LOCAL_ROOT}/data"
+TOKEN_FILE="${LOCAL_ROOT}/backend.token"
+AUTHORIZATION_FILE="${LOCAL_ROOT}/backend.authorization"
+PRODUCT_CONFIG="${ABYSS_HOME}/product-config.json"
+BACKEND_PID_FILE="${STATE_DIR}/backend.pid"
+DASHBOARD_PID_FILE="${STATE_DIR}/dashboard.pid"
+BACKEND_LOG="${LOG_DIR}/backend.log"
+DASHBOARD_LOG="${LOG_DIR}/dashboard.log"
+DATABASE_FILE="${DATA_DIR}/abyss.sqlite"
+BACKEND_URL="http://${BACKEND_HOST}:${BACKEND_PORT}"
+DASHBOARD_URL="http://${DASHBOARD_HOST}:${DASHBOARD_PORT}"
+
+BACKEND_BIN="${ABYSS_BACKEND_BIN:-${RUNTIME_BIN_DIR}/abyss-backend}"
+ABYSS_BIN="${ABYSS_CLI_BIN:-${RUNTIME_BIN_DIR}/abyss}"
+DASHBOARD_BIN="${ABYSS_DASHBOARD_BIN:-${USER_BIN_DIR}/abyss-dashboard}"
+BACKEND_STARTED_THIS_RUN=false
+DASHBOARD_STARTED_THIS_RUN=false
+
+atomic_write() {
+  local destination="$1"
+  local mode="$2"
+  local temporary
+  temporary="$(mktemp "${destination}.tmp.XXXXXX")"
+  chmod "${mode}" "${temporary}"
+  cat >"${temporary}"
+  mv -f "${temporary}" "${destination}"
+}
+
+ensure_private_directories() {
+  umask 077
+  mkdir -p "${ABYSS_HOME}" "${LOCAL_ROOT}" "${STATE_DIR}" "${LOG_DIR}" "${DATA_DIR}"
+  chmod 700 "${ABYSS_HOME}" "${LOCAL_ROOT}" "${STATE_DIR}" "${LOG_DIR}" "${DATA_DIR}"
+}
+
+ensure_token() {
+  require_command openssl
+  if [[ -e "${TOKEN_FILE}" ]]; then
+    [[ -f "${TOKEN_FILE}" && ! -L "${TOKEN_FILE}" ]] \
+      || fail "backend token must be a regular non-symlink file: ${TOKEN_FILE}"
+    chmod 600 "${TOKEN_FILE}"
+  else
+    openssl rand -hex 32 | atomic_write "${TOKEN_FILE}" 600
+  fi
+
+  local token
+  token="$(tr -d '\r\n' <"${TOKEN_FILE}")"
+  [[ -n "${token}" ]] || fail "backend token file is empty: ${TOKEN_FILE}"
+  printf 'Bearer %s\n' "${token}" | atomic_write "${AUTHORIZATION_FILE}" 600
+}
+
+ensure_product_config() {
+  if [[ -e "${PRODUCT_CONFIG}" ]]; then
+    [[ -f "${PRODUCT_CONFIG}" && ! -L "${PRODUCT_CONFIG}" ]] \
+      || fail "product configuration must be a regular non-symlink file: ${PRODUCT_CONFIG}"
+    grep -Fq "\"plugin_id\": \"${PRODUCT_PLUGIN_ID}\"" "${PRODUCT_CONFIG}" \
+      || fail "${PRODUCT_CONFIG} is not managed by abyss-local; use a separate ABYSS_HOME"
+    chmod 600 "${PRODUCT_CONFIG}"
+    return 0
+  fi
+
+  cat <<EOF | atomic_write "${PRODUCT_CONFIG}" 600
+{
+  "schema_version": 1,
+  "product": {
+    "kind": "cli"
+  },
+  "delivery_worker": {
+    "plugin_id": "${PRODUCT_PLUGIN_ID}",
+    "delivery": {
+      "endpoint": "${BACKEND_URL}/v1/agent-usage/events",
+      "spool_enabled": true,
+      "spool_path": "local/delivery/failed-events.jsonl"
+    },
+    "authentication": {
+      "mode": "authorization_header_file",
+      "path": "local/backend.authorization"
+    }
+  }
+}
+EOF
+}
+
+ensure_runtime_state() {
+  ensure_private_directories
+  ensure_token
+  ensure_product_config
+}
+
+token_sha256() {
+  tr -d '\r\n' <"${TOKEN_FILE}" | openssl dgst -sha256 -r | awk '{print $1}'
+}
+
+read_pid() {
+  local path="$1"
+  [[ -f "${path}" && ! -L "${path}" ]] || return 1
+  local pid
+  IFS= read -r pid <"${path}" || return 1
+  case "${pid}" in
+    ''|*[!0-9]*) return 1 ;;
+  esac
+  [[ "${pid}" -gt 1 ]] || return 1
+  printf '%s\n' "${pid}"
+}
+
+process_matches() {
+  local pid="$1"
+  local marker="$2"
+  kill -0 "${pid}" 2>/dev/null || return 1
+  local command_line
+  command_line="$(ps -p "${pid}" -o command= 2>/dev/null)" || return 1
+  case "${command_line}" in
+    *"${marker}"*) return 0 ;;
+    *) return 1 ;;
+  esac
+}
+
+service_pid() {
+  local pid_file="$1"
+  local marker="$2"
+  local pid
+  pid="$(read_pid "${pid_file}")" || return 1
+  process_matches "${pid}" "${marker}" || return 1
+  printf '%s\n' "${pid}"
+}
+
+record_pid() {
+  local pid_file="$1"
+  local pid="$2"
+  printf '%s\n' "${pid}" | atomic_write "${pid_file}" 600
+}
+
+http_ready() {
+  curl --noproxy '*' -fsS --max-time 2 "$1" >/dev/null 2>&1
+}
+
+wait_until_ready() {
+  local name="$1"
+  local pid="$2"
+  local url="$3"
+  local attempt=1
+  while [[ "${attempt}" -le 50 ]]; do
+    if ! kill -0 "${pid}" 2>/dev/null; then
+      fail "${name} exited before becoming ready; see ${LOG_DIR}/${name}.log"
+    fi
+    if http_ready "${url}"; then
+      return 0
+    fi
+    sleep 0.2
+    attempt=$((attempt + 1))
+  done
+  fail "${name} did not become ready; see ${LOG_DIR}/${name}.log"
+}
+
+start_backend() {
+  local existing_pid
+  if existing_pid="$(service_pid "${BACKEND_PID_FILE}" 'abyss-backend')"; then
+    http_ready "${BACKEND_URL}/readyz" \
+      || fail "backend process ${existing_pid} is running but not ready"
+    info "backend already running at ${BACKEND_URL}"
+    return 1
+  fi
+  rm -f "${BACKEND_PID_FILE}"
+  [[ -x "${BACKEND_BIN}" ]] || fail "backend executable is missing: ${BACKEND_BIN}"
+  http_ready "${BACKEND_URL}/readyz" \
+    && fail "backend port ${BACKEND_PORT} is already serving an untracked process"
+
+  local digest
+  digest="$(token_sha256)"
+  ABYSS_BACKEND_ADDR="${BACKEND_HOST}:${BACKEND_PORT}" \
+  ABYSS_BACKEND_ENV="local" \
+  ABYSS_BACKEND_DATABASE_URL="${DATABASE_FILE}" \
+  ABYSS_BACKEND_API_TOKEN_SHA256="${digest}" \
+  ABYSS_BACKEND_RUN_MIGRATIONS="true" \
+    nohup "${BACKEND_BIN}" >>"${BACKEND_LOG}" 2>&1 </dev/null &
+  local pid=$!
+  record_pid "${BACKEND_PID_FILE}" "${pid}"
+  BACKEND_STARTED_THIS_RUN=true
+  wait_until_ready "backend" "${pid}" "${BACKEND_URL}/readyz"
+  info "backend started at ${BACKEND_URL}"
+  return 0
+}
+
+start_dashboard() {
+  local existing_pid
+  if existing_pid="$(service_pid "${DASHBOARD_PID_FILE}" 'abyss-dashboard')"; then
+    http_ready "${DASHBOARD_URL}/healthz" \
+      || fail "dashboard process ${existing_pid} is running but not ready"
+    info "dashboard already running at ${DASHBOARD_URL}"
+    return 1
+  fi
+  rm -f "${DASHBOARD_PID_FILE}"
+  [[ -x "${DASHBOARD_BIN}" ]] || fail "dashboard executable is missing: ${DASHBOARD_BIN}"
+  http_ready "${DASHBOARD_URL}/healthz" \
+    && fail "dashboard port ${DASHBOARD_PORT} is already serving an untracked process"
+
+  nohup "${DASHBOARD_BIN}" \
+    --host "${DASHBOARD_HOST}" \
+    --port "${DASHBOARD_PORT}" \
+    --backend "${BACKEND_URL}" \
+    --token-file "${TOKEN_FILE}" \
+    >>"${DASHBOARD_LOG}" 2>&1 </dev/null &
+  local pid=$!
+  record_pid "${DASHBOARD_PID_FILE}" "${pid}"
+  DASHBOARD_STARTED_THIS_RUN=true
+  wait_until_ready "dashboard" "${pid}" "${DASHBOARD_URL}/healthz"
+  info "dashboard started at ${DASHBOARD_URL}"
+  return 0
+}
+
+stop_service() {
+  local name="$1"
+  local pid_file="$2"
+  local marker="$3"
+  local pid
+  if ! pid="$(service_pid "${pid_file}" "${marker}")"; then
+    rm -f "${pid_file}"
+    info "${name} is not running"
+    return 0
+  fi
+
+  kill -TERM "${pid}"
+  local attempt=1
+  while [[ "${attempt}" -le 50 ]]; do
+    if ! kill -0 "${pid}" 2>/dev/null; then
+      rm -f "${pid_file}"
+      info "${name} stopped"
+      return 0
+    fi
+    sleep 0.1
+    attempt=$((attempt + 1))
+  done
+  process_matches "${pid}" "${marker}" \
+    || fail "refusing to terminate reused process id ${pid}"
+  kill -KILL "${pid}"
+  rm -f "${pid_file}"
+  info "${name} stopped after its shutdown timeout"
+}
+
+start_environment() {
+  require_command curl
+  require_command ps
+  ensure_runtime_state
+  [[ -x "${ABYSS_BIN}" ]] || fail "Abyss CLI executable is missing: ${ABYSS_BIN}"
+
+  rollback_start() {
+    local exit_code=$?
+    if [[ "${exit_code}" -ne 0 ]]; then
+      if [[ "${DASHBOARD_STARTED_THIS_RUN}" == true ]]; then
+        stop_service "dashboard" "${DASHBOARD_PID_FILE}" 'abyss-dashboard' || true
+      fi
+      if [[ "${BACKEND_STARTED_THIS_RUN}" == true ]]; then
+        stop_service "backend" "${BACKEND_PID_FILE}" 'abyss-backend' || true
+      fi
+    fi
+    return "${exit_code}"
+  }
+  trap rollback_start EXIT
+
+  start_backend || true
+  start_dashboard || true
+  ABYSS_HOME="${ABYSS_HOME}" "${ABYSS_BIN}" proxy start
+
+  trap - EXIT
+  info "local environment is ready"
+  info "dashboard: ${DASHBOARD_URL}"
+  info "run an agent with: abyss run -- <command>"
+}
+
+stop_environment() {
+  local exit_code=0
+  if [[ -x "${ABYSS_BIN}" ]]; then
+    ABYSS_HOME="${ABYSS_HOME}" "${ABYSS_BIN}" proxy stop \
+      || { warn "Abyss proxy did not stop cleanly"; exit_code=1; }
+  fi
+  stop_service "dashboard" "${DASHBOARD_PID_FILE}" 'abyss-dashboard' || exit_code=1
+  stop_service "backend" "${BACKEND_PID_FILE}" 'abyss-backend' || exit_code=1
+  return "${exit_code}"
+}
+
+status_environment() {
+  local exit_code=0
+  local pid
+  if pid="$(service_pid "${BACKEND_PID_FILE}" 'abyss-backend')" \
+    && http_ready "${BACKEND_URL}/readyz"; then
+    printf 'backend: running (pid %s, %s)\n' "${pid}" "${BACKEND_URL}"
+  else
+    printf 'backend: stopped\n'
+    exit_code=1
+  fi
+  if pid="$(service_pid "${DASHBOARD_PID_FILE}" 'abyss-dashboard')" \
+    && http_ready "${DASHBOARD_URL}/healthz"; then
+    printf 'dashboard: running (pid %s, %s)\n' "${pid}" "${DASHBOARD_URL}"
+  else
+    printf 'dashboard: stopped\n'
+    exit_code=1
+  fi
+  if [[ -x "${ABYSS_BIN}" ]] && ABYSS_HOME="${ABYSS_HOME}" "${ABYSS_BIN}" status; then
+    :
+  else
+    exit_code=1
+  fi
+  return "${exit_code}"
+}
+
+print_usage() {
+  cat <<'EOF'
+Usage: abyss-local <command>
+
+Commands:
+  init       Create private local credentials and CLI configuration.
+  start      Start SQLite+FTS backend, dashboard, and Abyss CLI proxy.
+  stop       Stop the CLI proxy, dashboard, and backend.
+  restart    Stop and start the complete local environment.
+  status     Report backend, dashboard, and CLI runtime state.
+  logs       Print local backend and dashboard log paths.
+EOF
+}
+
+command_name="${1:-start}"
+case "${command_name}" in
+  init)
+    ensure_runtime_state
+    info "local configuration initialized in ${LOCAL_ROOT}"
+    ;;
+  start) start_environment ;;
+  stop) stop_environment ;;
+  restart)
+    stop_environment || true
+    start_environment
+    ;;
+  status)
+    require_command curl
+    status_environment
+    ;;
+  logs)
+    printf 'backend: %s\ndashboard: %s\n' "${BACKEND_LOG}" "${DASHBOARD_LOG}"
+    ;;
+  help|--help|-h) print_usage ;;
+  *)
+    print_usage >&2
+    fail "unknown command: ${command_name}"
+    ;;
+esac

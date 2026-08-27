@@ -104,9 +104,9 @@ impl CliProductConfig {
                 "the Abyss CLI product configuration must not define an adapter".to_owned(),
             ));
         }
-        let requires_terminal_login = !matches!(
+        let requires_terminal_login = matches!(
             &file.delivery_worker.authentication,
-            AuthenticationConfig::None
+            AuthenticationConfig::ManagedBearer
         );
         let control_plane_url = file
             .product
@@ -116,7 +116,7 @@ impl CliProductConfig {
             .transpose()?;
         if requires_terminal_login && control_plane_url.is_none() {
             return Err(CliError::InvalidConfiguration(
-                "product.control_plane is required when delivery_worker.authentication.mode is not \"none\""
+                "product.control_plane is required when delivery_worker.authentication.mode is \"managed_bearer\""
                     .to_owned(),
             ));
         }
@@ -177,22 +177,23 @@ mod tests {
     }
 
     #[test]
-    fn unauthenticated_delivery_does_not_require_a_control_plane() {
-        for product in [
-            r#"{"kind":"cli"}"#,
-            r#"{"kind":"cli","control_plane":null}"#,
+    fn local_delivery_modes_do_not_require_a_control_plane() {
+        for authentication in [
+            r#"{"mode":"none"}"#,
+            r#"{"mode":"authorization_header_file","path":"token"}"#,
+            r#"{"mode":"cookie_header_file","path":"cookie"}"#,
         ] {
             let config = CliProductConfig::decode(&format!(
                 r#"{{
                     "schema_version": 1,
-                    "product": {product},
+                    "product": {{"kind":"cli"}},
                     "delivery_worker": {{
                         "delivery": {{"endpoint": "https://events.example.test/v1/events"}},
-                        "authentication": {{"mode": "none"}}
+                        "authentication": {authentication}
                     }}
                 }}"#
             ))
-            .expect("unauthenticated delivery should not require a control plane");
+            .expect("local delivery authentication should not require a control plane");
 
             assert_eq!(config.control_plane_url(), None);
             assert!(!config.requires_terminal_login());
@@ -200,25 +201,19 @@ mod tests {
     }
 
     #[test]
-    fn authenticated_delivery_requires_a_control_plane() {
-        for authentication in [
-            r#"{"mode":"managed_bearer"}"#,
-            r#"{"mode":"authorization_header_file","path":"token"}"#,
-            r#"{"mode":"cookie_header_file","path":"cookie"}"#,
-        ] {
-            let error = CliProductConfig::decode(&format!(
-                r#"{{
-                    "schema_version": 1,
-                    "product": {{"kind": "cli"}},
-                    "delivery_worker": {{"authentication": {authentication}}}
-                }}"#
-            ))
-            .expect_err("authenticated delivery must require a control plane");
+    fn managed_delivery_requires_a_control_plane() {
+        let error = CliProductConfig::decode(
+            r#"{
+                "schema_version": 1,
+                "product": {"kind": "cli"},
+                "delivery_worker": {"authentication": {"mode":"managed_bearer"}}
+            }"#,
+        )
+        .expect_err("managed delivery must require a control plane");
 
-            assert!(error.to_string().contains(
-                "product.control_plane is required when delivery_worker.authentication.mode is not \"none\""
-            ));
-        }
+        assert!(error.to_string().contains(
+            "product.control_plane is required when delivery_worker.authentication.mode is \"managed_bearer\""
+        ));
     }
 
     #[test]

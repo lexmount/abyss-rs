@@ -157,6 +157,10 @@ jobs:
         if: runner.os == 'Linux'
         run: python3 scripts/tests/test_backend_image_contract.py
 
+      - name: Run native local environment tests
+        if: runner.os != 'Windows'
+        run: make test-local
+
       - name: Run macOS CA trust black-box
         if: runner.os == 'macOS' && github.event_name == 'workflow_dispatch'
         timeout-minutes: 5

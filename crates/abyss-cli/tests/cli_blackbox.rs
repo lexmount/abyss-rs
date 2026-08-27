@@ -328,7 +328,7 @@ fn authenticated_proxy_without_a_control_plane_reports_configuration_error() {
     let stderr = String::from_utf8_lossy(&output.stderr);
     assert!(
         stderr.contains(
-            "product.control_plane is required when delivery_worker.authentication.mode is not \"none\""
+            "product.control_plane is required when delivery_worker.authentication.mode is \"managed_bearer\""
         ),
         "stderr={stderr}"
     );
