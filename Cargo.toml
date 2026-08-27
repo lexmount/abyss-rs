@@ -1,0 +1,92 @@
+[workspace]
+members = [
+    "crates/abyss-agent-hook",
+    "crates/abyss-cli",
+    "crates/abyss-delivery-plugin",
+    "crates/abyss-broker",
+    "crates/abyss-mitm",
+    "crates/abyss-plugin-protocol",
+    "crates/abyss-sdk",
+    "crates/abyss-storage",
+    "crates/abyss-terminal-auth",
+]
+resolver = "3"
+
+[workspace.package]
+version = "1.0.0"
+edition = "2024"
+authors = ["chunchi.che@lexmount.com"]
+license-file = "LICENSE"
+repository = "https://github.com/lexmount/abyss-rs"
+
+[workspace.dependencies]
+abyss-agent-hook = { path = "crates/abyss-agent-hook" }
+abyss-mitm = { path = "crates/abyss-mitm" }
+abyss-plugin-protocol = { path = "crates/abyss-plugin-protocol" }
+abyss-sdk = { path = "crates/abyss-sdk" }
+abyss-storage = { path = "crates/abyss-storage" }
+abyss-terminal-auth = { path = "crates/abyss-terminal-auth" }
+arc-swap = "1"
+parking_lot = "0.12"
+subtle = "2"
+thiserror = "2"
+toml = "0.9"
+
+[workspace.lints.rust]
+unsafe_code = "warn"
+
+[workspace.lints.clippy]
+all = { level = "warn", priority = -1 }
+cargo = { level = "warn", priority = -1 }
+nursery = { level = "warn", priority = -1 }
+pedantic = { level = "warn", priority = -1 }
+cargo_common_metadata = "allow"
+# Equality markers are derived only when an actual caller or trait bound requires them.
+derive_partial_eq_without_eq = "allow"
+# restriction
+allow_attributes = "warn"
+allow_attributes_without_reason = "warn"
+arithmetic_side_effects = "warn"
+as_conversions = "warn"
+as_pointer_underscore = "warn"
+big_endian_bytes = "warn"
+cfg_not_test = "warn"
+cognitive_complexity = "warn"
+decimal_literal_representation = "warn"
+default_numeric_fallback = "warn"
+default_union_representation = "warn"
+doc_include_without_cfg = "warn"
+doc_paragraphs_missing_punctuation = "warn"
+empty_drop = "warn"
+empty_enum_variants_with_brackets = "warn"
+empty_structs_with_brackets = "warn"
+error_impl_error = "warn"
+exhaustive_enums = "warn"
+exit = "warn"
+filetype_is_file = "warn"
+float_arithmetic = "warn"
+float_cmp_const = "warn"
+fn_to_numeric_cast_any = "warn"
+get_unwrap = "warn"
+if_then_some_else_none = "warn"
+impl_trait_in_params = "warn"
+infinite_loop = "warn"
+integer_division_remainder_used = "warn"
+large_include_file = "warn"
+let_underscore_must_use = "warn"
+map_with_unused_argument_over_ranges = "warn"
+missing_assert_message = "warn"
+multiple_unsafe_ops_per_block = "warn"
+mutex_atomic = "warn"
+needless_raw_strings = "warn"
+non_zero_suggestions = "warn"
+rc_buffer = "warn"
+rc_mutex = "warn"
+undocumented_unsafe_blocks = "warn"
+unnecessary_safety_comment = "warn"
+unnecessary_self_imports = "warn"
+unwrap_in_result = "warn"
+
+[profile.release]
+opt-level = 3
+lto = true

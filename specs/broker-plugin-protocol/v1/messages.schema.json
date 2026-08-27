@@ -1,0 +1,94 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://schemas.lexmount.net/abyss/broker-plugin/v1/messages.schema.json",
+  "title": "Abyss broker plugin protocol version 1 frame payloads",
+  "oneOf": [
+    {
+      "$ref": "#/$defs/pluginHello"
+    },
+    {
+      "$ref": "#/$defs/brokerHello"
+    },
+    {
+      "$ref": "#/$defs/brokerError"
+    },
+    {
+      "$ref": "agent-event.schema.json"
+    },
+    {
+      "$ref": "#/$defs/brokerClose"
+    }
+  ],
+  "$defs": {
+    "pluginHello": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "protocol_version",
+        "plugin_id"
+      ],
+      "properties": {
+        "protocol_version": {
+          "const": 1
+        },
+        "plugin_id": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128,
+          "pattern": "^[a-zA-Z0-9._-]+$"
+        }
+      }
+    },
+    "brokerHello": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "protocol_version"
+      ],
+      "properties": {
+        "protocol_version": {
+          "const": 1
+        }
+      }
+    },
+    "brokerError": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "code",
+        "reason"
+      ],
+      "properties": {
+        "code": {
+          "enum": [
+            1,
+            2,
+            3
+          ]
+        },
+        "reason": {
+          "type": "string"
+        }
+      }
+    },
+    "brokerClose": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "code",
+        "reason"
+      ],
+      "properties": {
+        "code": {
+          "enum": [
+            100,
+            101
+          ]
+        },
+        "reason": {
+          "type": "string"
+        }
+      }
+    }
+  }
+}

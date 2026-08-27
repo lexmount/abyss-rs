@@ -1,0 +1,4 @@
+interface:
+  display_name: "Local Agent E2E"
+  short_description: "Run the local Abyss agent audit stack"
+  default_prompt: "Use $local-agent-e2e to start and verify the local published Backend, delivery plugin, and explicit-proxy Broker environment."

@@ -1,0 +1,46 @@
+{
+  "event_id": "evt-123",
+  "occurred_at": "2026-08-19T10:00:00Z",
+  "device": {
+    "host_name": "developer-mac",
+    "platform": "macos",
+    "os_version": "15.6"
+  },
+  "agent": {
+    "name": "codex",
+    "version": "1.2.3"
+  },
+  "session_id": "session-123",
+  "turn_index": 1,
+  "llm": {
+    "provider": "openai",
+    "model": "gpt-5"
+  },
+  "side": "response",
+  "text": "I will inspect the repository.",
+  "token_usage": {
+    "input_tokens": 0,
+    "output_tokens": 12,
+    "cache_read_tokens": 0,
+    "cache_write_tokens": 0,
+    "reasoning_tokens": 4,
+    "total_tokens": 16
+  },
+  "tool_calls": [
+    {
+      "call_id": "call-123",
+      "name": "exec",
+      "input": "pwd",
+      "input_sha256": "0000000000000000000000000000000000000000000000000000000000000000"
+    }
+  ],
+  "attachments": [
+    {
+      "position": 0,
+      "media_type": "image/png",
+      "byte_size": 8,
+      "sha256": "0000000000000000000000000000000000000000000000000000000000000000",
+      "content_base64": "iVBORw0KGgo="
+    }
+  ]
+}

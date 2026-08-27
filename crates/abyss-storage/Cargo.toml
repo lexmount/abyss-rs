@@ -1,0 +1,17 @@
+[package]
+name = "abyss-storage"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license-file.workspace = true
+repository.workspace = true
+publish = false
+
+[dependencies]
+diesel = { version = "2.2", default-features = false, features = ["sqlite"] }
+libsqlite3-sys = { version = "0.35", features = ["bundled"] }
+parking_lot.workspace = true
+thiserror.workspace = true
+
+[lints]
+workspace = true

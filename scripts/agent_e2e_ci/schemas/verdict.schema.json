@@ -1,0 +1,89 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "status",
+    "run_id",
+    "seed",
+    "coverage",
+    "scenario_results",
+    "issues",
+    "summary",
+    "recommended_action"
+  ],
+  "properties": {
+    "status": {"type": "string", "enum": ["pass", "fail", "inconclusive"]},
+    "run_id": {"type": "string", "pattern": ".+"},
+    "seed": {"type": "integer"},
+    "coverage": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "tool_call_observed",
+        "matching_tool_result_observed",
+        "image_transmitted",
+        "session_turn_coherent",
+        "token_usage_consistent",
+        "run_isolated",
+        "notes"
+      ],
+      "properties": {
+        "tool_call_observed": {"type": "boolean"},
+        "matching_tool_result_observed": {"type": "boolean"},
+        "image_transmitted": {"type": "boolean"},
+        "session_turn_coherent": {"type": "boolean"},
+        "token_usage_consistent": {"type": "boolean"},
+        "run_isolated": {"type": "boolean"},
+        "notes": {"type": "string", "pattern": ".+"}
+      }
+    },
+    "scenario_results": {
+      "type": "array",
+      "minItems": 1,
+      "maxItems": 3,
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["id", "outcome", "observed_behavior", "comparisons", "issues"],
+        "properties": {
+          "id": {"type": "string", "pattern": ".+"},
+          "outcome": {
+            "type": "string",
+            "enum": ["match", "mismatch", "inconclusive"]
+          },
+          "observed_behavior": {"type": "string", "pattern": ".+"},
+          "comparisons": {
+            "type": "array",
+            "minItems": 1,
+            "items": {
+              "type": "object",
+              "additionalProperties": false,
+              "required": ["criterion", "actual", "backend", "outcome", "explanation"],
+              "properties": {
+                "criterion": {"type": "string", "pattern": ".+"},
+                "actual": {"type": "string", "pattern": ".+"},
+                "backend": {"type": "string", "pattern": ".+"},
+                "outcome": {
+                  "type": "string",
+                  "enum": ["match", "mismatch", "not_observed"]
+                },
+                "explanation": {"type": "string", "pattern": ".+"}
+              }
+            }
+          },
+          "issues": {
+            "type": "array",
+            "items": {"type": "string", "pattern": ".+"}
+          }
+        }
+      }
+    },
+    "issues": {
+      "type": "array",
+      "items": {"type": "string", "pattern": ".+"}
+    },
+    "summary": {"type": "string", "pattern": ".+"},
+    "recommended_action": {"type": "string", "pattern": ".+"}
+  }
+}

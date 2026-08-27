@@ -1,0 +1,22 @@
+# Clippy behavior configuration.
+#
+# Lint levels belong in Cargo.toml under [workspace.lints].
+doc-valid-idents = [
+    "..",
+    "Anthropic",
+    "Cursor",
+    "Gemini",
+    "GitHub",
+    "HTTP",
+    "HTTPS",
+    "IPC",
+    "LexMount",
+    "MDM",
+    "MITM",
+    "OpenAI",
+    "QUIC",
+    "SSE",
+    "TLS",
+    "WFP",
+    "macOS",
+]

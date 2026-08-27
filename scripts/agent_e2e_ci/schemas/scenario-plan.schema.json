@@ -1,0 +1,95 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["run_id", "seed", "scenarios"],
+  "properties": {
+    "run_id": {"type": "string", "pattern": ".+"},
+    "seed": {"type": "integer"},
+    "scenarios": {
+      "type": "array",
+      "minItems": 1,
+      "maxItems": 3,
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "id",
+          "title",
+          "objective",
+          "prompt",
+          "files",
+          "image",
+          "coverage_targets",
+          "rationale"
+        ],
+        "properties": {
+          "id": {
+            "type": "string",
+            "pattern": "^[a-z0-9][a-z0-9_-]{0,63}$"
+          },
+          "title": {"type": "string", "pattern": ".+"},
+          "objective": {"type": "string", "pattern": ".+"},
+          "prompt": {"type": "string", "pattern": ".+"},
+          "files": {
+            "type": "array",
+            "minItems": 1,
+            "maxItems": 8,
+            "items": {
+              "type": "object",
+              "additionalProperties": false,
+              "required": ["path", "content"],
+              "properties": {
+                "path": {"type": "string", "pattern": ".+"},
+                "content": {"type": "string", "pattern": ".+"}
+              }
+            }
+          },
+          "image": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["width", "height", "pattern", "palette"],
+            "properties": {
+              "width": {"type": "integer", "minimum": 32, "maximum": 256},
+              "height": {"type": "integer", "minimum": 32, "maximum": 256},
+              "pattern": {
+                "type": "string",
+                "enum": [
+                  "checkerboard",
+                  "horizontal_stripes",
+                  "vertical_stripes",
+                  "quadrants"
+                ]
+              },
+              "palette": {
+                "type": "array",
+                "minItems": 2,
+                "maxItems": 4,
+                "items": {"type": "string", "pattern": "^#[0-9a-fA-F]{6}$"}
+              }
+            }
+          },
+          "coverage_targets": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": [
+              "tool_call",
+              "tool_result",
+              "image_input",
+              "session_turn",
+              "token_usage"
+            ],
+            "properties": {
+              "tool_call": {"type": "boolean"},
+              "tool_result": {"type": "boolean"},
+              "image_input": {"type": "boolean"},
+              "session_turn": {"type": "boolean"},
+              "token_usage": {"type": "boolean"}
+            }
+          },
+          "rationale": {"type": "string", "pattern": ".+"}
+        }
+      }
+    }
+  }
+}

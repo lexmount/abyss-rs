@@ -1,0 +1,24 @@
+[Unit]
+Description=Abyss explicit HTTP/HTTPS proxy broker for %i
+Wants=network-online.target
+After=network-online.target
+
+[Service]
+Type=simple
+User=%i
+WorkingDirectory=/home/%i
+Environment=HOME=/home/%i
+Environment=ABYSS_HOME=/home/%i/.abyss
+ExecStartPre=/bin/rm -f /home/%i/.abyss/runtime/startup-info.json /home/%i/.abyss/runtime/broker.token
+ExecStart=/usr/local/bin/abyss-broker --api 127.0.0.1:0 --config /home/%i/.abyss/broker-config.toml --auth-token-file /home/%i/.abyss/runtime/broker.token --startup-info-file /home/%i/.abyss/runtime/startup-info.json
+ExecStopPost=/bin/rm -f /home/%i/.abyss/runtime/startup-info.json /home/%i/.abyss/runtime/broker.token
+Restart=on-failure
+RestartSec=2s
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ReadWritePaths=/home/%i/.abyss
+RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6
+
+[Install]
+WantedBy=multi-user.target

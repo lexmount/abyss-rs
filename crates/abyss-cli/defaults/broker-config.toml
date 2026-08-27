@@ -1,0 +1,12 @@
+schema_version = 1
+
+[devtools]
+log_level = "info"
+performance_trace = false
+log_location = "logs"
+
+[ca]
+path = "ca"
+
+[proxy]
+mode = "explicit"

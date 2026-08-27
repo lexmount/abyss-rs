@@ -1,0 +1,43 @@
+[build-system]
+requires = ["setuptools>=77"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "abyss-sdk"
+version = "1.0.0"
+description = "Python SDK for the Abyss broker REST API and plugin event stream"
+readme = "README.md"
+requires-python = ">=3.9"
+license = "GPL-3.0-only"
+authors = [{name = "Lexmount"}]
+keywords = ["abyss", "agent", "audit", "broker"]
+classifiers = [
+  "Programming Language :: Python :: 3",
+  "Programming Language :: Python :: 3 :: Only",
+  "Operating System :: MacOS",
+  "Operating System :: Microsoft :: Windows",
+  "Operating System :: POSIX :: Linux",
+]
+
+[project.urls]
+Repository = "https://github.com/lexmount/abyss-rs"
+
+[project.optional-dependencies]
+dev = ["PyYAML>=6,<7", "ruff>=0.11,<1"]
+
+[tool.setuptools.packages.find]
+where = ["."]
+include = ["abyss_sdk*"]
+
+[tool.setuptools.package-data]
+abyss_sdk = ["py.typed"]
+
+[tool.ruff]
+target-version = "py39"
+line-length = 100
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "UP", "B", "SIM", "RUF"]
+
+[tool.ruff.format]
+quote-style = "double"

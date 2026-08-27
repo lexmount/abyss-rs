@@ -1,0 +1,50 @@
+name: Codex Black-box
+
+on:
+  workflow_dispatch:
+  pull_request:
+    branches:
+      - main
+  push:
+    branches:
+      - main
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  codex-upload:
+    name: Real Codex context upload
+    if: github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Rust
+        uses: ./.github/actions/setup-rust
+        with:
+          cache-shared-key: codex-upload-blackbox
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 24
+
+      - name: Install Codex CLI
+        run: npm install --global @openai/codex@0.144.3
+
+      - name: Require OpenAI credential
+        env:
+          CODEX_API_KEY: ${{ secrets.CODEX_API_KEY }}
+        run: test -n "${CODEX_API_KEY}" || { echo 'CODEX_API_KEY Actions secret is required.' >&2; exit 1; }
+
+      - name: Run Codex usage upload black-box
+        timeout-minutes: 15
+        env:
+          CODEX_API_KEY: ${{ secrets.CODEX_API_KEY }}
+        run: exec scripts/blackbox_codex_usage_upload.sh

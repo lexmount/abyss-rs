@@ -1,0 +1,56 @@
+name: Claude Code Black-box
+
+on:
+  workflow_dispatch:
+  pull_request:
+    branches:
+      - main
+  push:
+    branches:
+      - main
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  claude-code-upload:
+    name: Real Claude Code context upload
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Rust
+        uses: ./.github/actions/setup-rust
+        with:
+          cache-shared-key: claude-code-upload-blackbox
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 24
+
+      - name: Install Claude Code CLI
+        run: |
+          npm install --global @anthropic-ai/claude-code@2.1.209
+          claude --version
+
+      - name: Require Claude Code credentials
+        env:
+          CLAUDE_CODE_API_KEY: ${{ secrets.CLAUDE_CODE_API_KEY || secrets.ANTHROPIC_API_KEY }}
+          CLAUDE_CODE_BASE_URL: ${{ secrets.CLAUDE_CODE_BASE_URL || 'https://api.anthropic.com' }}
+        run: |
+          test -n "${CLAUDE_CODE_API_KEY}" || { echo 'CLAUDE_CODE_API_KEY or ANTHROPIC_API_KEY Actions secret is required.' >&2; exit 1; }
+          test -n "${CLAUDE_CODE_BASE_URL}" || { echo 'CLAUDE_CODE_BASE_URL Actions secret is required.' >&2; exit 1; }
+
+      - name: Run Claude Code usage upload black-box
+        timeout-minutes: 15
+        env:
+          CLAUDE_CODE_API_KEY: ${{ secrets.CLAUDE_CODE_API_KEY || secrets.ANTHROPIC_API_KEY }}
+          CLAUDE_CODE_BASE_URL: ${{ secrets.CLAUDE_CODE_BASE_URL || 'https://api.anthropic.com' }}
+          CLAUDE_CODE_MODEL: ${{ secrets.CLAUDE_CODE_MODEL || 'claude-sonnet-4-6' }}
+        run: exec scripts/blackbox_claude_code_usage_upload.sh

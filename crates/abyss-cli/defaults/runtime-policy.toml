@@ -1,0 +1,59 @@
+schema_version = 1
+
+[mitm.tls_decryption]
+default_action = "passthrough"
+missing_sni_action = "passthrough"
+
+[[mitm.tls_decryption.rules]]
+id = "passthrough-openai-support-services"
+enabled = true
+action = "passthrough"
+destination_hosts = ["ab.chatgpt.com"]
+
+[[mitm.tls_decryption.rules]]
+id = "decrypt-openai-chatgpt"
+enabled = true
+action = "intercept"
+destination_hosts = ["openai.com", "*.openai.com", "chatgpt.com", "*.chatgpt.com"]
+
+[[mitm.tls_decryption.rules]]
+id = "decrypt-anthropic-claude"
+enabled = true
+action = "intercept"
+destination_hosts = ["anthropic.com", "*.anthropic.com", "claude.ai", "*.claude.ai"]
+
+[hooks.harness_usage]
+enabled = true
+
+[hooks.harness_usage.config.content]
+token_usage = true
+conversation_text = true
+tool_calls = true
+images = true
+
+[hooks.harness_usage.config.harnesses.codex]
+enabled = true
+
+[hooks.harness_usage.config.harnesses.codex.content]
+token_usage = true
+conversation_text = true
+tool_calls = true
+images = true
+
+[hooks.harness_usage.config.harnesses."claude-code"]
+enabled = true
+
+[hooks.harness_usage.config.harnesses."claude-code".content]
+token_usage = true
+conversation_text = true
+tool_calls = true
+images = true
+
+[hooks.harness_usage.config.harnesses."claude-desktop"]
+enabled = true
+
+[hooks.harness_usage.config.harnesses."claude-desktop".content]
+token_usage = true
+conversation_text = true
+tool_calls = true
+images = true

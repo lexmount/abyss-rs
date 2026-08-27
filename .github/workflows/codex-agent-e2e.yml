@@ -1,0 +1,97 @@
+name: Codex Agent-driven E2E
+
+on:
+  workflow_dispatch:
+    inputs:
+      seed:
+        description: Optional recorded seed used to guide scenario variation
+        required: false
+        type: string
+      max_scenarios:
+        description: Maximum randomized scenarios
+        required: false
+        default: "2"
+        type: choice
+        options:
+          - "1"
+          - "2"
+          - "3"
+      skip:
+        description: Record an explicit successful skip
+        required: false
+        default: false
+        type: boolean
+  pull_request:
+    branches:
+      - main
+    types:
+      - opened
+      - synchronize
+      - reopened
+      - labeled
+      - unlabeled
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  agent-e2e:
+    name: Codex agent-driven E2E
+    runs-on: [self-hosted, abyss, Linux, X64]
+    timeout-minutes: 45
+    env:
+      ABYSS_AGENT_E2E_MANUAL_SKIP: ${{ (github.event_name == 'pull_request' && contains(github.event.pull_request.labels.*.name, 'skip-agent-e2e')) || (github.event_name == 'workflow_dispatch' && inputs.skip) }}
+      ABYSS_AGENT_E2E_FORK_SKIP: ${{ github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name != github.repository }}
+      ABYSS_AGENT_E2E_RUN_ID: ${{ github.run_id }}-${{ github.run_attempt }}
+      ABYSS_AGENT_E2E_SEED: ${{ inputs.seed }}
+      ABYSS_AGENT_E2E_MAX_SCENARIOS: ${{ inputs.max_scenarios || '2' }}
+
+    steps:
+      - name: Record skipped check
+        if: env.ABYSS_AGENT_E2E_MANUAL_SKIP == 'true' || env.ABYSS_AGENT_E2E_FORK_SKIP == 'true'
+        shell: bash
+        run: |
+          set -euo pipefail
+          reason="manual skip requested"
+          if [[ "${ABYSS_AGENT_E2E_FORK_SKIP}" == "true" ]]; then
+            reason="fork pull requests cannot use the self-hosted Codex login"
+          fi
+          {
+            echo "## Codex agent-driven E2E"
+            echo
+            echo "- Status: \`SKIPPED\`"
+            echo "- Reason: ${reason}"
+            echo "- Actor: \`${GITHUB_ACTOR}\`"
+            echo "- Commit: \`${GITHUB_SHA}\`"
+          } >>"${GITHUB_STEP_SUMMARY}"
+
+      - name: Checkout
+        if: env.ABYSS_AGENT_E2E_MANUAL_SKIP != 'true' && env.ABYSS_AGENT_E2E_FORK_SKIP != 'true'
+        uses: actions/checkout@v4
+
+      - name: Validate runner prerequisites
+        if: env.ABYSS_AGENT_E2E_MANUAL_SKIP != 'true' && env.ABYSS_AGENT_E2E_FORK_SKIP != 'true'
+        run: python3 -m scripts.agent_e2e_ci preflight
+
+      - name: Test CI orchestration contracts
+        if: env.ABYSS_AGENT_E2E_MANUAL_SKIP != 'true' && env.ABYSS_AGENT_E2E_FORK_SKIP != 'true'
+        run: python3 -m unittest discover -s scripts/tests -p 'test_agent_e2e_*.py'
+
+      - name: Run agent-driven E2E
+        if: env.ABYSS_AGENT_E2E_MANUAL_SKIP != 'true' && env.ABYSS_AGENT_E2E_FORK_SKIP != 'true'
+        env:
+          ABYSS_AGENT_E2E_RUNTIME_ROOT: ${{ runner.temp }}/abyss-agent-e2e-${{ github.run_id }}-${{ github.run_attempt }}
+        run: python3 -m scripts.agent_e2e_ci run
+
+      - name: Upload safe comparison evidence
+        if: always() && env.ABYSS_AGENT_E2E_MANUAL_SKIP != 'true' && env.ABYSS_AGENT_E2E_FORK_SKIP != 'true'
+        uses: actions/upload-artifact@v4
+        with:
+          name: codex-agent-e2e-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/abyss-agent-e2e-${{ github.run_id }}-${{ github.run_attempt }}/artifacts
+          if-no-files-found: warn
+          retention-days: 14
