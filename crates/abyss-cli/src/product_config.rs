@@ -13,6 +13,7 @@ const PRODUCT_CONFIG_SCHEMA_VERSION: u32 = 1;
 #[derive(Debug)]
 pub struct CliProductConfig {
     control_plane_url: Option<String>,
+    dashboard_url: Option<String>,
     requires_terminal_login: bool,
 }
 
@@ -33,7 +34,7 @@ struct ProductSettings {
     #[serde(default)]
     control_plane: Option<ControlPlaneSettings>,
     #[serde(default)]
-    dashboard: Option<serde_json::Value>,
+    dashboard: Option<DashboardSettings>,
     #[serde(default)]
     sso: Option<serde_json::Value>,
     #[serde(default)]
@@ -55,11 +56,23 @@ struct ControlPlaneSettings {
     auth_path_prefix: Option<String>,
 }
 
+#[derive(Deserialize)]
+struct DashboardSettings {
+    #[serde(default)]
+    url: Option<String>,
+}
+
 impl CliProductConfig {
     /// Returns the configured control-plane base URL when this deployment has one.
     #[must_use]
     pub fn control_plane_url(&self) -> Option<&str> {
         self.control_plane_url.as_deref()
+    }
+
+    /// Returns the dashboard URL exposed by this deployment, when configured.
+    #[must_use]
+    pub fn dashboard_url(&self) -> Option<&str> {
+        self.dashboard_url.as_deref()
     }
 
     /// Returns whether endpoint commands require a valid terminal credential.
@@ -114,6 +127,13 @@ impl CliProductConfig {
             .as_ref()
             .map(Self::validate_control_plane_url)
             .transpose()?;
+        let dashboard_url = file
+            .product
+            .dashboard
+            .as_ref()
+            .and_then(|dashboard| dashboard.url.as_deref())
+            .map(Self::validate_dashboard_url)
+            .transpose()?;
         if requires_terminal_login && control_plane_url.is_none() {
             return Err(CliError::InvalidConfiguration(
                 "product.control_plane is required when delivery_worker.authentication.mode is \"managed_bearer\""
@@ -122,7 +142,6 @@ impl CliProductConfig {
         }
         drop((
             file.delivery_worker,
-            file.product.dashboard,
             file.product.sso,
             file.product.updates,
             file.product
@@ -131,6 +150,7 @@ impl CliProductConfig {
         ));
         Ok(Self {
             control_plane_url,
+            dashboard_url,
             requires_terminal_login,
         })
     }
@@ -138,10 +158,17 @@ impl CliProductConfig {
     fn validate_control_plane_url(
         control_plane: &ControlPlaneSettings,
     ) -> Result<String, CliError> {
-        let control_plane_url = control_plane.url.trim().to_owned();
-        let parsed = reqwest::Url::parse(&control_plane_url).map_err(|error| {
-            CliError::InvalidConfiguration(format!("invalid product.control_plane.url: {error}"))
-        })?;
+        Self::validate_http_url(&control_plane.url, "product.control_plane.url")
+    }
+
+    fn validate_dashboard_url(url: &str) -> Result<String, CliError> {
+        Self::validate_http_url(url, "product.dashboard.url")
+    }
+
+    fn validate_http_url(value: &str, field: &str) -> Result<String, CliError> {
+        let url = value.trim().to_owned();
+        let parsed = reqwest::Url::parse(&url)
+            .map_err(|error| CliError::InvalidConfiguration(format!("invalid {field}: {error}")))?;
         if parsed.host_str().is_none()
             || !matches!(parsed.scheme(), "http" | "https")
             || parsed.username() != ""
@@ -149,12 +176,11 @@ impl CliProductConfig {
             || parsed.query().is_some()
             || parsed.fragment().is_some()
         {
-            return Err(CliError::InvalidConfiguration(
-                "product.control_plane.url must be an absolute HTTP(S) URL without credentials, query, or fragment"
-                    .to_owned(),
-            ));
+            return Err(CliError::InvalidConfiguration(format!(
+                "{field} must be an absolute HTTP(S) URL without credentials, query, or fragment"
+            )));
         }
-        Ok(control_plane_url)
+        Ok(url)
     }
 }
 
@@ -172,6 +198,10 @@ mod tests {
         assert_eq!(
             config.control_plane_url(),
             Some("https://control.example.test/api")
+        );
+        assert_eq!(
+            config.dashboard_url(),
+            Some("https://dashboard.example.test")
         );
         assert!(config.requires_terminal_login());
     }
@@ -217,6 +247,44 @@ mod tests {
     }
 
     #[test]
+    fn dashboard_must_be_an_absolute_http_url() {
+        let error = CliProductConfig::decode(
+            r#"{
+                "schema_version": 1,
+                "product": {
+                    "kind": "cli",
+                    "dashboard": {"url": "file:///tmp/dashboard"}
+                },
+                "delivery_worker": {"authentication": {"mode":"none"}}
+            }"#,
+        )
+        .expect_err("dashboard URL must use HTTP or HTTPS");
+
+        assert!(
+            error
+                .to_string()
+                .contains("product.dashboard.url must be an absolute HTTP(S) URL")
+        );
+    }
+
+    #[test]
+    fn dashboard_integration_without_a_url_remains_optional() {
+        let config = CliProductConfig::decode(
+            r#"{
+                "schema_version": 1,
+                "product": {
+                    "kind": "cli",
+                    "dashboard": {"embedded": true}
+                },
+                "delivery_worker": {"authentication": {"mode":"none"}}
+            }"#,
+        )
+        .expect("a dashboard integration does not have to expose a browser URL");
+
+        assert_eq!(config.dashboard_url(), None);
+    }
+
+    #[test]
     fn cli_profile_rejects_a_platform_adapter() {
         let error = CliProductConfig::decode(
             r#"{
@@ -253,7 +321,8 @@ mod tests {
             "schema_version": 1,
             "product": {
                 "kind": "cli",
-                "control_plane": {"url": "https://control.example.test/api"}
+                "control_plane": {"url": "https://control.example.test/api"},
+                "dashboard": {"url": "https://dashboard.example.test"}
             },
             "delivery_worker": {
                 "plugin_id": "example.delivery",

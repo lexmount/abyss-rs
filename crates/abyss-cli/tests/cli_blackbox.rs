@@ -125,6 +125,19 @@ fn login_persists_the_cli_owned_credential() {
 fn status_and_log_dump_work_without_a_running_broker() {
     let root = unique_test_dir();
     let support_bundle = root.join("support.zip");
+    fs::create_dir_all(&root).expect("test state should create");
+    fs::write(
+        root.join("product-config.json"),
+        r#"{
+            "schema_version": 1,
+            "product": {
+                "kind": "cli",
+                "dashboard": {"url": "http://127.0.0.1:43123"}
+            },
+            "delivery_worker": {"authentication": {"mode": "none"}}
+        }"#,
+    )
+    .expect("product configuration should write");
     let output = Command::new(env!("CARGO_BIN_EXE_abyss"))
         .env("ABYSS_HOME", &root)
         .args(["status", "--broker-api", "127.0.0.1:1"])
@@ -135,6 +148,7 @@ fn status_and_log_dump_work_without_a_running_broker() {
     let status = String::from_utf8_lossy(&output.stdout);
     assert!(status.contains("Auth: logged_out"));
     assert!(status.contains("Broker: stopped"));
+    assert!(status.contains("Dashboard: http://127.0.0.1:43123"));
 
     let output = Command::new(env!("CARGO_BIN_EXE_abyss"))
         .env("ABYSS_HOME", &root)

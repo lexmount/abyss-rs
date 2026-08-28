@@ -2,8 +2,6 @@
 
 set -euo pipefail
 
-readonly DEFAULT_ABYSS_RS_REPOSITORY="https://github.com/lexmount/abyss-rs.git"
-readonly DEFAULT_ABYSS_RS_REF="main"
 readonly DEFAULT_BACKEND_REPOSITORY="https://github.com/lexmount/abyss-backend.git"
 readonly DEFAULT_BACKEND_REVISION="872c030f333e881fc25d452e73677a36090b69c6"
 readonly DEFAULT_DASHBOARD_PACKAGE="@lexmount.com/abyss-dashboard@0.1.0"
@@ -52,6 +50,46 @@ validate_port() {
   esac
   [[ "${value}" -ge 1 && "${value}" -le 65535 ]] \
     || fail "${label} must be between 1 and 65535"
+}
+
+read_install_setting() {
+  local path="$1"
+  local expected_key="$2"
+  local line
+  local key
+  local value
+  local result=""
+  local found=false
+  while IFS= read -r line || [[ -n "${line}" ]]; do
+    [[ -n "${line}" ]] || continue
+    key="${line%%=*}"
+    value="${line#*=}"
+    if [[ "${key}" == "${expected_key}" ]]; then
+      if [[ "${found}" == true ]]; then
+        printf 'install-local: duplicate %s in %s\n' "${expected_key}" "${path}" >&2
+        return 2
+      fi
+      found=true
+      result="${value}"
+    fi
+  done <"${path}"
+  [[ "${found}" == true ]] || return 1
+  printf '%s\n' "${result}"
+}
+
+find_free_port() {
+  node <<'NODE'
+const net = require("node:net");
+const server = net.createServer();
+server.on("error", (error) => {
+  console.error(`could not allocate a loopback port: ${error.message}`);
+  process.exitCode = 1;
+});
+server.listen(0, "127.0.0.1", () => {
+  console.log(server.address().port);
+  server.close();
+});
+NODE
 }
 
 checkout_source() {
@@ -109,6 +147,11 @@ done
 require_version_at_least "Node.js" "$(node -p 'process.versions.node.split(".")[0]')" 22
 require_version_at_least "npm" "$(npm --version | cut -d. -f1)" 10
 
+SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd -P)"
+ABYSS_RS_SOURCE="$(cd -- "${SCRIPT_DIR}/.." && pwd -P)"
+[[ -f "${ABYSS_RS_SOURCE}/Cargo.toml" && -f "${ABYSS_RS_SOURCE}/scripts/abyss-local" ]] \
+  || fail "run this installer from an abyss-rs checkout: ${ABYSS_RS_SOURCE}"
+
 ABYSS_HOME="${ABYSS_HOME:-${HOME}/.abyss}"
 USER_INSTALL_ROOT="${ABYSS_INSTALL_ROOT:-${HOME}/.local}"
 USER_BIN_DIR="${USER_INSTALL_ROOT}/bin"
@@ -117,10 +160,8 @@ if [[ "${platform}" == "Linux" ]]; then
 else
   RUNTIME_BIN_DIR="${ABYSS_RUNTIME_BIN_DIR:-${USER_BIN_DIR}}"
 fi
-BACKEND_PORT="${ABYSS_LOCAL_BACKEND_PORT:-8080}"
-DASHBOARD_PORT="${ABYSS_LOCAL_DASHBOARD_PORT:-5173}"
-ABYSS_RS_REPOSITORY="${ABYSS_RS_REPOSITORY:-${DEFAULT_ABYSS_RS_REPOSITORY}}"
-ABYSS_RS_REF="${ABYSS_RS_REF:-${DEFAULT_ABYSS_RS_REF}}"
+BACKEND_PORT="${ABYSS_LOCAL_BACKEND_PORT:-}"
+DASHBOARD_PORT="${ABYSS_LOCAL_DASHBOARD_PORT:-}"
 BACKEND_REPOSITORY="${ABYSS_BACKEND_REPOSITORY:-${DEFAULT_BACKEND_REPOSITORY}}"
 BACKEND_REVISION="${ABYSS_BACKEND_REVISION:-${DEFAULT_BACKEND_REVISION}}"
 DASHBOARD_PACKAGE="${ABYSS_DASHBOARD_PACKAGE:-${DEFAULT_DASHBOARD_PACKAGE}}"
@@ -128,10 +169,38 @@ DASHBOARD_PACKAGE="${ABYSS_DASHBOARD_PACKAGE:-${DEFAULT_DASHBOARD_PACKAGE}}"
 require_safe_path_value "ABYSS_HOME" "${ABYSS_HOME}"
 require_safe_path_value "user install root" "${USER_INSTALL_ROOT}"
 require_safe_path_value "runtime binary directory" "${RUNTIME_BIN_DIR}"
-validate_port "backend port" "${BACKEND_PORT}"
-validate_port "dashboard port" "${DASHBOARD_PORT}"
-[[ "${BACKEND_PORT}" != "${DASHBOARD_PORT}" ]] \
-  || fail "backend and dashboard ports must differ"
+
+existing_install_config="${ABYSS_HOME}/local/install.conf"
+if [[ -e "${existing_install_config}" ]]; then
+  [[ -f "${existing_install_config}" && ! -L "${existing_install_config}" ]] \
+    || fail "existing local install configuration is not a regular file: ${existing_install_config}"
+  if [[ -z "${BACKEND_PORT}" ]]; then
+    if existing_port="$(read_install_setting "${existing_install_config}" backend_port)"; then
+      BACKEND_PORT="${existing_port}"
+    else
+      existing_port_status=$?
+      [[ "${existing_port_status}" -eq 1 ]] || exit "${existing_port_status}"
+    fi
+  fi
+  if [[ -z "${DASHBOARD_PORT}" ]]; then
+    if existing_port="$(read_install_setting "${existing_install_config}" dashboard_port)"; then
+      DASHBOARD_PORT="${existing_port}"
+    else
+      existing_port_status=$?
+      [[ "${existing_port_status}" -eq 1 ]] || exit "${existing_port_status}"
+    fi
+  fi
+fi
+if [[ -n "${BACKEND_PORT}" ]]; then
+  validate_port "backend port" "${BACKEND_PORT}"
+fi
+if [[ -n "${DASHBOARD_PORT}" ]]; then
+  validate_port "dashboard port" "${DASHBOARD_PORT}"
+fi
+if [[ -n "${BACKEND_PORT}" && -n "${DASHBOARD_PORT}" ]]; then
+  [[ "${BACKEND_PORT}" != "${DASHBOARD_PORT}" ]] \
+    || fail "backend and dashboard ports must differ"
+fi
 
 if [[ "${platform}" == "Linux" ]]; then
   [[ "${RUNTIME_BIN_DIR}" == "/usr/local/bin" ]] \
@@ -155,16 +224,6 @@ cleanup() {
   rm -rf "${install_workspace}"
 }
 trap cleanup EXIT
-
-if [[ -n "${ABYSS_RS_SOURCE_DIR:-}" ]]; then
-  ABYSS_RS_SOURCE="${ABYSS_RS_SOURCE_DIR}"
-  [[ -f "${ABYSS_RS_SOURCE}/Cargo.toml" ]] \
-    || fail "ABYSS_RS_SOURCE_DIR is not an abyss-rs checkout: ${ABYSS_RS_SOURCE}"
-else
-  ABYSS_RS_SOURCE="${install_workspace}/abyss-rs"
-  info "fetching abyss-rs ${ABYSS_RS_REF}"
-  checkout_source "${ABYSS_RS_REPOSITORY}" "${ABYSS_RS_REF}" "${ABYSS_RS_SOURCE}"
-fi
 
 if [[ -n "${ABYSS_BACKEND_SOURCE_DIR:-}" ]]; then
   BACKEND_SOURCE="${ABYSS_BACKEND_SOURCE_DIR}"
@@ -221,6 +280,24 @@ fi
 info "installing dashboard ${DASHBOARD_PACKAGE}"
 npm install --global --prefix "${USER_INSTALL_ROOT}" "${DASHBOARD_PACKAGE}"
 install -m 0755 "${ABYSS_RS_SOURCE}/scripts/abyss-local" "${USER_BIN_DIR}/abyss-local"
+
+if [[ -z "${BACKEND_PORT}" ]]; then
+  BACKEND_PORT="$(find_free_port)"
+  while [[ -n "${DASHBOARD_PORT}" && "${BACKEND_PORT}" == "${DASHBOARD_PORT}" ]]; do
+    BACKEND_PORT="$(find_free_port)"
+  done
+fi
+if [[ -z "${DASHBOARD_PORT}" ]]; then
+  DASHBOARD_PORT="$(find_free_port)"
+  while [[ "${DASHBOARD_PORT}" == "${BACKEND_PORT}" ]]; do
+    DASHBOARD_PORT="$(find_free_port)"
+  done
+fi
+validate_port "backend port" "${BACKEND_PORT}"
+validate_port "dashboard port" "${DASHBOARD_PORT}"
+[[ "${BACKEND_PORT}" != "${DASHBOARD_PORT}" ]] \
+  || fail "backend and dashboard ports must differ"
+info "selected backend port ${BACKEND_PORT} and dashboard port ${DASHBOARD_PORT}"
 
 umask 077
 mkdir -p "${ABYSS_HOME}/local"

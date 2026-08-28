@@ -66,11 +66,14 @@ run_local init
 [[ "$(file_mode "${TEST_HOME}/product-config.json")" == "600" ]]
 grep -Fq "http://127.0.0.1:${BACKEND_PORT}/v1/agent-usage/events" \
   "${TEST_HOME}/product-config.json"
+grep -Fq "\"url\": \"http://127.0.0.1:${DASHBOARD_PORT}\"" \
+  "${TEST_HOME}/product-config.json"
 token="$(tr -d '\r\n' <"${TEST_HOME}/local/backend.token")"
 [[ "$(tr -d '\r\n' <"${TEST_HOME}/local/backend.authorization")" == "Bearer ${token}" ]]
 unset token
 
-run_local start
+start_output="$(run_local start)"
+[[ "${start_output}" == *"Dashboard: http://127.0.0.1:${DASHBOARD_PORT}"* ]]
 curl --noproxy '*' -fsS "http://127.0.0.1:${BACKEND_PORT}/readyz" >/dev/null
 curl --noproxy '*' -fsS "http://127.0.0.1:${DASHBOARD_PORT}/healthz" >/dev/null
 run_local status

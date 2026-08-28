@@ -164,15 +164,16 @@ ensure_product_config() {
       || fail "product configuration must be a regular non-symlink file: ${PRODUCT_CONFIG}"
     grep -Fq "\"plugin_id\": \"${PRODUCT_PLUGIN_ID}\"" "${PRODUCT_CONFIG}" \
       || fail "${PRODUCT_CONFIG} is not managed by abyss-local; use a separate ABYSS_HOME"
-    chmod 600 "${PRODUCT_CONFIG}"
-    return 0
   fi
 
   cat <<EOF | atomic_write "${PRODUCT_CONFIG}" 600
 {
   "schema_version": 1,
   "product": {
-    "kind": "cli"
+    "kind": "cli",
+    "dashboard": {
+      "url": "${DASHBOARD_URL}"
+    }
   },
   "delivery_worker": {
     "plugin_id": "${PRODUCT_PLUGIN_ID}",
@@ -372,7 +373,6 @@ start_environment() {
 
   trap - EXIT
   info "local environment is ready"
-  info "dashboard: ${DASHBOARD_URL}"
   info "run an agent with: abyss run -- <command>"
 }
 

@@ -22,9 +22,10 @@ same file to `abyss-delivery-plugin`. When
 or `cookie_header_file`, `product.control_plane` may be omitted and proxy
 commands do not require terminal login. Static credential files are resolved
 relative to `product-config.json`. The `managed_bearer` mode requires
-`product.control_plane` and preserves the terminal login flow. Product URLs,
-SSO settings, update settings, and managed credentials belong in the
-distributing repository.
+`product.control_plane` and preserves the terminal login flow. An optional
+`product.dashboard.url` is shown by `abyss status` and `abyss proxy start`.
+Product URLs, SSO settings, update settings, and managed credentials belong in
+the distributing repository.
 
 The open `install-local.sh` bootstrap creates a narrowly scoped local
 `product-config.json` for the SQLite+FTS backend and refuses to replace a file

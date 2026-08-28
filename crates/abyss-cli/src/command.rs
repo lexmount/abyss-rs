@@ -127,6 +127,9 @@ impl ProxyCommandRunner {
                 let running = require_bootstrapped_runtime(running)?;
                 let proxy_addr = running.proxy_addr();
                 println!("Abyss proxy is running on http://{proxy_addr}.");
+                if let Some(dashboard_url) = configured_dashboard_url(&paths)? {
+                    println!("Dashboard: {dashboard_url}");
+                }
                 println!("Use `abyss run -- <command>` to launch an agent through it.");
                 Ok(())
             }
@@ -271,6 +274,7 @@ impl StatusCommandRunner {
             }
         });
         let broker = StatusBroker::resolve(&paths, broker_api)?;
+        let dashboard_url = configured_dashboard_url(&paths)?;
         let broker_state = if broker.running {
             "running"
         } else if paths.broker_token_file().exists() {
@@ -317,6 +321,7 @@ impl StatusCommandRunner {
         println!("Auth: {auth}");
         println!("Broker: {broker_state}");
         println!("Proxy: {proxy}");
+        println!("Dashboard: {}", dashboard_url.as_deref().unwrap_or("-"));
         println!("Harnesses:");
         println!("  codex: {}", enabled_label(&hooks, BuiltInHarness::Codex));
         println!(
@@ -337,6 +342,15 @@ impl StatusCommandRunner {
         );
         Ok(())
     }
+}
+
+fn configured_dashboard_url(paths: &CliPaths) -> Result<Option<String>, CliError> {
+    let path = paths.product_config_file();
+    if !path.exists() {
+        return Ok(None);
+    }
+    let product_config = CliProductConfig::load(&path)?;
+    Ok(product_config.dashboard_url().map(str::to_owned))
 }
 
 struct DiagnosticsCommandRunner;

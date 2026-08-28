@@ -15,17 +15,21 @@ event production remain platform independent.
 
 The local environment supports Linux x86_64 and macOS ARM64 without Docker. It
 requires Git, Rust/Cargo, OpenSSL, curl, Node.js 22 or newer, and npm 10 or
-newer. Install the Abyss CLI, build the SQLite+FTS backend, install the dashboard
-package, and start the complete environment with one command:
+newer. Clone the repository, then run its installer to build the Abyss CLI and
+SQLite+FTS backend, install the dashboard package, and start the complete
+environment:
 
 ```bash
-curl --proto '=https' --tlsv1.2 -fsSL https://raw.githubusercontent.com/lexmount/abyss-rs/main/scripts/install-local.sh | bash
+git clone https://github.com/lexmount/abyss-rs.git
+cd abyss-rs
+bash scripts/install-local.sh
 ```
 
 The installer keeps all services on IPv4 loopback, stores the SQLite database
-and private bearer files under `~/.abyss/local`, and prints any PATH update
-needed by the current shell. Open <http://127.0.0.1:5173>, then run an agent
-through Abyss:
+and private bearer files under `~/.abyss/local`, automatically selects available
+backend and dashboard ports, and prints any PATH update needed by the current
+shell. `abyss status` and `abyss proxy start` print the selected dashboard URL.
+Run an agent through Abyss after installation:
 
 ```bash
 abyss-local status

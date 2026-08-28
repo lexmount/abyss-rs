@@ -10,6 +10,9 @@ case "${1:-}" in
         mkdir -p "$(dirname "${state_file}")"
         : >"${state_file}"
         printf 'Abyss proxy is running on http://127.0.0.1:28999.\n'
+        python3 -c \
+          'import json, sys; data = json.load(open(sys.argv[1], encoding="utf-8")); print("Dashboard: {}".format(data["product"]["dashboard"]["url"]))' \
+          "${ABYSS_HOME}/product-config.json"
         ;;
       stop)
         rm -f "${state_file}"
