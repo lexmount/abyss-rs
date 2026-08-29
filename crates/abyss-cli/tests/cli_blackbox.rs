@@ -196,6 +196,73 @@ fn status_and_log_dump_work_without_a_running_broker() {
 }
 
 #[test]
+fn deploy_local_reports_redirect_safe_stages_and_preserves_endpoint_output() {
+    let root = unique_test_dir();
+    fs::create_dir_all(&root).expect("test state should create");
+    let (backend, dashboard) = prepare_fake_local_services(&root);
+    let binary = env!("CARGO_BIN_EXE_abyss");
+
+    let start = local_deployment_command(binary, &root, &backend, &dashboard)
+        .args(["deploy-local", "start"])
+        .output()
+        .expect("local deployment should start");
+    assert!(
+        start.status.success(),
+        "local deployment should start; stderr={}",
+        String::from_utf8_lossy(&start.stderr)
+    );
+    let stdout = String::from_utf8_lossy(&start.stdout);
+    assert!(stdout.contains("Backend: http://127.0.0.1:"));
+    assert!(stdout.contains("Dashboard: http://127.0.0.1:"));
+    assert!(stdout.contains("Proxy: skipped"));
+    assert!(stdout.contains("Local environment is ready."));
+
+    let stderr = String::from_utf8_lossy(&start.stderr);
+    let mut remainder = stderr.as_ref();
+    for expected in [
+        "[1/5] Checking local dependencies...",
+        "[1/5] Checking local dependencies... done",
+        "[2/5] Preparing abyss-backend v1.0.0... configured",
+        "[3/5] Preparing abyss-dashboard v0.1.0... configured",
+        "[4/5] Starting local services...",
+        "Starting backend; waiting for health check",
+        "Backend ready: http://127.0.0.1:",
+        "Starting dashboard; waiting for health check",
+        "Dashboard ready: http://127.0.0.1:",
+        "[5/5] Starting proxy...",
+        "Proxy skipped (debug configuration).",
+    ] {
+        let position = remainder
+            .find(expected)
+            .unwrap_or_else(|| panic!("missing ordered `{expected}` in {stderr}"));
+        remainder = &remainder[position + expected.len()..];
+    }
+    assert!(!stderr.contains("\u{1b}["));
+    assert!(!stderr.contains('\r'));
+
+    let repeated = local_deployment_command(binary, &root, &backend, &dashboard)
+        .args(["deploy-local", "start"])
+        .output()
+        .expect("running local deployment should be reusable");
+    assert!(repeated.status.success());
+    let repeated_progress = String::from_utf8_lossy(&repeated.stderr);
+    assert!(repeated_progress.contains("Backend ready: http://127.0.0.1:"));
+    assert!(repeated_progress.contains("(already running)"));
+    assert!(repeated_progress.contains("Dashboard ready: http://127.0.0.1:"));
+
+    let stop = local_deployment_command(binary, &root, &backend, &dashboard)
+        .args(["deploy-local", "stop"])
+        .output()
+        .expect("local deployment should stop");
+    assert!(
+        stop.status.success(),
+        "local deployment should stop; stderr={}",
+        String::from_utf8_lossy(&stop.stderr)
+    );
+    fs::remove_dir_all(root).expect("test state should be removed");
+}
+
+#[test]
 fn log_dump_reports_startup_identity_discovery_failures_in_a_partial_bundle() {
     for (case, startup_info, expected_error) in [
         ("missing", None, "broker startup identity was not found at"),
@@ -693,6 +760,34 @@ fn unique_test_dir() -> std::path::PathBuf {
         .expect("system clock should be after epoch")
         .as_nanos();
     std::env::temp_dir().join(format!("abyss-cli-blackbox-{}-{nonce}", std::process::id()))
+}
+
+fn local_deployment_command(
+    binary: &str,
+    root: &std::path::Path,
+    backend: &std::path::Path,
+    dashboard: &std::path::Path,
+) -> Command {
+    let mut command = Command::new(binary);
+    command
+        .env("ABYSS_HOME", root)
+        .env("ABYSS_LOCAL_BACKEND_BIN", backend)
+        .env("ABYSS_LOCAL_DASHBOARD_BIN", dashboard)
+        .env("ABYSS_LOCAL_SKIP_PROXY", "1");
+    command
+}
+
+fn prepare_fake_local_services(root: &std::path::Path) -> (std::path::PathBuf, std::path::PathBuf) {
+    let fixture = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("../../scripts/tests/fixtures/fake_local_service.py")
+        .canonicalize()
+        .expect("fake local service fixture should resolve");
+    let backend = root.join("abyss-backend");
+    let dashboard = root.join("abyss-dashboard");
+    std::os::unix::fs::symlink(&fixture, &backend).expect("fake backend executable should link");
+    std::os::unix::fs::symlink(&fixture, &dashboard)
+        .expect("fake dashboard executable should link");
+    (backend, dashboard)
 }
 
 fn write_cli_startup_fixture(root: &std::path::Path, product_config: &str) {
