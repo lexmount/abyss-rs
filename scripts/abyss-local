@@ -44,6 +44,14 @@ validate_port() {
   fi
 }
 
+default_abyss_home() {
+  case "$(uname -s)" in
+    Darwin) printf '%s\n' "${HOME}/Library/Application Support/Abyss/cli" ;;
+    Linux) printf '%s\n' "${HOME}/.abyss" ;;
+    *) fail "supported platforms are macOS and Linux" ;;
+  esac
+}
+
 default_runtime_bin_dir() {
   if [[ "$(uname -s)" == "Linux" ]]; then
     printf '%s\n' '/usr/local/bin'
@@ -52,7 +60,7 @@ default_runtime_bin_dir() {
   fi
 }
 
-ABYSS_HOME="${ABYSS_HOME:-${HOME}/.abyss}"
+ABYSS_HOME="${ABYSS_HOME:-$(default_abyss_home)}"
 LOCAL_ROOT="${ABYSS_LOCAL_ROOT:-${ABYSS_HOME}/local}"
 INSTALL_CONFIG="${LOCAL_ROOT}/install.conf"
 RUNTIME_BIN_DIR="${ABYSS_RUNTIME_BIN_DIR:-}"

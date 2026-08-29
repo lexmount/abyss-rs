@@ -152,7 +152,13 @@ ABYSS_RS_SOURCE="$(cd -- "${SCRIPT_DIR}/.." && pwd -P)"
 [[ -f "${ABYSS_RS_SOURCE}/Cargo.toml" && -f "${ABYSS_RS_SOURCE}/scripts/abyss-local" ]] \
   || fail "run this installer from an abyss-rs checkout: ${ABYSS_RS_SOURCE}"
 
-ABYSS_HOME="${ABYSS_HOME:-${HOME}/.abyss}"
+if [[ "${platform}" == "Darwin" ]]; then
+  DEFAULT_ABYSS_HOME="${HOME}/Library/Application Support/Abyss/cli"
+else
+  DEFAULT_ABYSS_HOME="${HOME}/.abyss"
+fi
+readonly DEFAULT_ABYSS_HOME
+ABYSS_HOME="${ABYSS_HOME:-${DEFAULT_ABYSS_HOME}}"
 USER_INSTALL_ROOT="${ABYSS_INSTALL_ROOT:-${HOME}/.local}"
 USER_BIN_DIR="${USER_INSTALL_ROOT}/bin"
 if [[ "${platform}" == "Linux" ]]; then

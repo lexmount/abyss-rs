@@ -46,6 +46,12 @@ class LocalEnvironmentContractTests(unittest.TestCase):
         self.assertNotIn('ABYSS_LOCAL_BACKEND_PORT:-8080', source)
         self.assertNotIn('ABYSS_LOCAL_DASHBOARD_PORT:-5173', source)
 
+    def test_installer_and_manager_share_platform_default_state_roots(self) -> None:
+        for path in (INSTALLER, MANAGER):
+            source = path.read_text(encoding="utf-8")
+            self.assertIn('${HOME}/Library/Application Support/Abyss/cli', source)
+            self.assertIn('${HOME}/.abyss', source)
+
     def test_installer_builds_only_the_native_storage_profile(self) -> None:
         source = INSTALLER.read_text(encoding="utf-8")
 
@@ -75,6 +81,7 @@ class LocalEnvironmentContractTests(unittest.TestCase):
         self.assertIn("abyss-local status", source)
         self.assertIn("abyss-local stop", source)
         self.assertIn("abyss run -- codex", source)
+        self.assertIn("Library/Application Support/Abyss/cli/local", source)
 
 
 if __name__ == "__main__":

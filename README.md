@@ -25,9 +25,10 @@ cd abyss-rs
 bash scripts/install-local.sh
 ```
 
-The installer keeps all services on IPv4 loopback, stores the SQLite database
-and private bearer files under `~/.abyss/local`, automatically selects available
-backend and dashboard ports, and prints any PATH update needed by the current
+The installer keeps all services on IPv4 loopback and stores the SQLite database
+and private bearer files under `~/Library/Application Support/Abyss/cli/local`
+on macOS or `~/.abyss/local` on Linux. It automatically selects available
+backend and dashboard ports and prints any PATH update needed by the current
 shell. `abyss status` and `abyss proxy start` print the selected dashboard URL.
 Run an agent through Abyss after installation:
 
@@ -44,8 +45,8 @@ abyss-local start
 abyss-local logs
 ```
 
-The installer refuses to replace an unrelated existing
-`~/.abyss/product-config.json`; set `ABYSS_HOME` to another absolute directory
+The installer refuses to replace an unrelated existing `product-config.json` in
+the platform state directory; set `ABYSS_HOME` to another absolute directory
 when the machine already has a different deployment. Linux installation uses
 the existing systemd broker integration and may request `sudo`.
 

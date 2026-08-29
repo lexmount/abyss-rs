@@ -6,6 +6,7 @@ REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 TEST_ROOT="$(mktemp -d "${TMPDIR:-/tmp}/abyss-local-blackbox.XXXXXX")"
 FAKE_BIN="${TEST_ROOT}/bin"
 TEST_HOME="${TEST_ROOT}/home"
+PLATFORM_USER_HOME="${TEST_ROOT}/platform-home"
 MANAGER="${REPO_ROOT}/scripts/abyss-local"
 BLOCKER_PID=""
 
@@ -27,6 +28,16 @@ run_local() {
   ABYSS_LOCAL_DASHBOARD_PORT="${DASHBOARD_PORT}" \
     "${MANAGER}" "$@"
 }
+
+run_with_platform_default_home() (
+  unset ABYSS_HOME ABYSS_LOCAL_ROOT
+  HOME="${PLATFORM_USER_HOME}" \
+  ABYSS_RUNTIME_BIN_DIR="${FAKE_BIN}" \
+  ABYSS_USER_BIN_DIR="${FAKE_BIN}" \
+  ABYSS_LOCAL_BACKEND_PORT="${BACKEND_PORT}" \
+  ABYSS_LOCAL_DASHBOARD_PORT="${DASHBOARD_PORT}" \
+    "${MANAGER}" "$@"
+)
 
 cleanup() {
   if [[ -n "${BLOCKER_PID}" ]] && kill -0 "${BLOCKER_PID}" 2>/dev/null; then
@@ -59,6 +70,23 @@ install -m 0755 \
 install -m 0755 \
   "${REPO_ROOT}/scripts/tests/fixtures/fake_abyss.sh" \
   "${FAKE_BIN}/abyss"
+
+case "$(uname -s)" in
+  Darwin)
+    PLATFORM_DEFAULT_ABYSS_HOME="${PLATFORM_USER_HOME}/Library/Application Support/Abyss/cli"
+    ;;
+  Linux)
+    PLATFORM_DEFAULT_ABYSS_HOME="${PLATFORM_USER_HOME}/.abyss"
+    ;;
+  *)
+    printf 'unsupported black-box test platform\n' >&2
+    exit 1
+    ;;
+esac
+run_with_platform_default_home init
+[[ -f "${PLATFORM_DEFAULT_ABYSS_HOME}/product-config.json" ]]
+grep -Fq "\"url\": \"http://127.0.0.1:${DASHBOARD_PORT}\"" \
+  "${PLATFORM_DEFAULT_ABYSS_HOME}/product-config.json"
 
 run_local init
 [[ "$(file_mode "${TEST_HOME}/local/backend.token")" == "600" ]]
