@@ -42,6 +42,12 @@ pub enum Command {
     },
     /// Show the combined endpoint and broker status.
     Status(StatusArgs),
+    /// Deploy and manage the local SQLite+FTS environment.
+    DeployLocal {
+        /// Local deployment operation.
+        #[command(subcommand)]
+        command: DeployLocalCommand,
+    },
     /// Diagnose the latest Agent network request from local broker observations.
     Diagnostics(DiagnosticsArgs),
     /// Run a child process with the explicit proxy configured.
@@ -53,6 +59,17 @@ pub enum Command {
         #[command(subcommand)]
         command: InternalCommand,
     },
+}
+
+/// Local SQLite+FTS deployment operations.
+#[derive(Debug, Subcommand)]
+pub enum DeployLocalCommand {
+    /// Install missing components and start the complete local environment.
+    Start,
+    /// Stop the proxy, dashboard, and backend while preserving local data.
+    Stop,
+    /// Report backend, dashboard, and proxy health.
+    Status,
 }
 
 /// Terminal login options. The control-plane URL is normally supplied by
@@ -234,7 +251,7 @@ pub struct EnvArgs {
 mod tests {
     use clap::{CommandFactory as _, Parser as _};
 
-    use super::{Command, ConfigCommand, ContextCommand, ProxyCommand};
+    use super::{Command, ConfigCommand, ContextCommand, DeployLocalCommand, ProxyCommand};
 
     #[test]
     fn parses_version_command() {
@@ -266,6 +283,13 @@ mod tests {
             panic!("expected proxy command");
         };
         assert!(matches!(command, ProxyCommand::Start(_)));
+
+        let deploy = super::Cli::try_parse_from(["abyss", "deploy-local", "start"])
+            .expect("local deployment command should parse");
+        let Command::DeployLocal { command } = deploy.command else {
+            panic!("expected local deployment command");
+        };
+        assert!(matches!(command, DeployLocalCommand::Start));
     }
 
     #[test]
@@ -303,6 +327,7 @@ mod tests {
             "config",
             "log",
             "status",
+            "deploy-local",
             "diagnostics",
             "run",
         ] {
@@ -346,6 +371,9 @@ mod tests {
             &["abyss", "log", "dump"],
             &["abyss", "log", "dump", "-f", "support.zip"],
             &["abyss", "status"],
+            &["abyss", "deploy-local", "start"],
+            &["abyss", "deploy-local", "stop"],
+            &["abyss", "deploy-local", "status"],
             &["abyss", "diagnostics"],
             &["abyss", "run", "--", "codex", "--version"],
         ];

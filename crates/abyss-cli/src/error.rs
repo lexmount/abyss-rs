@@ -63,6 +63,12 @@ pub enum CliError {
         /// Bounded response body.
         body: String,
     },
+    /// A local runtime artifact request failed before a response arrived.
+    #[error("local runtime artifact request failed: {0}")]
+    LocalArtifactRequest(#[source] reqwest::Error),
+    /// A downloaded or installed local runtime artifact was invalid.
+    #[error("local runtime artifact is invalid: {0}")]
+    LocalArtifact(String),
     /// The destination immediately rejected a newly installed credential.
     #[error("delivery destination rejected the credential while replaying queued events")]
     DeliveryCredentialRejected,
