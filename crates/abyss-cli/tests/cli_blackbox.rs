@@ -25,6 +25,7 @@ fn version_commands_report_the_workspace_version() {
         String::from_utf8_lossy(&version.stdout).trim(),
         env!("CARGO_PKG_VERSION")
     );
+    assert!(version.stderr.is_empty());
 
     let flag = Command::new(env!("CARGO_BIN_EXE_abyss"))
         .arg("--version")
@@ -35,6 +36,7 @@ fn version_commands_report_the_workspace_version() {
         String::from_utf8_lossy(&flag.stdout).trim(),
         concat!("abyss ", env!("CARGO_PKG_VERSION"))
     );
+    assert!(flag.stderr.is_empty());
 }
 
 #[test]
@@ -57,6 +59,7 @@ export http_proxy='http://127.0.0.1:28999'\n\
 export https_proxy='http://127.0.0.1:28999'\n\
 export NO_PROXY='127.0.0.1,localhost'\n"
     );
+    assert!(output.stderr.is_empty());
 }
 
 #[test]
@@ -104,6 +107,11 @@ fn login_persists_the_cli_owned_credential() {
         "login should succeed; stderr={}",
         String::from_utf8_lossy(&output.stderr)
     );
+    let login_progress = String::from_utf8_lossy(&output.stderr);
+    assert!(login_progress.contains("Abyss login"));
+    assert!(login_progress.contains("Waiting for login to complete"));
+    assert!(login_progress.contains("Login succeeded as linux@example.invalid"));
+    assert!(!login_progress.contains("\u{1b}["));
     let credential_path = root.join("auth/credentials.json");
     let credential = fs::read_to_string(&credential_path).expect("credential should be written");
     assert!(credential.contains("native-token"));
@@ -170,6 +178,10 @@ fn status_and_log_dump_work_without_a_running_broker() {
         "log dump should succeed; stderr={}",
         String::from_utf8_lossy(&output.stderr)
     );
+    let progress = String::from_utf8_lossy(&output.stderr);
+    assert!(progress.contains("Collecting the Abyss support bundle"));
+    assert!(progress.contains("Support bundle collected"));
+    assert!(!progress.contains("\u{1b}["));
     let bundle = fs::read(&support_bundle).expect("support bundle should be written");
     assert!(bundle.starts_with(b"PK\x03\x04"));
     assert!(
@@ -192,6 +204,90 @@ fn status_and_log_dump_work_without_a_running_broker() {
             .windows(b"cli/cli.log".len())
             .any(|window| window == b"cli/cli.log")
     );
+    fs::remove_dir_all(root).expect("test state should be removed");
+}
+
+#[test]
+fn deploy_local_reports_plain_progress_and_preserves_command_results() {
+    let root = unique_test_dir();
+    fs::create_dir_all(&root).expect("test state should create");
+    let service = root.join("fake-local-service.py");
+    write_fake_local_service(&service);
+    let binary = env!("CARGO_BIN_EXE_abyss");
+
+    let start = local_deployment_command(binary, &root, &service)
+        .args(["deploy-local", "start"])
+        .output()
+        .expect("local deployment should start");
+    assert!(
+        start.status.success(),
+        "local deployment should start; stderr={}",
+        String::from_utf8_lossy(&start.stderr)
+    );
+    let stdout = String::from_utf8_lossy(&start.stdout);
+    assert!(stdout.contains("Backend: http://127.0.0.1:"));
+    assert!(stdout.contains("Dashboard: http://127.0.0.1:"));
+    assert!(stdout.contains("Proxy: skipped"));
+    assert!(stdout.contains("Local environment is ready."));
+    let stderr = String::from_utf8_lossy(&start.stderr);
+    for expected in [
+        "Abyss local deployment",
+        "Preparing abyss-backend v1.0.0",
+        "abyss-backend v1.0.0 provided by configuration",
+        "Preparing abyss-dashboard v0.1.0",
+        "abyss-dashboard v0.1.0 provided by configuration",
+        "Starting local backend",
+        "Local backend ready at http://127.0.0.1:",
+        "Starting local dashboard",
+        "Local dashboard ready at http://127.0.0.1:",
+    ] {
+        assert!(
+            stderr.contains(expected),
+            "missing `{expected}` in {stderr}"
+        );
+    }
+    assert!(!stderr.contains("\u{1b}["));
+
+    let repeated = local_deployment_command(binary, &root, &service)
+        .args(["deploy-local", "start"])
+        .output()
+        .expect("running local deployment should be reusable");
+    assert!(
+        repeated.status.success(),
+        "repeated start should succeed; stderr={}",
+        String::from_utf8_lossy(&repeated.stderr)
+    );
+    let repeated_progress = String::from_utf8_lossy(&repeated.stderr);
+    assert!(repeated_progress.contains("Local backend already running"));
+    assert!(repeated_progress.contains("Local dashboard already running"));
+
+    let status = local_deployment_command(binary, &root, &service)
+        .args(["deploy-local", "status"])
+        .output()
+        .expect("local deployment status should run");
+    assert!(status.status.success());
+    let status_output = String::from_utf8_lossy(&status.stdout);
+    assert!(status_output.contains("Backend: running"));
+    assert!(status_output.contains("Dashboard: running"));
+    assert!(status_output.contains("Proxy: skipped"));
+    assert!(status.stderr.is_empty());
+
+    let stop = local_deployment_command(binary, &root, &service)
+        .args(["deploy-local", "stop"])
+        .output()
+        .expect("local deployment should stop");
+    assert!(
+        stop.status.success(),
+        "local deployment should stop; stderr={}",
+        String::from_utf8_lossy(&stop.stderr)
+    );
+    assert!(stop.stdout.is_empty());
+    let stop_progress = String::from_utf8_lossy(&stop.stderr);
+    assert!(stop_progress.contains("Stop Abyss local deployment"));
+    assert!(stop_progress.contains("Local dashboard and backend stopped"));
+    assert!(stop_progress.contains("Local environment stopped"));
+    assert!(!stop_progress.contains("\u{1b}["));
+
     fs::remove_dir_all(root).expect("test state should be removed");
 }
 
@@ -693,6 +789,66 @@ fn unique_test_dir() -> std::path::PathBuf {
         .expect("system clock should be after epoch")
         .as_nanos();
     std::env::temp_dir().join(format!("abyss-cli-blackbox-{}-{nonce}", std::process::id()))
+}
+
+fn local_deployment_command(
+    binary: &str,
+    root: &std::path::Path,
+    service: &std::path::Path,
+) -> Command {
+    let mut command = Command::new(binary);
+    command
+        .env("ABYSS_HOME", root)
+        .env("ABYSS_LOCAL_BACKEND_BIN", service)
+        .env("ABYSS_LOCAL_DASHBOARD_BIN", service)
+        .env("ABYSS_LOCAL_SKIP_PROXY", "1");
+    command
+}
+
+fn write_fake_local_service(path: &std::path::Path) {
+    fs::write(
+        path,
+        r#"#!/usr/bin/env python3
+import argparse
+import http.server
+import os
+
+if "ABYSS_BACKEND_ADDR" in os.environ:
+    host, port = os.environ["ABYSS_BACKEND_ADDR"].rsplit(":", 1)
+else:
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--host", required=True)
+    parser.add_argument("--port", required=True, type=int)
+    parser.add_argument("--backend", required=True)
+    parser.add_argument("--token-file", required=True)
+    args = parser.parse_args()
+    host, port = args.host, args.port
+
+class Handler(http.server.BaseHTTPRequestHandler):
+    def do_GET(self):
+        body = b"ok"
+        self.send_response(200)
+        self.send_header("Content-Type", "text/plain")
+        self.send_header("Content-Length", str(len(body)))
+        self.end_headers()
+        self.wfile.write(body)
+
+    def log_message(self, format, *args):
+        pass
+
+http.server.ThreadingHTTPServer((host, int(port)), Handler).serve_forever()
+"#,
+    )
+    .expect("fake local service should write");
+    #[cfg(unix)]
+    {
+        let mut permissions = fs::metadata(path)
+            .expect("fake local service metadata should read")
+            .permissions();
+        permissions.set_mode(0o700);
+        fs::set_permissions(path, permissions)
+            .expect("fake local service should become executable");
+    }
 }
 
 fn write_cli_startup_fixture(root: &std::path::Path, product_config: &str) {

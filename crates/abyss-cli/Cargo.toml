@@ -13,6 +13,7 @@ abyss-delivery-plugin = { path = "../abyss-delivery-plugin" }
 abyss-mitm.workspace = true
 abyss-terminal-auth.workspace = true
 chrono = { version = "0.4", features = ["serde"] }
+cliclack = "0.5"
 clap = { version = "4", features = ["derive", "env"] }
 hex = "0.4"
 nix = { version = "0.30", default-features = false, features = ["process", "signal"] }

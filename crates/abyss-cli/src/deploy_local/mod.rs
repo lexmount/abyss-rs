@@ -14,8 +14,8 @@ use std::{
 
 use artifacts::{ArtifactInstaller, DashboardArtifact, RuntimeArtifacts};
 use config::{
-    DeploymentState, LocalCredentials, LocalPaths, validate_product_config_ownership,
-    write_product_config,
+    BACKEND_VERSION, DASHBOARD_VERSION, DeploymentState, LocalCredentials, LocalPaths,
+    validate_product_config_ownership, write_product_config,
 };
 use process::{DeploymentOperationLock, ManagedService, ServiceCommand, ServiceStatus};
 
@@ -23,6 +23,76 @@ use crate::{error::CliError, paths::CliPaths};
 
 const BACKEND_HOST: Ipv4Addr = Ipv4Addr::LOCALHOST;
 const DASHBOARD_HOST: Ipv4Addr = Ipv4Addr::LOCALHOST;
+
+/// Installable or managed component reported during local deployment.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum DeploymentComponent {
+    /// SQLite+FTS backend executable and service.
+    Backend,
+    /// npm dashboard artifact and service.
+    Dashboard,
+}
+
+/// How one runtime artifact became available.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum ArtifactDisposition {
+    /// An explicit executable path supplied the artifact.
+    Configured,
+    /// The expected version was already installed and valid.
+    Cached,
+    /// This invocation downloaded or installed the artifact.
+    Installed,
+}
+
+/// How one managed service reached the ready state.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum ServiceDisposition {
+    /// The existing owned process was already healthy.
+    Existing,
+    /// This invocation started and health-checked the process.
+    Started,
+}
+
+/// Semantic progress emitted by local deployment without terminal concerns.
+#[derive(Debug, Eq, PartialEq)]
+pub enum DeploymentEvent {
+    /// Artifact validation or discovery started.
+    PreparingArtifact(DeploymentComponent),
+    /// A bounded artifact download started.
+    DownloadingArtifact {
+        /// Artifact being downloaded.
+        component: DeploymentComponent,
+        /// Response length when provided by the server.
+        total: Option<u64>,
+    },
+    /// More bytes were read from the current artifact response.
+    DownloadAdvanced {
+        /// Total bytes read so far.
+        downloaded: u64,
+    },
+    /// Cryptographic artifact verification started.
+    VerifyingArtifact(DeploymentComponent),
+    /// An external package manager installation started.
+    InstallingArtifact(DeploymentComponent),
+    /// An artifact is available for service startup.
+    ArtifactReady {
+        /// Available artifact.
+        component: DeploymentComponent,
+        /// Source of the artifact.
+        disposition: ArtifactDisposition,
+    },
+    /// Managed service startup or reuse validation started.
+    StartingService(DeploymentComponent),
+    /// A managed service passed its health check.
+    ServiceReady {
+        /// Ready service.
+        component: DeploymentComponent,
+        /// Whether this invocation started it.
+        disposition: ServiceDisposition,
+        /// Loopback service URL.
+        url: String,
+    },
+}
 
 pub struct LocalDeployment {
     cli_paths: CliPaths,
@@ -60,11 +130,14 @@ impl LocalDeployment {
         })
     }
 
-    pub fn start(&self) -> Result<StartedLocalServices, CliError> {
+    pub fn start(
+        &self,
+        progress: &mut dyn FnMut(DeploymentEvent),
+    ) -> Result<StartedLocalServices, CliError> {
         self.paths.ensure_directories()?;
         let _operation = DeploymentOperationLock::acquire(&self.paths)?;
         validate_product_config_ownership(&self.cli_paths)?;
-        let artifacts = ArtifactInstaller::new(&self.paths)?.ensure()?;
+        let artifacts = ArtifactInstaller::new(&self.paths)?.ensure(progress)?;
         let credentials = LocalCredentials::ensure(&self.paths)?;
         let backend = ManagedService::backend(&self.paths);
         let dashboard = ManagedService::dashboard(&self.paths);
@@ -82,10 +155,18 @@ impl LocalDeployment {
         }
 
         let previous_backend_port = previous.as_ref().map(|state| state.backend_port);
+        progress(DeploymentEvent::StartingService(
+            DeploymentComponent::Backend,
+        ));
         let backend_port =
             self.ensure_backend(&backend, &artifacts, &credentials, previous_backend_port)?;
         let backend_started = backend_port.started;
         let backend_port = backend_port.port;
+        progress(DeploymentEvent::ServiceReady {
+            component: DeploymentComponent::Backend,
+            disposition: ServiceDisposition::from_started(backend_started),
+            url: format!("http://{}", socket_address(BACKEND_HOST, backend_port)),
+        });
 
         let previous_dashboard_port = previous.as_ref().map(|state| state.dashboard_port);
         let backend_address_changed =
@@ -93,6 +174,9 @@ impl LocalDeployment {
         if backend_address_changed {
             dashboard.stop()?;
         }
+        progress(DeploymentEvent::StartingService(
+            DeploymentComponent::Dashboard,
+        ));
         let dashboard_result = self.ensure_dashboard(
             &dashboard,
             &artifacts,
@@ -108,6 +192,14 @@ impl LocalDeployment {
                 return Err(error);
             }
         };
+        progress(DeploymentEvent::ServiceReady {
+            component: DeploymentComponent::Dashboard,
+            disposition: ServiceDisposition::from_started(dashboard_port.started),
+            url: format!(
+                "http://{}",
+                socket_address(DASHBOARD_HOST, dashboard_port.port)
+            ),
+        });
         let state = DeploymentState::new(backend_port, dashboard_port.port);
         if let Err(error) = state
             .write(&self.paths)
@@ -317,6 +409,49 @@ impl LocalDeploymentStatus {
 
     pub const fn is_ready(&self) -> bool {
         self.backend.is_running() && self.dashboard.is_running()
+    }
+}
+
+impl DeploymentComponent {
+    pub fn artifact_label(self) -> String {
+        match self {
+            Self::Backend => format!("abyss-backend v{BACKEND_VERSION}"),
+            Self::Dashboard => format!("abyss-dashboard v{DASHBOARD_VERSION}"),
+        }
+    }
+
+    pub const fn service_label(self) -> &'static str {
+        match self {
+            Self::Backend => "backend",
+            Self::Dashboard => "dashboard",
+        }
+    }
+}
+
+impl ArtifactDisposition {
+    pub const fn label(self) -> &'static str {
+        match self {
+            Self::Configured => "provided by configuration",
+            Self::Cached => "already cached",
+            Self::Installed => "installed",
+        }
+    }
+}
+
+impl ServiceDisposition {
+    const fn from_started(started: bool) -> Self {
+        if started {
+            Self::Started
+        } else {
+            Self::Existing
+        }
+    }
+
+    pub const fn label(self) -> &'static str {
+        match self {
+            Self::Existing => "already running",
+            Self::Started => "ready",
+        }
     }
 }
 

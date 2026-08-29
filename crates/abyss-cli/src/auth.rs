@@ -12,6 +12,7 @@ use crate::{
     error::CliError,
     paths::CliPaths,
     product_config::CliProductConfig,
+    ui::CliUi,
 };
 
 /// Runs the endpoint CLI login and logout flows.
@@ -19,7 +20,7 @@ pub struct AuthCommandRunner;
 
 impl AuthCommandRunner {
     /// Completes browser SSO and persists the CLI-owned credential.
-    pub fn login(args: &LoginArgs) -> Result<(), CliError> {
+    pub fn login(args: &LoginArgs, ui: &CliUi) -> Result<(), CliError> {
         let paths = CliPaths::from_env()?;
         let product_config = CliProductConfig::load(&paths.product_config_file())?;
         let store = CliCredentialStore::from_paths(&paths)?;
@@ -30,15 +31,18 @@ impl AuthCommandRunner {
         let client = ReqwestControlPlaneAuthClient::new(&control_plane)?;
         let attempt = TerminalLoginAttempt::start(&client)?;
 
-        println!("\nLogin\n");
-        println!("Open this URL in a browser to sign in:");
-        println!("{}", attempt.verification_url());
-        println!("\nWaiting for login to complete...");
+        ui.intro("Abyss login");
+        ui.note(
+            "Open this URL in a browser to sign in",
+            attempt.verification_url(),
+        );
+        let activity = ui.activity("Waiting for login to complete...");
         let credential = attempt.poll_until_authenticated(
             &client,
             &TerminalLoginOptions::new(args.timeout_seconds)
                 .with_poll_interval_seconds(args.poll_interval_seconds),
         )?;
+        activity.finish("Authentication completed.");
         let email = credential.user.email.clone();
         let expires_at = credential.expires_at;
         store.write(&CredentialFile::from_session(control_plane, credential))?;
@@ -46,15 +50,15 @@ impl AuthCommandRunner {
             let credential = store.read()?;
             delivery.set_bearer_if_managed(&credential.token, &credential.control_plane)?;
         }
-        println!(
+        ui.outro(format!(
             "Login succeeded as {email} (expires_at={expires_at}). Credential stored at {}.",
             store.path().display()
-        );
+        ));
         Ok(())
     }
 
     /// Revokes the native credential and removes the local credential file.
-    pub fn logout(args: &LogoutArgs) -> Result<(), CliError> {
+    pub fn logout(args: &LogoutArgs, ui: &CliUi) -> Result<(), CliError> {
         let paths = CliPaths::from_env()?;
         let store = CliCredentialStore::from_paths(&paths)?;
         let credential = store.read()?;
@@ -63,14 +67,18 @@ impl AuthCommandRunner {
             .as_deref()
             .unwrap_or(&credential.control_plane);
         let client = ReqwestControlPlaneAuthClient::new(control_plane)?;
+        let activity = ui.activity("Logging out of Abyss...");
         if let Some(delivery) = DeliveryWorker::discover(&paths)? {
             delivery.clear_bearer_if_managed()?;
         }
         store.remove()?;
-        if let Err(error) = client.native_logout(&credential.token) {
-            eprintln!("Warning: local logout succeeded, but remote revocation failed: {error}");
+        let remote_error = client.native_logout(&credential.token).err();
+        activity.finish("Logged out.");
+        if let Some(error) = remote_error {
+            ui.warning(format!(
+                "Local logout succeeded, but remote revocation failed: {error}"
+            ));
         }
-        println!("Logged out.");
         Ok(())
     }
 }

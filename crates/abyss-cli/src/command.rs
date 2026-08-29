@@ -26,6 +26,7 @@ use crate::{
     product_config::CliProductConfig,
     runtime::{RunningBroker, ensure_started},
     support_bundle::SupportBundleCollector,
+    ui::{CliUi, LocalDeploymentUi},
 };
 
 /// Parsed endpoint command ready for execution.
@@ -42,7 +43,11 @@ impl CliCommand {
 
     /// Executes one endpoint CLI operation.
     pub fn run(self) -> Result<(), CliError> {
+        let ui = CliUi::detect();
         let bootstrap = self.runtime_bootstrap();
+        let bootstrap_activity = self
+            .runtime_bootstrap_message()
+            .map(|message| ui.activity(message));
         let running = if let Some(bootstrap) = bootstrap {
             let paths = CliPaths::from_env()?;
             if self.requires_login_before_bootstrap() {
@@ -56,20 +61,25 @@ impl CliCommand {
         } else {
             None
         };
+        if let Some(activity) = bootstrap_activity {
+            activity.finish("Abyss runtime ready.");
+        }
         match self.cli.command {
             ParsedCommand::Version => {
                 println!("{}", env!("CARGO_PKG_VERSION"));
                 Ok(())
             }
-            ParsedCommand::Login(args) => AuthCommandRunner::login(&args),
-            ParsedCommand::Logout(args) => AuthCommandRunner::logout(&args),
-            ParsedCommand::Proxy { command } => ProxyCommandRunner::run(command, running.as_ref()),
-            ParsedCommand::Config { command } => {
-                ConfigCommandRunner::run(command, running.as_ref())
+            ParsedCommand::Login(args) => AuthCommandRunner::login(&args, &ui),
+            ParsedCommand::Logout(args) => AuthCommandRunner::logout(&args, &ui),
+            ParsedCommand::Proxy { command } => {
+                ProxyCommandRunner::run(command, running.as_ref(), &ui)
             }
-            ParsedCommand::Log { command } => LogCommandRunner::run(command),
+            ParsedCommand::Config { command } => {
+                ConfigCommandRunner::run(command, running.as_ref(), &ui)
+            }
+            ParsedCommand::Log { command } => LogCommandRunner::run(command, &ui),
             ParsedCommand::Status(args) => StatusCommandRunner::run(args.broker_api.as_deref()),
-            ParsedCommand::DeployLocal { command } => DeployLocalCommandRunner::run(&command),
+            ParsedCommand::DeployLocal { command } => DeployLocalCommandRunner::run(&command, &ui),
             ParsedCommand::Diagnostics(args) => {
                 DiagnosticsCommandRunner::run(args.broker_api.as_deref())
             }
@@ -112,28 +122,52 @@ impl CliCommand {
             } | ParsedCommand::Run(_)
         )
     }
+
+    const fn runtime_bootstrap_message(&self) -> Option<&'static str> {
+        match &self.cli.command {
+            ParsedCommand::Login(args) if !args.skip_runtime => {
+                Some("Preparing the Abyss login runtime...")
+            }
+            ParsedCommand::Proxy {
+                command: ProxyCommand::Start(_),
+            } => Some("Starting the Abyss proxy; system CA approval may be requested..."),
+            ParsedCommand::Config { .. } => Some("Connecting to the Abyss runtime..."),
+            _ => None,
+        }
+    }
 }
 
 struct DeployLocalCommandRunner;
 
 impl DeployLocalCommandRunner {
-    fn run(command: &DeployLocalCommand) -> Result<(), CliError> {
+    fn run(command: &DeployLocalCommand, ui: &CliUi) -> Result<(), CliError> {
         let paths = CliPaths::from_env()?;
         let deployment = LocalDeployment::from_paths(paths.clone())?;
         match command {
-            DeployLocalCommand::Start => Self::start(&paths, &deployment),
-            DeployLocalCommand::Stop => Self::stop(&paths, &deployment),
+            DeployLocalCommand::Start => Self::start(&paths, &deployment, ui),
+            DeployLocalCommand::Stop => Self::stop(&paths, &deployment, ui),
             DeployLocalCommand::Status => Self::status(&paths, &deployment),
         }
     }
 
-    fn start(paths: &CliPaths, deployment: &LocalDeployment) -> Result<(), CliError> {
-        let started = deployment.start()?;
+    fn start(paths: &CliPaths, deployment: &LocalDeployment, ui: &CliUi) -> Result<(), CliError> {
+        ui.intro("Abyss local deployment");
+        let mut deployment_ui = LocalDeploymentUi::new(ui);
+        let started = deployment.start(&mut |event| deployment_ui.report(event))?;
         let running = if skip_local_proxy() {
+            ui.success("Local proxy skipped for this debug deployment.");
             None
         } else {
+            let activity =
+                ui.activity("Starting the local proxy; system CA approval may be requested...");
             match ensure_started(paths, None, None) {
-                Ok(running) => Some(running),
+                Ok(running) => {
+                    activity.finish(format!(
+                        "Local proxy ready at http://{}.",
+                        running.proxy_addr()
+                    ));
+                    Some(running)
+                }
                 Err(error) => {
                     deployment.rollback(&started);
                     return Err(error);
@@ -149,10 +183,13 @@ impl DeployLocalCommandRunner {
         }
         println!("Local environment is ready.");
         println!("Use `abyss run -- <command>` to launch an agent through it.");
+        ui.outro("Local environment is ready.");
         Ok(())
     }
 
-    fn stop(paths: &CliPaths, deployment: &LocalDeployment) -> Result<(), CliError> {
+    fn stop(paths: &CliPaths, deployment: &LocalDeployment, ui: &CliUi) -> Result<(), CliError> {
+        ui.intro("Stop Abyss local deployment");
+        let proxy_activity = ui.activity("Stopping the local proxy...");
         let proxy_error = if skip_local_proxy() {
             None
         } else {
@@ -162,12 +199,19 @@ impl DeployLocalCommandRunner {
                 Err(error) => Some(error),
             }
         };
+        if proxy_error.is_none() {
+            proxy_activity.finish("Local proxy stopped.");
+        } else {
+            drop(proxy_activity);
+        }
+        let services_activity = ui.activity("Stopping the dashboard and backend...");
         let deployment_result = deployment.stop();
         deployment_result?;
+        services_activity.finish("Local dashboard and backend stopped.");
         if let Some(error) = proxy_error {
             return Err(error);
         }
-        println!("Local proxy, dashboard, and backend stopped.");
+        ui.outro("Local environment stopped.");
         Ok(())
     }
 
@@ -203,7 +247,11 @@ struct RuntimeBootstrap {
 struct ProxyCommandRunner;
 
 impl ProxyCommandRunner {
-    fn run(command: ProxyCommand, running: Option<&RunningBroker>) -> Result<(), CliError> {
+    fn run(
+        command: ProxyCommand,
+        running: Option<&RunningBroker>,
+        ui: &CliUi,
+    ) -> Result<(), CliError> {
         let paths = CliPaths::from_env()?;
         match command {
             ProxyCommand::Start(_args) => {
@@ -214,11 +262,13 @@ impl ProxyCommandRunner {
                     println!("Dashboard: {dashboard_url}");
                 }
                 println!("Use `abyss run -- <command>` to launch an agent through it.");
+                ui.success("Abyss proxy is ready.");
                 Ok(())
             }
             ProxyCommand::Stop(args) => {
+                let activity = ui.activity("Stopping the Abyss proxy...");
                 platform_adapter().stop_broker(&paths, args.user.as_deref())?;
-                println!("Abyss proxy stopped.");
+                activity.finish("Abyss proxy stopped.");
                 Ok(())
             }
             ProxyCommand::Env(args) => {
@@ -241,7 +291,11 @@ impl ProxyCommandRunner {
 struct ConfigCommandRunner;
 
 impl ConfigCommandRunner {
-    fn run(command: ConfigCommand, running: Option<&RunningBroker>) -> Result<(), CliError> {
+    fn run(
+        command: ConfigCommand,
+        running: Option<&RunningBroker>,
+        ui: &CliUi,
+    ) -> Result<(), CliError> {
         let paths = CliPaths::from_env()?;
         let running = require_bootstrapped_runtime(running)?;
         let broker = running.endpoint().authenticated_client()?;
@@ -256,7 +310,7 @@ impl ConfigCommandRunner {
                     }
                 }
                 broker.set_hooks_config(&hooks)?;
-                println!("Context capture {}.", context_label(enabled));
+                ui.success(format!("Context capture {}.", context_label(enabled)));
                 Ok(())
             }
             ConfigCommand::Harness { command } => {
@@ -278,16 +332,19 @@ impl ConfigCommandRunner {
                     .or_insert_with(HarnessConfig::default)
                     .enabled = Some(enabled);
                 broker.set_hooks_config(&hooks)?;
-                println!(
+                ui.success(format!(
                     "{} capture {}.",
                     harness_label(harness),
                     if enabled { "enabled" } else { "disabled" }
-                );
+                ));
                 if let Some(configuration) = claude_code_configuration {
-                    println!(
-                        "Claude Code environment configured in {} (CA bundle: {}).",
-                        configuration.settings_path().display(),
-                        configuration.bundle_path().display()
+                    ui.note(
+                        "Claude Code environment",
+                        format!(
+                            "Settings: {}\nCA bundle: {}",
+                            configuration.settings_path().display(),
+                            configuration.bundle_path().display()
+                        ),
                     );
                 }
                 Ok(())
@@ -299,17 +356,23 @@ impl ConfigCommandRunner {
 struct LogCommandRunner;
 
 impl LogCommandRunner {
-    fn run(command: LogCommand) -> Result<(), CliError> {
+    fn run(command: LogCommand, ui: &CliUi) -> Result<(), CliError> {
         match command {
-            LogCommand::Dump(args) => Self::dump(args.file, args.broker_api.as_deref()),
+            LogCommand::Dump(args) => Self::dump(args.file, args.broker_api.as_deref(), ui),
         }
     }
 
-    fn dump(path: Option<std::path::PathBuf>, broker_api: Option<&str>) -> Result<(), CliError> {
+    fn dump(
+        path: Option<std::path::PathBuf>,
+        broker_api: Option<&str>,
+        ui: &CliUi,
+    ) -> Result<(), CliError> {
         let paths = CliPaths::from_env()?;
         let platform = platform_adapter();
         let discovery = BrokerConnection::discover(&paths, platform.as_ref(), broker_api, None);
+        let activity = ui.activity("Collecting the Abyss support bundle...");
         let output = SupportBundleCollector::new(paths, discovery).collect(path)?;
+        activity.finish("Support bundle collected.");
         println!("Support bundle written to {}.", output.display());
         Ok(())
     }

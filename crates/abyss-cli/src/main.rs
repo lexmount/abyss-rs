@@ -23,6 +23,7 @@ mod platform;
 mod product_config;
 mod runtime;
 mod support_bundle;
+mod ui;
 
 use std::process::ExitCode;
 

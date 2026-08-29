@@ -12,9 +12,12 @@ use std::{
 use serde::Deserialize;
 use sha2::{Digest as _, Sha256};
 
-use super::config::{
-    BACKEND_VERSION, DASHBOARD_PACKAGE, DASHBOARD_VERSION, LocalPaths, atomic_write,
-    ensure_private_directory,
+use super::{
+    ArtifactDisposition, DeploymentComponent, DeploymentEvent,
+    config::{
+        BACKEND_VERSION, DASHBOARD_PACKAGE, DASHBOARD_VERSION, LocalPaths, atomic_write,
+        ensure_private_directory,
+    },
 };
 use crate::{error::CliError, filesystem};
 
@@ -58,16 +61,29 @@ impl<'a> ArtifactInstaller<'a> {
         Ok(Self { paths, client })
     }
 
-    pub(super) fn ensure(&self) -> Result<RuntimeArtifacts, CliError> {
+    pub(super) fn ensure(
+        &self,
+        progress: &mut dyn FnMut(DeploymentEvent),
+    ) -> Result<RuntimeArtifacts, CliError> {
         Ok(RuntimeArtifacts {
-            backend: self.ensure_backend()?,
-            dashboard: self.ensure_dashboard()?,
+            backend: self.ensure_backend(progress)?,
+            dashboard: self.ensure_dashboard(progress)?,
         })
     }
 
-    fn ensure_backend(&self) -> Result<PathBuf, CliError> {
+    fn ensure_backend(
+        &self,
+        progress: &mut dyn FnMut(DeploymentEvent),
+    ) -> Result<PathBuf, CliError> {
+        progress(DeploymentEvent::PreparingArtifact(
+            DeploymentComponent::Backend,
+        ));
         if let Some(path) = std::env::var_os(BACKEND_BIN_ENV).map(PathBuf::from) {
             validate_executable(&path, "ABYSS_LOCAL_BACKEND_BIN")?;
+            progress(DeploymentEvent::ArtifactReady {
+                component: DeploymentComponent::Backend,
+                disposition: ArtifactDisposition::Configured,
+            });
             return Ok(path);
         }
         let target = backend_target()?;
@@ -77,6 +93,10 @@ impl<'a> ArtifactInstaller<'a> {
         let binary = directory.join(&asset_name);
         let checksum_file = directory.join("sha256");
         if installed_backend_is_valid(&binary, &checksum_file)? {
+            progress(DeploymentEvent::ArtifactReady {
+                component: DeploymentComponent::Backend,
+                disposition: ArtifactDisposition::Cached,
+            });
             return Ok(binary);
         }
 
@@ -87,7 +107,14 @@ impl<'a> ArtifactInstaller<'a> {
         validate_release_base_url(&release_base)?;
         let checksums = self.download(&format!("{release_base}/SHA256SUMS"), MAX_CHECKSUM_BYTES)?;
         let expected = checksum_for_asset(&checksums, &asset_name)?;
-        let bytes = self.download(&format!("{release_base}/{asset_name}"), MAX_BACKEND_BYTES)?;
+        let bytes = self.download_backend(
+            &format!("{release_base}/{asset_name}"),
+            MAX_BACKEND_BYTES,
+            progress,
+        )?;
+        progress(DeploymentEvent::VerifyingArtifact(
+            DeploymentComponent::Backend,
+        ));
         let actual = hex::encode(Sha256::digest(&bytes));
         if actual != expected {
             return Err(CliError::LocalArtifact(format!(
@@ -102,12 +129,26 @@ impl<'a> ArtifactInstaller<'a> {
             "backend checksum",
         )?;
         validate_executable(&binary, "installed backend")?;
+        progress(DeploymentEvent::ArtifactReady {
+            component: DeploymentComponent::Backend,
+            disposition: ArtifactDisposition::Installed,
+        });
         Ok(binary)
     }
 
-    fn ensure_dashboard(&self) -> Result<DashboardArtifact, CliError> {
+    fn ensure_dashboard(
+        &self,
+        progress: &mut dyn FnMut(DeploymentEvent),
+    ) -> Result<DashboardArtifact, CliError> {
+        progress(DeploymentEvent::PreparingArtifact(
+            DeploymentComponent::Dashboard,
+        ));
         if let Some(path) = std::env::var_os(DASHBOARD_BIN_ENV).map(PathBuf::from) {
             validate_executable(&path, "ABYSS_LOCAL_DASHBOARD_BIN")?;
+            progress(DeploymentEvent::ArtifactReady {
+                component: DeploymentComponent::Dashboard,
+                disposition: ArtifactDisposition::Configured,
+            });
             return Ok(DashboardArtifact::Direct(path));
         }
         let node = require_command_version("node", MINIMUM_NODE_MAJOR)?;
@@ -115,6 +156,10 @@ impl<'a> ArtifactInstaller<'a> {
         let directory = self.paths.dashboard_runtime_dir();
         let script = dashboard_script(&directory);
         if installed_dashboard_is_valid(&directory)? {
+            progress(DeploymentEvent::ArtifactReady {
+                component: DeploymentComponent::Dashboard,
+                disposition: ArtifactDisposition::Cached,
+            });
             return Ok(DashboardArtifact::NodeScript { node, script });
         }
 
@@ -133,6 +178,9 @@ impl<'a> ArtifactInstaller<'a> {
             })?;
         }
         ensure_private_directory(&temporary)?;
+        progress(DeploymentEvent::InstallingArtifact(
+            DeploymentComponent::Dashboard,
+        ));
         let result = (|| {
             let output = Command::new("npm")
                 .args([
@@ -177,6 +225,10 @@ impl<'a> ArtifactInstaller<'a> {
             drop(fs::remove_dir_all(&temporary));
         }
         result?;
+        progress(DeploymentEvent::ArtifactReady {
+            component: DeploymentComponent::Dashboard,
+            disposition: ArtifactDisposition::Installed,
+        });
         Ok(DashboardArtifact::NodeScript { node, script })
     }
 
@@ -192,31 +244,87 @@ impl<'a> ArtifactInstaller<'a> {
                 response.status()
             )));
         }
-        let maximum_bytes_u64 = u64::try_from(maximum_bytes)
-            .map_err(|_| CliError::LocalArtifact("artifact size limit is invalid".to_owned()))?;
-        if response
-            .content_length()
-            .is_some_and(|length| length > maximum_bytes_u64)
-        {
-            return Err(CliError::LocalArtifact(format!(
-                "download {url} exceeds the {maximum_bytes}-byte size limit"
-            )));
-        }
-        let limit = maximum_bytes_u64.saturating_add(1);
-        let mut bytes = Vec::new();
-        response
-            .take(limit)
-            .read_to_end(&mut bytes)
-            .map_err(|source| {
-                CliError::filesystem("read downloaded local artifact", url, source)
-            })?;
-        if bytes.len() > maximum_bytes {
-            return Err(CliError::LocalArtifact(format!(
-                "download {url} exceeds the {maximum_bytes}-byte size limit"
-            )));
-        }
-        Ok(bytes)
+        validate_declared_length(response.content_length(), url, maximum_bytes)?;
+        read_bounded(response, url, maximum_bytes, |_| {})
     }
+
+    fn download_backend(
+        &self,
+        url: &str,
+        maximum_bytes: usize,
+        progress: &mut dyn FnMut(DeploymentEvent),
+    ) -> Result<Vec<u8>, CliError> {
+        let response = self
+            .client
+            .get(url)
+            .send()
+            .map_err(CliError::LocalArtifactRequest)?;
+        if !response.status().is_success() {
+            return Err(CliError::LocalArtifact(format!(
+                "download {url} returned HTTP {}",
+                response.status()
+            )));
+        }
+        validate_declared_length(response.content_length(), url, maximum_bytes)?;
+        progress(DeploymentEvent::DownloadingArtifact {
+            component: DeploymentComponent::Backend,
+            total: response.content_length(),
+        });
+        read_bounded(response, url, maximum_bytes, |downloaded| {
+            progress(DeploymentEvent::DownloadAdvanced { downloaded });
+        })
+    }
+}
+
+fn validate_declared_length(
+    content_length: Option<u64>,
+    label: &str,
+    maximum_bytes: usize,
+) -> Result<(), CliError> {
+    let maximum_bytes = u64::try_from(maximum_bytes)
+        .map_err(|_| CliError::LocalArtifact("artifact size limit is invalid".to_owned()))?;
+    if content_length.is_some_and(|length| length > maximum_bytes) {
+        return Err(CliError::LocalArtifact(format!(
+            "download {label} exceeds the {maximum_bytes}-byte size limit"
+        )));
+    }
+    Ok(())
+}
+
+fn read_bounded(
+    mut reader: impl std::io::Read,
+    label: &str,
+    maximum_bytes: usize,
+    mut advanced: impl FnMut(u64),
+) -> Result<Vec<u8>, CliError> {
+    let maximum_bytes_u64 = u64::try_from(maximum_bytes)
+        .map_err(|_| CliError::LocalArtifact("artifact size limit is invalid".to_owned()))?;
+    let mut bytes = Vec::new();
+    let mut buffer = vec![0_u8; 64 * 1024].into_boxed_slice();
+    loop {
+        let count = reader.read(&mut buffer).map_err(|source| {
+            CliError::filesystem("read downloaded local artifact", label, source)
+        })?;
+        if count == 0 {
+            break;
+        }
+        if bytes.len().saturating_add(count) > maximum_bytes {
+            return Err(CliError::LocalArtifact(format!(
+                "download {label} exceeds the {maximum_bytes}-byte size limit"
+            )));
+        }
+        bytes.extend_from_slice(&buffer[..count]);
+        let downloaded = u64::try_from(bytes.len()).map_err(|_| {
+            CliError::LocalArtifact("downloaded artifact length is invalid".to_owned())
+        })?;
+        if downloaded > maximum_bytes_u64 {
+            return Err(CliError::LocalArtifact(format!(
+                "download {label} exceeds the {maximum_bytes}-byte size limit"
+            )));
+        }
+        advanced(downloaded);
+    }
+    Ok(bytes)
 }
 
 fn backend_target() -> Result<&'static str, CliError> {
@@ -408,9 +516,13 @@ fn bounded_stderr(stderr: &[u8]) -> String {
 
 #[cfg(test)]
 mod tests {
+    use std::io::Cursor;
+
     use sha2::{Digest as _, Sha256};
 
-    use super::{checksum_for_asset, validate_release_base_url};
+    use super::{
+        checksum_for_asset, read_bounded, validate_declared_length, validate_release_base_url,
+    };
 
     #[test]
     fn checksum_parser_requires_one_exact_asset() {
@@ -433,5 +545,36 @@ mod tests {
         assert!(validate_release_base_url("https://github.com/example/release").is_ok());
         assert!(validate_release_base_url("https://user@example.test/release").is_err());
         assert!(validate_release_base_url("file:///tmp/release").is_err());
+    }
+
+    #[test]
+    fn bounded_download_reports_monotonic_progress() {
+        let contents = vec![7_u8; 150_000];
+        let mut positions = Vec::new();
+
+        let downloaded = read_bounded(
+            Cursor::new(&contents),
+            "fixture",
+            contents.len(),
+            |position| {
+                positions.push(position);
+            },
+        )
+        .expect("bounded fixture should download");
+
+        assert_eq!(downloaded, contents);
+        assert_eq!(positions.last().copied(), Some(150_000));
+        assert!(positions.windows(2).all(|pair| pair[0] < pair[1]));
+    }
+
+    #[test]
+    fn bounded_download_rejects_declared_and_streamed_oversize_content() {
+        let declared = validate_declared_length(Some(11), "fixture", 10)
+            .expect_err("oversize declared length should fail");
+        assert!(declared.to_string().contains("10-byte size limit"));
+
+        let streamed = read_bounded(Cursor::new(vec![0_u8; 11]), "fixture", 10, |_| {})
+            .expect_err("oversize streamed content should fail");
+        assert!(streamed.to_string().contains("10-byte size limit"));
     }
 }
