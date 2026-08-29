@@ -18,13 +18,13 @@ use crate::{
         Command as ParsedCommand, ConfigCommand, ContextCommand, DeployLocalCommand,
         HarnessCommand, InternalCommand, LogCommand, ProxyCommand, RunArgs,
     },
-    deploy_local::LocalDeployment,
+    deploy_local::{DeployProgress, DeployProgressRenderer, LocalDeployment},
     error::CliError,
     local_config::LocalRuntimePolicy,
     paths::CliPaths,
     platform::platform_adapter,
     product_config::CliProductConfig,
-    runtime::{RunningBroker, ensure_started},
+    runtime::{RunningBroker, RuntimeStartProgress, ensure_started, ensure_started_with_progress},
     support_bundle::SupportBundleCollector,
 };
 
@@ -128,12 +128,26 @@ impl DeployLocalCommandRunner {
     }
 
     fn start(paths: &CliPaths, deployment: &LocalDeployment) -> Result<(), CliError> {
-        let started = deployment.start()?;
+        let mut progress = DeployProgressRenderer::detect();
+        let started = deployment.start(&mut |event| progress.report(event))?;
+        progress.report(DeployProgress::StartingProxy);
         let running = if skip_local_proxy() {
+            progress.report(DeployProgress::ProxySkipped);
             None
         } else {
-            match ensure_started(paths, None, None) {
-                Ok(running) => Some(running),
+            match ensure_started_with_progress(paths, None, None, &mut |event| {
+                progress.report(match event {
+                    RuntimeStartProgress::InstallingCa => DeployProgress::InstallingCa,
+                    RuntimeStartProgress::LaunchingBroker => DeployProgress::LaunchingProxy,
+                    RuntimeStartProgress::WaitingForBroker => DeployProgress::WaitingForProxy,
+                });
+            }) {
+                Ok(running) => {
+                    progress.report(DeployProgress::ProxyReady {
+                        url: format!("http://{}", running.proxy_addr()),
+                    });
+                    Some(running)
+                }
                 Err(error) => {
                     deployment.rollback(&started);
                     return Err(error);

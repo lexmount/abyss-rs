@@ -27,6 +27,17 @@ pub struct RunningBroker {
     proxy_addr: SocketAddr,
 }
 
+/// Observable phases of explicit proxy startup.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub enum RuntimeStartProgress {
+    /// The generated CA is about to be installed into the platform trust store.
+    InstallingCa,
+    /// The platform-managed broker is being launched.
+    LaunchingBroker,
+    /// The broker has not published a healthy explicit endpoint yet.
+    WaitingForBroker,
+}
+
 impl RunningBroker {
     /// Returns the concrete REST endpoint published by the broker.
     #[must_use]
@@ -47,6 +58,16 @@ pub fn ensure_started(
     user: Option<&str>,
     requested_port: Option<u16>,
 ) -> Result<RunningBroker, CliError> {
+    ensure_started_with_progress(paths, user, requested_port, &mut |_| {})
+}
+
+/// Starts the explicit runtime while reporting user-visible lifecycle phases.
+pub fn ensure_started_with_progress(
+    paths: &CliPaths,
+    user: Option<&str>,
+    requested_port: Option<u16>,
+    progress: &mut dyn FnMut(RuntimeStartProgress),
+) -> Result<RunningBroker, CliError> {
     ensure_config(paths)?;
     let mut config = LocalConfig::load(&paths.config_file())?;
     config.require_explicit_mode()?;
@@ -58,9 +79,12 @@ pub fn ensure_started(
     let ca_path = config.ca_path(&paths.config_file())?;
     let store = CaStore::at(ca_path);
     store.load_or_generate_with(platform.ca_material_persistence())?;
+    progress(RuntimeStartProgress::InstallingCa);
     platform.install_ca_trust(store.directory())?;
+    progress(RuntimeStartProgress::LaunchingBroker);
     let endpoint =
         platform.start_broker(paths, user, requested_port.is_some() && config_changed)?;
+    progress(RuntimeStartProgress::WaitingForBroker);
     let proxy_addr = wait_for_broker(&endpoint)?;
     let delivery = DeliveryWorker::ensure_running(paths, &endpoint)?;
     sync_delivery_credential(paths, &delivery)?;

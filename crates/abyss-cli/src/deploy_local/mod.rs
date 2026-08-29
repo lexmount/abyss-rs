@@ -6,6 +6,7 @@
 mod artifacts;
 mod config;
 mod process;
+mod terminal;
 
 use std::{
     net::{Ipv4Addr, SocketAddrV4, TcpListener},
@@ -18,11 +19,101 @@ use config::{
     write_product_config,
 };
 use process::{DeploymentOperationLock, ManagedService, ServiceCommand, ServiceStatus};
+pub use terminal::DeployProgressRenderer;
 
 use crate::{error::CliError, paths::CliPaths};
 
 const BACKEND_HOST: Ipv4Addr = Ipv4Addr::LOCALHOST;
 const DASHBOARD_HOST: Ipv4Addr = Ipv4Addr::LOCALHOST;
+
+/// How a version-pinned local runtime artifact became available.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum ArtifactDisposition {
+    /// The executable was supplied explicitly through deployment configuration.
+    Configured,
+    /// The expected version was already installed and valid.
+    Cached,
+    /// This invocation downloaded or installed the artifact.
+    Installed,
+}
+
+/// How a managed local service reached the ready state.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum ServiceDisposition {
+    /// An existing owned process was already healthy.
+    Existing,
+    /// This invocation started and health-checked the process.
+    Started,
+}
+
+/// Backend or dashboard component reported during local deployment.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum DeployComponent {
+    /// SQLite+FTS backend executable and service.
+    Backend,
+    /// Local web dashboard artifact and service.
+    Dashboard,
+}
+
+/// Semantic progress emitted by local deployment without terminal concerns.
+#[derive(Debug, PartialEq)]
+pub enum DeployProgress {
+    /// Local runtime and tool prerequisites are being checked.
+    CheckingDependencies,
+    /// All required local prerequisites are available.
+    DependenciesReady,
+    /// Component discovery or installation started.
+    PreparingArtifact(DeployComponent),
+    /// Backend response bytes have been downloaded.
+    DownloadingBackend {
+        /// Total response bytes read so far.
+        downloaded: u64,
+        /// Declared response size when available.
+        total: Option<u64>,
+    },
+    /// The downloaded backend digest is being verified.
+    VerifyingBackend,
+    /// npm is installing the version-pinned dashboard package.
+    InstallingDashboard,
+    /// A version-pinned component is ready.
+    ArtifactReady {
+        /// Available component.
+        component: DeployComponent,
+        /// Source of the artifact used by this invocation.
+        disposition: ArtifactDisposition,
+    },
+    /// Backend and dashboard startup orchestration started.
+    StartingServices,
+    /// A component is starting and waiting for its health endpoint.
+    WaitingForService {
+        /// Component being checked.
+        component: DeployComponent,
+    },
+    /// A managed component passed its health check.
+    ServiceReady {
+        /// Ready component.
+        component: DeployComponent,
+        /// Loopback service URL.
+        url: String,
+        /// Whether this invocation started the process.
+        disposition: ServiceDisposition,
+    },
+    /// Proxy startup orchestration started.
+    StartingProxy,
+    /// The generated CA is about to be installed into the trust store.
+    InstallingCa,
+    /// The platform broker is being launched.
+    LaunchingProxy,
+    /// The broker is waiting for its explicit proxy endpoint.
+    WaitingForProxy,
+    /// The explicit proxy passed its readiness checks.
+    ProxyReady {
+        /// Loopback explicit proxy URL.
+        url: String,
+    },
+    /// Proxy startup was intentionally skipped in a debug deployment.
+    ProxySkipped,
+}
 
 pub struct LocalDeployment {
     cli_paths: CliPaths,
@@ -60,11 +151,14 @@ impl LocalDeployment {
         })
     }
 
-    pub fn start(&self) -> Result<StartedLocalServices, CliError> {
+    pub fn start(
+        &self,
+        progress: &mut dyn FnMut(DeployProgress),
+    ) -> Result<StartedLocalServices, CliError> {
         self.paths.ensure_directories()?;
         let _operation = DeploymentOperationLock::acquire(&self.paths)?;
         validate_product_config_ownership(&self.cli_paths)?;
-        let artifacts = ArtifactInstaller::new(&self.paths)?.ensure()?;
+        let artifacts = ArtifactInstaller::new(&self.paths)?.ensure(progress)?;
         let credentials = LocalCredentials::ensure(&self.paths)?;
         let backend = ManagedService::backend(&self.paths);
         let dashboard = ManagedService::dashboard(&self.paths);
@@ -82,10 +176,21 @@ impl LocalDeployment {
         }
 
         let previous_backend_port = previous.as_ref().map(|state| state.backend_port);
-        let backend_port =
-            self.ensure_backend(&backend, &artifacts, &credentials, previous_backend_port)?;
+        progress(DeployProgress::StartingServices);
+        let backend_port = self.ensure_backend(
+            &backend,
+            &artifacts,
+            &credentials,
+            previous_backend_port,
+            progress,
+        )?;
         let backend_started = backend_port.started;
         let backend_port = backend_port.port;
+        progress(DeployProgress::ServiceReady {
+            component: DeployComponent::Backend,
+            url: format!("http://{}", socket_address(BACKEND_HOST, backend_port)),
+            disposition: ServiceDisposition::from_started(backend_started),
+        });
 
         let previous_dashboard_port = previous.as_ref().map(|state| state.dashboard_port);
         let backend_address_changed =
@@ -98,6 +203,7 @@ impl LocalDeployment {
             &artifacts,
             backend_port,
             previous_dashboard_port,
+            progress,
         );
         let dashboard_port = match dashboard_result {
             Ok(result) => result,
@@ -108,6 +214,14 @@ impl LocalDeployment {
                 return Err(error);
             }
         };
+        progress(DeployProgress::ServiceReady {
+            component: DeployComponent::Dashboard,
+            url: format!(
+                "http://{}",
+                socket_address(DASHBOARD_HOST, dashboard_port.port)
+            ),
+            disposition: ServiceDisposition::from_started(dashboard_port.started),
+        });
         let state = DeploymentState::new(backend_port, dashboard_port.port);
         if let Err(error) = state
             .write(&self.paths)
@@ -193,6 +307,7 @@ impl LocalDeployment {
         artifacts: &RuntimeArtifacts,
         credentials: &LocalCredentials,
         previous_port: Option<u16>,
+        progress: &mut dyn FnMut(DeployProgress),
     ) -> Result<PortStart, CliError> {
         if let Some(port) = previous_port {
             let health_url = format!("http://{}/readyz", socket_address(BACKEND_HOST, port));
@@ -231,6 +346,9 @@ impl LocalDeployment {
             )
             .environment("ABYSS_BACKEND_RUN_MIGRATIONS", "true");
         let health_url = format!("http://{address}/readyz");
+        progress(DeployProgress::WaitingForService {
+            component: DeployComponent::Backend,
+        });
         let disposition = service.start(&command, &self.health_client, &health_url)?;
         Ok(PortStart {
             port,
@@ -244,6 +362,7 @@ impl LocalDeployment {
         artifacts: &RuntimeArtifacts,
         backend_port: u16,
         previous_port: Option<u16>,
+        progress: &mut dyn FnMut(DeployProgress),
     ) -> Result<PortStart, CliError> {
         if let Some(port) = previous_port {
             let health_url = format!("http://{}/healthz", socket_address(DASHBOARD_HOST, port));
@@ -288,6 +407,9 @@ impl LocalDeployment {
             .argument("--token-file")
             .argument(self.paths.token_file().into_os_string());
         let health_url = format!("http://{address}/healthz");
+        progress(DeployProgress::WaitingForService {
+            component: DeployComponent::Dashboard,
+        });
         let disposition = service.start(&command, &self.health_client, &health_url)?;
         Ok(PortStart {
             port,
@@ -317,6 +439,16 @@ impl LocalDeploymentStatus {
 
     pub const fn is_ready(&self) -> bool {
         self.backend.is_running() && self.dashboard.is_running()
+    }
+}
+
+impl ServiceDisposition {
+    const fn from_started(started: bool) -> Self {
+        if started {
+            Self::Started
+        } else {
+            Self::Existing
+        }
     }
 }
 
