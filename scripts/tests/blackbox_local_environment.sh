@@ -3,41 +3,43 @@
 set -euo pipefail
 
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
-TEST_ROOT="$(mktemp -d "${TMPDIR:-/tmp}/abyss-local-blackbox.XXXXXX")"
+TEST_ROOT="$(mktemp -d "${TMPDIR:-/tmp}/abyss-deploy-local-blackbox.XXXXXX")"
 FAKE_BIN="${TEST_ROOT}/bin"
 TEST_HOME="${TEST_ROOT}/home"
-PLATFORM_USER_HOME="${TEST_ROOT}/platform-home"
-MANAGER="${REPO_ROOT}/scripts/abyss-local"
+FOREIGN_HOME="${TEST_ROOT}/foreign-home"
+PLATFORM_HOME="${TEST_ROOT}/platform-home"
 BLOCKER_PID=""
 
-find_free_port() {
-  python3 -c 'import socket; s=socket.socket(); s.bind(("127.0.0.1", 0)); print(s.getsockname()[1]); s.close()'
-}
-
-BACKEND_PORT="$(find_free_port)"
-DASHBOARD_PORT="$(find_free_port)"
-while [[ "${DASHBOARD_PORT}" == "${BACKEND_PORT}" ]]; do
-  DASHBOARD_PORT="$(find_free_port)"
-done
+cargo build --quiet --locked --manifest-path "${REPO_ROOT}/Cargo.toml" --package abyss-cli
+TARGET_DIRECTORY="$(cargo metadata \
+  --no-deps \
+  --format-version 1 \
+  --manifest-path "${REPO_ROOT}/Cargo.toml" \
+  | python3 -c 'import json,sys; print(json.load(sys.stdin)["target_directory"])')"
+ABYSS_BIN="${TARGET_DIRECTORY}/debug/abyss"
 
 run_local() {
   ABYSS_HOME="${TEST_HOME}" \
-  ABYSS_RUNTIME_BIN_DIR="${FAKE_BIN}" \
-  ABYSS_USER_BIN_DIR="${FAKE_BIN}" \
-  ABYSS_LOCAL_BACKEND_PORT="${BACKEND_PORT}" \
-  ABYSS_LOCAL_DASHBOARD_PORT="${DASHBOARD_PORT}" \
-    "${MANAGER}" "$@"
+  ABYSS_LOCAL_BACKEND_BIN="${FAKE_BIN}/abyss-backend" \
+  ABYSS_LOCAL_DASHBOARD_BIN="${FAKE_BIN}/abyss-dashboard" \
+  ABYSS_LOCAL_SKIP_PROXY=1 \
+    "${ABYSS_BIN}" deploy-local "$@"
 }
 
-run_with_platform_default_home() (
-  unset ABYSS_HOME ABYSS_LOCAL_ROOT
-  HOME="${PLATFORM_USER_HOME}" \
-  ABYSS_RUNTIME_BIN_DIR="${FAKE_BIN}" \
-  ABYSS_USER_BIN_DIR="${FAKE_BIN}" \
-  ABYSS_LOCAL_BACKEND_PORT="${BACKEND_PORT}" \
-  ABYSS_LOCAL_DASHBOARD_PORT="${DASHBOARD_PORT}" \
-    "${MANAGER}" "$@"
+run_platform_default() (
+  unset ABYSS_HOME
+  HOME="${PLATFORM_HOME}" \
+  ABYSS_LOCAL_BACKEND_BIN="${FAKE_BIN}/abyss-backend" \
+  ABYSS_LOCAL_DASHBOARD_BIN="${FAKE_BIN}/abyss-dashboard" \
+  ABYSS_LOCAL_SKIP_PROXY=1 \
+    "${ABYSS_BIN}" deploy-local "$@"
 )
+
+read_state() {
+  python3 -c \
+    'import json,sys; print(json.load(open(sys.argv[1], encoding="utf-8"))[sys.argv[2]])' \
+    "${TEST_HOME}/local/deployment.json" "$1"
+}
 
 cleanup() {
   if [[ -n "${BLOCKER_PID}" ]] && kill -0 "${BLOCKER_PID}" 2>/dev/null; then
@@ -45,6 +47,7 @@ cleanup() {
     wait "${BLOCKER_PID}" 2>/dev/null || true
   fi
   run_local stop >/dev/null 2>&1 || true
+  run_platform_default stop >/dev/null 2>&1 || true
   rm -rf "${TEST_ROOT}"
 }
 trap cleanup EXIT
@@ -67,77 +70,103 @@ install -m 0755 \
 install -m 0755 \
   "${REPO_ROOT}/scripts/tests/fixtures/fake_local_service.py" \
   "${FAKE_BIN}/port-blocker"
-install -m 0755 \
-  "${REPO_ROOT}/scripts/tests/fixtures/fake_abyss.sh" \
-  "${FAKE_BIN}/abyss"
 
 case "$(uname -s)" in
   Darwin)
-    PLATFORM_DEFAULT_ABYSS_HOME="${PLATFORM_USER_HOME}/Library/Application Support/Abyss/cli"
+    PLATFORM_STATE_ROOT="${PLATFORM_HOME}/Library/Application Support/Abyss/cli"
     ;;
   Linux)
-    PLATFORM_DEFAULT_ABYSS_HOME="${PLATFORM_USER_HOME}/.abyss"
+    PLATFORM_STATE_ROOT="${PLATFORM_HOME}/.abyss"
     ;;
   *)
-    printf 'unsupported black-box test platform\n' >&2
+    printf 'unsupported local deployment test platform\n' >&2
     exit 1
     ;;
 esac
-run_with_platform_default_home init
-[[ -f "${PLATFORM_DEFAULT_ABYSS_HOME}/product-config.json" ]]
-grep -Fq "\"url\": \"http://127.0.0.1:${DASHBOARD_PORT}\"" \
-  "${PLATFORM_DEFAULT_ABYSS_HOME}/product-config.json"
+run_platform_default start >/dev/null
+[[ -f "${PLATFORM_STATE_ROOT}/product-config.json" ]]
+run_platform_default status >/dev/null
+run_platform_default stop >/dev/null
 
-run_local init
+start_output="$(run_local start)"
+[[ "${start_output}" == *"Local environment is ready."* ]]
+[[ "${start_output}" == *"Proxy: skipped"* ]]
+backend_port="$(read_state backend_port)"
+dashboard_port="$(read_state dashboard_port)"
+[[ "${backend_port}" != "${dashboard_port}" ]]
+[[ "${start_output}" == *"Backend: http://127.0.0.1:${backend_port}"* ]]
+[[ "${start_output}" == *"Dashboard: http://127.0.0.1:${dashboard_port}"* ]]
+curl --noproxy '*' -fsS "http://127.0.0.1:${backend_port}/readyz" >/dev/null
+curl --noproxy '*' -fsS "http://127.0.0.1:${dashboard_port}/healthz" >/dev/null
 [[ "$(file_mode "${TEST_HOME}/local/backend.token")" == "600" ]]
 [[ "$(file_mode "${TEST_HOME}/local/backend.authorization")" == "600" ]]
 [[ "$(file_mode "${TEST_HOME}/product-config.json")" == "600" ]]
-grep -Fq "http://127.0.0.1:${BACKEND_PORT}/v1/agent-usage/events" \
+grep -Fq "http://127.0.0.1:${backend_port}/v1/agent-usage/events" \
   "${TEST_HOME}/product-config.json"
-grep -Fq "\"url\": \"http://127.0.0.1:${DASHBOARD_PORT}\"" \
+grep -Fq "\"url\": \"http://127.0.0.1:${dashboard_port}\"" \
   "${TEST_HOME}/product-config.json"
-token="$(tr -d '\r\n' <"${TEST_HOME}/local/backend.token")"
-[[ "$(tr -d '\r\n' <"${TEST_HOME}/local/backend.authorization")" == "Bearer ${token}" ]]
-unset token
 
-start_output="$(run_local start)"
-[[ "${start_output}" == *"Dashboard: http://127.0.0.1:${DASHBOARD_PORT}"* ]]
-curl --noproxy '*' -fsS "http://127.0.0.1:${BACKEND_PORT}/readyz" >/dev/null
-curl --noproxy '*' -fsS "http://127.0.0.1:${DASHBOARD_PORT}/healthz" >/dev/null
 run_local status
-run_local start
+backend_pid="$(python3 -c \
+  'import json,sys; print(json.load(open(sys.argv[1], encoding="utf-8"))["pid"])' \
+  "${TEST_HOME}/local/run/backend.json")"
+dashboard_pid="$(python3 -c \
+  'import json,sys; print(json.load(open(sys.argv[1], encoding="utf-8"))["pid"])' \
+  "${TEST_HOME}/local/run/dashboard.json")"
+run_local start >/dev/null
+[[ "$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["pid"])' \
+  "${TEST_HOME}/local/run/backend.json")" == "${backend_pid}" ]]
+[[ "$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["pid"])' \
+  "${TEST_HOME}/local/run/dashboard.json")" == "${dashboard_pid}" ]]
+
 run_local stop
 if run_local status >/dev/null 2>&1; then
-  printf 'stopped environment unexpectedly reported healthy\n' >&2
+  printf 'stopped local deployment unexpectedly reported healthy\n' >&2
   exit 1
 fi
 
-printf '%s\n' "$$" >"${TEST_HOME}/local/run/backend.pid"
-run_local stop
-[[ ! -e "${TEST_HOME}/local/run/backend.pid" ]]
-
-"${FAKE_BIN}/port-blocker" "${DASHBOARD_PORT}" >/dev/null 2>&1 &
+"${FAKE_BIN}/port-blocker" "${dashboard_port}" >/dev/null 2>&1 &
 BLOCKER_PID=$!
 for _attempt in {1..20}; do
-  if curl --noproxy '*' -fsS "http://127.0.0.1:${DASHBOARD_PORT}/healthz" >/dev/null 2>&1; then
+  if curl --noproxy '*' -fsS "http://127.0.0.1:${dashboard_port}/healthz" >/dev/null 2>&1; then
     break
   fi
   sleep 0.1
 done
-curl --noproxy '*' -fsS "http://127.0.0.1:${DASHBOARD_PORT}/healthz" >/dev/null
-if run_local start >/dev/null 2>&1; then
-  printf 'port conflict unexpectedly allowed local environment startup\n' >&2
-  exit 1
-fi
-[[ ! -e "${TEST_HOME}/local/run/backend.pid" ]]
-[[ ! -e "${TEST_HOME}/local/run/dashboard.pid" ]]
-if curl --noproxy '*' -fsS "http://127.0.0.1:${BACKEND_PORT}/readyz" >/dev/null 2>&1; then
-  printf 'failed startup did not roll back the backend\n' >&2
-  exit 1
-fi
-
+run_local start >/dev/null
+replacement_dashboard_port="$(read_state dashboard_port)"
+[[ "${replacement_dashboard_port}" != "${dashboard_port}" ]]
+curl --noproxy '*' -fsS "http://127.0.0.1:${replacement_dashboard_port}/healthz" >/dev/null
+run_local stop >/dev/null
 kill -TERM "${BLOCKER_PID}"
 wait "${BLOCKER_PID}" || true
 BLOCKER_PID=""
 
-printf 'abyss-local black-box test passed\n'
+ABYSS_HOME="${TEST_HOME}" \
+ABYSS_LOCAL_BACKEND_BIN="${FAKE_BIN}/abyss-backend" \
+ABYSS_LOCAL_DASHBOARD_BIN="/usr/bin/false" \
+ABYSS_LOCAL_SKIP_PROXY=1 \
+  "${ABYSS_BIN}" deploy-local start >/dev/null 2>&1 && {
+    printf 'failed dashboard unexpectedly allowed local deployment startup\n' >&2
+    exit 1
+  }
+failed_backend_port="$(read_state backend_port)"
+if curl --noproxy '*' -fsS "http://127.0.0.1:${failed_backend_port}/readyz" >/dev/null 2>&1; then
+  printf 'failed startup did not roll back the newly started backend\n' >&2
+  exit 1
+fi
+
+mkdir -p "${FOREIGN_HOME}"
+printf '%s\n' '{"delivery_worker":{"plugin_id":"example.foreign"}}' \
+  >"${FOREIGN_HOME}/product-config.json"
+if ABYSS_HOME="${FOREIGN_HOME}" \
+  ABYSS_LOCAL_BACKEND_BIN="${FAKE_BIN}/abyss-backend" \
+  ABYSS_LOCAL_DASHBOARD_BIN="${FAKE_BIN}/abyss-dashboard" \
+  ABYSS_LOCAL_SKIP_PROXY=1 \
+    "${ABYSS_BIN}" deploy-local start >/dev/null 2>&1; then
+  printf 'foreign product configuration was unexpectedly replaced\n' >&2
+  exit 1
+fi
+grep -Fq 'example.foreign' "${FOREIGN_HOME}/product-config.json"
+
+printf 'abyss deploy-local black-box test passed\n'

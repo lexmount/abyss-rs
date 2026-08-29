@@ -13,46 +13,8 @@ event production remain platform independent.
 
 ## Quick Start
 
-The local environment supports Linux x86_64 and macOS ARM64 without Docker. It
-requires Git, Rust/Cargo, OpenSSL, curl, Node.js 22 or newer, and npm 10 or
-newer. Clone the repository, then run its installer to build the Abyss CLI and
-SQLite+FTS backend, install the dashboard package, and start the complete
-environment:
-
-```bash
-git clone https://github.com/lexmount/abyss-rs.git
-cd abyss-rs
-bash scripts/install-local.sh
-```
-
-The installer keeps all services on IPv4 loopback and stores the SQLite database
-and private bearer files under `~/Library/Application Support/Abyss/cli/local`
-on macOS or `~/.abyss/local` on Linux. It automatically selects available
-backend and dashboard ports and prints any PATH update needed by the current
-shell. `abyss status` and `abyss proxy start` print the selected dashboard URL.
-Run an agent through Abyss after installation:
-
-```bash
-abyss-local status
-abyss run -- codex
-```
-
-Manage the environment without reinstalling it:
-
-```bash
-abyss-local stop
-abyss-local start
-abyss-local logs
-```
-
-The installer refuses to replace an unrelated existing `product-config.json` in
-the platform state directory; set `ABYSS_HOME` to another absolute directory
-when the machine already has a different deployment. Linux installation uses
-the existing systemd broker integration and may request `sudo`.
-
-### Build the CLI only
-
-To build only the endpoint CLI and its runtime processes from source:
+The local environment supports Linux x86_64 and macOS ARM64 without Docker.
+Clone the repository and build the CLI runtime from source:
 
 ```bash
 git clone https://github.com/lexmount/abyss-rs.git
@@ -64,11 +26,48 @@ cargo build --release --locked \
 export PATH="$PWD/target/release:$PATH"
 ```
 
-The CLI requires a deployment-supplied `product-config.json`. The local
-installer creates a profile that delivers events to its authenticated backend.
-Other distributions can provide their own delivery destination and
-authentication mode; `managed_bearer` deployments also require a control plane
-and `abyss login`.
+Linux additionally requires the broker systemd integration described in
+[`platform/linux/README.md`](platform/linux/README.md). With Node.js 22 or newer
+and npm 10 or newer installed, deploy the SQLite+FTS backend and dashboard:
+
+```bash
+abyss deploy-local start
+```
+
+The first start downloads the checksummed native backend from the public
+`lexmount/abyss-backend` GitHub Release and installs the pinned public dashboard
+package below the private Abyss state directory. Neither component is added to
+`PATH`; `abyss` remains the only management command.
+
+The CLI keeps all services on IPv4 loopback and stores downloaded runtimes, the
+SQLite database, logs, and private bearer files under
+`~/Library/Application Support/Abyss/cli/local` on macOS or `~/.abyss/local` on
+Linux. It automatically selects and persists available backend and dashboard
+ports. `abyss status` and `abyss proxy start` also print the selected dashboard
+URL. Inspect the complete local environment and run an agent through it:
+
+```bash
+abyss deploy-local status
+abyss run -- codex
+```
+
+Manage the environment without reinstalling it:
+
+```bash
+abyss deploy-local stop
+abyss deploy-local start
+```
+
+`deploy-local` refuses to replace an unrelated existing `product-config.json`
+in the platform state directory; set `ABYSS_HOME` to another absolute directory
+when the machine already has a different deployment. Linux proxy startup uses
+the existing systemd broker integration; CA trust changes may request `sudo`.
+
+The CLI requires a deployment-supplied `product-config.json` for proxy and agent
+commands. `abyss deploy-local start` creates a local profile that delivers
+events to its authenticated backend. Other distributions can provide their own
+delivery destination and authentication mode; `managed_bearer` deployments
+also require a control plane and `abyss login`.
 
 Run another AI agent without changing the parent shell:
 

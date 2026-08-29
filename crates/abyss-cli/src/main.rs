@@ -13,6 +13,7 @@ mod cli_logging;
 mod command;
 mod credential;
 mod delivery;
+mod deploy_local;
 mod error;
 mod filesystem;
 mod local_config;

@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Minimal loopback services used by the abyss-local black-box test."""
+"""Minimal loopback services used by the deploy-local black-box test."""
 
 from __future__ import annotations
 

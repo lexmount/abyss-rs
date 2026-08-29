@@ -15,9 +15,10 @@ use crate::{
     broker::{BrokerClient, BrokerConnection, ProxyLifecycle},
     claude_code::ClaudeCodeConfigurator,
     cli::{
-        Command as ParsedCommand, ConfigCommand, ContextCommand, HarnessCommand, InternalCommand,
-        LogCommand, ProxyCommand, RunArgs,
+        Command as ParsedCommand, ConfigCommand, ContextCommand, DeployLocalCommand,
+        HarnessCommand, InternalCommand, LogCommand, ProxyCommand, RunArgs,
     },
+    deploy_local::LocalDeployment,
     error::CliError,
     local_config::LocalRuntimePolicy,
     paths::CliPaths,
@@ -68,6 +69,7 @@ impl CliCommand {
             }
             ParsedCommand::Log { command } => LogCommandRunner::run(command),
             ParsedCommand::Status(args) => StatusCommandRunner::run(args.broker_api.as_deref()),
+            ParsedCommand::DeployLocal { command } => DeployLocalCommandRunner::run(&command),
             ParsedCommand::Diagnostics(args) => {
                 DiagnosticsCommandRunner::run(args.broker_api.as_deref())
             }
@@ -110,6 +112,87 @@ impl CliCommand {
             } | ParsedCommand::Run(_)
         )
     }
+}
+
+struct DeployLocalCommandRunner;
+
+impl DeployLocalCommandRunner {
+    fn run(command: &DeployLocalCommand) -> Result<(), CliError> {
+        let paths = CliPaths::from_env()?;
+        let deployment = LocalDeployment::from_paths(paths.clone())?;
+        match command {
+            DeployLocalCommand::Start => Self::start(&paths, &deployment),
+            DeployLocalCommand::Stop => Self::stop(&paths, &deployment),
+            DeployLocalCommand::Status => Self::status(&paths, &deployment),
+        }
+    }
+
+    fn start(paths: &CliPaths, deployment: &LocalDeployment) -> Result<(), CliError> {
+        let started = deployment.start()?;
+        let running = if skip_local_proxy() {
+            None
+        } else {
+            match ensure_started(paths, None, None) {
+                Ok(running) => Some(running),
+                Err(error) => {
+                    deployment.rollback(&started);
+                    return Err(error);
+                }
+            }
+        };
+        println!("Backend: {}", started.backend_url());
+        println!("Dashboard: {}", started.dashboard_url());
+        if let Some(running) = running {
+            println!("Proxy: http://{}", running.proxy_addr());
+        } else {
+            println!("Proxy: skipped");
+        }
+        println!("Local environment is ready.");
+        println!("Use `abyss run -- <command>` to launch an agent through it.");
+        Ok(())
+    }
+
+    fn stop(paths: &CliPaths, deployment: &LocalDeployment) -> Result<(), CliError> {
+        let proxy_error = if skip_local_proxy() {
+            None
+        } else {
+            match BrokerConnection::discover(paths, platform_adapter().as_ref(), None, None) {
+                Ok(Some(_connection)) => platform_adapter().stop_broker(paths, None).err(),
+                Ok(None) => None,
+                Err(error) => Some(error),
+            }
+        };
+        let deployment_result = deployment.stop();
+        deployment_result?;
+        if let Some(error) = proxy_error {
+            return Err(error);
+        }
+        println!("Local proxy, dashboard, and backend stopped.");
+        Ok(())
+    }
+
+    fn status(paths: &CliPaths, deployment: &LocalDeployment) -> Result<(), CliError> {
+        let status = deployment.status()?;
+        let (proxy_label, proxy_ready) = if skip_local_proxy() {
+            ("skipped".to_owned(), true)
+        } else {
+            StatusBroker::resolve(paths, None)?.proxy_status()
+        };
+        println!("Backend: {}", status.backend_label());
+        println!("Dashboard: {}", status.dashboard_label());
+        println!("Proxy: {proxy_label}");
+        if status.is_ready() && proxy_ready {
+            return Ok(());
+        }
+        Err(CliError::InvalidConfiguration(
+            "local deployment is not fully running; run `abyss deploy-local start`".to_owned(),
+        ))
+    }
+}
+
+fn skip_local_proxy() -> bool {
+    cfg!(debug_assertions)
+        && std::env::var("ABYSS_LOCAL_SKIP_PROXY").is_ok_and(|value| value == "1")
 }
 
 struct RuntimeBootstrap {
@@ -256,6 +339,29 @@ impl StatusBroker {
             public,
             running,
         })
+    }
+
+    fn proxy_status(&self) -> (String, bool) {
+        if !self.running {
+            return ("stopped".to_owned(), false);
+        }
+        let Some(public) = &self.public else {
+            return ("unhealthy".to_owned(), false);
+        };
+        let Ok(status) = public.proxy_status() else {
+            return ("unhealthy".to_owned(), false);
+        };
+        if !matches!(status.lifecycle, ProxyLifecycle::Running) {
+            return ("stopped".to_owned(), false);
+        }
+        let mode = status
+            .mode
+            .as_ref()
+            .map_or("explicit", crate::broker::ProxyMode::as_str);
+        let address = status
+            .listen_addr
+            .map_or_else(|| "unknown".to_owned(), |address| address.to_string());
+        (format!("{mode}:{address}"), status.listen_addr.is_some())
     }
 }
 
