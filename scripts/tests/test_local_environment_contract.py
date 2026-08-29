@@ -8,7 +8,6 @@ from pathlib import Path
 
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
-INSTALLER = REPO_ROOT / "scripts" / "install-local.sh"
 DEPLOY_LOCAL = REPO_ROOT / "crates" / "abyss-cli" / "src" / "deploy_local"
 README = REPO_ROOT / "README.md"
 
@@ -26,19 +25,15 @@ class LocalEnvironmentContractTests(unittest.TestCase):
         )
         self.assertIn("SHA256SUMS", artifacts)
 
-    def test_installer_only_installs_the_original_cli_runtime(self) -> None:
-        source = INSTALLER.read_text(encoding="utf-8")
+    def test_readme_builds_the_original_cli_runtime_from_source(self) -> None:
+        source = README.read_text(encoding="utf-8")
 
-        self.assertIn('${BASH_SOURCE[0]}', source)
-        self.assertIn('ABYSS_RS_SOURCE="$(cd -- "${SCRIPT_DIR}/.."', source)
+        self.assertFalse((REPO_ROOT / "scripts" / "install-local.sh").exists())
+        self.assertIn("git clone https://github.com/lexmount/abyss-rs.git", source)
+        self.assertIn("cargo build --release --locked", source)
         for package in ("abyss-cli", "abyss-broker", "abyss-delivery-plugin"):
             self.assertIn(f"--package {package}", source)
-        self.assertNotIn("abyss-backend.git", source)
-        self.assertNotIn("--package abyss-backend", source)
-        self.assertNotIn("npm install", source)
-        self.assertNotIn("abyss-local", source)
-        self.assertNotIn("docker", source.lower())
-        self.assertIn('"${RUNTIME_BIN_DIR}/abyss" deploy-local start', source)
+        self.assertNotIn("scripts/install-local.sh", source)
 
     def test_cli_owns_loopback_ports_and_private_credentials(self) -> None:
         source = (DEPLOY_LOCAL / "mod.rs").read_text(encoding="utf-8")

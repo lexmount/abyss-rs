@@ -27,12 +27,12 @@ relative to `product-config.json`. The `managed_bearer` mode requires
 Product URLs, SSO settings, update settings, and managed credentials belong in
 the distributing repository.
 
-The open `install-local.sh` bootstrap creates a narrowly scoped local
-`product-config.json` for the SQLite+FTS backend and refuses to replace a file
-owned by another deployment. Product deployment packages should include all
-three configuration files and preserve existing files byte-for-byte. Hosted or
-signed product installers, artifact origins, and release lifecycles remain
-outside this open runtime repository.
+`abyss deploy-local start` creates a narrowly scoped local `product-config.json`
+for the SQLite+FTS backend and refuses to replace a file owned by another
+deployment. Product deployment packages should include all three configuration
+files and preserve existing files byte-for-byte. Hosted or signed product
+installers, artifact origins, and release lifecycles remain outside this open
+runtime repository.
 
 The broker REST API binds a dynamic loopback endpoint and publishes its address,
 PID, and token path in `runtime/startup-info.json`. Temporary files such as

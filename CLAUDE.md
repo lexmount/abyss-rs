@@ -70,10 +70,10 @@ The open CLI embeds only generic `broker-config.toml` and
 environment-specific fallback compiled into the open binary.
 
 This repository owns the generic `abyss deploy-local` lifecycle for the public
-SQLite+FTS backend release and npm dashboard. `install-local.sh` only builds and
-installs the original CLI runtime from a checkout before invoking that command.
-Hosted or signed product installers, private artifact origins, and product
-release lifecycles belong to the distributing product and service repositories.
+SQLite+FTS backend release and npm dashboard. Users build the original CLI
+runtime directly from a checkout. Hosted or signed product installers, private
+artifact origins, and product release lifecycles belong to the distributing
+product and service repositories.
 
 ## Security boundaries
 

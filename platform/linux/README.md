@@ -20,8 +20,24 @@ distributor is responsible for publishing an x86_64 musl archive containing:
 
 Installer implementation, artifact hosting, checksum publication, and
 configuration seeding behavior for hosted distributions are owned outside this
-open runtime repository. The generic `scripts/install-local.sh` bootstrap builds
-these public components from source for a loopback-only local environment.
+open runtime repository. Development builds are produced directly from the
+repository with Cargo.
+
+For a source build, install the compiled runtime and service template before
+starting the local environment:
+
+```bash
+cargo build --release --locked \
+  --package abyss-cli \
+  --package abyss-broker \
+  --package abyss-delivery-plugin
+sudo install -m 0755 target/release/abyss /usr/local/bin/abyss
+sudo install -m 0755 target/release/abyss-broker /usr/local/bin/abyss-broker
+sudo install -m 0755 target/release/abyss-delivery-plugin /usr/local/bin/abyss-delivery-plugin
+sudo install -m 0644 platform/linux/abyss-broker@.service /etc/systemd/system/abyss-broker@.service
+sudo systemctl daemon-reload
+abyss deploy-local start
+```
 
 ## User workflow
 
