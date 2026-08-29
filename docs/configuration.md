@@ -18,16 +18,21 @@ files during subsequent starts.
 or package must supply it. The CLI validates `schema_version = 1`, requires
 `product.kind = "cli"`, rejects platform-adapter configuration, and passes the
 same file to `abyss-delivery-plugin`. When
-`delivery_worker.authentication.mode = "none"`, `product.control_plane` may be
-omitted and proxy commands do not require terminal login. Every other existing
-authentication mode requires `product.control_plane` and preserves the terminal
-login flow. Product URLs, SSO settings, update settings, and delivery
-credentials belong in the distributing repository.
+`delivery_worker.authentication.mode` is `none`, `authorization_header_file`,
+or `cookie_header_file`, `product.control_plane` may be omitted and proxy
+commands do not require terminal login. Static credential files are resolved
+relative to `product-config.json`. The `managed_bearer` mode requires
+`product.control_plane` and preserves the terminal login flow. An optional
+`product.dashboard.url` is shown by `abyss status` and `abyss proxy start`.
+Product URLs, SSO settings, update settings, and managed credentials belong in
+the distributing repository.
 
-Deployment packages should include all three configuration files so their
-installer can seed missing local state. Existing files should be preserved
-byte-for-byte. Installer implementation, artifact origin, and release lifecycle
-remain outside this open runtime repository.
+The open `install-local.sh` bootstrap creates a narrowly scoped local
+`product-config.json` for the SQLite+FTS backend and refuses to replace a file
+owned by another deployment. Product deployment packages should include all
+three configuration files and preserve existing files byte-for-byte. Hosted or
+signed product installers, artifact origins, and release lifecycles remain
+outside this open runtime repository.
 
 The broker REST API binds a dynamic loopback endpoint and publishes its address,
 PID, and token path in `runtime/startup-info.json`. Temporary files such as

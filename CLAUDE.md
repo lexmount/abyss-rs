@@ -69,8 +69,10 @@ The open CLI embeds only generic `broker-config.toml` and
 `product-config.json` is deployment-supplied and must never have an
 environment-specific fallback compiled into the open binary.
 
-Installer implementations, artifact origins, and release lifecycle belong to
-the distributing product and service repositories.
+This repository owns the generic, unsigned `install-local.sh` bootstrap for the
+public SQLite+FTS backend and npm dashboard. Hosted or signed product installers,
+private artifact origins, and product release lifecycles belong to the
+distributing product and service repositories.
 
 ## Security boundaries
 

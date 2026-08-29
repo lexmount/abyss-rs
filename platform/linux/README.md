@@ -19,7 +19,9 @@ distributor is responsible for publishing an x86_64 musl archive containing:
 - `LICENSE`.
 
 Installer implementation, artifact hosting, checksum publication, and
-configuration seeding behavior are owned outside this open runtime repository.
+configuration seeding behavior for hosted distributions are owned outside this
+open runtime repository. The generic `scripts/install-local.sh` bootstrap builds
+these public components from source for a loopback-only local environment.
 
 ## User workflow
 
@@ -34,10 +36,10 @@ abyss log dump --file /tmp/abyss-support.zip
 abyss logout
 ```
 
-With `delivery_worker.authentication.mode = "none"`, no login or control-plane
-configuration is required. Other authentication modes require
-`product.control_plane`; in those deployments, run `abyss login` before the
-commands above. `abyss login` reads the control-plane URL from the
+With `delivery_worker.authentication.mode = "none"` or a static header-file
+mode, no login or control-plane configuration is required. `managed_bearer`
+requires `product.control_plane`; in those deployments, run `abyss login` before
+the commands above. `abyss login` reads the control-plane URL from the
 deployment-supplied `product-config.json`. `abyss run` starts the explicit
 broker, ensures that its CA is trusted, and scopes proxy environment variables
 to the launched command.

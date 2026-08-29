@@ -582,6 +582,12 @@ fn send_custom_harness_flow(socket_path: &Path, upstream_addr: SocketAddr, broke
     let mut request_bytes = request.into_bytes();
     request_bytes.extend_from_slice(&body);
     write_flow_frame(&mut stream, 2, 1, flow_id, &request_bytes);
+    let close = serde_json::to_vec(&json!({
+        "flow_id": flow_id,
+        "reason": "request_complete"
+    }))
+    .expect("FlowClose should serialize");
+    write_flow_frame(&mut stream, 3, 1, flow_id, &close);
 
     let mut response = Vec::new();
     loop {
@@ -608,12 +614,6 @@ fn send_custom_harness_flow(socket_path: &Path, upstream_addr: SocketAddr, broke
             break;
         }
     }
-    let close = serde_json::to_vec(&json!({
-        "flow_id": flow_id,
-        "reason": "response_complete"
-    }))
-    .expect("FlowClose should serialize");
-    write_flow_frame(&mut stream, 3, 1, flow_id, &close);
     assert!(
         String::from_utf8_lossy(&response).contains("hello back"),
         "framed ingress should return the real upstream response"
