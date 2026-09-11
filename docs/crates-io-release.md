@@ -41,7 +41,7 @@ complete dependency closure even before the supporting crates exist on crates.io
    of its four publishable workspace dependencies together. Keep the lockfile
    current. The initial prepared version is `1.0.0`.
 2. Update crate READMEs as needed. If the public AgentEvent fixture changes, copy
-   it to `crates/abyss-broker/tests/fixtures/agent-event.json`; the release check
+   it to `crates/abyss-broker/src/plugin/fixtures/agent-event.json`; the release check
    verifies that they match so packaged tests remain self-contained.
 3. Validate locally:
 

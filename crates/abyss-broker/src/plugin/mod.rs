@@ -181,9 +181,8 @@ mod tests {
 
         let mut first = connect_plugin(&endpoint, "first-plugin").await;
         let mut second = connect_plugin(&endpoint, "second-plugin").await;
-        let event: AgentEvent =
-            serde_json::from_str(include_str!("../../tests/fixtures/agent-event.json"))
-                .expect("published AgentEvent fixture should decode");
+        let event: AgentEvent = serde_json::from_str(include_str!("fixtures/agent-event.json"))
+            .expect("published AgentEvent fixture should decode");
         sink.publish(event)
             .await
             .expect("broker event sink should accept the event");
