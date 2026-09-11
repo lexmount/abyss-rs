@@ -13,6 +13,19 @@ event production remain platform independent.
 
 ## Quick Start
 
+For the standalone broker, install it from crates.io:
+
+```bash
+cargo install --locked abyss-broker
+```
+
+Follow the [broker setup guide](crates/abyss-broker/README.md) to prepare its CA,
+select explicit-proxy mode, and start it. For maintainers, the
+[crates.io release guide](docs/crates-io-release.md) describes version tags and
+the GitHub Actions publication workflow.
+
+### Complete local environment from source
+
 The local environment supports Linux x86_64 and macOS ARM64 without Docker.
 Clone the repository and build the CLI runtime from source:
 

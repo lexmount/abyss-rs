@@ -20,11 +20,11 @@ license-file = "LICENSE"
 repository = "https://github.com/lexmount/abyss-rs"
 
 [workspace.dependencies]
-abyss-agent-hook = { path = "crates/abyss-agent-hook" }
-abyss-mitm = { path = "crates/abyss-mitm" }
-abyss-plugin-protocol = { path = "crates/abyss-plugin-protocol" }
+abyss-agent-hook = { path = "crates/abyss-agent-hook", version = "1.0.0" }
+abyss-mitm = { path = "crates/abyss-mitm", version = "1.0.0" }
+abyss-plugin-protocol = { path = "crates/abyss-plugin-protocol", version = "1.0.0" }
 abyss-sdk = { path = "crates/abyss-sdk" }
-abyss-storage = { path = "crates/abyss-storage" }
+abyss-storage = { path = "crates/abyss-storage", version = "1.0.0" }
 abyss-terminal-auth = { path = "crates/abyss-terminal-auth" }
 arc-swap = "1"
 parking_lot = "0.12"

@@ -5,7 +5,11 @@ edition.workspace = true
 authors.workspace = true
 license-file.workspace = true
 repository.workspace = true
-publish = false
+description = "TLS interception and HTTP stream handling for the Abyss runtime"
+readme = "README.md"
+keywords = ["proxy", "mitm", "tls", "http"]
+categories = ["network-programming"]
+publish = ["crates-io"]
 
 [dependencies]
 arc-swap = "1"

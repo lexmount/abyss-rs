@@ -281,10 +281,9 @@ mod tests {
         let hello: BrokerHello = read_json(&mut client).await;
         assert_eq!(hello.protocol_version.wire_value(), 1_u16);
 
-        let event: AgentEvent = serde_json::from_str(include_str!(
-            "../../../../specs/broker-plugin-protocol/v1/fixtures/agent-event.json"
-        ))
-        .expect("published AgentEvent fixture should decode");
+        let event: AgentEvent =
+            serde_json::from_str(include_str!("../../tests/fixtures/agent-event.json"))
+                .expect("published AgentEvent fixture should decode");
         events
             .send(Arc::new(event))
             .expect("accepted session should subscribe to events");
@@ -365,10 +364,9 @@ mod tests {
             .expect("PluginHello should write");
         let _hello: BrokerHello = read_json(&mut client).await;
         for _index in 0_u8..3_u8 {
-            let event: AgentEvent = serde_json::from_str(include_str!(
-                "../../../../specs/broker-plugin-protocol/v1/fixtures/agent-event.json"
-            ))
-            .expect("published AgentEvent fixture should decode");
+            let event: AgentEvent =
+                serde_json::from_str(include_str!("../../tests/fixtures/agent-event.json"))
+                    .expect("published AgentEvent fixture should decode");
             events
                 .send(Arc::new(event))
                 .expect("accepted session should remain subscribed");
