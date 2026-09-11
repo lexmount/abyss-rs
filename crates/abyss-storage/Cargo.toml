@@ -5,7 +5,11 @@ edition.workspace = true
 authors.workspace = true
 license-file.workspace = true
 repository.workspace = true
-publish = false
+description = "Durable local SQLite storage primitives for Abyss endpoint components"
+readme = "README.md"
+keywords = ["sqlite", "storage", "abyss"]
+categories = ["database"]
+publish = ["crates-io"]
 
 [dependencies]
 diesel = { version = "2.2", default-features = false, features = ["sqlite"] }

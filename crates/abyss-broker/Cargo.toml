@@ -5,7 +5,11 @@ edition.workspace = true
 authors.workspace = true
 license-file.workspace = true
 repository.workspace = true
-publish = false
+description = "Endpoint broker for AI agent traffic observation and control"
+readme = "README.md"
+keywords = ["ai", "agent", "proxy", "mitm", "observability"]
+categories = ["command-line-utilities", "network-programming"]
+publish = ["crates-io"]
 
 [dependencies]
 abyss-agent-hook.workspace = true

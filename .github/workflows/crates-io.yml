@@ -1,0 +1,116 @@
+name: Publish broker to crates.io
+
+on:
+  push:
+    tags:
+      - 'v*'
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: crates-io-${{ github.ref }}
+  cancel-in-progress: false
+
+env:
+  CARGO_TERM_COLOR: always
+  RUSTUP_TOOLCHAIN: '1.98.0'
+
+jobs:
+  verify:
+    name: Verify broker release
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Install Rust
+        run: rustup toolchain install "$RUSTUP_TOOLCHAIN" --profile minimal --component clippy
+
+      - uses: Swatinem/rust-cache@82a92a6e8fbeee089604da2575dc567ae9ddeaab # v2.7.5
+        with:
+          shared-key: crates-io
+
+      - name: Test release validation and retry behavior
+        run: python3 -m unittest discover -s scripts/tests -p 'test_publish_crates.py'
+
+      - name: Validate release scope and tag
+        env:
+          RELEASE_REF_TYPE: ${{ github.ref_type }}
+          RELEASE_REF_NAME: ${{ github.ref_name }}
+        run: |
+          args=()
+          if [[ "$RELEASE_REF_TYPE" == tag ]]; then
+            args+=(--tag "$RELEASE_REF_NAME")
+          fi
+          python3 scripts/ci/publish_crates.py check "${args[@]}"
+
+      - name: Test broker and libraries
+        run: >-
+          cargo test --locked
+          -p abyss-plugin-protocol -p abyss-storage -p abyss-mitm
+          -p abyss-agent-hook -p abyss-broker
+          -- --skip broker_loads_current_toml_config_with_relative_paths_and_devtools_controls
+
+      - name: Test static configuration in isolation
+        run: >-
+          cargo test --locked -p abyss-broker --test broker_cli_blackbox
+          broker_loads_current_toml_config_with_relative_paths_and_devtools_controls
+          -- --exact
+
+      - name: Lint broker and libraries
+        run: >-
+          cargo clippy --locked --all-targets
+          -p abyss-plugin-protocol -p abyss-storage -p abyss-mitm
+          -p abyss-agent-hook -p abyss-broker -- -D warnings
+
+      - name: Test explicit proxy
+        run: make test-blackbox-broker-explicit
+
+      - name: Verify crates.io packages without uploading
+        run: python3 scripts/ci/publish_crates.py dry-run
+
+  publish:
+    name: Publish broker release
+    if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')
+    needs: verify
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    concurrency:
+      group: crates-io-publish
+      cancel-in-progress: false
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Install Rust
+        run: rustup toolchain install "$RUSTUP_TOOLCHAIN" --profile minimal
+
+      - uses: Swatinem/rust-cache@82a92a6e8fbeee089604da2575dc567ae9ddeaab # v2.7.5
+        with:
+          shared-key: crates-io
+
+      - name: Publish dependencies and broker
+        env:
+          CARGO_REGISTRY_TOKEN: ${{ secrets.CARGO_REGISTRY_TOKEN }}
+          RELEASE_TAG: ${{ github.ref_name }}
+        run: python3 scripts/ci/publish_crates.py publish --tag "$RELEASE_TAG"
+
+      - name: Install the published broker from crates.io
+        env:
+          RELEASE_TAG: ${{ github.ref_name }}
+        run: |
+          version="${RELEASE_TAG#v}"
+          cargo install --locked --registry crates-io --version "=$version" \
+            --root "$RUNNER_TEMP/broker-install" abyss-broker
+          "$RUNNER_TEMP/broker-install/bin/abyss-broker" --help
+          test "$("$RUNNER_TEMP/broker-install/bin/abyss-broker" --version)" = "abyss-broker $version"

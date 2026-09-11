@@ -5,7 +5,11 @@ edition.workspace = true
 authors.workspace = true
 license-file.workspace = true
 repository.workspace = true
-publish = false
+description = "Broker/plugin wire protocol and normalized AI agent events for Abyss"
+readme = "README.md"
+keywords = ["ai", "agent", "protocol", "ipc"]
+categories = ["network-programming"]
+publish = ["crates-io"]
 
 [dependencies]
 chrono = { version = "0.4", features = ["serde"] }

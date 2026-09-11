@@ -566,8 +566,7 @@ fn projected_provider_metadata(metadata: &Value, content: &HarnessUsageContentCo
     // Provider event type lists are a raw structural view and can reveal that
     // a disabled tool or image category was present even after normalized
     // content segments are removed. Keep them only when every normalized
-    // event content category is enabled. Diagnostic captures are independent
-    // of this projection policy.
+    // event content category is enabled.
     if !content.token_usage || !content.conversation_text || !content.tool_calls || !content.images
     {
         object.remove("provider_event_types");

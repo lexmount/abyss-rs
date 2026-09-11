@@ -12,7 +12,7 @@ pub const DEFAULT_API_ENDPOINT: &str = "127.0.0.1:0";
 
 /// Top-level CLI parsed by `clap`.
 #[derive(Debug, Parser)]
-#[command(name = "abyss-broker")]
+#[command(name = "abyss-broker", version)]
 #[command(about = "Run the cross-platform Abyss broker proxy.")]
 pub struct Cli {
     #[arg(

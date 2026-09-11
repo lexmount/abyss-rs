@@ -5,7 +5,11 @@ edition.workspace = true
 authors.workspace = true
 license-file.workspace = true
 repository.workspace = true
-publish = false
+description = "AI agent protocol parsing and normalized events for the Abyss runtime"
+readme = "README.md"
+keywords = ["ai", "agent", "protocol", "observability"]
+categories = ["network-programming", "parsing"]
+publish = ["crates-io"]
 
 [dependencies]
 abyss-mitm.workspace = true
