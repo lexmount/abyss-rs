@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Validate and publish the broker's public dependency closure to crates.io."""
+"""Validate and publish the broker, Rust SDK, and their dependencies to crates.io."""
 
 import argparse
 import json
@@ -13,13 +13,14 @@ from urllib.request import Request, urlopen
 
 
 ROOT = Path(__file__).resolve().parents[2]
-# Dependencies must appear before their consumers. Other workspace crates stay private.
+# Dependencies must appear before their consumers. Other workspace crates remain unpublished.
 PACKAGES = (
     "abyss-plugin-protocol",
     "abyss-storage",
     "abyss-mitm",
     "abyss-agent-hook",
     "abyss-broker",
+    "abyss-sdk",
 )
 
 
@@ -70,14 +71,20 @@ def check_release(tag):
     packaged_fixture = ROOT / "crates/abyss-broker/src/plugin/fixtures/agent-event.json"
     if fixture.read_bytes() != packaged_fixture.read_bytes():
         raise ValueError("broker's packaged AgentEvent fixture must match the public specification")
-    print(f"Validated broker release {version}: {', '.join(PACKAGES)}", flush=True)
+    contract = ROOT / "specs/broker-plugin-protocol/v1"
+    packaged_contract = ROOT / "crates/abyss-sdk/tests/fixtures/broker-plugin-protocol/v1"
+    for source in sorted(contract.rglob("*.json")):
+        relative = source.relative_to(contract)
+        if source.read_bytes() != (packaged_contract / relative).read_bytes():
+            raise ValueError(f"SDK's packaged {relative} must match the public specification")
+    print(f"Validated crates.io release {version}: {', '.join(PACKAGES)}", flush=True)
     return version
 
 
 def published_version(name, version):
     """Only an index 404 means missing; network/auth/server failures stop publication."""
     if name not in PACKAGES:
-        raise ValueError(f"crate is outside the broker release set: {name}")
+        raise ValueError(f"crate is outside the crates.io release set: {name}")
     request = Request(
         f"https://index.crates.io/{name[:2]}/{name[2:4]}/{name}",
         headers={"User-Agent": "abyss-rs-release (https://github.com/lexmount/abyss-rs)"},

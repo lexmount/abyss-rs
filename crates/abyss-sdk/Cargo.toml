@@ -5,7 +5,11 @@ edition.workspace = true
 authors.workspace = true
 license-file.workspace = true
 repository.workspace = true
-publish = false
+description = "Rust SDK for the Abyss broker REST API and plugin event stream"
+readme = "README.md"
+keywords = ["ai", "agent", "sdk", "observability"]
+categories = ["api-bindings", "network-programming"]
+publish = ["crates-io"]
 
 [dependencies]
 abyss-plugin-protocol.workspace = true
