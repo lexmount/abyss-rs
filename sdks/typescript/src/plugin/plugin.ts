@@ -4,14 +4,14 @@ import type { Socket } from "node:net";
 
 import { decodeAgentEvent, type AgentEvent } from "../event.js";
 import {
-  AbyssPluginError,
+  BrokerPluginError,
   HandshakeRejectedError,
   UnexpectedBrokerEofError,
 } from "./errors.js";
 import { readJsonFrames, writeJsonFrame } from "./framing.js";
 import { connectPluginStream, resolvePluginEndpoint } from "./transport.js";
 
-export interface AbyssPluginOptions {
+export interface BrokerPluginOptions {
   consumerId: string;
   endpoint?: string;
 }
@@ -76,11 +76,11 @@ export class PluginConnection implements AsyncIterable<AgentEvent> {
   }
 }
 
-export class AbyssPlugin {
+export class BrokerPlugin {
   readonly #consumerId: string;
   readonly #endpoint: string | undefined;
 
-  constructor(options: AbyssPluginOptions) {
+  constructor(options: BrokerPluginOptions) {
     if (!/^[a-zA-Z0-9._-]{1,128}$/.test(options.consumerId)) {
       throw new TypeError(
         "consumerId must contain 1-128 ASCII letters, digits, dots, underscores, or hyphens",
@@ -111,7 +111,7 @@ export class AbyssPlugin {
       }
       const hello = response.value as Partial<BrokerHello>;
       if (hello.protocol_version !== 1) {
-        throw new AbyssPluginError(
+        throw new BrokerPluginError(
           "broker returned an invalid handshake response",
         );
       }

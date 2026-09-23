@@ -6,7 +6,7 @@ from dataclasses import dataclass
 from typing import Any, Callable, Optional
 
 from ..event import AgentEvent
-from .errors import AbyssPluginError, HandshakeRejectedError, UnexpectedBrokerEofError
+from .errors import BrokerPluginError, HandshakeRejectedError, UnexpectedBrokerEofError
 from .framing import read_json_frame, write_json_frame
 from .transport import PluginTransport, connect_plugin_transport, resolve_plugin_endpoint
 
@@ -45,7 +45,7 @@ class AgentEventStream(Iterator[AgentEvent]):
                 self.close_stream()
                 raise StopIteration
             if not isinstance(frame, Mapping):
-                raise AbyssPluginError("broker Agent event frame must be an object")
+                raise BrokerPluginError("broker Agent event frame must be an object")
             return AgentEvent.from_dict(frame)
         except StopIteration:
             raise
@@ -61,7 +61,7 @@ class AgentEventStream(Iterator[AgentEvent]):
             self._transport.close()
 
 
-class AbyssPlugin:
+class BrokerPlugin:
     """One configured out-of-process consumer of broker Agent events."""
 
     def __init__(self, plugin_id: str, endpoint: Optional[str] = None) -> None:
@@ -89,7 +89,7 @@ class AbyssPlugin:
             if rejection is not None:
                 raise HandshakeRejectedError(rejection.code, rejection.reason)
             if not isinstance(response, Mapping) or response.get("protocol_version") != 1:
-                raise AbyssPluginError("broker returned an invalid handshake response")
+                raise BrokerPluginError("broker returned an invalid handshake response")
             return AgentEventStream(transport)
         except Exception:
             transport.close()

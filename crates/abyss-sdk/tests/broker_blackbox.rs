@@ -7,7 +7,7 @@ use abyss_sdk::{
     broker::{
         BrokerClientError, BrokerLogRequest, HarnessConfig, HarnessMatcherConfig, ProxyLifecycle,
     },
-    plugin::AbyssPlugin,
+    plugin::BrokerPlugin,
 };
 use futures_util::StreamExt as _;
 
@@ -34,7 +34,7 @@ async fn real_broker_supports_rest_and_plugin_sdk() {
             .expect("startup info should advertise api_addr")
     ))
     .expect("public real-broker URL should be accepted");
-    let mut events = AbyssPlugin::new("blackbox.rust-sdk")
+    let mut events = BrokerPlugin::new("blackbox.rust-sdk")
         .connect()
         .await
         .expect("Rust SDK should complete a real broker plugin handshake");

@@ -11,7 +11,7 @@ use abyss_delivery_plugin::{
     DeliveryAuthenticationManager, DeliveryControlServer, DeliveryPluginConfig,
     DeliveryPluginError, EventUploader, WorkerStartupInfoGuard,
 };
-use abyss_sdk::plugin::{AbyssPlugin, AbyssPluginError};
+use abyss_sdk::plugin::{BrokerPlugin, BrokerPluginError};
 use clap::Parser;
 use futures_util::StreamExt as _;
 
@@ -71,7 +71,7 @@ async fn run_worker(
     control: &DeliveryControlServer,
 ) -> Result<(), DeliveryPluginError> {
     let _ = uploader.replay_spool().await?;
-    let mut plugin = AbyssPlugin::new(config.plugin_id);
+    let mut plugin = BrokerPlugin::new(config.plugin_id);
     if let Some(endpoint) = config.broker_endpoint {
         plugin = plugin.with_endpoint(endpoint);
     }
@@ -91,7 +91,9 @@ async fn run_worker(
     while let Some(event) = events.next().await {
         Arc::clone(&uploader).deliver(event?).await?;
     }
-    events.take_close().ok_or(AbyssPluginError::UnexpectedEof)?;
+    events
+        .take_close()
+        .ok_or(BrokerPluginError::UnexpectedEof)?;
     Ok(())
 }
 

@@ -126,5 +126,5 @@ pub enum DeliveryPluginError {
     },
     /// The broker plugin runtime failed.
     #[error(transparent)]
-    Plugin(#[from] abyss_sdk::plugin::AbyssPluginError),
+    Plugin(#[from] abyss_sdk::plugin::BrokerPluginError),
 }

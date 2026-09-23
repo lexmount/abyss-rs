@@ -1,13 +1,13 @@
 /** Typed plugin connection and protocol failures. */
 
-export class AbyssPluginError extends Error {
+export class BrokerPluginError extends Error {
   constructor(message: string, options?: ErrorOptions) {
     super(message, options);
-    this.name = "AbyssPluginError";
+    this.name = "BrokerPluginError";
   }
 }
 
-export class HandshakeRejectedError extends AbyssPluginError {
+export class HandshakeRejectedError extends BrokerPluginError {
   readonly code: number;
   readonly reason: string;
 
@@ -19,7 +19,7 @@ export class HandshakeRejectedError extends AbyssPluginError {
   }
 }
 
-export class UnexpectedBrokerEofError extends AbyssPluginError {
+export class UnexpectedBrokerEofError extends BrokerPluginError {
   constructor() {
     super("broker plugin stream ended without BrokerClose");
     this.name = "UnexpectedBrokerEofError";

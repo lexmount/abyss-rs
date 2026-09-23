@@ -5,7 +5,7 @@ import os
 from pathlib import Path
 
 from abyss_sdk import BrokerApiError, BrokerClient
-from abyss_sdk.plugin import AbyssPlugin
+from abyss_sdk.plugin import BrokerPlugin
 
 
 def main() -> None:
@@ -16,7 +16,7 @@ def main() -> None:
     client = BrokerClient.from_startup_info(startup_info)
     startup = json.loads(Path(startup_info).read_text(encoding="utf-8"))
     unauthenticated = BrokerClient(base_url=f"http://{startup['api_addr']}")
-    events = AbyssPlugin(plugin_id="blackbox.python-sdk").connect()
+    events = BrokerPlugin(plugin_id="blackbox.python-sdk").connect()
 
     assert client.get_health() == {"service": "abyss-broker", "status": "ok"}
     try:

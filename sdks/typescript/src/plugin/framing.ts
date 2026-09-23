@@ -2,7 +2,7 @@
 
 import type { Socket } from "node:net";
 
-import { AbyssPluginError } from "./errors.js";
+import { BrokerPluginError } from "./errors.js";
 
 const FRAME_HEADER_BYTES = 4;
 const MAX_JSON_FRAME_BYTES = 16 * 1024 * 1024;
@@ -13,7 +13,7 @@ export async function writeJsonFrame(
 ): Promise<void> {
   const payload = Buffer.from(JSON.stringify(value), "utf8");
   if (payload.length > MAX_JSON_FRAME_BYTES) {
-    throw new AbyssPluginError(
+    throw new BrokerPluginError(
       `plugin frame payload length ${payload.length} exceeds maximum ${MAX_JSON_FRAME_BYTES}`,
     );
   }
@@ -40,7 +40,7 @@ export async function* readJsonFrames(socket: Socket): AsyncGenerator<unknown> {
     while (buffered.length >= FRAME_HEADER_BYTES) {
       const payloadLength = buffered.readUInt32BE(0);
       if (payloadLength > MAX_JSON_FRAME_BYTES) {
-        throw new AbyssPluginError(
+        throw new BrokerPluginError(
           `plugin frame payload length ${payloadLength} exceeds maximum ${MAX_JSON_FRAME_BYTES}`,
         );
       }
@@ -53,13 +53,13 @@ export async function* readJsonFrames(socket: Socket): AsyncGenerator<unknown> {
       try {
         yield JSON.parse(payload.toString("utf8")) as unknown;
       } catch (error) {
-        throw new AbyssPluginError("decode broker plugin JSON frame", {
+        throw new BrokerPluginError("decode broker plugin JSON frame", {
           cause: error,
         });
       }
     }
   }
   if (buffered.length !== 0) {
-    throw new AbyssPluginError("broker plugin stream ended within a frame");
+    throw new BrokerPluginError("broker plugin stream ended within a frame");
   }
 }

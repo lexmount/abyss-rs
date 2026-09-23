@@ -26,7 +26,7 @@ const STARTUP_INFO_ENV: &str = "ABYSS_BROKER_STARTUP_INFO";
 /// Error returned by the public broker plugin runtime.
 #[derive(Debug, Error)]
 #[non_exhaustive]
-pub enum AbyssPluginError {
+pub enum BrokerPluginError {
     /// No explicit or product-discovered local endpoint was available.
     #[error(
         "broker plugin endpoint is unavailable; configure {PLUGIN_ENDPOINT_ENV}, {STARTUP_INFO_ENV}, or ABYSS_HOME"
@@ -78,7 +78,7 @@ pub enum AbyssPluginError {
     Handler(String),
 }
 
-impl From<super::codec::PluginFrameError> for AbyssPluginError {
+impl From<super::codec::PluginFrameError> for BrokerPluginError {
     fn from(error: super::codec::PluginFrameError) -> Self {
         Self::Frame(error.to_string())
     }
@@ -96,14 +96,14 @@ pub enum StartupInfoError {
 }
 
 /// One configured out-of-process consumer of broker Agent events.
-pub struct AbyssPlugin {
+pub struct BrokerPlugin {
     plugin_id: String,
     endpoint: Option<String>,
 }
 
 /// Stream of typed Agent events received after a successful handshake.
 pub struct AgentEventStream {
-    inner: Pin<Box<dyn Stream<Item = Result<AgentEvent, AbyssPluginError>> + Send>>,
+    inner: Pin<Box<dyn Stream<Item = Result<AgentEvent, BrokerPluginError>> + Send>>,
     close: Arc<Mutex<Option<BrokerClose>>>,
 }
 
@@ -132,7 +132,7 @@ struct EventStreamState {
     terminated: bool,
 }
 
-impl AbyssPlugin {
+impl BrokerPlugin {
     /// Creates a plugin that discovers its endpoint from the product runtime.
     #[must_use]
     pub fn new<T>(plugin_id: T) -> Self
@@ -161,11 +161,11 @@ impl AbyssPlugin {
     ///
     /// Returns an error when endpoint discovery, transport connection, or the
     /// handshake fails.
-    pub async fn connect(self) -> Result<AgentEventStream, AbyssPluginError> {
+    pub async fn connect(self) -> Result<AgentEventStream, BrokerPluginError> {
         let endpoint = self.resolve_endpoint().await?;
         let mut stream = transport::connect(&endpoint)
             .await
-            .map_err(|source| AbyssPluginError::Connect { endpoint, source })?;
+            .map_err(|source| BrokerPluginError::Connect { endpoint, source })?;
         self.handshake(stream.as_mut().get_mut()).await?;
         Ok(AgentEventStream::new(stream))
     }
@@ -176,7 +176,7 @@ impl AbyssPlugin {
     ///
     /// Returns an error when endpoint discovery, transport, protocol handling,
     /// or the supplied event handler fails.
-    pub async fn run<H, F, E>(self, mut handler: H) -> Result<BrokerClose, AbyssPluginError>
+    pub async fn run<H, F, E>(self, mut handler: H) -> Result<BrokerClose, BrokerPluginError>
     where
         H: FnMut(AgentEvent) -> F,
         F: Future<Output = Result<(), E>>,
@@ -186,13 +186,13 @@ impl AbyssPlugin {
         while let Some(event) = events.next().await {
             handler(event?)
                 .await
-                .map_err(|error| AbyssPluginError::Handler(error.to_string()))?;
+                .map_err(|error| BrokerPluginError::Handler(error.to_string()))?;
         }
-        events.take_close().ok_or(AbyssPluginError::UnexpectedEof)
+        events.take_close().ok_or(BrokerPluginError::UnexpectedEof)
     }
 
     #[cfg(test)]
-    async fn connect_stream<S>(self, stream: S) -> Result<AgentEventStream, AbyssPluginError>
+    async fn connect_stream<S>(self, stream: S) -> Result<AgentEventStream, BrokerPluginError>
     where
         S: AsyncRead + AsyncWrite + Send + Unpin + 'static,
     {
@@ -201,30 +201,30 @@ impl AbyssPlugin {
         Ok(AgentEventStream::new(stream))
     }
 
-    async fn handshake<S>(&self, stream: &mut S) -> Result<(), AbyssPluginError>
+    async fn handshake<S>(&self, stream: &mut S) -> Result<(), BrokerPluginError>
     where
         S: AsyncRead + AsyncWrite + Send + Unpin + ?Sized,
     {
         codec::write_json(stream, &PluginHello::new(self.plugin_id.clone())).await?;
         let payload = codec::read_payload(stream)
             .await?
-            .ok_or(AbyssPluginError::UnexpectedEof)?;
+            .ok_or(BrokerPluginError::UnexpectedEof)?;
         let response = serde_json::from_slice::<HandshakeResponse>(&payload).map_err(|source| {
-            AbyssPluginError::Decode {
+            BrokerPluginError::Decode {
                 phase: "handshake response",
                 source,
             }
         })?;
         match response {
             HandshakeResponse::Accepted(_hello) => Ok(()),
-            HandshakeResponse::Rejected(error) => Err(AbyssPluginError::HandshakeRejected {
+            HandshakeResponse::Rejected(error) => Err(BrokerPluginError::HandshakeRejected {
                 code: error.code,
                 reason: error.reason,
             }),
         }
     }
 
-    async fn resolve_endpoint(&self) -> Result<String, AbyssPluginError> {
+    async fn resolve_endpoint(&self) -> Result<String, BrokerPluginError> {
         if let Some(endpoint) = &self.endpoint {
             return Ok(endpoint.clone());
         }
@@ -238,20 +238,20 @@ impl AbyssPlugin {
                     .map(PathBuf::from)
                     .map(|root| root.join("runtime").join("startup-info.json"))
             })
-            .ok_or(AbyssPluginError::MissingEndpoint)?;
+            .ok_or(BrokerPluginError::MissingEndpoint)?;
         Self::read_startup_info(startup_info_path).await
     }
 
-    async fn read_startup_info(path: PathBuf) -> Result<String, AbyssPluginError> {
+    async fn read_startup_info(path: PathBuf) -> Result<String, BrokerPluginError> {
         let body =
             tokio::fs::read(&path)
                 .await
-                .map_err(|source| AbyssPluginError::StartupInfo {
+                .map_err(|source| BrokerPluginError::StartupInfo {
                     path: path.clone(),
                     source: StartupInfoError::Io(source),
                 })?;
         let info = serde_json::from_slice::<StartupInfo>(&body).map_err(|source| {
-            AbyssPluginError::StartupInfo {
+            BrokerPluginError::StartupInfo {
                 path,
                 source: StartupInfoError::Json(source),
             }
@@ -306,21 +306,21 @@ impl AgentEventStream {
 }
 
 impl Stream for AgentEventStream {
-    type Item = Result<AgentEvent, AbyssPluginError>;
+    type Item = Result<AgentEvent, BrokerPluginError>;
 
     fn poll_next(mut self: Pin<&mut Self>, context: &mut Context<'_>) -> Poll<Option<Self::Item>> {
         self.inner.as_mut().poll_next(context)
     }
 }
 
-async fn read_stream_message<S>(stream: &mut S) -> Result<StreamMessage, AbyssPluginError>
+async fn read_stream_message<S>(stream: &mut S) -> Result<StreamMessage, BrokerPluginError>
 where
     S: AsyncRead + Unpin + ?Sized,
 {
     let payload = codec::read_payload(stream)
         .await?
-        .ok_or(AbyssPluginError::UnexpectedEof)?;
-    serde_json::from_slice(&payload).map_err(|source| AbyssPluginError::Decode {
+        .ok_or(BrokerPluginError::UnexpectedEof)?;
+    serde_json::from_slice(&payload).map_err(|source| BrokerPluginError::Decode {
         phase: "event stream frame",
         source,
     })
@@ -335,7 +335,7 @@ mod tests {
     use futures_util::StreamExt as _;
     use tokio::io::duplex;
 
-    use super::AbyssPlugin;
+    use super::BrokerPlugin;
     use crate::plugin::codec::{read_payload, write_json};
 
     #[tokio::test]
@@ -361,7 +361,7 @@ mod tests {
             .await
             .expect("BrokerClose should write");
         });
-        let plugin = AbyssPlugin::new("sdk-test-plugin");
+        let plugin = BrokerPlugin::new("sdk-test-plugin");
 
         let mut events = plugin
             .connect_stream(client)

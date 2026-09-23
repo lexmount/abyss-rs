@@ -11,8 +11,8 @@ print(broker.get_proxy_status())
 ```
 
 ```python
-from abyss_sdk.plugin import AbyssPlugin, AgentEvent
+from abyss_sdk.plugin import BrokerPlugin, AgentEvent
 
-plugin = AbyssPlugin(plugin_id="company.security-exporter")
+plugin = BrokerPlugin(plugin_id="company.security-exporter")
 plugin.run(lambda event: print(event.event_id))
 ```

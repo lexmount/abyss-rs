@@ -11,9 +11,9 @@ console.log(await broker.getProxyStatus());
 ```
 
 ```typescript
-import { AbyssPlugin, type AgentEvent } from "@lexmount/abyss-sdk/plugin";
+import { BrokerPlugin, type AgentEvent } from "@lexmount/abyss-sdk/plugin";
 
-await new AbyssPlugin({ consumerId: "company.security-exporter" }).run(
+await new BrokerPlugin({ consumerId: "company.security-exporter" }).run(
   async (event: AgentEvent) => {
     console.log(event.event_id);
   },

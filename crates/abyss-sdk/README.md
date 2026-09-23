@@ -14,10 +14,10 @@ println!("{:?}", status.lifecycle);
 ```
 
 ```rust,no_run
-use abyss_sdk::plugin::AbyssPlugin;
+use abyss_sdk::plugin::BrokerPlugin;
 
 # async fn example() -> Result<(), Box<dyn std::error::Error>> {
-let close = AbyssPlugin::new("company.security-exporter")
+let close = BrokerPlugin::new("company.security-exporter")
     .run(|event| async move {
         println!("{}", event.event_id);
         Ok::<(), std::convert::Infallible>(())

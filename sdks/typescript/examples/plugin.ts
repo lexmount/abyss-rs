@@ -1,6 +1,6 @@
-import { AbyssPlugin } from "@lexmount/abyss-sdk/plugin";
+import { BrokerPlugin } from "@lexmount/abyss-sdk/plugin";
 
-const close = await new AbyssPlugin({ consumerId: "example.typescript" }).run(
+const close = await new BrokerPlugin({ consumerId: "example.typescript" }).run(
   async (event) => {
     process.stdout.write(`${event.event_id}\n`);
   },

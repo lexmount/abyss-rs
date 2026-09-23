@@ -6,7 +6,7 @@ import socket
 from pathlib import Path
 from typing import Optional, Protocol
 
-from .errors import AbyssPluginError
+from .errors import BrokerPluginError
 
 
 class PluginTransport(Protocol):
@@ -49,17 +49,17 @@ def resolve_plugin_endpoint(explicit: Optional[str] = None) -> str:
         if abyss_home:
             startup_info = str(Path(abyss_home) / "runtime" / "startup-info.json")
     if not startup_info:
-        raise AbyssPluginError(
+        raise BrokerPluginError(
             "broker plugin endpoint is unavailable; configure "
             "ABYSS_BROKER_PLUGIN_ENDPOINT, ABYSS_BROKER_STARTUP_INFO, or ABYSS_HOME"
         )
     try:
         parsed = json.loads(Path(startup_info).read_text(encoding="utf-8"))
     except (OSError, json.JSONDecodeError) as error:
-        raise AbyssPluginError(f"read broker startup info {startup_info}") from error
+        raise BrokerPluginError(f"read broker startup info {startup_info}") from error
     endpoint = parsed.get("plugin_endpoint") if isinstance(parsed, dict) else None
     if not isinstance(endpoint, str) or not endpoint:
-        raise AbyssPluginError("broker startup info has no plugin_endpoint")
+        raise BrokerPluginError("broker startup info has no plugin_endpoint")
     return endpoint
 
 
@@ -73,7 +73,7 @@ def connect_plugin_transport(endpoint: str) -> PluginTransport:
         stream.connect(endpoint)
         return SocketTransport(stream)
     except OSError as error:
-        raise AbyssPluginError(f"connect to broker plugin endpoint {endpoint}") from error
+        raise BrokerPluginError(f"connect to broker plugin endpoint {endpoint}") from error
 
 
 if os.name == "nt":

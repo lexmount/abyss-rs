@@ -11,9 +11,9 @@ export type {
   ToolResult,
 } from "../event.js";
 export {
-  AbyssPluginError,
+  BrokerPluginError,
   HandshakeRejectedError,
   UnexpectedBrokerEofError,
 } from "./errors.js";
-export { AbyssPlugin, PluginConnection } from "./plugin.js";
-export type { AbyssPluginOptions, BrokerClose } from "./plugin.js";
+export { BrokerPlugin, PluginConnection } from "./plugin.js";
+export type { BrokerPluginOptions, BrokerClose } from "./plugin.js";

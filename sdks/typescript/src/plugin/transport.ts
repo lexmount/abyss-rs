@@ -4,7 +4,7 @@ import { readFile } from "node:fs/promises";
 import { connect as connectSocket, type Socket } from "node:net";
 import { join } from "node:path";
 
-import { AbyssPluginError } from "./errors.js";
+import { BrokerPluginError } from "./errors.js";
 
 interface StartupInfo {
   plugin_endpoint: string;
@@ -26,7 +26,7 @@ export async function resolvePluginEndpoint(
       ? join(process.env.ABYSS_HOME, "runtime", "startup-info.json")
       : undefined);
   if (startupInfo === undefined) {
-    throw new AbyssPluginError(
+    throw new BrokerPluginError(
       "broker plugin endpoint is unavailable; configure ABYSS_BROKER_PLUGIN_ENDPOINT, ABYSS_BROKER_STARTUP_INFO, or ABYSS_HOME",
     );
   }
@@ -34,7 +34,7 @@ export async function resolvePluginEndpoint(
   try {
     parsed = JSON.parse(await readFile(startupInfo, "utf8")) as StartupInfo;
   } catch (error) {
-    throw new AbyssPluginError(`read broker startup info ${startupInfo}`, {
+    throw new BrokerPluginError(`read broker startup info ${startupInfo}`, {
       cause: error,
     });
   }
@@ -42,7 +42,7 @@ export async function resolvePluginEndpoint(
     typeof parsed.plugin_endpoint !== "string" ||
     parsed.plugin_endpoint.length === 0
   ) {
-    throw new AbyssPluginError("broker startup info has no plugin_endpoint");
+    throw new BrokerPluginError("broker startup info has no plugin_endpoint");
   }
   return parsed.plugin_endpoint;
 }
@@ -53,7 +53,7 @@ export async function connectPluginStream(endpoint: string): Promise<Socket> {
     const onError = (error: Error): void => {
       socket.destroy();
       reject(
-        new AbyssPluginError(`connect to broker plugin endpoint ${endpoint}`, {
+        new BrokerPluginError(`connect to broker plugin endpoint ${endpoint}`, {
           cause: error,
         }),
       );
