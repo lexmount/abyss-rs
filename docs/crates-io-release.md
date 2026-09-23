@@ -1,21 +1,24 @@
-# Publishing the broker to crates.io
+# Publishing the broker and Rust SDK to crates.io
 
-The public release consists of five crates, published in dependency order:
+The public release consists of six crates, published in dependency order:
 
 1. `abyss-plugin-protocol`
 2. `abyss-storage`
 3. `abyss-mitm`
 4. `abyss-agent-hook`
 5. `abyss-broker`
+6. `abyss-sdk`
 
-Each has a crates.io page. Users install one command with
-`cargo install --locked abyss-broker`; Cargo compiles the four libraries as
-dependencies. Other workspace crates retain `publish = false`.
+Users install the broker with `cargo install --locked abyss-broker`; Cargo
+compiles its four supporting libraries as dependencies. Rust integrations add
+the SDK with `cargo add abyss-sdk`; the SDK depends on `abyss-plugin-protocol`
+and communicates with a separately running broker. Other workspace crates
+retain `publish = false`.
 
 ## One-time setup
 
 Log in to crates.io with the publishing owner's account and verify its email.
-Create an API token with permission to publish all five names, including their
+Create an API token with permission to publish all six names, including their
 initial creation. Add it to this GitHub repository under **Settings → Secrets
 and variables → Actions → Repository secrets**, named:
 
@@ -28,8 +31,11 @@ standard environment variable. It does not need `cargo login`. Pull requests
 and manually dispatched runs only validate and never upload.
 
 After the first release, add the intended maintainers or GitHub team as owners
-of **all five crates**. A token's account must be an owner, directly or through
+of **all six crates**. A token's account must be an owner, directly or through
 an authorized team, to publish subsequent versions.
+
+If an existing token is restricted to the original five crate names, extend its
+scope to include `abyss-sdk` and permit its initial creation before releasing.
 
 ## Prepare and release a version
 
@@ -38,11 +44,14 @@ pins Rust 1.98.0 and Python 3.12. Cargo's multi-package dry run validates the
 complete dependency closure even before the supporting crates exist on crates.io.
 
 1. Update `workspace.package.version` in the root `Cargo.toml` and the versions
-   of its four publishable workspace dependencies together. Keep the lockfile
-   current. The initial prepared version is `1.0.0`.
+   of its five publishable workspace dependencies together. Keep the lockfile
+   current.
 2. Update crate READMEs as needed. If the public AgentEvent fixture changes, copy
    it to `crates/abyss-broker/src/plugin/fixtures/agent-event.json`; the release check
-   verifies that they match so packaged tests remain self-contained.
+   verifies that they match so packaged tests remain self-contained. Also copy
+   the protocol's JSON schemas and fixtures into
+   `crates/abyss-sdk/tests/fixtures/broker-plugin-protocol/v1/`; the same check
+   rejects SDK copies that differ from the public specification.
 3. Validate locally:
 
    ```bash
@@ -53,7 +62,7 @@ complete dependency closure even before the supporting crates exist on crates.io
    ```
 
    Replace `v1.0.0` with the intended release tag. `--allow-dirty` is only for a
-   local dry run before committing. The workflow also tests and lints the five
+   local dry run before committing. The workflow also tests and lints the six
    crates and runs the explicit proxy black-box test before packaging.
 4. Commit and merge the release changes into `main`, and wait for the Rust and
    package validation workflows to pass. Existing Rust CI covers Linux, macOS,
@@ -65,9 +74,9 @@ complete dependency closure even before the supporting crates exist on crates.io
    git push origin v1.0.0
    ```
 
-The `Publish broker to crates.io` workflow runs for `v*` tag pushes. It rejects
+The `Publish broker and SDK to crates.io` workflow runs for `v*` tag pushes. It rejects
 tags that do not exactly match `v<workspace.package.version>`, validates all
-packages, then publishes the five crates. Cargo waits for each uploaded version
+packages, then publishes the six crates. Cargo waits for each uploaded version
 to appear in the index before publishing its dependents. Finally, the workflow
 installs the exact broker version from crates.io into a temporary directory and
 checks `--help` and `--version`.

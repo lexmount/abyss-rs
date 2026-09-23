@@ -1,4 +1,4 @@
-name: Publish broker to crates.io
+name: Publish broker and SDK to crates.io
 
 on:
   push:
@@ -20,7 +20,7 @@ env:
 
 jobs:
   verify:
-    name: Verify broker release
+    name: Verify broker and SDK release
     runs-on: ubuntu-latest
     timeout-minutes: 45
     steps:
@@ -51,11 +51,11 @@ jobs:
           fi
           python3 scripts/ci/publish_crates.py check "${args[@]}"
 
-      - name: Test broker and libraries
+      - name: Test broker, SDK, and libraries
         run: >-
           cargo test --locked
           -p abyss-plugin-protocol -p abyss-storage -p abyss-mitm
-          -p abyss-agent-hook -p abyss-broker
+          -p abyss-agent-hook -p abyss-broker -p abyss-sdk
           -- --skip broker_loads_current_toml_config_with_relative_paths_and_devtools_controls
 
       - name: Test static configuration in isolation
@@ -64,11 +64,11 @@ jobs:
           broker_loads_current_toml_config_with_relative_paths_and_devtools_controls
           -- --exact
 
-      - name: Lint broker and libraries
+      - name: Lint broker, SDK, and libraries
         run: >-
           cargo clippy --locked --all-targets
           -p abyss-plugin-protocol -p abyss-storage -p abyss-mitm
-          -p abyss-agent-hook -p abyss-broker -- -D warnings
+          -p abyss-agent-hook -p abyss-broker -p abyss-sdk -- -D warnings
 
       - name: Test explicit proxy
         run: make test-blackbox-broker-explicit
@@ -77,7 +77,7 @@ jobs:
         run: python3 scripts/ci/publish_crates.py dry-run
 
   publish:
-    name: Publish broker release
+    name: Publish broker and SDK release
     if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')
     needs: verify
     runs-on: ubuntu-latest
@@ -99,7 +99,7 @@ jobs:
         with:
           shared-key: crates-io
 
-      - name: Publish dependencies and broker
+      - name: Publish dependencies, broker, and SDK
         env:
           CARGO_REGISTRY_TOKEN: ${{ secrets.CARGO_REGISTRY_TOKEN }}
           RELEASE_TAG: ${{ github.ref_name }}

@@ -348,7 +348,7 @@ mod tests {
                 .await
                 .expect("BrokerHello should write");
             let event: AgentEvent = serde_json::from_str(include_str!(
-                "../../../../specs/broker-plugin-protocol/v1/fixtures/agent-event.json"
+                "../../tests/fixtures/broker-plugin-protocol/v1/fixtures/agent-event.json"
             ))
             .expect("published AgentEvent fixture should decode");
             write_json(&mut server, &event)

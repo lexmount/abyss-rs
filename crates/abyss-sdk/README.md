@@ -2,6 +2,16 @@
 
 Rust SDK for the local `abyss-broker` REST API and plugin event stream.
 
+Add the published SDK to your project:
+
+```bash
+cargo add abyss-sdk
+```
+
+The broker runs as a separate process. The SDK provides local REST management
+and plugin event consumption; it does not handle remote event upload or
+control-plane authentication.
+
 ```rust,no_run
 use abyss_sdk::BrokerClient;
 

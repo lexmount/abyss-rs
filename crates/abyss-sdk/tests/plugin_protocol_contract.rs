@@ -20,7 +20,7 @@ impl PublishedContract {
     fn load() -> Self {
         Self {
             root: PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-                .join("../../specs/broker-plugin-protocol/v1"),
+                .join("tests/fixtures/broker-plugin-protocol/v1"),
         }
     }
 

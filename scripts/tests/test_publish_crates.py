@@ -23,10 +23,13 @@ def sample_metadata():
             "id": name, "name": name, "version": "1.0.0", "publish": ["crates-io"],
             "description": "A public component", "readme": "README.md", "dependencies": [],
         })
-    packages[-1]["dependencies"] = [{
-        "name": "abyss-agent-hook", "kind": None,
-        "path": "/workspace/crates/abyss-agent-hook", "req": "^1.0.0", "source": None,
-    }]
+    dependencies = {"abyss-broker": "abyss-agent-hook", "abyss-sdk": "abyss-plugin-protocol"}
+    for package in packages:
+        if dependency := dependencies.get(package["name"]):
+            package["dependencies"] = [{
+                "name": dependency, "kind": None,
+                "path": f"/workspace/crates/{dependency}", "req": "^1.0.0", "source": None,
+            }]
     packages.append({"id": "abyss-cli", "name": "abyss-cli", "publish": []})
     return {"packages": packages, "workspace_members": [p["id"] for p in packages]}
 
@@ -39,7 +42,7 @@ class ReleaseValidationTests(unittest.TestCase):
     def validate(self, tag="v1.0.0"):
         return release.validate_release(self.workspace, self.metadata, tag)
 
-    def test_accepts_complete_broker_release(self):
+    def test_accepts_complete_broker_and_sdk_release(self):
         self.assertEqual(self.validate(), "1.0.0")
         self.assertEqual(self.validate(tag=None), "1.0.0")
 
@@ -116,13 +119,23 @@ class PublicationTests(unittest.TestCase):
 
     @patch.object(release.subprocess, "run")
     @patch.object(release.subprocess, "check_output", return_value=b"")
-    @patch.object(release, "published_version", side_effect=[True, True, False, False, False])
+    @patch.object(release, "published_version", side_effect=lambda name, _version: name in release.PACKAGES[:2])
     def test_partial_release_resumes_in_dependency_order(self, _index, _git, run):
         release.publish_release("1.0.0")
         self.assertEqual([call.args[0][-1] for call in run.call_args_list], list(release.PACKAGES[2:]))
         for call in run.call_args_list:
             self.assertNotIn("test-token", call.args[0])
             self.assertNotIn("--no-verify", call.args[0])
+
+    @patch.object(release.subprocess, "run")
+    @patch.object(release.subprocess, "check_output", return_value=b"")
+    @patch.object(release, "published_version", side_effect=lambda name, _version: name != "abyss-sdk")
+    def test_only_publishes_sdk_when_other_crates_already_exist(self, _index, _git, run):
+        release.publish_release("1.0.0")
+        run.assert_called_once_with(
+            ["cargo", "publish", "--locked", "--registry", "crates-io", "--package", "abyss-sdk"],
+            cwd=release.ROOT, check=True,
+        )
 
     @patch.object(release.subprocess, "run", side_effect=subprocess.CalledProcessError(101, "cargo"))
     @patch.object(release.subprocess, "check_output", return_value=b"")
