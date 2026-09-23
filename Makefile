@@ -46,11 +46,16 @@ test-blackbox-broker-config-api:
 test-blackbox-macos-ca:
 	bash scripts/blackbox_macos_ca_management.sh
 
-.PHONY: test-local test-local-contract test-blackbox-local
+.PHONY: test-local test-local-contract test-blackbox-local test-install-cli
 test-local: test-local-contract test-blackbox-local
 
 test-local-contract:
 	python3 scripts/tests/test_local_environment_contract.py
+	$(MAKE) test-install-cli
+
+test-install-cli:
+	bash -n scripts/install-cli.sh
+	python3 scripts/tests/test_install_cli.py
 
 test-blackbox-local:
 	bash scripts/tests/blackbox_local_environment.sh

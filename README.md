@@ -27,21 +27,36 @@ the GitHub Actions publication workflow.
 ### Complete local environment from source
 
 The local environment supports Linux x86_64 and macOS ARM64 without Docker.
-Clone the repository and build the CLI runtime from source:
+Install the Rust stable toolchain and a native C/C++ build toolchain first
+(Xcode Command Line Tools on macOS; on Linux, also install CMake and pkg-config).
+Clone the repository and build and install the complete CLI runtime:
 
 ```bash
 git clone https://github.com/lexmount/abyss-rs.git
 cd abyss-rs
-cargo build --release --locked \
-  --package abyss-cli \
-  --package abyss-broker \
-  --package abyss-delivery-plugin
-export PATH="$PWD/target/release:$PATH"
+bash scripts/install-cli.sh
+abyss version
+abyss --help
 ```
 
-Linux additionally requires the broker systemd integration described in
-[`platform/linux/README.md`](platform/linux/README.md). With Node.js 22 or newer
-and npm 10 or newer installed, deploy the SQLite+FTS backend and dashboard:
+The script builds `abyss`, `abyss-broker`, and `abyss-delivery-plugin` together
+with `cargo build --release --locked`, checks that all three programs run, and
+installs them into `/usr/local/bin`. Run it as your normal user; it requests
+`sudo` only for installation when needed. Linux requires a running systemd and
+also installs the broker service template and reloads systemd. See the
+[Linux integration notes](platform/linux/README.md) for its user-home layout.
+
+Use `bash scripts/install-cli.sh --prefix "$HOME/.local"` for a user-writable
+macOS installation, or another absolute prefix on either platform. Add the
+printed `PREFIX/bin` directory to `PATH` if needed. Keep all three binaries
+together because the CLI discovers its delivery worker, and its macOS broker,
+beside its own executable. Stop the local environment before rerunning the
+script to upgrade it. The script supports `CARGO_TARGET_DIR` and stages packages
+under `DESTDIR` without reloading systemd when that variable is set.
+
+Installation prepares the executables and Linux service template. Configuration,
+CA trust, backend, and dashboard setup happen when you start the runtime. With
+Node.js 22 or newer and npm 10 or newer installed, run:
 
 ```bash
 abyss deploy-local start

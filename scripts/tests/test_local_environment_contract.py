@@ -17,7 +17,9 @@ class LocalEnvironmentContractTests(unittest.TestCase):
         config = (DEPLOY_LOCAL / "config.rs").read_text(encoding="utf-8")
         artifacts = (DEPLOY_LOCAL / "artifacts.rs").read_text(encoding="utf-8")
 
-        self.assertIn("https://github.com/lexmount/abyss-backend/releases/download", artifacts)
+        self.assertIn(
+            "https://github.com/lexmount/abyss-backend/releases/download", artifacts
+        )
         self.assertRegex(config, r'BACKEND_VERSION: &str = "[0-9]+\.[0-9]+\.[0-9]+"')
         self.assertRegex(
             config,
@@ -28,12 +30,9 @@ class LocalEnvironmentContractTests(unittest.TestCase):
     def test_readme_builds_the_original_cli_runtime_from_source(self) -> None:
         source = README.read_text(encoding="utf-8")
 
-        self.assertFalse((REPO_ROOT / "scripts" / "install-local.sh").exists())
         self.assertIn("git clone https://github.com/lexmount/abyss-rs.git", source)
+        self.assertIn("bash scripts/install-cli.sh", source)
         self.assertIn("cargo build --release --locked", source)
-        for package in ("abyss-cli", "abyss-broker", "abyss-delivery-plugin"):
-            self.assertIn(f"--package {package}", source)
-        self.assertNotIn("scripts/install-local.sh", source)
 
     def test_cli_owns_loopback_ports_and_private_credentials(self) -> None:
         source = (DEPLOY_LOCAL / "mod.rs").read_text(encoding="utf-8")
