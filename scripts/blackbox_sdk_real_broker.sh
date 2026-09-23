@@ -177,7 +177,8 @@ run_sdk_case() {
   wait_for_broker "${startup_info}"
 
   echo "Running ${language} SDK against real abyss-broker pid ${CURRENT_BROKER_PID}"
-  ABYSS_BROKER_STARTUP_INFO="${startup_info}" "$@"
+  ABYSS_BROKER_PLUGIN_ENDPOINT="${case_dir}/wrong-plugin.sock" \
+    ABYSS_BROKER_STARTUP_INFO="${startup_info}" "$@"
 
   local attempt=1
   while [[ "${attempt}" -le 100 ]]; do

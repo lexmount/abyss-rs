@@ -4,17 +4,12 @@ import type { Socket } from "node:net";
 
 import { decodeAgentEvent, type AgentEvent } from "../event.js";
 import {
-  AbyssPluginError,
+  BrokerPluginError,
   HandshakeRejectedError,
   UnexpectedBrokerEofError,
 } from "./errors.js";
 import { readJsonFrames, writeJsonFrame } from "./framing.js";
-import { connectPluginStream, resolvePluginEndpoint } from "./transport.js";
-
-export interface AbyssPluginOptions {
-  consumerId: string;
-  endpoint?: string;
-}
+import { connectPluginStream } from "./transport.js";
 
 export interface BrokerClose {
   code: number;
@@ -76,28 +71,28 @@ export class PluginConnection implements AsyncIterable<AgentEvent> {
   }
 }
 
-export class AbyssPlugin {
-  readonly #consumerId: string;
-  readonly #endpoint: string | undefined;
+export class BrokerPlugin {
+  readonly #pluginId: string;
+  readonly #endpoint: string;
 
-  constructor(options: AbyssPluginOptions) {
-    if (!/^[a-zA-Z0-9._-]{1,128}$/.test(options.consumerId)) {
+  /** @internal Create consumers through BrokerClient.plugin(). */
+  constructor(pluginId: string, endpoint: string) {
+    if (!/^[a-zA-Z0-9._-]{1,128}$/.test(pluginId)) {
       throw new TypeError(
-        "consumerId must contain 1-128 ASCII letters, digits, dots, underscores, or hyphens",
+        "pluginId must contain 1-128 ASCII letters, digits, dots, underscores, or hyphens",
       );
     }
-    this.#consumerId = options.consumerId;
-    this.#endpoint = options.endpoint;
+    this.#pluginId = pluginId;
+    this.#endpoint = endpoint;
   }
 
   async connect(): Promise<PluginConnection> {
-    const endpoint = await resolvePluginEndpoint(this.#endpoint);
-    const socket = await connectPluginStream(endpoint);
+    const socket = await connectPluginStream(this.#endpoint);
     const frames = readJsonFrames(socket)[Symbol.asyncIterator]();
     try {
       await writeJsonFrame(socket, {
         protocol_version: 1,
-        plugin_id: this.#consumerId,
+        plugin_id: this.#pluginId,
       });
       const response = await frames.next();
       if (response.done) {
@@ -111,7 +106,7 @@ export class AbyssPlugin {
       }
       const hello = response.value as Partial<BrokerHello>;
       if (hello.protocol_version !== 1) {
-        throw new AbyssPluginError(
+        throw new BrokerPluginError(
           "broker returned an invalid handshake response",
         );
       }

@@ -1,12 +1,17 @@
-"""Minimal synchronous broker plugin."""
+"""Consume broker events using one startup information file."""
 
-from abyss_sdk.plugin import AbyssPlugin
+import argparse
+
+from abyss_sdk import BrokerClient
 
 
 def main() -> None:
-    plugin = AbyssPlugin(plugin_id="example.python")
-    close = plugin.run(lambda event: print(event.event_id))
-    print(f"broker closed plugin stream: {close.code} {close.reason}")
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("startup_info", help="Broker startup-info.json path")
+    args = parser.parse_args()
+    broker = BrokerClient.from_startup_info(args.startup_info)
+    close = broker.plugin("example.python").run(lambda event: print(event.event_id))
+    print("Broker closed:", close.code, close.reason)
 
 
 if __name__ == "__main__":

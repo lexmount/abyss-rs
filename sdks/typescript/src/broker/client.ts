@@ -3,6 +3,8 @@
 import { readFile } from "node:fs/promises";
 import { isIP } from "node:net";
 
+import { BrokerPlugin } from "../plugin/plugin.js";
+
 import type {
   BrokerLogRequest,
   BrokerLogResponse,
@@ -20,6 +22,7 @@ const MAX_ERROR_BODY_CHARS = 16 * 1024;
 
 export interface BrokerClientOptions {
   baseUrl: string;
+  pluginEndpoint: string;
   bearerToken?: string;
   timeoutMs?: number;
 }
@@ -27,6 +30,7 @@ export interface BrokerClientOptions {
 interface StartupInfo {
   api_addr: string;
   auth_token_file: string;
+  plugin_endpoint: string;
 }
 
 export class BrokerApiError extends Error {
@@ -41,11 +45,22 @@ export class BrokerApiError extends Error {
 
 export class BrokerClient {
   readonly #baseUrl: URL;
+  readonly #pluginEndpoint: string;
   readonly #bearerToken: string | undefined;
   readonly #timeoutMs: number;
 
   constructor(options: BrokerClientOptions) {
     this.#baseUrl = normalizedBaseUrl(options.baseUrl);
+    if (
+      typeof options.pluginEndpoint !== "string" ||
+      options.pluginEndpoint.trim().length === 0 ||
+      options.pluginEndpoint.includes("\0")
+    ) {
+      throw new TypeError(
+        "pluginEndpoint must be non-empty and contain no NUL bytes",
+      );
+    }
+    this.#pluginEndpoint = options.pluginEndpoint;
     this.#bearerToken = options.bearerToken;
     this.#timeoutMs = options.timeoutMs ?? DEFAULT_TIMEOUT_MS;
     if (!Number.isSafeInteger(this.#timeoutMs) || this.#timeoutMs <= 0) {
@@ -53,19 +68,24 @@ export class BrokerClient {
     }
   }
 
+  /** Create an independent event consumer without connecting or rediscovering endpoints. */
+  plugin(pluginId: string): BrokerPlugin {
+    return new BrokerPlugin(pluginId, this.#pluginEndpoint);
+  }
+
   static async fromStartupInfo(path: string): Promise<BrokerClient> {
     const startup = JSON.parse(await readFile(path, "utf8")) as StartupInfo;
     if (
       typeof startup.api_addr !== "string" ||
-      typeof startup.auth_token_file !== "string"
+      typeof startup.auth_token_file !== "string" ||
+      typeof startup.plugin_endpoint !== "string"
     ) {
-      throw new TypeError(
-        "broker startup info is missing REST discovery fields",
-      );
+      throw new TypeError("broker startup info is missing connection fields");
     }
     const token = (await readFile(startup.auth_token_file, "utf8")).trim();
     return new BrokerClient({
       baseUrl: `http://${startup.api_addr}`,
+      pluginEndpoint: startup.plugin_endpoint,
       bearerToken: token,
     });
   }

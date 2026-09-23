@@ -47,7 +47,7 @@ class BrokerClientContractTests(unittest.TestCase):
                 self.subTest(base_url=base_url),
                 self.assertRaisesRegex(ValueError, "HTTP and a loopback host"),
             ):
-                BrokerClient(base_url=base_url)
+                BrokerClient(base_url=base_url, plugin_endpoint="/tmp/broker.sock")
 
 
 if __name__ == "__main__":

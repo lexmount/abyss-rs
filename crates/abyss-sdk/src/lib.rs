@@ -5,8 +5,8 @@
 
 //! Public Rust contracts for integrating with `abyss-broker`.
 //!
-//! The SDK exposes two independent local integration surfaces: the broker REST
-//! management API and the versioned plugin event stream. It never handles
+//! A single `BrokerClient` owns the REST and plugin endpoints for one broker.
+//! It provides management APIs and creates `plugin::BrokerPlugin` event consumers. It never handles
 //! control-plane APIs, event upload, or remote authentication.
 
 pub mod broker;

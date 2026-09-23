@@ -9,7 +9,7 @@ pub use abyss_plugin_protocol::event::{
     AgentContext, AgentEvent, AgentEventSide, DeviceContext, ImageAttachment, ImageMediaType,
     LlmContext, LlmProvider, TokenUsage, ToolCall, ToolResult,
 };
-pub use client::{AbyssPlugin, AbyssPluginError, AgentEventStream};
+pub use client::{AgentEventStream, BrokerPlugin, BrokerPluginError};
 pub use protocol::{
     BrokerClose, BrokerCloseCode, BrokerError, BrokerErrorCode, BrokerHello, PluginHello,
     PluginProtocolVersion,

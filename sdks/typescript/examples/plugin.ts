@@ -1,11 +1,13 @@
-import { AbyssPlugin } from "@lexmount/abyss-sdk/plugin";
+import { BrokerClient } from "@lexmount/abyss-sdk";
 
-const close = await new AbyssPlugin({ consumerId: "example.typescript" }).run(
-  async (event) => {
-    process.stdout.write(`${event.event_id}\n`);
-  },
-);
-
-process.stderr.write(
-  `broker closed plugin stream: ${close.code} ${close.reason}\n`,
-);
+const startupInfo = process.argv[2];
+if (!startupInfo) {
+  throw new Error(
+    "Pass the broker startup-info.json path as the first argument",
+  );
+}
+const broker = await BrokerClient.fromStartupInfo(startupInfo);
+const close = await broker.plugin("example.typescript").run(async (event) => {
+  console.log(event.event_id, event.agent.name, event.side);
+});
+console.log("Broker closed:", close.code, close.reason);

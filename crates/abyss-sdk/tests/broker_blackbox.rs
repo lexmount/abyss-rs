@@ -7,7 +7,7 @@ use abyss_sdk::{
     broker::{
         BrokerClientError, BrokerLogRequest, HarnessConfig, HarnessMatcherConfig, ProxyLifecycle,
     },
-    plugin::AbyssPlugin,
+    plugin::AgentEventStream,
 };
 use futures_util::StreamExt as _;
 
@@ -27,17 +27,27 @@ async fn real_broker_supports_rest_and_plugin_sdk() {
             .expect("startup info should remain readable"),
     )
     .expect("startup info should remain valid JSON");
-    let unauthenticated = BrokerClient::new(&format!(
-        "http://{}",
-        startup_json["api_addr"]
+    let unauthenticated = BrokerClient::new(
+        &format!(
+            "http://{}",
+            startup_json["api_addr"].as_str().expect("API address")
+        ),
+        startup_json["plugin_endpoint"]
             .as_str()
-            .expect("startup info should advertise api_addr")
-    ))
-    .expect("public real-broker URL should be accepted");
-    let mut events = AbyssPlugin::new("blackbox.rust-sdk")
+            .expect("plugin endpoint"),
+    )
+    .expect("real broker endpoints should be accepted");
+    let events = client
+        .plugin("blackbox.rust-sdk")
         .connect()
         .await
         .expect("Rust SDK should complete a real broker plugin handshake");
+
+    let manual_events = unauthenticated
+        .plugin("blackbox.rust-manual")
+        .connect()
+        .await
+        .expect("manual client should use its configured plugin endpoint");
 
     let health = client.health().await.expect("health should succeed");
     assert_eq!(health.service, "abyss-broker");
@@ -104,9 +114,20 @@ async fn real_broker_supports_rest_and_plugin_sdk() {
 
     let stopped = client.shutdown().await.expect("broker should shut down");
     assert!(matches!(stopped.lifecycle, ProxyLifecycle::Stopped));
-    assert!(events.next().await.is_none());
+    assert_shutdown_close(events).await;
+    assert_shutdown_close(manual_events).await;
+}
+
+async fn assert_shutdown_close(mut events: AgentEventStream) {
+    assert!(
+        events.next().await.is_none(),
+        "shutdown must end the stream"
+    );
     let close = events
         .take_close()
         .expect("real broker should send a deliberate close frame");
-    assert_eq!(close.code, 100_u32);
+    assert_eq!(
+        close.code, 100_u32,
+        "broker must signal an orderly shutdown"
+    );
 }

@@ -1,10 +1,12 @@
-//! Async HTTP implementation of the broker REST management contract.
+//! Broker connection configuration, REST management, and plugin creation.
 
 use std::{path::Path, time::Duration};
 
 use reqwest::{Method, RequestBuilder, Url};
 use serde::{Deserialize, Serialize, de::DeserializeOwned};
 use serde_json::Value;
+
+use crate::plugin::BrokerPlugin;
 
 use super::{
     error::BrokerClientError,
@@ -17,9 +19,10 @@ use super::{
 const DEFAULT_REQUEST_TIMEOUT: Duration = Duration::from_secs(10);
 const MAX_ERROR_BODY_BYTES: usize = 16 * 1024;
 
-/// Async client for the loopback `abyss-broker` REST API.
+/// Client for one broker's REST API and local plugin event stream.
 pub struct BrokerClient {
     base_url: Url,
+    plugin_endpoint: String,
     bearer_token: Option<String>,
     http: reqwest::Client,
 }
@@ -28,6 +31,7 @@ pub struct BrokerClient {
 struct StartupInfo {
     api_addr: String,
     auth_token_file: String,
+    plugin_endpoint: String,
 }
 
 #[derive(Deserialize)]
@@ -36,12 +40,12 @@ struct ErrorResponse {
 }
 
 impl BrokerClient {
-    /// Creates a client for an explicit broker HTTP base URL.
+    /// Creates a client with the REST and plugin endpoints of one broker.
     ///
     /// # Errors
     ///
-    /// Returns an error when the URL is malformed or the HTTP client cannot be built.
-    pub fn new(base_url: &str) -> Result<Self, BrokerClientError> {
+    /// Returns an error when either endpoint is invalid or the HTTP client cannot be built.
+    pub fn new(base_url: &str, plugin_endpoint: &str) -> Result<Self, BrokerClientError> {
         let normalized = format!("{}/", base_url.trim().trim_end_matches('/'));
         let base_url =
             Url::parse(&normalized).map_err(|error| BrokerClientError::InvalidBaseUrl {
@@ -51,15 +55,31 @@ impl BrokerClient {
         if base_url.scheme() != "http" || !is_loopback_host(&base_url) {
             return Err(BrokerClientError::NonLoopbackBaseUrl(base_url.to_string()));
         }
+        if plugin_endpoint.trim().is_empty() || plugin_endpoint.contains('\0') {
+            return Err(BrokerClientError::InvalidPluginEndpoint);
+        }
         let http = reqwest::Client::builder()
             .no_proxy()
             .timeout(DEFAULT_REQUEST_TIMEOUT)
             .build()?;
         Ok(Self {
             base_url,
+            plugin_endpoint: plugin_endpoint.to_owned(),
             bearer_token: None,
             http,
         })
+    }
+
+    /// Creates an independent plugin consumer bound to this broker.
+    ///
+    /// This does not connect or consult environment variables. The plugin owns
+    /// its endpoint snapshot and can outlive this client.
+    #[must_use]
+    pub fn plugin<T>(&self, plugin_id: T) -> BrokerPlugin
+    where
+        T: Into<String>,
+    {
+        BrokerPlugin::new(plugin_id.into(), self.plugin_endpoint.clone())
     }
 
     /// Adds the per-process local bearer token used by protected routes.
@@ -72,7 +92,7 @@ impl BrokerClient {
         self
     }
 
-    /// Discovers the REST endpoint and bearer token from broker startup information.
+    /// Loads both broker endpoints and the bearer token from startup information.
     ///
     /// # Errors
     ///
@@ -98,8 +118,11 @@ impl BrokerClient {
                 path: token_path,
                 source,
             })?;
-        Self::new(&format!("http://{}", startup.api_addr))
-            .map(|client| client.with_bearer_token(token.trim().to_owned()))
+        Self::new(
+            &format!("http://{}", startup.api_addr),
+            &startup.plugin_endpoint,
+        )
+        .map(|client| client.with_bearer_token(token.trim().to_owned()))
     }
 
     /// Returns broker process liveness.
@@ -314,7 +337,7 @@ mod tests {
     #[test]
     fn rejects_non_loopback_or_encrypted_remote_base_urls() {
         for base_url in ["http://example.com:18190", "https://127.0.0.1:18190"] {
-            let result = BrokerClient::new(base_url);
+            let result = BrokerClient::new(base_url, "/tmp/broker.sock");
             assert!(
                 matches!(result, Err(BrokerClientError::NonLoopbackBaseUrl(_))),
                 "broker REST clients must remain on the loopback HTTP boundary: {base_url}"

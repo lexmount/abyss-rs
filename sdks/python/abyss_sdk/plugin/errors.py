@@ -1,11 +1,11 @@
 """Typed plugin connection and protocol failures."""
 
 
-class AbyssPluginError(RuntimeError):
+class BrokerPluginError(RuntimeError):
     """Base plugin runtime failure."""
 
 
-class HandshakeRejectedError(AbyssPluginError):
+class HandshakeRejectedError(BrokerPluginError):
     """Broker rejected the initial plugin handshake."""
 
     def __init__(self, code: int, reason: str) -> None:
@@ -14,7 +14,7 @@ class HandshakeRejectedError(AbyssPluginError):
         self.reason = reason
 
 
-class UnexpectedBrokerEofError(AbyssPluginError):
+class UnexpectedBrokerEofError(BrokerPluginError):
     """Accepted broker stream ended without a deliberate close frame."""
 
     def __init__(self) -> None:

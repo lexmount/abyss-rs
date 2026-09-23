@@ -27,18 +27,27 @@ fn product_config(delivery_worker: &Value) -> Vec<u8> {
 }
 
 #[test]
-fn real_plugin_process_delivers_a_broker_event_to_the_configured_destination() {
+fn real_plugin_process_loads_broker_startup_info_and_delivers_an_event() {
     let directory = tempdir().expect("temporary directory should exist");
     let socket_path = directory.path().join("plugins.sock");
     let broker = UnixListener::bind(&socket_path).expect("fake broker should bind");
     let (destination, received) = spawn_destination();
     let config_path = directory.path().join("product-config.json");
     let startup_info_path = directory.path().join("worker-startup.json");
+    let broker_startup_path = directory.path().join("broker-startup.json");
+    std::fs::write(
+        &broker_startup_path,
+        serde_json::to_vec(&serde_json::json!({
+            "api_addr": "127.0.0.1:18190",
+            "plugin_endpoint": socket_path
+        }))
+        .expect("broker startup info should serialize"),
+    )
+    .expect("broker startup info should write without a REST token");
     std::fs::write(
         &config_path,
         product_config(&serde_json::json!({
             "plugin_id": "official-delivery-blackbox",
-            "broker_endpoint": socket_path,
             "delivery": {
                 "endpoint": destination,
                 "spool_enabled": false
@@ -49,6 +58,8 @@ fn real_plugin_process_delivers_a_broker_event_to_the_configured_destination() {
     .expect("config should write");
 
     let mut child = Command::new(env!("CARGO_BIN_EXE_abyss-delivery-plugin"))
+        .env("ABYSS_BROKER_STARTUP_INFO", &broker_startup_path)
+        .env_remove("ABYSS_BROKER_PLUGIN_ENDPOINT")
         .arg("--config")
         .arg(&config_path)
         .arg("--startup-info-file")
@@ -117,6 +128,7 @@ fn managed_bearer_hot_update_replays_spool_without_restarting_worker() {
         product_config(&serde_json::json!({
             "plugin_id": "managed-delivery-blackbox",
             "broker_endpoint": socket_path,
+            "broker_api_url": "http://127.0.0.1:18190",
             "delivery": {
                 "endpoint": destination,
                 "spool_enabled": true,
@@ -218,6 +230,7 @@ fn destination_unauthorized_invalidates_token_and_refresh_replays_without_restar
         product_config(&serde_json::json!({
             "plugin_id": "managed-refresh-blackbox",
             "broker_endpoint": socket_path,
+            "broker_api_url": "http://127.0.0.1:18190",
             "delivery": {
                 "endpoint": destination,
                 "spool_enabled": true,

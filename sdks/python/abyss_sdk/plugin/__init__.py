@@ -10,16 +10,16 @@ from ..event import (
     ToolCall,
     ToolResult,
 )
-from .errors import AbyssPluginError, HandshakeRejectedError, UnexpectedBrokerEofError
-from .plugin import AbyssPlugin, AgentEventStream, BrokerClose
+from .errors import BrokerPluginError, HandshakeRejectedError, UnexpectedBrokerEofError
+from .plugin import AgentEventStream, BrokerClose, BrokerPlugin
 
 __all__ = [
-    "AbyssPlugin",
-    "AbyssPluginError",
     "AgentContext",
     "AgentEvent",
     "AgentEventStream",
     "BrokerClose",
+    "BrokerPlugin",
+    "BrokerPluginError",
     "DeviceContext",
     "HandshakeRejectedError",
     "ImageAttachment",

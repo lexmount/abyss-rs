@@ -6,9 +6,9 @@ from dataclasses import dataclass
 from typing import Any, Callable, Optional
 
 from ..event import AgentEvent
-from .errors import AbyssPluginError, HandshakeRejectedError, UnexpectedBrokerEofError
+from .errors import BrokerPluginError, HandshakeRejectedError, UnexpectedBrokerEofError
 from .framing import read_json_frame, write_json_frame
-from .transport import PluginTransport, connect_plugin_transport, resolve_plugin_endpoint
+from .transport import PluginTransport, connect_plugin_transport
 
 PLUGIN_ID_PATTERN = re.compile(r"^[a-zA-Z0-9._-]{1,128}$")
 
@@ -45,7 +45,7 @@ class AgentEventStream(Iterator[AgentEvent]):
                 self.close_stream()
                 raise StopIteration
             if not isinstance(frame, Mapping):
-                raise AbyssPluginError("broker Agent event frame must be an object")
+                raise BrokerPluginError("broker Agent event frame must be an object")
             return AgentEvent.from_dict(frame)
         except StopIteration:
             raise
@@ -61,10 +61,10 @@ class AgentEventStream(Iterator[AgentEvent]):
             self._transport.close()
 
 
-class AbyssPlugin:
-    """One configured out-of-process consumer of broker Agent events."""
+class BrokerPlugin:
+    """Consumer bound to a broker, created with ``BrokerClient.plugin``."""
 
-    def __init__(self, plugin_id: str, endpoint: Optional[str] = None) -> None:
+    def __init__(self, plugin_id: str, endpoint: str) -> None:
         if PLUGIN_ID_PATTERN.fullmatch(plugin_id) is None:
             raise ValueError(
                 "plugin_id must contain 1-128 ASCII letters, digits, dots, underscores, or hyphens"
@@ -75,8 +75,7 @@ class AbyssPlugin:
     def connect(self) -> AgentEventStream:
         """Connect, perform the version 1 handshake, and return the event stream."""
 
-        endpoint = resolve_plugin_endpoint(self._endpoint)
-        transport = connect_plugin_transport(endpoint)
+        transport = connect_plugin_transport(self._endpoint)
         try:
             write_json_frame(
                 transport,
@@ -89,7 +88,7 @@ class AbyssPlugin:
             if rejection is not None:
                 raise HandshakeRejectedError(rejection.code, rejection.reason)
             if not isinstance(response, Mapping) or response.get("protocol_version") != 1:
-                raise AbyssPluginError("broker returned an invalid handshake response")
+                raise BrokerPluginError("broker returned an invalid handshake response")
             return AgentEventStream(transport)
         except Exception:
             transport.close()

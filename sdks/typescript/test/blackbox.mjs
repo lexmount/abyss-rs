@@ -2,7 +2,6 @@ import assert from "node:assert/strict";
 import { readFile } from "node:fs/promises";
 
 import { BrokerApiError, BrokerClient } from "../dist/index.js";
-import { AbyssPlugin } from "../dist/plugin/index.js";
 
 const startupInfo = process.env.ABYSS_BROKER_STARTUP_INFO;
 if (!startupInfo) {
@@ -13,10 +12,13 @@ const client = await BrokerClient.fromStartupInfo(startupInfo);
 const startup = JSON.parse(await readFile(startupInfo, "utf8"));
 const unauthenticated = new BrokerClient({
   baseUrl: `http://${startup.api_addr}`,
+  pluginEndpoint: startup.plugin_endpoint,
 });
-const events = await new AbyssPlugin({
-  consumerId: "blackbox.typescript-sdk",
-}).connect();
+const events = await client.plugin("blackbox.typescript-sdk").connect();
+
+const manualEvents = await unauthenticated
+  .plugin("blackbox.typescript-manual")
+  .connect();
 
 assert.deepEqual(await client.getHealth(), {
   service: "abyss-broker",
@@ -48,5 +50,7 @@ await client.getTrafficSnapshot();
 assert.equal((await client.shutdown()).lifecycle, "stopped");
 assert.equal(await events.nextEvent(), undefined);
 assert.equal(events.close?.code, 100);
+assert.equal(await manualEvents.nextEvent(), undefined);
+assert.equal(manualEvents.close?.code, 100);
 
 process.stdout.write("TypeScript SDK real-broker black-box: ok\n");

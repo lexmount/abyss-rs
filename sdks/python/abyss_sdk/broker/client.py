@@ -8,6 +8,7 @@ from urllib.error import HTTPError, URLError
 from urllib.parse import urlencode, urljoin, urlparse
 from urllib.request import ProxyHandler, Request, build_opener
 
+from ..plugin.plugin import BrokerPlugin
 from .types import (
     BrokerLogRequest,
     BrokerLogResponse,
@@ -44,19 +45,31 @@ class BrokerClient:
     def __init__(
         self,
         base_url: str,
+        plugin_endpoint: str,
         bearer_token: Optional[str] = None,
         timeout_seconds: float = DEFAULT_TIMEOUT_SECONDS,
     ) -> None:
         self._base_url = _normalized_base_url(base_url)
+        if (
+            not isinstance(plugin_endpoint, str)
+            or not plugin_endpoint.strip()
+            or "\0" in plugin_endpoint
+        ):
+            raise ValueError("plugin_endpoint must be non-empty and contain no NUL bytes")
+        self._plugin_endpoint = plugin_endpoint
         self._bearer_token = bearer_token
         if timeout_seconds <= 0:
             raise ValueError("timeout_seconds must be greater than zero")
         self._timeout_seconds = timeout_seconds
         self._opener = build_opener(ProxyHandler({}))
 
+    def plugin(self, plugin_id: str) -> BrokerPlugin:
+        """Create an independent consumer bound to this client's plugin endpoint."""
+        return BrokerPlugin(plugin_id, self._plugin_endpoint)
+
     @classmethod
     def from_startup_info(cls, path: str) -> "BrokerClient":
-        """Discover the endpoint and bearer token from broker startup information."""
+        """Load both broker endpoints and the bearer token from startup information."""
 
         startup_path = Path(path)
         startup = json.loads(startup_path.read_text(encoding="utf-8"))
@@ -64,10 +77,13 @@ class BrokerClient:
             raise TypeError("broker startup info must be an object")
         api_addr = startup.get("api_addr")
         token_path = startup.get("auth_token_file")
-        if not isinstance(api_addr, str) or not isinstance(token_path, str):
-            raise TypeError("broker startup info is missing REST discovery fields")
+        plugin_endpoint = startup.get("plugin_endpoint")
+        if not all(isinstance(value, str) for value in (api_addr, token_path, plugin_endpoint)):
+            raise TypeError("broker startup info is missing connection fields")
         token = Path(token_path).read_text(encoding="utf-8").strip()
-        return cls(base_url=f"http://{api_addr}", bearer_token=token)
+        return cls(
+            base_url=f"http://{api_addr}", plugin_endpoint=plugin_endpoint, bearer_token=token
+        )
 
     def get_health(self) -> HealthResponse:
         return self._request("healthz", HealthResponse, protected=False)

@@ -9,6 +9,9 @@ use thiserror::Error;
 #[derive(Debug, Error)]
 #[non_exhaustive]
 pub enum BrokerClientError {
+    /// The plugin endpoint is empty or contains a NUL byte.
+    #[error("broker plugin endpoint must be non-empty and contain no NUL bytes")]
+    InvalidPluginEndpoint,
     /// The configured broker base URL is invalid.
     #[error("invalid broker base URL `{base_url}`: {reason}")]
     InvalidBaseUrl {

@@ -16,7 +16,10 @@ const DEFAULT_DELIVERY_ENDPOINT: &str = "http://127.0.0.1:8080/v1/agent-usage/ev
 pub struct DeliveryPluginConfig {
     /// Stable identity presented to the broker during the handshake.
     pub plugin_id: String,
-    /// Optional concrete broker endpoint; normal SDK discovery is used when absent.
+    /// Optional broker REST URL, paired with `broker_endpoint` for manual configuration.
+    /// Missing endpoints are loaded from broker startup information.
+    pub broker_api_url: Option<String>,
+    /// Optional concrete plugin endpoint; startup information is used when absent.
     pub broker_endpoint: Option<String>,
     /// Destination and failed-delivery persistence settings.
     pub delivery: DeliveryConfig,
@@ -182,6 +185,7 @@ impl Default for DeliveryPluginConfig {
     fn default() -> Self {
         Self {
             plugin_id: DEFAULT_PLUGIN_ID.to_owned(),
+            broker_api_url: None,
             broker_endpoint: None,
             delivery: DeliveryConfig::default(),
             authentication: AuthenticationConfig::None,
