@@ -20,24 +20,30 @@ distributor is responsible for publishing an x86_64 musl archive containing:
 
 Installer implementation, artifact hosting, checksum publication, and
 configuration seeding behavior for hosted distributions are owned outside this
-open runtime repository. Development builds are produced directly from the
-repository with Cargo.
+open runtime repository. This repository's `scripts/install-cli.sh` builds and
+installs the CLI runtime directly from a source checkout.
 
 For a source build, install the compiled runtime and service template before
 starting the local environment:
 
 ```bash
-cargo build --release --locked \
-  --package abyss-cli \
-  --package abyss-broker \
-  --package abyss-delivery-plugin
-sudo install -m 0755 target/release/abyss /usr/local/bin/abyss
-sudo install -m 0755 target/release/abyss-broker /usr/local/bin/abyss-broker
-sudo install -m 0755 target/release/abyss-delivery-plugin /usr/local/bin/abyss-delivery-plugin
-sudo install -m 0644 platform/linux/abyss-broker@.service /etc/systemd/system/abyss-broker@.service
-sudo systemctl daemon-reload
+bash scripts/install-cli.sh
+abyss version
 abyss deploy-local start
 ```
+
+Run the script as your normal user with Rust stable, a C/C++ toolchain, CMake,
+pkg-config, and systemd available. It builds all three release binaries before
+installing them into `/usr/local/bin`, installs the service template, and runs
+`systemctl daemon-reload`. Only installation uses `sudo`. Service enablement,
+startup, configuration, and CA trust remain owned by the CLI.
+
+`--prefix /opt/abyss` selects another installation prefix and updates the
+installed unit's executable path. Linux prefixes must use only letters,
+digits, slash, underscore, dot, and hyphen, and must be accessible to the
+service user. Ensure `PREFIX/bin` is on `PATH`. `DESTDIR=/absolute/staging`
+stages both binaries and the unit without contacting systemd. Stop the local
+environment before reinstalling an updated checkout.
 
 ## User workflow
 
@@ -74,8 +80,10 @@ to the launched command.
 └── delivery/              delivery-plugin state and failed events
 ```
 
-The systemd template starts `/usr/local/bin/abyss-broker` for the endpoint user
-and reads `/home/%i/.abyss/broker-config.toml`. The broker publishes its dynamic
+The systemd template starts `/usr/local/bin/abyss-broker` (or the selected
+prefix's binary) for the endpoint user and reads
+`/home/%i/.abyss/broker-config.toml`. It currently assumes a `/home/<user>` home
+directory and the default `~/.abyss` state root. The broker publishes its dynamic
 REST and explicit-proxy endpoints through runtime state instead of requiring
 fixed ports.
 
