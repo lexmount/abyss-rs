@@ -24,6 +24,30 @@ select explicit-proxy mode, and start it. For maintainers, the
 [crates.io release guide](docs/crates-io-release.md) describes version tags and
 the GitHub Actions publication workflow.
 
+### Install a prebuilt CLI release
+
+The public CLI release supports Linux x86_64 with systemd and macOS ARM64.
+Once a CLI release is published, install it without Rust or a compiler:
+
+```bash
+curl --proto '=https' --tlsv1.2 -fsSL \
+  https://github.com/lexmount/abyss-rs/releases/latest/download/install.sh | sh
+abyss version
+```
+
+The POSIX shell installer downloads the matching release archive, verifies its
+SHA-256, and installs `abyss`, `abyss-broker`, and `abyss-delivery-plugin` together
+in `/usr/local/bin`. Linux also gets the systemd service template and a daemon
+reload. Run as your normal user; installation requests `sudo` when necessary.
+Keep configuration and CA initialization separate by running
+`abyss deploy-local start` afterward, with Node.js 22+ and npm 10+ installed.
+
+Pass options after `sh -s --`, for example `sh -s -- --prefix /opt/abyss` or
+`sh -s -- --version 1.0.0`. Stop the local environment before upgrading. The
+installer preserves existing configuration and data. Other platforms can use
+the source installer below. See the [CLI release guide](docs/cli-release.md)
+for release assets, validation, and publishing the first release.
+
 ### Complete local environment from source
 
 The local environment supports Linux x86_64 and macOS ARM64 without Docker.

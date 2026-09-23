@@ -6,22 +6,25 @@ transparent Linux interception is currently provided.
 
 ## Distribution boundary
 
-This repository provides the generic systemd service template. A product
-distributor is responsible for publishing an x86_64 musl archive containing:
+This repository publishes the public x86_64 musl CLI archive and generic
+systemd service template. The archive contains:
 
 - `abyss`;
 - `abyss-broker`;
 - `abyss-delivery-plugin`;
 - `abyss-broker@.service`;
-- `broker-config.toml`;
-- `runtime-policy.toml`;
-- a deployment-specific `product-config.json`;
+- `VERSION`;
 - `LICENSE`.
 
-Installer implementation, artifact hosting, checksum publication, and
-configuration seeding behavior for hosted distributions are owned outside this
-open runtime repository. This repository's `scripts/install-cli.sh` builds and
-installs the CLI runtime directly from a source checkout.
+The public `scripts/install.sh` downloads a checksummed release archive; the
+release workflow publishes it as `install.sh` in GitHub Releases. The CLI owns
+generic broker and policy defaults, and `abyss deploy-local start` creates the
+local deployment configuration. Private product configuration and signed
+desktop installers remain outside this repository. See the
+[CLI release guide](../../docs/cli-release.md).
+
+This repository's `scripts/install-cli.sh` also builds and installs the CLI
+runtime directly from a source checkout.
 
 For a source build, install the compiled runtime and service template before
 starting the local environment:

@@ -55,7 +55,9 @@ test-local-contract:
 
 test-install-cli:
 	bash -n scripts/install-cli.sh
+	sh -n scripts/install.sh
 	python3 scripts/tests/test_install_cli.py
+	python3 scripts/tests/test_release_installer.py
 
 test-blackbox-local:
 	bash scripts/tests/blackbox_local_environment.sh

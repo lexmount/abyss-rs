@@ -1,0 +1,141 @@
+name: Release CLI binaries
+
+on:
+  pull_request:
+    paths:
+      - '.github/workflows/cli-release.yml'
+      - 'scripts/install.sh'
+      - 'scripts/ci/package_cli.py'
+      - 'scripts/tests/*release*'
+      - 'crates/**'
+      - 'Cargo.toml'
+      - 'Cargo.lock'
+      - '.cargo/**'
+      - 'platform/linux/abyss-broker@.service'
+  push:
+    tags:
+      - 'v*'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: cli-release-${{ github.ref }}
+  cancel-in-progress: false
+
+env:
+  RUSTUP_TOOLCHAIN: '1.98.0'
+  CARGO_TERM_COLOR: always
+
+jobs:
+  build:
+    name: Package CLI (${{ matrix.target }})
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 45
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-22.04
+            target: x86_64-unknown-linux-musl
+          - os: macos-14
+            target: aarch64-apple-darwin
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Install Linux build tools
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y musl-tools cmake pkg-config clang libclang-dev
+          echo 'CC_x86_64_unknown_linux_musl=musl-gcc' >> "$GITHUB_ENV"
+          echo 'CARGO_TARGET_X86_64_UNKNOWN_LINUX_MUSL_LINKER=musl-gcc' >> "$GITHUB_ENV"
+      - name: Configure macOS build tools
+        if: runner.os == 'macOS'
+        run: |
+          clang_bin="$(xcrun --find clang)"
+          libclang_dir="$(cd "$(dirname "$clang_bin")/../lib" && pwd)"
+          echo "LIBCLANG_PATH=$libclang_dir" >> "$GITHUB_ENV"
+          echo 'MACOSX_DEPLOYMENT_TARGET=11.0' >> "$GITHUB_ENV"
+      - name: Install Rust
+        env:
+          CLI_TARGET: ${{ matrix.target }}
+        run: rustup toolchain install "$RUSTUP_TOOLCHAIN" --profile minimal --target "$CLI_TARGET"
+      - name: Test piped download installer
+        run: |
+          sh -n scripts/install.sh
+          python3 scripts/tests/test_release_installer.py
+      - uses: Swatinem/rust-cache@82a92a6e8fbeee089604da2575dc567ae9ddeaab # v2.7.5
+        with:
+          shared-key: cli-release-${{ matrix.target }}
+      - name: Build release binaries
+        env:
+          CLI_TARGET: ${{ matrix.target }}
+        run: >-
+          cargo build --release --locked --target "$CLI_TARGET"
+          -p abyss-cli -p abyss-broker -p abyss-delivery-plugin
+      - name: Package and validate release version
+        env:
+          CLI_TARGET: ${{ matrix.target }}
+          RELEASE_REF_TYPE: ${{ github.ref_type }}
+          RELEASE_REF_NAME: ${{ github.ref_name }}
+        run: |
+          args=()
+          if [[ "$RELEASE_REF_TYPE" == tag ]]; then
+            args+=(--tag "$RELEASE_REF_NAME")
+          fi
+          python3 scripts/ci/package_cli.py --target "$CLI_TARGET" \
+            --binaries "target/$CLI_TARGET/release" --output dist "${args[@]}"
+          cat dist/SHA256SUMS.* > dist/SHA256SUMS
+      - name: Verify installed release binaries
+        run: sh scripts/tests/smoke_release_install.sh dist
+      - uses: actions/upload-artifact@v4
+        with:
+          name: cli-${{ matrix.target }}
+          path: |
+            dist/*.tar.gz
+            dist/install.sh
+            dist/SHA256SUMS.*
+          if-no-files-found: error
+
+  publish:
+    name: Publish complete CLI release
+    if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')
+    needs: build
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    concurrency:
+      group: cli-release-publish
+      cancel-in-progress: false
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: cli-*
+          path: artifacts
+      - name: Assemble complete release
+        run: |
+          mkdir dist
+          cmp artifacts/cli-aarch64-apple-darwin/install.sh artifacts/cli-x86_64-unknown-linux-musl/install.sh
+          cp artifacts/cli-aarch64-apple-darwin/install.sh dist/install.sh
+          cp artifacts/cli-*/*.tar.gz dist/
+          cat artifacts/cli-*/SHA256SUMS.* > dist/SHA256SUMS
+          cd dist
+          sha256sum --check SHA256SUMS
+      - name: Upload assets before publishing latest
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          RELEASE_TAG: ${{ github.ref_name }}
+        run: |
+          if gh release view "$RELEASE_TAG" --json isDraft > release.json 2> release-error.log; then
+            python3 -c 'import json; assert json.load(open("release.json"))["isDraft"], "refusing to replace a published release"'
+          else
+            gh release create "$RELEASE_TAG" --verify-tag --draft \
+              --title "Abyss CLI $RELEASE_TAG" --generate-notes
+          fi
+          gh release upload "$RELEASE_TAG" dist/install.sh dist/SHA256SUMS dist/*.tar.gz --clobber
+          gh release edit "$RELEASE_TAG" --draft=false --latest
