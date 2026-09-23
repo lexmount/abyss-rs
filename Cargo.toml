@@ -13,18 +13,18 @@ members = [
 resolver = "3"
 
 [workspace.package]
-version = "1.0.0"
+version = "1.0.1"
 edition = "2024"
 authors = ["chunchi.che@lexmount.com"]
 license-file = "LICENSE"
 repository = "https://github.com/lexmount/abyss-rs"
 
 [workspace.dependencies]
-abyss-agent-hook = { path = "crates/abyss-agent-hook", version = "1.0.0" }
-abyss-mitm = { path = "crates/abyss-mitm", version = "1.0.0" }
-abyss-plugin-protocol = { path = "crates/abyss-plugin-protocol", version = "1.0.0" }
+abyss-agent-hook = { path = "crates/abyss-agent-hook", version = "1.0.1" }
+abyss-mitm = { path = "crates/abyss-mitm", version = "1.0.1" }
+abyss-plugin-protocol = { path = "crates/abyss-plugin-protocol", version = "1.0.1" }
 abyss-sdk = { path = "crates/abyss-sdk" }
-abyss-storage = { path = "crates/abyss-storage", version = "1.0.0" }
+abyss-storage = { path = "crates/abyss-storage", version = "1.0.1" }
 abyss-terminal-auth = { path = "crates/abyss-terminal-auth" }
 arc-swap = "1"
 parking_lot = "0.12"
