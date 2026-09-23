@@ -1,8 +1,10 @@
 """Platform-local stream connection used by the plugin runtime."""
 
+import json
 import os
 import socket
-from typing import Protocol
+from pathlib import Path
+from typing import Optional, Protocol
 
 from .errors import BrokerPluginError
 
@@ -31,6 +33,34 @@ class SocketTransport:
 
     def close(self) -> None:
         self._stream.close()
+
+
+def resolve_plugin_endpoint(explicit: Optional[str] = None) -> str:
+    """Resolve a concrete endpoint using the published discovery precedence."""
+
+    if explicit is not None and explicit.strip():
+        return explicit
+    environment_endpoint = os.environ.get("ABYSS_BROKER_PLUGIN_ENDPOINT", "").strip()
+    if environment_endpoint:
+        return environment_endpoint
+    startup_info = os.environ.get("ABYSS_BROKER_STARTUP_INFO", "").strip()
+    if not startup_info:
+        abyss_home = os.environ.get("ABYSS_HOME", "").strip()
+        if abyss_home:
+            startup_info = str(Path(abyss_home) / "runtime" / "startup-info.json")
+    if not startup_info:
+        raise BrokerPluginError(
+            "broker plugin endpoint is unavailable; configure "
+            "ABYSS_BROKER_PLUGIN_ENDPOINT, ABYSS_BROKER_STARTUP_INFO, or ABYSS_HOME"
+        )
+    try:
+        parsed = json.loads(Path(startup_info).read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError) as error:
+        raise BrokerPluginError(f"read broker startup info {startup_info}") from error
+    endpoint = parsed.get("plugin_endpoint") if isinstance(parsed, dict) else None
+    if not isinstance(endpoint, str) or not endpoint:
+        raise BrokerPluginError("broker startup info has no plugin_endpoint")
+    return endpoint
 
 
 def connect_plugin_transport(endpoint: str) -> PluginTransport:

@@ -9,7 +9,12 @@ import {
   UnexpectedBrokerEofError,
 } from "./errors.js";
 import { readJsonFrames, writeJsonFrame } from "./framing.js";
-import { connectPluginStream } from "./transport.js";
+import { connectPluginStream, resolvePluginEndpoint } from "./transport.js";
+
+export interface BrokerPluginOptions {
+  consumerId: string;
+  endpoint?: string;
+}
 
 export interface BrokerClose {
   code: number;
@@ -72,27 +77,27 @@ export class PluginConnection implements AsyncIterable<AgentEvent> {
 }
 
 export class BrokerPlugin {
-  readonly #pluginId: string;
-  readonly #endpoint: string;
+  readonly #consumerId: string;
+  readonly #endpoint: string | undefined;
 
-  /** @internal Create consumers through BrokerClient.plugin(). */
-  constructor(pluginId: string, endpoint: string) {
-    if (!/^[a-zA-Z0-9._-]{1,128}$/.test(pluginId)) {
+  constructor(options: BrokerPluginOptions) {
+    if (!/^[a-zA-Z0-9._-]{1,128}$/.test(options.consumerId)) {
       throw new TypeError(
-        "pluginId must contain 1-128 ASCII letters, digits, dots, underscores, or hyphens",
+        "consumerId must contain 1-128 ASCII letters, digits, dots, underscores, or hyphens",
       );
     }
-    this.#pluginId = pluginId;
-    this.#endpoint = endpoint;
+    this.#consumerId = options.consumerId;
+    this.#endpoint = options.endpoint;
   }
 
   async connect(): Promise<PluginConnection> {
-    const socket = await connectPluginStream(this.#endpoint);
+    const endpoint = await resolvePluginEndpoint(this.#endpoint);
+    const socket = await connectPluginStream(endpoint);
     const frames = readJsonFrames(socket)[Symbol.asyncIterator]();
     try {
       await writeJsonFrame(socket, {
         protocol_version: 1,
-        plugin_id: this.#pluginId,
+        plugin_id: this.#consumerId,
       });
       const response = await frames.next();
       if (response.done) {

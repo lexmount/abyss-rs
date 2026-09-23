@@ -15,5 +15,5 @@ export {
   HandshakeRejectedError,
   UnexpectedBrokerEofError,
 } from "./errors.js";
-export { PluginConnection } from "./plugin.js";
-export type { BrokerPlugin, BrokerClose } from "./plugin.js";
+export { BrokerPlugin, PluginConnection } from "./plugin.js";
+export type { BrokerPluginOptions, BrokerClose } from "./plugin.js";

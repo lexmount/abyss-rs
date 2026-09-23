@@ -8,7 +8,7 @@ from typing import Any, Callable, Optional
 from ..event import AgentEvent
 from .errors import BrokerPluginError, HandshakeRejectedError, UnexpectedBrokerEofError
 from .framing import read_json_frame, write_json_frame
-from .transport import PluginTransport, connect_plugin_transport
+from .transport import PluginTransport, connect_plugin_transport, resolve_plugin_endpoint
 
 PLUGIN_ID_PATTERN = re.compile(r"^[a-zA-Z0-9._-]{1,128}$")
 
@@ -62,9 +62,9 @@ class AgentEventStream(Iterator[AgentEvent]):
 
 
 class BrokerPlugin:
-    """Consumer bound to a broker, created with ``BrokerClient.plugin``."""
+    """One configured out-of-process consumer of broker Agent events."""
 
-    def __init__(self, plugin_id: str, endpoint: str) -> None:
+    def __init__(self, plugin_id: str, endpoint: Optional[str] = None) -> None:
         if PLUGIN_ID_PATTERN.fullmatch(plugin_id) is None:
             raise ValueError(
                 "plugin_id must contain 1-128 ASCII letters, digits, dots, underscores, or hyphens"
@@ -75,7 +75,8 @@ class BrokerPlugin:
     def connect(self) -> AgentEventStream:
         """Connect, perform the version 1 handshake, and return the event stream."""
 
-        transport = connect_plugin_transport(self._endpoint)
+        endpoint = resolve_plugin_endpoint(self._endpoint)
+        transport = connect_plugin_transport(endpoint)
         try:
             write_json_frame(
                 transport,

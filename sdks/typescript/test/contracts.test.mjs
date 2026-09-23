@@ -59,19 +59,11 @@ test("AgentEvent decoder rejects invalid counters and unknown sides", () => {
 
 test("BrokerClient rejects URLs outside the loopback HTTP boundary", () => {
   assert.throws(
-    () =>
-      new BrokerClient({
-        baseUrl: "http://example.com:18190",
-        pluginEndpoint: "/tmp/broker.sock",
-      }),
+    () => new BrokerClient({ baseUrl: "http://example.com:18190" }),
     /HTTP and a loopback host/,
   );
   assert.throws(
-    () =>
-      new BrokerClient({
-        baseUrl: "https://127.0.0.1:18190",
-        pluginEndpoint: "/tmp/broker.sock",
-      }),
+    () => new BrokerClient({ baseUrl: "https://127.0.0.1:18190" }),
     /HTTP and a loopback host/,
   );
 });

@@ -5,6 +5,7 @@ import os
 from pathlib import Path
 
 from abyss_sdk import BrokerApiError, BrokerClient
+from abyss_sdk.plugin import BrokerPlugin
 
 
 def main() -> None:
@@ -14,12 +15,8 @@ def main() -> None:
 
     client = BrokerClient.from_startup_info(startup_info)
     startup = json.loads(Path(startup_info).read_text(encoding="utf-8"))
-    unauthenticated = BrokerClient(
-        base_url=f"http://{startup['api_addr']}", plugin_endpoint=startup["plugin_endpoint"]
-    )
-    events = client.plugin("blackbox.python-sdk").connect()
-
-    manual_events = unauthenticated.plugin("blackbox.python-manual").connect()
+    unauthenticated = BrokerClient(base_url=f"http://{startup['api_addr']}")
+    events = BrokerPlugin(plugin_id="blackbox.python-sdk").connect()
 
     assert client.get_health() == {"service": "abyss-broker", "status": "ok"}
     try:
@@ -49,8 +46,6 @@ def main() -> None:
     assert client.shutdown()["lifecycle"] == "stopped"
     assert list(events) == []
     assert events.close is not None and events.close.code == 100
-    assert list(manual_events) == []
-    assert manual_events.close is not None and manual_events.close.code == 100
     print("Python SDK real-broker black-box: ok")
 
 

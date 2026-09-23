@@ -4,8 +4,8 @@
 `abyss-broker` Agent events. The broker never reads this plugin's destination,
 credential, or failed-delivery spool.
 
-With no configuration, the plugin loads broker endpoints from startup information
-and sends events without authentication to
+With no configuration, the plugin connects through normal `abyss-sdk`
+discovery and sends events without authentication to
 `http://127.0.0.1:8080/v1/agent-usage/events`. Packaged products pass their
 shared `product-config.json`; delivery settings live under `delivery_worker`:
 
@@ -40,20 +40,12 @@ complete header file. Relative credential and spool paths are resolved from the
 configuration file directory. Changing the endpoint or authentication mode
 requires only a process restart, not a rebuild.
 
-The worker creates one SDK `BrokerClient`, then calls `client.plugin(plugin_id)`.
-It loads missing endpoints from the JSON file named by
-`ABYSS_BROKER_STARTUP_INFO`, or `$ABYSS_HOME/runtime/startup-info.json`.
-The startup record must contain both `api_addr` and `plugin_endpoint`; the worker
-does not read the REST bearer token because it only consumes plugin events.
+The SDK discovers the broker endpoint in this order:
 
-For manual configuration without startup information, set both `broker_api_url`
-(the loopback HTTP URL) and `broker_endpoint` (the plugin socket or Named Pipe)
-in `delivery_worker`. `broker_endpoint` takes precedence over
-`ABYSS_BROKER_PLUGIN_ENDPOINT`, which takes precedence over the startup record.
-An explicit `broker_api_url` likewise takes precedence over `api_addr`.
-Existing configurations supplying only `broker_endpoint` must also supply the
-REST URL or a broker startup record. Endpoint discovery stays in the worker;
-the SDK plugin itself uses only the address retained by its `BrokerClient`.
+1. `broker_endpoint` in the plugin configuration;
+2. `ABYSS_BROKER_PLUGIN_ENDPOINT`;
+3. the JSON file named by `ABYSS_BROKER_STARTUP_INFO`;
+4. `$ABYSS_HOME/runtime/startup-info.json`.
 
 Unix platforms use a Unix domain socket. Windows uses the Named Pipe endpoint
 advertised in the same startup information contract.

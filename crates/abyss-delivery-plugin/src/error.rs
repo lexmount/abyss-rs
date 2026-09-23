@@ -127,7 +127,4 @@ pub enum DeliveryPluginError {
     /// The broker plugin runtime failed.
     #[error(transparent)]
     Plugin(#[from] abyss_sdk::plugin::BrokerPluginError),
-    /// Broker connection configuration could not be loaded or validated.
-    #[error(transparent)]
-    Broker(#[from] abyss_sdk::broker::BrokerClientError),
 }
