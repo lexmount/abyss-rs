@@ -772,6 +772,8 @@ pub(super) fn best_usage(values: &[Value]) -> Option<TokenUsage> {
         return None;
     }
 
+    // Streaming Messages responses report input-side counters in
+    // `message_start` and cumulative output in `message_delta`.
     let mut combined = TokenUsage::default();
     for usage in usages {
         combined.input_tokens = combined.input_tokens.max(usage.input_tokens);
@@ -779,17 +781,14 @@ pub(super) fn best_usage(values: &[Value]) -> Option<TokenUsage> {
         combined.cache_read_tokens = combined.cache_read_tokens.max(usage.cache_read_tokens);
         combined.cache_write_tokens = combined.cache_write_tokens.max(usage.cache_write_tokens);
         combined.reasoning_tokens = combined.reasoning_tokens.max(usage.reasoning_tokens);
-        combined.total_tokens = combined.total_tokens.max(usage.total_tokens);
     }
-    combined.total_tokens = combined.total_tokens.max(
-        combined
-            .input_tokens
-            .saturating_add(combined.output_tokens)
-            .saturating_add(combined.cache_read_tokens)
-            .saturating_add(combined.cache_write_tokens)
-            .saturating_add(combined.reasoning_tokens),
-    );
-    Some(combined)
+    Some(TokenUsage::from_parts(
+        combined.input_tokens,
+        combined.cache_read_tokens,
+        combined.cache_write_tokens,
+        combined.output_tokens,
+        combined.reasoning_tokens,
+    ))
 }
 
 pub(super) fn estimated_visible_usage(
@@ -800,13 +799,7 @@ pub(super) fn estimated_visible_usage(
 ) -> TokenUsage {
     let input_tokens = estimate_visible_tokens(request_texts, request_tool_events);
     let output_tokens = estimate_visible_tokens(response_texts, response_tool_events);
-    let total_tokens = input_tokens.saturating_add(output_tokens);
-    TokenUsage {
-        input_tokens,
-        output_tokens,
-        total_tokens,
-        ..TokenUsage::default()
-    }
+    TokenUsage::from_parts(input_tokens, 0, 0, output_tokens, 0)
 }
 
 fn estimate_visible_tokens(texts: &[String], tool_events: &[ParsedToolEvent]) -> i64 {
@@ -865,42 +858,33 @@ fn find_usage(value: &Value, depth: usize) -> Vec<TokenUsage> {
 fn usage_from_object(object: &serde_json::Map<String, Value>) -> Option<TokenUsage> {
     let input = int_field(object, "input_tokens").unwrap_or(0);
     let output = int_field(object, "output_tokens").unwrap_or(0);
-    let cache_read = int_field(object, "cache_read_input_tokens")
-        .or_else(|| nested_int_field(object, "input_tokens_details", "cached_tokens"))
+    let native_cache_read = int_field(object, "cache_read_input_tokens");
+    let native_cache_write = int_field(object, "cache_creation_input_tokens");
+    // Native Messages usage keeps cache counters outside `input_tokens`.
+    // OpenAI-style details from compatible gateways count them inside it.
+    let detail_cache_read = native_cache_read
+        .is_none()
+        .then(|| nested_int_field(object, "input_tokens_details", "cached_tokens"))
+        .flatten()
         .unwrap_or(0);
-    let cache_write = int_field(object, "cache_creation_input_tokens")
-        .or_else(|| nested_int_field(object, "input_tokens_details", "cache_creation_tokens"))
+    let detail_cache_write = native_cache_write
+        .is_none()
+        .then(|| nested_int_field(object, "input_tokens_details", "cache_creation_tokens"))
+        .flatten()
         .unwrap_or(0);
+    let cache_read = native_cache_read.unwrap_or(detail_cache_read);
+    let cache_write = native_cache_write.unwrap_or(detail_cache_write);
+    let input = input
+        .saturating_sub(detail_cache_read)
+        .saturating_sub(detail_cache_write)
+        .max(0);
     let reasoning = nested_int_field(object, "output_tokens_details", "thinking_tokens")
         .or_else(|| int_field(object, "thinking_tokens"))
         .or_else(|| int_field(object, "reasoning_tokens"))
         .unwrap_or(0);
-    let total = int_field(object, "total_tokens").unwrap_or_else(|| {
-        input
-            .saturating_add(output)
-            .saturating_add(cache_read)
-            .saturating_add(cache_write)
-            .saturating_add(reasoning)
-    });
 
-    if input == 0
-        && output == 0
-        && cache_read == 0
-        && cache_write == 0
-        && reasoning == 0
-        && total == 0
-    {
-        return None;
-    }
-
-    Some(TokenUsage {
-        input_tokens: input,
-        output_tokens: output,
-        cache_read_tokens: cache_read,
-        cache_write_tokens: cache_write,
-        reasoning_tokens: reasoning,
-        total_tokens: total,
-    })
+    let usage = TokenUsage::from_parts(input, cache_read, cache_write, output, reasoning);
+    (!usage.is_empty()).then_some(usage)
 }
 
 fn int_field(object: &serde_json::Map<String, Value>, key: &str) -> Option<i64> {
@@ -1237,6 +1221,32 @@ mod tests {
         assert_eq!(parsed.response_tool_events.len(), 1);
         assert_eq!(parsed.usage.input_tokens, 5);
         assert_eq!(parsed.usage.output_tokens, 2);
+    }
+
+    #[test]
+    fn keeps_messages_cache_counters_disjoint_from_input() {
+        let request = json!({
+            "model": "claude-test",
+            "messages": [{"role": "user", "content": "continue"}]
+        });
+        let response = concat!(
+            "data: {\"type\":\"message_start\",\"message\":{\"id\":\"msg_3\",",
+            "\"model\":\"claude-test\",\"usage\":{\"input_tokens\":2,",
+            "\"cache_read_input_tokens\":77000,\"cache_creation_input_tokens\":400,",
+            "\"output_tokens\":1}}}\n\n",
+            "data: {\"type\":\"message_delta\",\"usage\":{\"input_tokens\":2,",
+            "\"cache_read_input_tokens\":77000,\"cache_creation_input_tokens\":400,",
+            "\"output_tokens\":150}}\n\n"
+        );
+        let exchange = sse_exchange("/v1/messages", &request, response.as_bytes());
+
+        let parsed = parse_anthropic_messages_exchange(&exchange).expect("Anthropic SSE exchange");
+
+        assert_eq!(parsed.usage.input_tokens, 2);
+        assert_eq!(parsed.usage.cache_read_tokens, 77_000);
+        assert_eq!(parsed.usage.cache_write_tokens, 400);
+        assert_eq!(parsed.usage.output_tokens, 150);
+        assert_eq!(parsed.usage.total_tokens, 77_552);
     }
 
     #[test]

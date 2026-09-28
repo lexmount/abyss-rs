@@ -8,10 +8,7 @@ use std::{
 use abyss_mitm::FlowId;
 use parking_lot::Mutex;
 
-use crate::protocol::{
-    model::{tool::ParsedToolEvent, usage::TokenUsage},
-    openai::ParsedOpenAiExchange,
-};
+use crate::protocol::{model::tool::ParsedToolEvent, openai::ParsedOpenAiExchange};
 
 const PENDING_TURN_TTL: Duration = Duration::from_mins(1);
 const MAX_PENDING_TURNS: usize = 64;
@@ -98,7 +95,7 @@ fn merge(mut current: ParsedOpenAiExchange, next: ParsedOpenAiExchange) -> Parse
     append_unique(&mut current.event_types, next.event_types);
     append_unique_tools(&mut current.request_tool_events, next.request_tool_events);
     append_unique_tools(&mut current.response_tool_events, next.response_tool_events);
-    if !next.usage.is_empty() && usage_rank(&next.usage) >= usage_rank(&current.usage) {
+    if !next.usage.is_empty() && next.usage.total_tokens >= current.usage.total_tokens {
         current.usage = next.usage;
     }
     if next.response_id.is_some() {
@@ -130,15 +127,6 @@ fn append_unique_tools(target: &mut Vec<ParsedToolEvent>, source: Vec<ParsedTool
             target.push(event);
         }
     }
-}
-
-fn usage_rank(usage: &TokenUsage) -> i64 {
-    usage.total_tokens.max(
-        usage
-            .input_tokens
-            .saturating_add(usage.output_tokens)
-            .saturating_add(usage.reasoning_tokens),
-    )
 }
 
 #[cfg(test)]

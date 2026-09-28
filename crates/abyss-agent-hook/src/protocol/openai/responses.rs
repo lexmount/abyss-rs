@@ -536,11 +536,7 @@ fn best_usage(values: &[Value]) -> Option<TokenUsage> {
     values
         .iter()
         .flat_map(|value| find_usage(value, MAX_PARSE_DEPTH))
-        .max_by_key(|usage| {
-            usage
-                .total_tokens
-                .max(usage.input_tokens.saturating_add(usage.output_tokens))
-        })
+        .max_by_key(|usage| usage.total_tokens)
 }
 
 fn find_usage(value: &Value, depth: usize) -> Vec<TokenUsage> {
@@ -590,29 +586,21 @@ fn usage_from_object(object: &serde_json::Map<String, Value>) -> Option<TokenUsa
     let reasoning = nested_int_field(object, "output_tokens_details", "reasoning_tokens")
         .or_else(|| int_field(object, "reasoning_tokens"))
         .unwrap_or(0);
-    let input = input.unwrap_or(0);
-    let output = output.unwrap_or(0);
-    let total = int_field(object, "total_tokens")
-        .unwrap_or_else(|| input.saturating_add(output).saturating_add(reasoning));
-
-    if input == 0
-        && output == 0
-        && cache_read == 0
-        && cache_write == 0
-        && reasoning == 0
-        && total == 0
-    {
-        return None;
-    }
-
-    Some(TokenUsage {
-        input_tokens: input,
-        output_tokens: output,
-        cache_read_tokens: cache_read,
-        cache_write_tokens: cache_write,
-        reasoning_tokens: reasoning,
-        total_tokens: total,
-    })
+    // OpenAI input counts include cached tokens and output counts include
+    // reasoning; keep the cache counters disjoint from input.
+    let input = input
+        .unwrap_or(0)
+        .saturating_sub(cache_read)
+        .saturating_sub(cache_write)
+        .max(0);
+    let usage = TokenUsage::from_parts(
+        input,
+        cache_read,
+        cache_write,
+        output.unwrap_or(0),
+        reasoning,
+    );
+    (!usage.is_empty()).then_some(usage)
 }
 
 fn int_field(object: &serde_json::Map<String, Value>, key: &str) -> Option<i64> {
@@ -846,6 +834,37 @@ mod tests {
         assert_eq!(parsed.response_texts, vec!["hello user"]);
         assert_eq!(parsed.usage.input_tokens, 2);
         assert_eq!(parsed.usage.output_tokens, 3);
+    }
+
+    #[test]
+    fn removes_cached_tokens_from_input() {
+        let exchange = json_exchange(
+            "/v1/responses",
+            &json!({
+                "model": "gpt-5",
+                "input": [{"role": "user", "content": "hello"}]
+            }),
+            &json!({
+                "id": "resp-2",
+                "model": "gpt-5",
+                "output": [{"content": [{"type": "output_text", "text": "hi"}]}],
+                "usage": {
+                    "input_tokens": 1000_i32,
+                    "input_tokens_details": {"cached_tokens": 900_i32},
+                    "output_tokens": 50_i32,
+                    "output_tokens_details": {"reasoning_tokens": 20_i32},
+                    "total_tokens": 1050_i32
+                }
+            }),
+        );
+
+        let parsed = parse_openai_exchange(&exchange).expect("OpenAI exchange");
+
+        assert_eq!(parsed.usage.input_tokens, 100);
+        assert_eq!(parsed.usage.cache_read_tokens, 900);
+        assert_eq!(parsed.usage.output_tokens, 50);
+        assert_eq!(parsed.usage.reasoning_tokens, 20);
+        assert_eq!(parsed.usage.total_tokens, 1050);
     }
 
     #[test]

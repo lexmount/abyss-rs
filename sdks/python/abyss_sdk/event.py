@@ -33,7 +33,12 @@ class LlmContext:
 
 @dataclass(frozen=True)
 class TokenUsage:
-    """Normalized non-negative token counters."""
+    """Normalized non-negative token counters.
+
+    Input, cache read, cache write, and output counters are disjoint;
+    ``reasoning_tokens`` is a breakdown of ``output_tokens`` and
+    ``total_tokens`` is the sum of the four disjoint counters.
+    """
 
     input_tokens: int
     output_tokens: int

@@ -201,7 +201,7 @@ Protocol version 1 defines one flat, normalized `AgentEvent` shape:
   },
   "side": "request",
   "token_usage": {
-    "input_tokens": 24,
+    "input_tokens": 16,
     "output_tokens": 0,
     "cache_read_tokens": 8,
     "cache_write_tokens": 0,
@@ -214,6 +214,15 @@ Protocol version 1 defines one flat, normalized `AgentEvent` shape:
 There is no event kind discriminator or nested payload enum because version 1
 defines only this event shape. `side` identifies whether the normalized content
 and token usage belong to an Agent request or provider response.
+
+`token_usage` counters are disjoint regardless of how the provider reports
+them. `input_tokens` counts input neither read from nor written into a provider
+cache, `cache_read_tokens` and `cache_write_tokens` count the cached input, and
+`output_tokens` counts model output including reasoning. `reasoning_tokens` is
+the part of `output_tokens` spent on reasoning, and `total_tokens` is
+`input_tokens + cache_read_tokens + cache_write_tokens + output_tokens`. Request
+events carry the input-side counters and response events carry the output-side
+counters, so summing both sides of one exchange never double-counts a token.
 
 Provider-specific response identifiers, raw HTTP details, parser evidence, and
 other internal correlation data are not part of the public event. The broker

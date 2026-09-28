@@ -181,20 +181,23 @@ pub struct ToolResult {
 }
 
 /// Normalized non-negative token counters.
+///
+/// Input, cache read, cache write, and output counters are disjoint;
+/// `reasoning_tokens` is a breakdown of `output_tokens`.
 #[derive(Debug, Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct TokenUsage {
-    /// Tokens consumed by prompt or input content.
+    /// Input tokens neither read from nor written into a provider cache.
     pub input_tokens: u64,
-    /// Tokens produced by model output.
+    /// Tokens produced by model output, including reasoning.
     pub output_tokens: u64,
     /// Input tokens read from a provider cache.
     pub cache_read_tokens: u64,
     /// Input tokens written into a provider cache.
     pub cache_write_tokens: u64,
-    /// Tokens spent in model reasoning traces.
+    /// Part of `output_tokens` spent in model reasoning traces.
     pub reasoning_tokens: u64,
-    /// Provider total or a total derived by the producer.
+    /// Sum of input, cache read, cache write, and output counters.
     pub total_tokens: u64,
 }
 

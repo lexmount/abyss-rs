@@ -34,6 +34,11 @@ export interface LlmContext {
 
 export type AgentEventSide = "request" | "response";
 
+/**
+ * Normalized non-negative token counters. Input, cache read, cache write, and
+ * output counters are disjoint; `reasoning_tokens` is a breakdown of
+ * `output_tokens` and `total_tokens` is the sum of the four disjoint counters.
+ */
 export interface TokenUsage {
   input_tokens: number;
   output_tokens: number;
