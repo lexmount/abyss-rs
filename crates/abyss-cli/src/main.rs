@@ -13,6 +13,7 @@ mod cli_logging;
 mod command;
 mod credential;
 mod delivery;
+#[cfg(feature = "local")]
 mod deploy_local;
 mod error;
 mod filesystem;

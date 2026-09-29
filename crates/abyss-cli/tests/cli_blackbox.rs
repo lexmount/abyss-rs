@@ -262,12 +262,59 @@ fn dashboard_requires_a_configured_url_before_opening_the_browser() {
         assert!(!output.status.success());
         let stderr = String::from_utf8_lossy(&output.stderr);
         assert!(stderr.contains("dashboard URL is not configured"));
-        assert!(stderr.contains("abyss deploy-local start"));
+        assert!(stderr.contains("product.dashboard.url"));
+        assert_eq!(
+            stderr.contains("abyss deploy-local start"),
+            cfg!(feature = "local")
+        );
         assert!(!root.join("browser-args").exists());
     }
     fs::remove_dir_all(root).expect("test state should be removed");
 }
 
+#[test]
+fn deploy_local_command_availability_matches_build_features() {
+    let root = unique_test_dir();
+    fs::create_dir_all(&root).expect("test state should create");
+    let binary = env!("CARGO_BIN_EXE_abyss");
+    let help = Command::new(binary)
+        .env("ABYSS_HOME", &root)
+        .arg("--help")
+        .output()
+        .expect("CLI help should run");
+    assert!(help.status.success());
+    assert_eq!(
+        String::from_utf8_lossy(&help.stdout)
+            .lines()
+            .any(|line| line.trim_start().starts_with("deploy-local")),
+        cfg!(feature = "local")
+    );
+
+    for operation in ["start", "stop", "status"] {
+        let mut command = Command::new(binary);
+        command
+            .env("ABYSS_HOME", &root)
+            .args(["deploy-local", operation]);
+        if cfg!(feature = "local") {
+            command.arg("--help");
+        }
+        let output = command.output().expect("CLI command should run");
+        if cfg!(feature = "local") {
+            assert!(output.status.success());
+        } else {
+            assert_eq!(output.status.code(), Some(2_i32));
+            assert!(
+                String::from_utf8_lossy(&output.stderr)
+                    .contains("unrecognized subcommand 'deploy-local'")
+            );
+        }
+    }
+    assert!(!root.join("local").exists());
+    assert!(!root.join("product-config.json").exists());
+    fs::remove_dir_all(root).expect("test state should be removed");
+}
+
+#[cfg(feature = "local")]
 #[test]
 fn deploy_local_reports_redirect_safe_stages_and_preserves_endpoint_output() {
     let root = unique_test_dir();
@@ -881,6 +928,7 @@ fn dashboard_command(root: &std::path::Path) -> Command {
     command
 }
 
+#[cfg(feature = "local")]
 fn local_deployment_command(
     binary: &str,
     root: &std::path::Path,
@@ -896,6 +944,7 @@ fn local_deployment_command(
     command
 }
 
+#[cfg(feature = "local")]
 fn prepare_fake_local_services(root: &std::path::Path) -> (std::path::PathBuf, std::path::PathBuf) {
     let fixture = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
         .join("../../scripts/tests/fixtures/fake_local_service.py")

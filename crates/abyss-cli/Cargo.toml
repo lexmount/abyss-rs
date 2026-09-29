@@ -7,6 +7,10 @@ license-file.workspace = true
 repository.workspace = true
 publish = false
 
+[features]
+default = ["local"]
+local = ["dep:hex", "dep:rand", "dep:sha2"]
+
 [dependencies]
 abyss-agent-hook.workspace = true
 abyss-delivery-plugin = { path = "../abyss-delivery-plugin" }
@@ -14,14 +18,14 @@ abyss-mitm.workspace = true
 abyss-terminal-auth.workspace = true
 chrono = { version = "0.4", features = ["serde"] }
 clap = { version = "4", features = ["derive", "env"] }
-hex = "0.4"
+hex = { version = "0.4", optional = true }
 nix = { version = "0.30", default-features = false, features = ["process", "signal"] }
-rand = "0.9"
+rand = { version = "0.9", optional = true }
 reqwest = { version = "0.12", default-features = false, features = ["blocking", "json", "rustls-tls"] }
 regex = "1"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
-sha2 = "0.10"
+sha2 = { version = "0.10", optional = true }
 thiserror = "2"
 toml.workspace = true
 

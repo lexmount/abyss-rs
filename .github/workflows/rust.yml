@@ -109,6 +109,12 @@ jobs:
           cargo test --locked "${packages[@]}" -- \
             --skip broker_loads_current_toml_config_with_relative_paths_and_devtools_controls
 
+      - name: Test and lint CLI without local deployment
+        if: runner.os != 'Windows'
+        run: |
+          cargo test --locked --package abyss-cli --no-default-features
+          cargo clippy --locked --package abyss-cli --all-targets --no-default-features -- -D warnings
+
       - name: Run broker static configuration black-box
         shell: bash
         run: |

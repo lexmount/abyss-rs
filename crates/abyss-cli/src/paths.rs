@@ -105,6 +105,7 @@ impl CliPaths {
     }
 
     /// Root for the CLI-managed local backend and dashboard deployment.
+    #[cfg(feature = "local")]
     #[must_use]
     pub fn local_deployment_dir(&self) -> PathBuf {
         self.root.join("local")
@@ -166,6 +167,7 @@ mod tests {
             PathBuf::from("/tmp/abyss/runtime-policy.toml")
         );
         assert_eq!(paths.logs_dir(), PathBuf::from("/tmp/abyss/logs"));
+        #[cfg(feature = "local")]
         assert_eq!(
             paths.local_deployment_dir(),
             PathBuf::from("/tmp/abyss/local")

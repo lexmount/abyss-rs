@@ -15,17 +15,23 @@ use crate::{
     broker::{BrokerClient, BrokerConnection, ProxyLifecycle},
     claude_code::ClaudeCodeConfigurator,
     cli::{
-        Command as ParsedCommand, ConfigCommand, ContextCommand, DeployLocalCommand,
-        HarnessCommand, InternalCommand, LogCommand, ProxyCommand, RunArgs,
+        Command as ParsedCommand, ConfigCommand, ContextCommand, HarnessCommand, InternalCommand,
+        LogCommand, ProxyCommand, RunArgs,
     },
-    deploy_local::{DeployProgress, DeployProgressRenderer, LocalDeployment},
     error::CliError,
     local_config::LocalRuntimePolicy,
     paths::CliPaths,
     platform::platform_adapter,
     product_config::CliProductConfig,
-    runtime::{RunningBroker, RuntimeStartProgress, ensure_started, ensure_started_with_progress},
+    runtime::{RunningBroker, ensure_started},
     support_bundle::SupportBundleCollector,
+};
+
+#[cfg(feature = "local")]
+use crate::{
+    cli::DeployLocalCommand,
+    deploy_local::{DeployProgress, DeployProgressRenderer, LocalDeployment},
+    runtime::{RuntimeStartProgress, ensure_started_with_progress},
 };
 
 /// Parsed endpoint command ready for execution.
@@ -70,6 +76,7 @@ impl CliCommand {
             ParsedCommand::Log { command } => LogCommandRunner::run(command),
             ParsedCommand::Status(args) => StatusCommandRunner::run(args.broker_api.as_deref()),
             ParsedCommand::Dashboard => DashboardCommandRunner::run(),
+            #[cfg(feature = "local")]
             ParsedCommand::DeployLocal { command } => DeployLocalCommandRunner::run(&command),
             ParsedCommand::Diagnostics(args) => {
                 DiagnosticsCommandRunner::run(args.broker_api.as_deref())
@@ -115,8 +122,10 @@ impl CliCommand {
     }
 }
 
+#[cfg(feature = "local")]
 struct DeployLocalCommandRunner;
 
+#[cfg(feature = "local")]
 impl DeployLocalCommandRunner {
     fn run(command: &DeployLocalCommand) -> Result<(), CliError> {
         let paths = CliPaths::from_env()?;
@@ -205,6 +214,7 @@ impl DeployLocalCommandRunner {
     }
 }
 
+#[cfg(feature = "local")]
 fn skip_local_proxy() -> bool {
     cfg!(debug_assertions)
         && std::env::var("ABYSS_LOCAL_SKIP_PROXY").is_ok_and(|value| value == "1")
@@ -356,6 +366,7 @@ impl StatusBroker {
         })
     }
 
+    #[cfg(feature = "local")]
     fn proxy_status(&self) -> (String, bool) {
         if !self.running {
             return ("stopped".to_owned(), false);
@@ -471,10 +482,12 @@ impl DashboardCommandRunner {
     fn run() -> Result<(), CliError> {
         let paths = CliPaths::from_env()?;
         let url = configured_dashboard_url(&paths)?.ok_or_else(|| {
-            CliError::InvalidConfiguration(
-                "dashboard URL is not configured; run `abyss deploy-local start` or set product.dashboard.url in product-config.json"
-                    .to_owned(),
-            )
+            let hint = if cfg!(feature = "local") {
+                "run `abyss deploy-local start` or set product.dashboard.url in product-config.json"
+            } else {
+                "set product.dashboard.url in product-config.json"
+            };
+            CliError::InvalidConfiguration(format!("dashboard URL is not configured; {hint}"))
         })?;
         println!("Dashboard: {url}");
         if let Err(error) = platform_adapter().open_browser(&url) {

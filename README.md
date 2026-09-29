@@ -154,6 +154,31 @@ abyss logout
 See [Endpoint configuration](docs/configuration.md) for the complete runtime and
 deployment configuration boundary.
 
+### CLI build features
+
+The `abyss-cli` crate enables the `local` Cargo feature by default. It
+includes the `abyss deploy-local start|stop|status` commands, backend and dashboard
+installation, generated local configuration, and local service management.
+Public CLI releases and the source installer retain this default.
+
+Distributions that supply their own service configuration, such as Office or
+SaaS, can build a CLI without local deployment:
+
+```bash
+cargo build --release --locked -p abyss-cli --no-default-features
+```
+
+This removes the command from help and command parsing, and excludes its
+implementation and dedicated direct dependencies. Login, explicit proxy,
+capture policy, diagnostics, and event delivery remain available. The broker
+and delivery worker must still be packaged alongside the CLI.
+
+To enable local deployment explicitly when disabling default features:
+
+```bash
+cargo build --release --locked -p abyss-cli --no-default-features --features local
+```
+
 ## Architecture
 
 ```mermaid

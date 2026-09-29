@@ -64,9 +64,11 @@ pub enum CliError {
         body: String,
     },
     /// A local runtime artifact request failed before a response arrived.
+    #[cfg(feature = "local")]
     #[error("local runtime artifact request failed: {0}")]
     LocalArtifactRequest(#[source] reqwest::Error),
     /// A downloaded or installed local runtime artifact was invalid.
+    #[cfg(feature = "local")]
     #[error("local runtime artifact is invalid: {0}")]
     LocalArtifact(String),
     /// The destination immediately rejected a newly installed credential.
