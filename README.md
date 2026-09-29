@@ -100,8 +100,14 @@ URL. Inspect the complete local environment and run an agent through it:
 
 ```bash
 abyss deploy-local status
+abyss dashboard
 abyss run -- codex
 ```
+
+`abyss dashboard` opens the configured dashboard URL in your default browser
+using `open` on macOS or `xdg-open` on Linux. It prints the URL for manual access
+if the browser cannot be opened. Start a stopped local environment with
+`abyss deploy-local start` before opening its dashboard.
 
 Manage the environment without reinstalling it:
 

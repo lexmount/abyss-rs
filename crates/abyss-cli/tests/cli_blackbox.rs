@@ -3,6 +3,7 @@ use std::{
     io::{Read as _, Write as _},
     net::{TcpListener, TcpStream},
     process::Command,
+    sync::atomic::{AtomicUsize, Ordering},
     thread::{self, JoinHandle},
     time::{SystemTime, UNIX_EPOCH},
 };
@@ -192,6 +193,78 @@ fn status_and_log_dump_work_without_a_running_broker() {
             .windows(b"cli/cli.log".len())
             .any(|window| window == b"cli/cli.log")
     );
+    fs::remove_dir_all(root).expect("test state should be removed");
+}
+
+#[test]
+fn dashboard_opens_the_configured_url_without_starting_a_runtime() {
+    let root = unique_test_dir();
+    let output = dashboard_command(&root)
+        .output()
+        .expect("dashboard command should run");
+
+    assert!(
+        output.status.success(),
+        "dashboard should open; stderr={}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert_eq!(
+        fs::read_to_string(root.join("browser-args")).expect("browser arguments should read"),
+        "1\nhttps://dashboard.example.test/team;literal\n",
+        "the configured URL must reach the browser as one literal argument"
+    );
+    assert!(String::from_utf8_lossy(&output.stdout).contains("https://dashboard.example.test/"));
+    assert!(!root.join("runtime").exists());
+    fs::remove_dir_all(root).expect("test state should be removed");
+}
+
+#[test]
+fn dashboard_reports_browser_failures_and_preserves_the_url() {
+    let root = unique_test_dir();
+    let mut command = dashboard_command(&root);
+    command.env("ABYSS_TEST_BROWSER_EXIT", "7");
+    for launcher_missing in [false, true] {
+        if launcher_missing {
+            fs::remove_file(root.join(browser_launcher())).expect("launcher should be removed");
+        }
+        let output = command.output().expect("dashboard command should run");
+        assert!(!output.status.success(), "browser failure must be reported");
+        assert!(
+            String::from_utf8_lossy(&output.stdout).contains("https://dashboard.example.test/"),
+            "dashboard URL should remain available; launcher_missing={launcher_missing}; output={output:?}"
+        );
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        assert!(stderr.contains("Open the dashboard URL above manually."));
+        assert!(stderr.contains(browser_launcher()));
+    }
+    fs::remove_dir_all(root).expect("test state should be removed");
+}
+
+#[test]
+fn dashboard_requires_a_configured_url_before_opening_the_browser() {
+    let root = unique_test_dir();
+    let mut command = dashboard_command(&root);
+    let config = root.join("product-config.json");
+    fs::write(
+        &config,
+        r#"{
+            "schema_version": 1,
+            "product": {"kind": "cli"},
+            "delivery_worker": {"authentication": {"mode": "none"}}
+        }"#,
+    )
+    .expect("configuration without dashboard should write");
+    for config_missing in [false, true] {
+        if config_missing {
+            fs::remove_file(&config).expect("configuration should be removed");
+        }
+        let output = command.output().expect("dashboard command should run");
+        assert!(!output.status.success());
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        assert!(stderr.contains("dashboard URL is not configured"));
+        assert!(stderr.contains("abyss deploy-local start"));
+        assert!(!root.join("browser-args").exists());
+    }
     fs::remove_dir_all(root).expect("test state should be removed");
 }
 
@@ -755,11 +828,57 @@ fn write_json_response(body: &str, mut stream: TcpStream) {
 }
 
 fn unique_test_dir() -> std::path::PathBuf {
+    // Parallel tests can observe the same clock tick.
+    static NEXT_TEST_ID: AtomicUsize = AtomicUsize::new(0);
+
+    let test_id = NEXT_TEST_ID.fetch_add(1, Ordering::Relaxed);
     let nonce = SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .expect("system clock should be after epoch")
         .as_nanos();
-    std::env::temp_dir().join(format!("abyss-cli-blackbox-{}-{nonce}", std::process::id()))
+    std::env::temp_dir().join(format!(
+        "abyss-cli-blackbox-{}-{nonce}-{test_id}",
+        std::process::id()
+    ))
+}
+
+const fn browser_launcher() -> &'static str {
+    if cfg!(target_os = "macos") {
+        "open"
+    } else {
+        "xdg-open"
+    }
+}
+
+fn dashboard_command(root: &std::path::Path) -> Command {
+    write_cli_startup_fixture(
+        root,
+        r#"{
+            "schema_version": 1,
+            "product": {
+                "kind": "cli",
+                "control_plane": {"url": "https://control.example.test"},
+                "dashboard": {"url": "https://dashboard.example.test/team;literal"}
+            },
+            "delivery_worker": {"authentication": {"mode": "managed_bearer"}}
+        }"#,
+    );
+    let launcher = root.join(browser_launcher());
+    fs::write(
+        &launcher,
+        "#!/bin/sh\nprintf '%s\\n' \"$#\" \"$@\" > \"$ABYSS_TEST_BROWSER_ARGS\"\nexit \"$ABYSS_TEST_BROWSER_EXIT\"\n",
+    )
+    .expect("browser launcher fixture should write");
+    fs::set_permissions(&launcher, fs::Permissions::from_mode(0o700))
+        .expect("browser launcher fixture should be executable");
+    let mut command = Command::new(env!("CARGO_BIN_EXE_abyss"));
+    command
+        .env("ABYSS_HOME", root)
+        .env("PATH", root)
+        .env("ABYSS_TEST_BROWSER_ARGS", root.join("browser-args"))
+        .env("ABYSS_TEST_BROWSER_EXIT", "0")
+        .arg("dashboard");
+    command
 }
 
 fn local_deployment_command(

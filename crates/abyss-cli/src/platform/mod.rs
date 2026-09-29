@@ -7,6 +7,7 @@
 use std::{
     fs, io,
     path::{Path, PathBuf},
+    process::Command,
 };
 
 use abyss_mitm::CaMaterialPersistence;
@@ -70,8 +71,26 @@ pub trait PlatformAdapter: Send + Sync {
     /// Returns proxy variables injected into child processes.
     fn proxy_environment_variables(&self, proxy_url: &str) -> Vec<(String, String)>;
 
+    /// Opens a validated HTTP(S) URL in the user's default browser.
+    fn open_browser(&self, url: &str) -> Result<(), CliError>;
+
     /// Returns platform-specific support metadata.
     fn system_information(&self) -> String;
+}
+
+fn open_browser(program: &str, url: &str) -> Result<(), CliError> {
+    let output = Command::new(program)
+        .arg(url)
+        .output()
+        .map_err(|source| CliError::filesystem("open default browser", program, source))?;
+    if output.status.success() {
+        return Ok(());
+    }
+    Err(CliError::Command {
+        program: program.to_owned(),
+        status: output.status,
+        stderr: String::from_utf8_lossy(&output.stderr).trim().to_owned(),
+    })
 }
 
 /// Builds the adapter selected for the current target.

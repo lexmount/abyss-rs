@@ -42,6 +42,8 @@ pub enum Command {
     },
     /// Show the combined endpoint and broker status.
     Status(StatusArgs),
+    /// Open the configured dashboard in the default browser.
+    Dashboard,
     /// Deploy and manage the local SQLite+FTS environment.
     DeployLocal {
         /// Local deployment operation.
@@ -327,6 +329,7 @@ mod tests {
             "config",
             "log",
             "status",
+            "dashboard",
             "deploy-local",
             "diagnostics",
             "run",
@@ -343,7 +346,7 @@ mod tests {
                 .any(|line| line.trim_start().starts_with("internal")),
             "internal installer operations must remain hidden; help={help}"
         );
-        for out_of_scope_command in ["interception", "dashboard", "driver", "service", "ca"] {
+        for out_of_scope_command in ["interception", "driver", "service", "ca"] {
             assert!(
                 !help
                     .lines()
@@ -371,6 +374,7 @@ mod tests {
             &["abyss", "log", "dump"],
             &["abyss", "log", "dump", "-f", "support.zip"],
             &["abyss", "status"],
+            &["abyss", "dashboard"],
             &["abyss", "deploy-local", "start"],
             &["abyss", "deploy-local", "stop"],
             &["abyss", "deploy-local", "status"],
