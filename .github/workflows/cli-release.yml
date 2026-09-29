@@ -1,4 +1,4 @@
-name: Release CLI binaries
+name: Release endpoint binaries
 
 on:
   pull_request:
@@ -6,12 +6,15 @@ on:
       - '.github/workflows/cli-release.yml'
       - 'scripts/install.sh'
       - 'scripts/ci/package_cli.py'
+      - 'scripts/ci/verify_release.py'
+      - 'scripts/ci/assemble_release.py'
       - 'scripts/tests/*release*'
       - 'crates/**'
       - 'Cargo.toml'
       - 'Cargo.lock'
       - '.cargo/**'
       - 'platform/linux/abyss-broker@.service'
+      - 'LICENSE'
   push:
     tags:
       - 'v*'
@@ -28,9 +31,13 @@ env:
   RUSTUP_TOOLCHAIN: '1.98.0'
   CARGO_TERM_COLOR: always
 
+defaults:
+  run:
+    shell: bash
+
 jobs:
   build:
-    name: Package CLI (${{ matrix.target }})
+    name: Package endpoint (${{ matrix.target }})
     runs-on: ${{ matrix.os }}
     timeout-minutes: 45
     strategy:
@@ -41,6 +48,8 @@ jobs:
             target: x86_64-unknown-linux-musl
           - os: macos-14
             target: aarch64-apple-darwin
+          - os: windows-2022
+            target: x86_64-pc-windows-msvc
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
@@ -61,11 +70,29 @@ jobs:
           libclang_dir="$(cd "$(dirname "$clang_bin")/../lib" && pwd)"
           echo "LIBCLANG_PATH=$libclang_dir" >> "$GITHUB_ENV"
           echo 'MACOSX_DEPLOYMENT_TARGET=11.0' >> "$GITHUB_ENV"
+      - name: Configure Windows build tools
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = "Stop"
+          $llvmBin = "C:\Program Files\LLVM\bin"
+          $clang = Join-Path $llvmBin "clang.exe"
+          if (-not (Test-Path -Path $clang -PathType Leaf)) {
+            choco install llvm --version 18.1.8 --no-progress -y
+          }
+          if (-not (Test-Path -Path $clang -PathType Leaf)) {
+            throw "LLVM was not found at $clang after installation."
+          }
+          $llvmBin | Out-File -FilePath $env:GITHUB_PATH -Append
+          "LIBCLANG_PATH=$llvmBin" | Out-File -FilePath $env:GITHUB_ENV -Append
       - name: Install Rust
         env:
           CLI_TARGET: ${{ matrix.target }}
         run: rustup toolchain install "$RUSTUP_TOOLCHAIN" --profile minimal --target "$CLI_TARGET"
+      - name: Test release packaging and assembly
+        run: python scripts/tests/test_release_artifacts.py
       - name: Test piped download installer
+        if: runner.os != 'Windows'
         run: |
           sh -n scripts/install.sh
           python3 scripts/tests/test_release_installer.py
@@ -75,9 +102,12 @@ jobs:
       - name: Build release binaries
         env:
           CLI_TARGET: ${{ matrix.target }}
-        run: >-
-          cargo build --release --locked --target "$CLI_TARGET"
-          -p abyss-cli -p abyss-broker -p abyss-delivery-plugin
+        run: |
+          packages=(-p abyss-broker -p abyss-delivery-plugin)
+          if [[ "$RUNNER_OS" != Windows ]]; then
+            packages+=(-p abyss-cli)
+          fi
+          cargo build --release --locked --target "$CLI_TARGET" "${packages[@]}"
       - name: Package and validate release version
         env:
           CLI_TARGET: ${{ matrix.target }}
@@ -88,24 +118,78 @@ jobs:
           if [[ "$RELEASE_REF_TYPE" == tag ]]; then
             args+=(--tag "$RELEASE_REF_NAME")
           fi
-          python3 scripts/ci/package_cli.py --target "$CLI_TARGET" \
+          if [[ "$RUNNER_OS" == Windows ]]; then
+            args+=(--variant runtime)
+          fi
+          python scripts/ci/package_cli.py --target "$CLI_TARGET" \
             --binaries "target/$CLI_TARGET/release" --output dist "${args[@]}"
           cat dist/SHA256SUMS.* > dist/SHA256SUMS
       - name: Verify installed release binaries
+        if: runner.os != 'Windows'
         run: sh scripts/tests/smoke_release_install.sh dist
+      - name: Build and package CLI without local deployment
+        if: runner.os != 'Windows'
+        env:
+          CLI_TARGET: ${{ matrix.target }}
+          RELEASE_REF_TYPE: ${{ github.ref_type }}
+          RELEASE_REF_NAME: ${{ github.ref_name }}
+        run: |
+          # The default CLI is already archived. Only rebuild the CLI; retain the
+          # same broker and delivery executables for both distribution variants.
+          cargo build --release --locked --target "$CLI_TARGET" \
+            -p abyss-cli --no-default-features
+          args=()
+          if [[ "$RELEASE_REF_TYPE" == tag ]]; then
+            args+=(--tag "$RELEASE_REF_NAME")
+          fi
+          python scripts/ci/package_cli.py --target "$CLI_TARGET" \
+            --binaries "target/$CLI_TARGET/release" --output dist \
+            --variant no-local "${args[@]}"
+      - name: Verify archive metadata and native executables
+        run: |
+          shopt -s nullglob
+          python scripts/ci/verify_release.py --smoke dist/*.tar.gz dist/*.zip
       - uses: actions/upload-artifact@v4
         with:
-          name: cli-${{ matrix.target }}
+          name: endpoint-build-${{ matrix.target }}
           path: |
             dist/*.tar.gz
+            dist/*.zip
             dist/install.sh
             dist/SHA256SUMS.*
           if-no-files-found: error
 
-  publish:
-    name: Publish complete CLI release
-    if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')
+  assemble:
+    name: Validate complete endpoint release
     needs: build
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: endpoint-build-*
+          path: artifacts
+      - name: Assemble complete release
+        env:
+          RELEASE_REVISION: ${{ github.sha }}
+        run: |
+          python scripts/ci/assemble_release.py --artifacts artifacts \
+            --output dist --revision "$RELEASE_REVISION"
+          cd dist
+          sha256sum --check SHA256SUMS
+      - uses: actions/upload-artifact@v4
+        with:
+          name: endpoint-release
+          path: dist/*
+          if-no-files-found: error
+
+  publish:
+    name: Publish complete endpoint release
+    if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')
+    needs: assemble
     runs-on: ubuntu-latest
     permissions:
       contents: write
@@ -115,15 +199,10 @@ jobs:
     steps:
       - uses: actions/download-artifact@v4
         with:
-          pattern: cli-*
-          path: artifacts
-      - name: Assemble complete release
+          name: endpoint-release
+          path: dist
+      - name: Verify release checksums
         run: |
-          mkdir dist
-          cmp artifacts/cli-aarch64-apple-darwin/install.sh artifacts/cli-x86_64-unknown-linux-musl/install.sh
-          cp artifacts/cli-aarch64-apple-darwin/install.sh dist/install.sh
-          cp artifacts/cli-*/*.tar.gz dist/
-          cat artifacts/cli-*/SHA256SUMS.* > dist/SHA256SUMS
           cd dist
           sha256sum --check SHA256SUMS
       - name: Upload assets before publishing latest
@@ -136,7 +215,7 @@ jobs:
             python3 -c 'import json; assert json.load(open("release.json"))["isDraft"], "refusing to replace a published release"'
           else
             gh release create "$RELEASE_TAG" --verify-tag --draft \
-              --title "Abyss CLI $RELEASE_TAG" --generate-notes
+              --title "Abyss $RELEASE_TAG" --generate-notes
           fi
-          gh release upload "$RELEASE_TAG" dist/install.sh dist/SHA256SUMS dist/*.tar.gz --clobber
+          gh release upload "$RELEASE_TAG" dist/install.sh dist/SHA256SUMS dist/*.tar.gz dist/*.zip --clobber
           gh release edit "$RELEASE_TAG" --draft=false --latest

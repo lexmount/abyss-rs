@@ -159,7 +159,9 @@ deployment configuration boundary.
 The `abyss-cli` crate enables the `local` Cargo feature by default. It
 includes the `abyss deploy-local start|stop|status` commands, backend and dashboard
 installation, generated local configuration, and local service management.
-Public CLI releases and the source installer retain this default.
+Public CLI releases and the source installer retain this default. Releases also
+provide `-no-local` CLI archives for downstream products and a Windows x64
+broker/delivery runtime ZIP; see the [release assets](docs/cli-release.md#release-assets).
 
 Distributions that supply their own service configuration, such as Office or
 SaaS, can build a CLI without local deployment:
