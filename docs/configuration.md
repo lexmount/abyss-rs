@@ -14,6 +14,15 @@ The open CLI defaults for the first two files live in
 seed these public defaults when the files are missing and preserves existing
 files during subsequent starts.
 
+`abyss config context off` retains token usage and the identifying metadata
+needed to associate it with a device, Harness, model, and session. It disables
+conversation text, tool calls and results, and image attachments in both the
+global content policy and existing per-Harness overrides.
+`abyss config context on` enables all of these content categories again. Both commands retain token
+usage and preserve Harness enablement and matching rules. The broker persists
+the policy and applies it to subsequent event processing; previously captured
+events, including pending delivery retries, are not rewritten or deleted.
+
 `product-config.json` has no embedded default in this repository. A deployment
 or package must supply it. The CLI validates `schema_version = 1`, requires
 `product.kind = "cli"`, rejects platform-adapter configuration, and passes the

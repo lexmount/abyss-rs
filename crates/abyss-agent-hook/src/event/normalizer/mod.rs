@@ -720,6 +720,7 @@ mod tests {
                 claude_web::{ParsedClaudeWebExchange, conversation::ClaudeWebSessionIdSource},
             },
             model::{
+                image::ParsedImageAttachment,
                 tool::ParsedToolEvent,
                 usage::{TokenUsage, TokenUsageSource},
             },
@@ -787,6 +788,71 @@ mod tests {
                 .iter()
                 .all(|event| event.metadata.get("provider_usage").is_none())
         );
+    }
+
+    #[test]
+    fn token_only_events_exclude_text_tools_and_images_from_plugin_payload() {
+        let mut parsed = openai_exchange();
+        parsed.request_images = vec![
+            ParsedImageAttachment::from_bytes("image/png", b"\x89PNG\r\n\x1a\nprivate-image")
+                .expect("image fixture should be accepted"),
+        ];
+        parsed.request_tool_events = vec![ParsedToolEvent::ToolResult {
+            call_id: Some("call-1".to_owned()),
+            output: "private tool output".to_owned(),
+        }];
+        parsed.response_tool_events = vec![ParsedToolEvent::ToolCall {
+            item_id: None,
+            call_id: Some("call-2".to_owned()),
+            name: Some("shell".to_owned()),
+            input: "private tool input".to_owned(),
+        }];
+
+        // Verify the fixture carries every content category before filtering it.
+        for retain_content in [true, false] {
+            let content = HarnessUsageContentConfig {
+                token_usage: true,
+                conversation_text: retain_content,
+                tool_calls: retain_content,
+                images: retain_content,
+            };
+            let events = normalize_exchange(
+                &hook_config(),
+                &parsed,
+                &content,
+                &detection(BuiltInHarness::Codex, "x-openai-originator"),
+                &LlmProvider::OpenAi,
+                &correlation(1, 1),
+            )
+            .into_iter()
+            .map(|event| {
+                let event = abyss_plugin_protocol::event::AgentEvent::try_from(event)
+                    .expect("normalized event should convert");
+                serde_json::to_value(event).expect("plugin event should serialize")
+            })
+            .collect::<Vec<_>>();
+
+            assert_eq!(events.len(), 2);
+            assert_eq!(events[0]["token_usage"]["input_tokens"], 4_u64);
+            assert_eq!(events[0]["token_usage"]["cache_read_tokens"], 1_u64);
+            assert_eq!(events[1]["token_usage"]["output_tokens"], 6_u64);
+            assert_eq!(events[1]["token_usage"]["reasoning_tokens"], 2_u64);
+            assert_eq!(events[0].get("tool_results").is_some(), retain_content);
+            assert_eq!(events[1].get("tool_calls").is_some(), retain_content);
+            assert_eq!(events[0].get("attachments").is_some(), retain_content);
+            for event in &events {
+                assert_eq!(event.get("text").is_some(), retain_content);
+                assert_eq!(event["session_id"], "session-1");
+                if !retain_content {
+                    for field in ["tool_calls", "tool_results", "attachments", "metadata"] {
+                        assert!(
+                            event.get(field).is_none(),
+                            "unexpected content field: {field}"
+                        );
+                    }
+                }
+            }
+        }
     }
 
     #[test]
