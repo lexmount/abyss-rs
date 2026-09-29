@@ -720,6 +720,7 @@ mod tests {
                 claude_web::{ParsedClaudeWebExchange, conversation::ClaudeWebSessionIdSource},
             },
             model::{
+                image::ParsedImageAttachment,
                 tool::ParsedToolEvent,
                 usage::{TokenUsage, TokenUsageSource},
             },
@@ -787,6 +788,60 @@ mod tests {
                 .iter()
                 .all(|event| event.metadata.get("provider_usage").is_none())
         );
+    }
+
+    #[test]
+    fn usage_only_policy_removes_all_content_from_delivered_events() {
+        let mut parsed = openai_exchange();
+        parsed.request_images.push(
+            ParsedImageAttachment::from_bytes("image/png", b"\x89PNG\r\n\x1a\nprivate-image")
+                .expect("image fixture should be accepted"),
+        );
+        parsed
+            .request_tool_events
+            .push(ParsedToolEvent::ToolResult {
+                call_id: Some("call-1".to_owned()),
+                output: "private file contents".to_owned(),
+            });
+        parsed.response_tool_events.push(ParsedToolEvent::ToolCall {
+            item_id: Some("item-1".to_owned()),
+            call_id: Some("call-1".to_owned()),
+            name: Some("shell".to_owned()),
+            input: "{\"command\":\"cat private.txt\"}".to_owned(),
+        });
+
+        for enabled in [true, false] {
+            let content = HarnessUsageContentConfig {
+                token_usage: true,
+                conversation_text: enabled,
+                tool_calls: enabled,
+                images: enabled,
+            };
+            let events = normalize_exchange(
+                &hook_config(),
+                &parsed,
+                &content,
+                &detection(BuiltInHarness::Codex, "x-openai-originator"),
+                &LlmProvider::OpenAi,
+                &correlation(1, 1),
+            )
+            .into_iter()
+            .map(abyss_plugin_protocol::event::AgentEvent::try_from)
+            .collect::<Result<Vec<_>, _>>()
+            .expect("normalized events should convert to the delivery contract");
+
+            assert_eq!(events.len(), 2);
+            assert_eq!(events[0].token_usage.input_tokens, 4);
+            assert_eq!(events[1].token_usage.output_tokens, 6);
+            assert_eq!(events[0].text.as_deref(), enabled.then_some("hello"));
+            assert_eq!(events[1].text.as_deref(), enabled.then_some("hi"));
+            assert_eq!(events[0].tool_results.len(), usize::from(enabled));
+            assert_eq!(events[1].tool_calls.len(), usize::from(enabled));
+            assert_eq!(events[0].attachments.len(), usize::from(enabled));
+            assert!(events[0].tool_calls.is_empty());
+            assert!(events[1].tool_results.is_empty());
+            assert!(events[1].attachments.is_empty());
+        }
     }
 
     #[test]

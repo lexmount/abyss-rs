@@ -147,9 +147,9 @@ pub struct StopArgs {
 /// Capture configuration operations.
 #[derive(Debug, Subcommand)]
 pub enum ConfigCommand {
-    /// Enable or disable prompt and response context capture.
+    /// Enable or disable conversation, tool, and image capture while retaining token usage.
     Context {
-        /// Enable plaintext context capture.
+        /// Context capture operation.
         #[command(subcommand)]
         command: ContextCommand,
     },
@@ -165,9 +165,9 @@ pub enum ConfigCommand {
 /// Context capture operations.
 #[derive(Debug, Subcommand)]
 pub enum ContextCommand {
-    /// Upload plaintext prompt and response context.
+    /// Capture conversation text, tool calls and results, images, and token usage.
     On,
-    /// Upload usage metadata without plaintext context.
+    /// Retain token usage without conversation text, tool calls and results, or images.
     Off,
 }
 

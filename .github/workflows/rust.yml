@@ -94,19 +94,19 @@ jobs:
           fi
           printf '%s\n' "${packages[@]}" > "$RUNNER_TEMP/abyss-packages"
 
-      - name: Build Rust packages
+      - name: Build Rust packages with all features
         shell: bash
         run: |
           packages=()
           while IFS= read -r package; do packages+=("$package"); done < "$RUNNER_TEMP/abyss-packages"
-          cargo build --locked "${packages[@]}"
+          cargo build --locked --all-features "${packages[@]}"
 
-      - name: Run Rust tests
+      - name: Run Rust tests with all features
         shell: bash
         run: |
           packages=()
           while IFS= read -r package; do packages+=("$package"); done < "$RUNNER_TEMP/abyss-packages"
-          cargo test --locked "${packages[@]}" -- \
+          cargo test --locked --all-features "${packages[@]}" -- \
             --skip broker_loads_current_toml_config_with_relative_paths_and_devtools_controls
 
       - name: Test and lint CLI without local deployment
@@ -120,6 +120,7 @@ jobs:
         run: |
           test_name=broker_loads_current_toml_config_with_relative_paths_and_devtools_controls
           test_count="$(cargo test --locked \
+            --all-features \
             --package abyss-broker \
             --test broker_cli_blackbox \
             "${test_name}" \
@@ -128,6 +129,7 @@ jobs:
             | grep -Fxc "${test_name}: test")"
           test "${test_count}" -eq 1
           cargo test --locked \
+            --all-features \
             --package abyss-broker \
             --test broker_cli_blackbox \
             "${test_name}" \
@@ -141,6 +143,7 @@ jobs:
         if: runner.os == 'macOS'
         run: |
           cargo test --locked \
+            --all-features \
             --package abyss-broker \
             --test broker_cli_blackbox \
             custom_harness_emits_events_through_real_broker_flow_and_plugin_boundaries \
@@ -172,12 +175,12 @@ jobs:
         timeout-minutes: 5
         run: make test-blackbox-macos-ca
 
-      - name: Run clippy
+      - name: Run clippy with all features
         shell: bash
         run: |
           packages=()
           while IFS= read -r package; do packages+=("$package"); done < "$RUNNER_TEMP/abyss-packages"
-          cargo clippy --locked --all-targets "${packages[@]}" -- -D warnings
+          cargo clippy --locked --all-targets --all-features "${packages[@]}" -- -D warnings
 
   sdk:
     name: Multi-language SDK and real broker black-box

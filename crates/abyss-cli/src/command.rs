@@ -5,7 +5,9 @@
 
 use std::{io::Write as _, process::Command as ProcessCommand};
 
-use abyss_agent_hook::{BuiltInHarness, HarnessConfig, HarnessId};
+use abyss_agent_hook::{
+    BuiltInHarness, HarnessConfig, HarnessId, HarnessUsageContentConfig, HooksConfig,
+};
 use abyss_terminal_auth::CredentialStore as _;
 use chrono::Utc;
 use serde_json::Value;
@@ -274,12 +276,7 @@ impl ConfigCommandRunner {
         match command {
             ConfigCommand::Context { command } => {
                 let enabled = matches!(command, ContextCommand::On);
-                hooks.harness_usage.config.content.conversation_text = enabled;
-                for harness in hooks.harness_usage.config.harnesses.values_mut() {
-                    if let Some(content) = &mut harness.content {
-                        content.conversation_text = enabled;
-                    }
-                }
+                Self::set_context_capture(&mut hooks, enabled);
                 broker.set_hooks_config(&hooks)?;
                 println!("Context capture {}.", context_label(enabled));
                 Ok(())
@@ -318,6 +315,23 @@ impl ConfigCommandRunner {
                 Ok(())
             }
         }
+    }
+
+    fn set_context_capture(hooks: &mut HooksConfig, enabled: bool) {
+        let content = HarnessUsageContentConfig {
+            token_usage: true,
+            conversation_text: enabled,
+            tool_calls: enabled,
+            images: enabled,
+        };
+        // Existing per-Harness policies replace the default policy, so update
+        // them too without changing enablement, matchers, or inheritance.
+        for harness in hooks.harness_usage.config.harnesses.values_mut() {
+            if let Some(override_content) = &mut harness.content {
+                override_content.clone_from(&content);
+            }
+        }
+        hooks.harness_usage.config.content = content;
     }
 }
 
@@ -612,9 +626,55 @@ fn enabled_label(hooks: &abyss_agent_hook::HooksConfig, agent: BuiltInHarness) -
 
 #[cfg(test)]
 mod tests {
+    use abyss_agent_hook::HooksConfig;
     use clap::Parser as _;
+    use serde_json::json;
 
-    use super::CliCommand;
+    use super::{CliCommand, ConfigCommandRunner};
+
+    #[test]
+    fn context_switch_controls_all_content_including_harness_overrides() {
+        let mut hooks: HooksConfig = serde_json::from_value(json!({
+            "harness_usage": {
+                "config": {
+                    "content": {"token_usage": false},
+                    "harnesses": {
+                        "codex": {"content": {"token_usage": false}},
+                        "claude-code": {},
+                        "custom-agent": {
+                            "enabled": false,
+                            "content": {},
+                            "matchers": [{"process_names": ["custom-agent"]}]
+                        }
+                    }
+                }
+            }
+        }))
+        .expect("mixed capture policies should parse");
+
+        for enabled in [false, true, false] {
+            ConfigCommandRunner::set_context_capture(&mut hooks, enabled);
+
+            let config = &hooks.harness_usage.config;
+            for harness in ["codex", "claude-code", "custom-agent", "new-agent"] {
+                let content = config.content_for_harness(harness);
+                assert!(
+                    content.token_usage,
+                    "usage must remain enabled for {harness}"
+                );
+                assert_eq!(content.conversation_text, enabled, "{harness}");
+                assert_eq!(content.tool_calls, enabled, "{harness}");
+                assert_eq!(content.images, enabled, "{harness}");
+            }
+            assert!(hooks.harness_usage.enabled);
+            assert_eq!(config.harnesses.len(), 3);
+            assert!(config.harnesses["claude-code"].content.is_none());
+            assert_eq!(config.harnesses["codex"].enabled, None);
+            let custom = &config.harnesses["custom-agent"];
+            assert_eq!(custom.enabled, Some(false));
+            assert_eq!(custom.matchers[0].process_names, ["custom-agent"]);
+        }
+    }
 
     #[test]
     fn runtime_flows_share_the_delivery_worker_bootstrap() {
