@@ -3,6 +3,7 @@ use std::{
     io::{Read as _, Write as _},
     net::{TcpListener, TcpStream},
     process::Command,
+    sync::atomic::{AtomicUsize, Ordering},
     thread::{self, JoinHandle},
     time::{SystemTime, UNIX_EPOCH},
 };
@@ -229,7 +230,8 @@ fn dashboard_reports_browser_failures_and_preserves_the_url() {
         let output = command.output().expect("dashboard command should run");
         assert!(!output.status.success(), "browser failure must be reported");
         assert!(
-            String::from_utf8_lossy(&output.stdout).contains("https://dashboard.example.test/")
+            String::from_utf8_lossy(&output.stdout).contains("https://dashboard.example.test/"),
+            "dashboard URL should remain available; launcher_missing={launcher_missing}; output={output:?}"
         );
         let stderr = String::from_utf8_lossy(&output.stderr);
         assert!(stderr.contains("Open the dashboard URL above manually."));
@@ -826,11 +828,18 @@ fn write_json_response(body: &str, mut stream: TcpStream) {
 }
 
 fn unique_test_dir() -> std::path::PathBuf {
+    // Parallel tests can observe the same clock tick.
+    static NEXT_TEST_ID: AtomicUsize = AtomicUsize::new(0);
+
+    let test_id = NEXT_TEST_ID.fetch_add(1, Ordering::Relaxed);
     let nonce = SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .expect("system clock should be after epoch")
         .as_nanos();
-    std::env::temp_dir().join(format!("abyss-cli-blackbox-{}-{nonce}", std::process::id()))
+    std::env::temp_dir().join(format!(
+        "abyss-cli-blackbox-{}-{nonce}-{test_id}",
+        std::process::id()
+    ))
 }
 
 const fn browser_launcher() -> &'static str {
