@@ -45,6 +45,7 @@ pub enum Command {
     /// Open the configured dashboard in the default browser.
     Dashboard,
     /// Deploy and manage the local SQLite+FTS environment.
+    #[cfg(feature = "local")]
     DeployLocal {
         /// Local deployment operation.
         #[command(subcommand)]
@@ -64,6 +65,7 @@ pub enum Command {
 }
 
 /// Local SQLite+FTS deployment operations.
+#[cfg(feature = "local")]
 #[derive(Debug, Subcommand)]
 pub enum DeployLocalCommand {
     /// Install missing components and start the complete local environment.
@@ -253,7 +255,9 @@ pub struct EnvArgs {
 mod tests {
     use clap::{CommandFactory as _, Parser as _};
 
-    use super::{Command, ConfigCommand, ContextCommand, DeployLocalCommand, ProxyCommand};
+    #[cfg(feature = "local")]
+    use super::DeployLocalCommand;
+    use super::{Command, ConfigCommand, ContextCommand, ProxyCommand};
 
     #[test]
     fn parses_version_command() {
@@ -285,7 +289,11 @@ mod tests {
             panic!("expected proxy command");
         };
         assert!(matches!(command, ProxyCommand::Start(_)));
+    }
 
+    #[cfg(feature = "local")]
+    #[test]
+    fn parses_deploy_local_command() {
         let deploy = super::Cli::try_parse_from(["abyss", "deploy-local", "start"])
             .expect("local deployment command should parse");
         let Command::DeployLocal { command } = deploy.command else {
@@ -330,6 +338,7 @@ mod tests {
             "log",
             "status",
             "dashboard",
+            #[cfg(feature = "local")]
             "deploy-local",
             "diagnostics",
             "run",
@@ -375,8 +384,11 @@ mod tests {
             &["abyss", "log", "dump", "-f", "support.zip"],
             &["abyss", "status"],
             &["abyss", "dashboard"],
+            #[cfg(feature = "local")]
             &["abyss", "deploy-local", "start"],
+            #[cfg(feature = "local")]
             &["abyss", "deploy-local", "stop"],
+            #[cfg(feature = "local")]
             &["abyss", "deploy-local", "status"],
             &["abyss", "diagnostics"],
             &["abyss", "run", "--", "codex", "--version"],
