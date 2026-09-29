@@ -3,6 +3,8 @@
 //! The parser consumes exchanges already selected by protocol detection and
 //! extracts wire-level content without identifying the calling Harness.
 
+use std::collections::BTreeMap;
+
 use abyss_mitm::{
     CapturedBody, FlowContext, HttpExchange, TransparentProtocol, WebSocketDirection,
     WebSocketMessage,
@@ -75,10 +77,7 @@ pub fn parse_openai_exchange(exchange: &HttpExchange) -> Option<ParsedOpenAiExch
     let request_images = request_json.map_or_else(Vec::new, extract_openai_request_images);
     let request_tool_events = request_json.map_or_else(Vec::new, extract_request_tool_events);
     let response_values = response_values(exchange.response.headers(), exchange.response.body());
-    let response_texts = response_values
-        .iter()
-        .flat_map(extract_response_texts)
-        .collect::<Vec<_>>();
+    let response_texts = stream_aware_response_texts(&response_values);
     let response_tool_events = response_values
         .iter()
         .flat_map(extract_response_tool_events)
@@ -445,6 +444,164 @@ fn push_unique_tool_event(events: &mut Vec<ParsedToolEvent>, event: ParsedToolEv
     if !events.contains(&event) {
         events.push(event);
     }
+}
+
+/// Rebuilds assistant text from a Responses payload list.
+///
+/// A streaming Responses body is a sequence of edits to one response object,
+/// not a list of independent documents. The same completed text is republished
+/// by `response.output_text.done`, `response.content_part.done`,
+/// `response.output_item.done`, and `response.completed`, so collecting text
+/// from every event repeats one answer several times. Apply the events to
+/// per-slot state instead and fall back to the schema-agnostic search only when
+/// the payload carries no stream events at all.
+fn stream_aware_response_texts(values: &[Value]) -> Vec<String> {
+    let streamed = streamed_response_texts(values);
+    if !streamed.is_empty() {
+        return streamed;
+    }
+    dedupe_texts(values.iter().flat_map(extract_response_texts).collect())
+}
+
+/// Text slots keyed by `(output_index, content_index)`.
+///
+/// One output index is either a message item or a reasoning item, never both,
+/// so message content parts and reasoning summary parts share this key space
+/// and keep their provider-assigned order.
+type ResponseTextSlots = BTreeMap<(u64, u64), String>;
+
+fn streamed_response_texts(values: &[Value]) -> Vec<String> {
+    let mut slots = ResponseTextSlots::new();
+    let mut observed_stream_event = false;
+
+    for value in values {
+        let Some(event_type) = value.get("type").and_then(Value::as_str) else {
+            continue;
+        };
+        match event_type {
+            "response.output_text.delta" | "response.reasoning_summary_text.delta" => {
+                let Some(delta) = value.get("delta").and_then(Value::as_str) else {
+                    continue;
+                };
+                observed_stream_event = true;
+                slots.entry(slot_key(value)).or_default().push_str(delta);
+            }
+            "response.output_text.done" | "response.reasoning_summary_text.done" => {
+                let Some(text) = value.get("text").and_then(Value::as_str) else {
+                    continue;
+                };
+                observed_stream_event = true;
+                reconcile_slot(&mut slots, slot_key(value), text);
+            }
+            "response.content_part.done" | "response.reasoning_summary_part.done" => {
+                if let Some(text) = value.get("part").and_then(response_text_part) {
+                    observed_stream_event = true;
+                    reconcile_slot(&mut slots, slot_key(value), text);
+                }
+            }
+            "response.output_item.done" => {
+                let Some(item) = value.get("item") else {
+                    continue;
+                };
+                observed_stream_event = true;
+                reconcile_item(&mut slots, event_output_index(value), item);
+            }
+            "response.completed" | "response.done" => {
+                let Some(output) = value
+                    .get("response")
+                    .and_then(|response| response.get("output"))
+                    .and_then(Value::as_array)
+                else {
+                    continue;
+                };
+                observed_stream_event = true;
+                for (output_index, item) in output.iter().enumerate() {
+                    reconcile_item(&mut slots, slot_index(output_index), item);
+                }
+            }
+            _ => {}
+        }
+    }
+
+    if !observed_stream_event {
+        return Vec::new();
+    }
+    slots
+        .into_values()
+        .filter_map(|text| non_empty_trimmed(&text).map(str::to_owned))
+        .collect()
+}
+
+/// Applies one authoritative snapshot to an accumulated slot.
+///
+/// A snapshot that extends the accumulated text only contributes the missing
+/// suffix, a snapshot equal to it changes nothing, and a snapshot that diverges
+/// replaces it because the provider, not the accumulation, is authoritative.
+fn reconcile_slot(slots: &mut ResponseTextSlots, key: (u64, u64), authoritative: &str) {
+    if authoritative.is_empty() {
+        return;
+    }
+    let slot = slots.entry(key).or_default();
+    if authoritative.starts_with(slot.as_str()) {
+        slot.push_str(&authoritative[slot.len()..]);
+    } else if slot != authoritative {
+        authoritative.clone_into(slot);
+    }
+}
+
+/// Reconciles every text part of one completed output item.
+fn reconcile_item(slots: &mut ResponseTextSlots, output_index: u64, item: &Value) {
+    if item
+        .get("type")
+        .and_then(Value::as_str)
+        .is_some_and(is_openai_tool_block_type)
+    {
+        return;
+    }
+    let parts = item
+        .get("content")
+        .and_then(Value::as_array)
+        .or_else(|| item.get("summary").and_then(Value::as_array));
+    let Some(parts) = parts else {
+        return;
+    };
+    for (content_index, part) in parts.iter().enumerate() {
+        if let Some(text) = response_text_part(part) {
+            reconcile_slot(slots, (output_index, slot_index(content_index)), text);
+        }
+    }
+}
+
+/// Returns the text of one response content part, excluding refusals and tools.
+fn response_text_part(part: &Value) -> Option<&str> {
+    let part_type = part.get("type").and_then(Value::as_str)?;
+    matches!(part_type, "output_text" | "text" | "summary_text")
+        .then(|| part.get("text").and_then(Value::as_str))
+        .flatten()
+}
+
+/// Returns the `(output_index, content_index)` slot addressed by one event.
+///
+/// Reasoning summary events carry `summary_index` in place of `content_index`.
+fn slot_key(value: &Value) -> (u64, u64) {
+    let content_index = value
+        .get("content_index")
+        .or_else(|| value.get("summary_index"))
+        .and_then(Value::as_u64)
+        .unwrap_or(0);
+    (event_output_index(value), content_index)
+}
+
+/// Converts a provider array position into a slot index.
+fn slot_index(position: usize) -> u64 {
+    u64::try_from(position).unwrap_or(u64::MAX)
+}
+
+fn event_output_index(value: &Value) -> u64 {
+    value
+        .get("output_index")
+        .and_then(Value::as_u64)
+        .unwrap_or(0)
 }
 
 fn extract_response_texts(payload: &Value) -> Vec<String> {
@@ -949,6 +1106,118 @@ mod tests {
 
         assert_eq!(parsed.session_id, "session-1");
         assert_eq!(parsed.request_texts, vec!["hello websocket"]);
+    }
+
+    #[test]
+    fn streaming_response_text_is_not_repeated_by_terminal_events() {
+        // The Responses stream republishes one completed answer through several
+        // terminal events. The parser must report the answer once.
+        let exchange = sse_exchange(&[
+            r#"{"type":"response.output_text.delta","output_index":0,"content_index":0,"delta":"Hello "}"#,
+            r#"{"type":"response.output_text.delta","output_index":0,"content_index":0,"delta":"world"}"#,
+            r#"{"type":"response.output_text.done","output_index":0,"content_index":0,"text":"Hello world"}"#,
+            r#"{"type":"response.content_part.done","output_index":0,"content_index":0,"part":{"type":"output_text","text":"Hello world"}}"#,
+            r#"{"type":"response.output_item.done","output_index":0,"item":{"id":"msg_1","type":"message","role":"assistant","content":[{"type":"output_text","text":"Hello world"}]}}"#,
+            r#"{"type":"response.completed","response":{"id":"resp_1","model":"gpt-5","output":[{"id":"msg_1","type":"message","role":"assistant","content":[{"type":"output_text","text":"Hello world"}]}],"usage":{"input_tokens":1,"output_tokens":2,"total_tokens":3}}}"#,
+        ]);
+
+        let parsed = parse_openai_exchange(&exchange).expect("streaming exchange");
+
+        assert_eq!(parsed.response_texts, vec!["Hello world"]);
+        assert_eq!(parsed.usage.total_tokens, 3);
+    }
+
+    #[test]
+    fn streaming_response_keeps_accumulated_text_without_terminal_events() {
+        // A response body truncated by the capture budget keeps its deltas but
+        // loses every terminal event.
+        let exchange = sse_exchange(&[
+            r#"{"type":"response.output_text.delta","output_index":0,"content_index":0,"delta":"partial "}"#,
+            r#"{"type":"response.output_text.delta","output_index":0,"content_index":0,"delta":"answer"}"#,
+        ]);
+
+        let parsed = parse_openai_exchange(&exchange).expect("truncated streaming exchange");
+
+        assert_eq!(parsed.response_texts, vec!["partial answer"]);
+    }
+
+    #[test]
+    fn streaming_response_recovers_text_lost_from_deltas() {
+        // A terminal snapshot extends an incomplete accumulation instead of
+        // replacing or duplicating it.
+        let exchange = sse_exchange(&[
+            r#"{"type":"response.output_text.delta","output_index":0,"content_index":0,"delta":"Hello "}"#,
+            r#"{"type":"response.output_text.done","output_index":0,"content_index":0,"text":"Hello world"}"#,
+        ]);
+
+        let parsed = parse_openai_exchange(&exchange).expect("streaming exchange");
+
+        assert_eq!(parsed.response_texts, vec!["Hello world"]);
+    }
+
+    #[test]
+    fn streaming_response_prefers_the_provider_snapshot_when_it_diverges() {
+        let exchange = sse_exchange(&[
+            r#"{"type":"response.output_text.delta","output_index":0,"content_index":0,"delta":"draft"}"#,
+            r#"{"type":"response.output_text.done","output_index":0,"content_index":0,"text":"final"}"#,
+        ]);
+
+        let parsed = parse_openai_exchange(&exchange).expect("streaming exchange");
+
+        assert_eq!(parsed.response_texts, vec!["final"]);
+    }
+
+    #[test]
+    fn streaming_response_keeps_reasoning_summary_and_message_order() {
+        let exchange = sse_exchange(&[
+            r#"{"type":"response.reasoning_summary_text.delta","output_index":0,"summary_index":0,"delta":"thinking"}"#,
+            r#"{"type":"response.output_text.delta","output_index":1,"content_index":0,"delta":"answer"}"#,
+            r#"{"type":"response.completed","response":{"id":"resp_1","model":"gpt-5","output":[{"id":"rs_1","type":"reasoning","summary":[{"type":"summary_text","text":"thinking"}]},{"id":"msg_1","type":"message","role":"assistant","content":[{"type":"output_text","text":"answer"}]}]}}"#,
+        ]);
+
+        let parsed = parse_openai_exchange(&exchange).expect("streaming exchange");
+
+        assert_eq!(parsed.response_texts, vec!["thinking", "answer"]);
+    }
+
+    #[test]
+    fn streaming_response_keeps_parallel_message_parts_separate() {
+        let exchange = sse_exchange(&[
+            r#"{"type":"response.output_text.delta","output_index":0,"content_index":1,"delta":"second"}"#,
+            r#"{"type":"response.output_text.delta","output_index":0,"content_index":0,"delta":"first"}"#,
+        ]);
+
+        let parsed = parse_openai_exchange(&exchange).expect("streaming exchange");
+
+        assert_eq!(parsed.response_texts, vec!["first", "second"]);
+    }
+
+    #[test]
+    fn streaming_response_ignores_tool_call_items() {
+        let exchange = sse_exchange(&[
+            r#"{"type":"response.output_text.delta","output_index":0,"content_index":0,"delta":"answer"}"#,
+            r#"{"type":"response.output_item.done","output_index":1,"item":{"id":"fc_1","type":"function_call","name":"read_file","arguments":"{}"}}"#,
+        ]);
+
+        let parsed = parse_openai_exchange(&exchange).expect("streaming exchange");
+
+        assert_eq!(parsed.response_texts, vec!["answer"]);
+    }
+
+    fn sse_exchange(events: &[&str]) -> HttpExchange {
+        let mut body = String::new();
+        for event in events {
+            body.push_str("data: ");
+            body.push_str(event);
+            body.push_str("\n\n");
+        }
+        body.push_str("data: [DONE]\n\n");
+        exchange(
+            "/v1/responses",
+            &json!({"model": "gpt-5", "input": [{"role": "user", "content": "hi"}], "stream": true}),
+            "text/event-stream",
+            body.into_bytes(),
+        )
     }
 
     fn json_exchange(path: &str, request: &Value, response: &Value) -> HttpExchange {
