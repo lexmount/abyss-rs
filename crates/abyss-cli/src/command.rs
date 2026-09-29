@@ -69,6 +69,7 @@ impl CliCommand {
             }
             ParsedCommand::Log { command } => LogCommandRunner::run(command),
             ParsedCommand::Status(args) => StatusCommandRunner::run(args.broker_api.as_deref()),
+            ParsedCommand::Dashboard => DashboardCommandRunner::run(),
             ParsedCommand::DeployLocal { command } => DeployLocalCommandRunner::run(&command),
             ParsedCommand::Diagnostics(args) => {
                 DiagnosticsCommandRunner::run(args.broker_api.as_deref())
@@ -464,6 +465,26 @@ impl StatusCommandRunner {
     }
 }
 
+struct DashboardCommandRunner;
+
+impl DashboardCommandRunner {
+    fn run() -> Result<(), CliError> {
+        let paths = CliPaths::from_env()?;
+        let url = configured_dashboard_url(&paths)?.ok_or_else(|| {
+            CliError::InvalidConfiguration(
+                "dashboard URL is not configured; run `abyss deploy-local start` or set product.dashboard.url in product-config.json"
+                    .to_owned(),
+            )
+        })?;
+        println!("Dashboard: {url}");
+        if let Err(error) = platform_adapter().open_browser(&url) {
+            eprintln!("Open the dashboard URL above manually.");
+            return Err(error);
+        }
+        Ok(())
+    }
+}
+
 fn configured_dashboard_url(paths: &CliPaths) -> Result<Option<String>, CliError> {
     let path = paths.product_config_file();
     if !path.exists() {
@@ -616,6 +637,7 @@ mod tests {
                 "http://127.0.0.1:1234",
             ],
             vec!["abyss", "status"],
+            vec!["abyss", "dashboard"],
             vec!["abyss", "diagnostics"],
             vec!["abyss", "log", "dump"],
         ] {

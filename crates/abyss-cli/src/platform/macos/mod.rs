@@ -74,6 +74,10 @@ impl PlatformAdapter for MacOsPlatformAdapter {
         posix_proxy_environment_variables(proxy_url)
     }
 
+    fn open_browser(&self, url: &str) -> Result<(), CliError> {
+        super::open_browser("open", url)
+    }
+
     fn system_information(&self) -> String {
         format!(
             "platform=macos\nos={}\nkernel={}\nlaunchd={}\n",
