@@ -375,6 +375,10 @@ impl TryFrom<AgentEvent> for IngestUsageEvent {
         {
             metadata[key] = Value::String(turn_id);
         }
+        if let Some(body) = event.raw_body {
+            metadata["raw_body"] = serde_json::to_value(body)
+                .map_err(|error| DeliveryPluginError::Translate(error.to_string()))?;
+        }
         Ok(Self {
             event_id: event.event_id,
             observed_at: event.occurred_at.to_rfc3339(),
@@ -619,6 +623,7 @@ mod tests {
             },
             side: AgentEventSide::Request,
             text: None,
+            raw_body: None,
             token_usage: TokenUsage {
                 input_tokens: 1,
                 output_tokens: 0,

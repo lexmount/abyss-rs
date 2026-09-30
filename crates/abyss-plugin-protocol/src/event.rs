@@ -10,6 +10,9 @@ use std::num::NonZeroU32;
 
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Deserializer, Serialize, Serializer};
+mod raw_body;
+pub use raw_body::{RawBody, RawBodyPart, RawTransport};
+
 /// One event decoded with the contract defined by the active plugin protocol.
 #[derive(Debug, Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
@@ -38,6 +41,9 @@ pub struct AgentEvent {
     /// Policy-retained request or response text.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub text: Option<String>,
+    /// Captured body bytes before protocol parsing, available in plugin v2.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub raw_body: Option<RawBody>,
     /// Token counters attributed to this event side.
     pub token_usage: TokenUsage,
     /// Normalized tool calls associated with this event side.
@@ -390,6 +396,7 @@ mod tests {
             },
             side: AgentEventSide::Request,
             text: None,
+            raw_body: None,
             token_usage: TokenUsage {
                 input_tokens: 10,
                 output_tokens: 0,

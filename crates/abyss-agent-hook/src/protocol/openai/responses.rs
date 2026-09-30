@@ -40,6 +40,10 @@ pub struct ParsedOpenAiExchange {
     pub session_id: String,
     /// Hash of method, host, path, and request body for fallback correlation.
     pub request_hash: String,
+    /// Original WebSocket request messages, in observed sequence.
+    pub raw_request: Vec<abyss_plugin_protocol::event::RawBodyPart>,
+    /// Original WebSocket response messages, in observed sequence.
+    pub raw_response: Vec<abyss_plugin_protocol::event::RawBodyPart>,
     /// User-visible prompt/input fragments extracted from the request body.
     pub request_texts: Vec<String>,
     /// Validated image attachments embedded in user request content.
@@ -85,30 +89,13 @@ pub fn parse_openai_exchange(exchange: &HttpExchange) -> Option<ParsedOpenAiExch
     // Providers usually report token usage on the final response event. Some
     // request styles may include useful usage-like fields on the request, so use
     // those as a fallback only when response usage is absent.
-    //
-    // Request body capture is policy bounded in the MITM relay. Large Codex
-    // turns may therefore arrive here with a truncated, non-JSON request body
-    // while the response may also be truncated before the final usage event.
-    // Treat truncation itself as evidence that an audit-relevant exchange
-    // occurred, even when the retained prefixes do not parse into text or usage.
+    // Malformed, binary, and error bodies still produce an exchange identity
+    // so the hook can archive captured bytes independently of parsed content.
     let usage = best_usage(&response_values).unwrap_or_else(|| {
         request_json
             .and_then(|json| best_usage(std::slice::from_ref(json)))
             .unwrap_or_default()
     });
-    let body_was_truncated =
-        exchange.request.body().truncated() || exchange.response.body().truncated();
-    if request_texts.is_empty()
-        && request_images.is_empty()
-        && request_tool_events.is_empty()
-        && response_texts.is_empty()
-        && response_tool_events.is_empty()
-        && usage.is_empty()
-        && !body_was_truncated
-    {
-        return None;
-    }
-
     let response_id = first_response_id(&response_values)
         .or_else(|| request_json.and_then(|json| first_response_id(std::slice::from_ref(json))));
     let previous_response_id = request_json
@@ -136,6 +123,8 @@ pub fn parse_openai_exchange(exchange: &HttpExchange) -> Option<ParsedOpenAiExch
         transport: transport_name(&exchange.flow.protocol),
         session_id: session_id(headers).unwrap_or_else(|| format!("flow-{}", &request_hash[..16])),
         request_hash,
+        raw_request: Vec::new(),
+        raw_response: Vec::new(),
         request_texts,
         request_images,
         response_texts,
@@ -198,6 +187,10 @@ pub fn parse_openai_websocket_message(message: &WebSocketMessage) -> Option<Pars
         && response_texts.is_empty()
         && response_tool_events.is_empty()
         && usage.is_empty()
+        && !matches!(
+            string_field(&payload, "type"),
+            Some("response.completed" | "response.failed" | "response.incomplete" | "error")
+        )
     {
         return None;
     }
@@ -214,6 +207,8 @@ pub fn parse_openai_websocket_message(message: &WebSocketMessage) -> Option<Pars
         transport: transport_name(&message.flow.protocol),
         session_id: websocket_session_id(message, &payload),
         request_hash,
+        raw_request: Vec::new(),
+        raw_response: Vec::new(),
         request_texts,
         request_images,
         response_texts,

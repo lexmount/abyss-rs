@@ -5,7 +5,8 @@ use std::{
     time::{Duration, Instant},
 };
 
-use abyss_mitm::FlowId;
+use abyss_mitm::{FlowId, WebSocketDirection, WebSocketMessage};
+use abyss_plugin_protocol::event::RawBodyPart;
 use parking_lot::Mutex;
 
 use crate::protocol::{model::tool::ParsedToolEvent, openai::ParsedOpenAiExchange};
@@ -22,6 +23,8 @@ pub struct OpenAiWebSocketAccumulator {
 #[derive(Debug)]
 struct PendingTurn {
     exchange: Option<ParsedOpenAiExchange>,
+    raw_request: Vec<RawBodyPart>,
+    raw_response: Vec<RawBodyPart>,
     updated_at: Instant,
 }
 
@@ -31,14 +34,25 @@ impl OpenAiWebSocketAccumulator {
         &self,
         flow_id: &FlowId,
         parsed: Option<ParsedOpenAiExchange>,
+        raw: Option<&WebSocketMessage>,
     ) -> Option<ParsedOpenAiExchange> {
         let mut pending = self.pending.lock();
         let now = Instant::now();
         pending.retain(|_, turn| now.duration_since(turn.updated_at) <= PENDING_TURN_TTL);
         let mut turn = pending.remove(flow_id).unwrap_or(PendingTurn {
             exchange: None,
+            raw_request: Vec::new(),
+            raw_response: Vec::new(),
             updated_at: now,
         });
+        if let Some(raw) = raw {
+            let parts = if raw.direction == WebSocketDirection::ClientToServer {
+                &mut turn.raw_request
+            } else {
+                &mut turn.raw_response
+            };
+            parts.push(crate::raw_body::websocket(raw));
+        }
         if let Some(parsed) = parsed {
             turn.exchange = Some(match turn.exchange {
                 Some(current) => merge(current, parsed),
@@ -46,6 +60,10 @@ impl OpenAiWebSocketAccumulator {
             });
         }
         if turn.exchange.as_ref().is_some_and(is_terminal_response) {
+            if let Some(exchange) = turn.exchange.as_mut() {
+                exchange.raw_request = turn.raw_request;
+                exchange.raw_response = turn.raw_response;
+            }
             return turn.exchange;
         }
         turn.updated_at = now;
@@ -62,21 +80,13 @@ impl OpenAiWebSocketAccumulator {
     }
 }
 
-const fn is_request_only(parsed: &ParsedOpenAiExchange) -> bool {
-    (!parsed.request_texts.is_empty() || !parsed.request_images.is_empty())
-        && parsed.response_texts.is_empty()
-        && parsed.usage.is_empty()
-}
-
 fn is_terminal_response(parsed: &ParsedOpenAiExchange) -> bool {
-    let has_output_usage =
-        parsed.usage.output_tokens > 0_i64 || parsed.usage.reasoning_tokens > 0_i64;
-    !is_request_only(parsed)
-        && has_output_usage
-        && parsed
-            .event_types
-            .iter()
-            .any(|event_type| event_type == "response.completed")
+    parsed.event_types.iter().any(|kind| {
+        matches!(
+            kind.as_str(),
+            "response.completed" | "response.failed" | "response.incomplete" | "error"
+        )
+    })
 }
 
 fn merge(mut current: ParsedOpenAiExchange, next: ParsedOpenAiExchange) -> ParsedOpenAiExchange {
@@ -142,14 +152,18 @@ mod tests {
         let accumulator = OpenAiWebSocketAccumulator::default();
         let flow_id = FlowId::generate();
 
-        assert!(accumulator.push(&flow_id, Some(request("hello"))).is_none());
         assert!(
             accumulator
-                .push(&flow_id, Some(response("part one", false)))
+                .push(&flow_id, Some(request("hello")), None)
+                .is_none()
+        );
+        assert!(
+            accumulator
+                .push(&flow_id, Some(response("part one", false)), None)
                 .is_none()
         );
         let completed = accumulator
-            .push(&flow_id, Some(response("part two", true)))
+            .push(&flow_id, Some(response("part two", true)), None)
             .expect("terminal response should complete the interaction");
 
         assert_eq!(completed.request_texts, vec!["hello"]);
@@ -171,17 +185,17 @@ mod tests {
 
         assert!(
             accumulator
-                .push(&first_flow, Some(request("first")))
+                .push(&first_flow, Some(request("first")), None)
                 .is_none()
         );
         assert!(
             accumulator
-                .push(&second_flow, Some(request("second")))
+                .push(&second_flow, Some(request("second")), None)
                 .is_none()
         );
 
         let first = accumulator
-            .push(&first_flow, Some(response("done", true)))
+            .push(&first_flow, Some(response("done", true)), None)
             .expect("first flow should complete");
         assert_eq!(first.request_texts, vec!["first"]);
     }
@@ -215,6 +229,8 @@ mod tests {
             transport: "https",
             session_id: "session-1".to_owned(),
             request_hash: "request-hash".to_owned(),
+            raw_request: Vec::new(),
+            raw_response: Vec::new(),
             request_texts: Vec::new(),
             request_images: Vec::new(),
             response_texts: Vec::new(),

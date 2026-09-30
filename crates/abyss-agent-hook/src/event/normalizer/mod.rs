@@ -97,6 +97,9 @@ pub struct NormalizedUsageEvent {
     pub event_type: &'static str,
     /// Plaintext request or response content extracted by the hook.
     pub text: Option<String>,
+    /// Original body bytes retained independently of the parsed projection.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub raw_body: Option<abyss_plugin_protocol::event::RawBody>,
     /// Token counters attributed to this event side.
     pub token_usage: TokenUsage,
     /// Hook-private provider context used while building typed plugin fields.
@@ -121,6 +124,7 @@ impl TryFrom<NormalizedUsageEvent> for AgentEvent {
             llm,
             event_type,
             text,
+            raw_body,
             token_usage,
             metadata,
             attachments,
@@ -163,6 +167,7 @@ impl TryFrom<NormalizedUsageEvent> for AgentEvent {
             },
             side,
             text,
+            raw_body,
             token_usage: token_usage.try_into()?,
             tool_calls,
             tool_results,
@@ -456,6 +461,7 @@ fn events_for_parsed_exchange(
         && parts.usage.is_empty()
         && !parts.response_has_structured_content
         && !has_request_only_fallback
+        && !crate::raw_body::enabled(content)
     {
         return Vec::new();
     }
@@ -484,7 +490,8 @@ fn events_for_parsed_exchange(
     let mut events = Vec::new();
     let mut timestamps = EventTimestampSequence::new();
     let request_usage = parts.usage.request_side();
-    if !parts.request_text.is_empty()
+    if crate::raw_body::enabled(content)
+        || !parts.request_text.is_empty()
         || !parts.request_images.is_empty()
         || !request_usage.is_empty()
         || parts.request_has_structured_content
@@ -508,7 +515,8 @@ fn events_for_parsed_exchange(
     }
 
     let response_usage = parts.usage.response_side();
-    if !parts.response_text.is_empty()
+    if crate::raw_body::enabled(content)
+        || !parts.response_text.is_empty()
         || !response_usage.is_empty()
         || parts.response_has_structured_content
     {
@@ -665,6 +673,7 @@ fn usage_event(
         },
         event_type: side.event_type,
         text: side.content.conversation_text.then(|| side.text.to_owned()),
+        raw_body: None,
         token_usage: side.token_usage,
         metadata: side.metadata,
         attachments: normalized_image_attachments(side.attachments, side.content),
@@ -938,7 +947,7 @@ mod tests {
     }
 
     #[test]
-    fn claude_web_keeps_request_only_interactions() {
+    fn claude_web_keeps_empty_response_for_raw_archival() {
         let parsed = ParsedClaudeWebExchange {
             host: "claude.ai".to_owned(),
             path: "/api/organizations/org/chat_conversations/conversation/completion".to_owned(),
@@ -973,8 +982,9 @@ mod tests {
             &correlation(1, 1),
         );
 
-        assert_eq!(events.len(), 1);
+        assert_eq!(events.len(), 2);
         assert_eq!(events[0].event_type, "request");
+        assert_eq!(events[1].event_type, "response");
         assert_eq!(events[0].metadata["agent_client"], "desktop");
         assert_eq!(events[0].metadata["path_kind"], "claude_web_completion");
     }
@@ -1013,6 +1023,8 @@ mod tests {
             transport: "https",
             session_id: "session-1".to_owned(),
             request_hash: "request-hash".to_owned(),
+            raw_request: Vec::new(),
+            raw_response: Vec::new(),
             request_texts: vec!["hello".to_owned()],
             request_images: Vec::new(),
             response_texts: vec!["hi".to_owned()],

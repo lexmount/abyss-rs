@@ -179,6 +179,7 @@ pub mod tests {
             },
             event_type: "request",
             text: Some("hello".to_owned()),
+            raw_body: None,
             token_usage: TokenUsage {
                 input_tokens: 1_i64,
                 total_tokens: 1_i64,

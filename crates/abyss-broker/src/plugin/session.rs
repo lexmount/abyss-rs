@@ -41,6 +41,7 @@ pub struct PluginSession<S> {
     stream: S,
     events: broadcast::Sender<Arc<AgentEvent>>,
     shutdown: watch::Receiver<bool>,
+    protocol_version: PluginProtocolVersion,
 }
 
 enum StreamAction {
@@ -62,10 +63,11 @@ where
             stream,
             events,
             shutdown,
+            protocol_version: PluginProtocolVersion::V1,
         }
     }
 
-    /// Negotiates version 1 and writes events until this connection ends.
+    /// Negotiates the event contract and writes events until this connection ends.
     pub async fn run(mut self) -> Result<(), PluginSessionError> {
         let Some((plugin_id, mut events)) = self.handshake().await? else {
             return Ok(());
@@ -119,7 +121,16 @@ where
     ) -> Result<StreamAction, PluginSessionError> {
         match received {
             Ok(event) => {
-                write_json(&mut self.stream, event.as_ref()).await?;
+                if self.protocol_version == PluginProtocolVersion::V1 && event.raw_body.is_some() {
+                    let mut legacy = serde_json::to_value(event.as_ref())
+                        .map_err(|source| PluginFrameError::Json { source })?;
+                    if let Some(object) = legacy.as_object_mut() {
+                        object.remove("raw_body");
+                    }
+                    write_json(&mut self.stream, &legacy).await?;
+                } else {
+                    write_json(&mut self.stream, event.as_ref()).await?;
+                }
                 Ok(StreamAction::Continue)
             }
             Err(broadcast::error::RecvError::Lagged(skipped)) => {
@@ -170,14 +181,14 @@ where
                 return Ok(None);
             }
         };
-        if PluginProtocolVersion::try_from(hello.protocol_version).is_err() {
+        let Ok(protocol_version) = PluginProtocolVersion::try_from(hello.protocol_version) else {
             self.reject(
                 BrokerErrorCode::UnsupportedProtocolVersion,
                 format!("unsupported protocol version {}", hello.protocol_version),
             )
             .await?;
             return Ok(None);
-        }
+        };
         if !Self::valid_plugin_id(&hello.plugin_id) {
             self.reject(
                 BrokerErrorCode::InvalidHandshake,
@@ -188,7 +199,8 @@ where
         }
 
         let events = self.events.subscribe();
-        write_json(&mut self.stream, &BrokerHello::v1()).await?;
+        self.protocol_version = protocol_version;
+        write_json(&mut self.stream, &BrokerHello { protocol_version }).await?;
         Ok(Some((hello.plugin_id, events)))
     }
 
@@ -298,6 +310,36 @@ mod tests {
             .await
             .expect("session task should finish")
             .expect("session should close cleanly");
+    }
+
+    #[tokio::test]
+    async fn raw_bodies_are_sent_only_to_v2_plugins() {
+        for version in [1_u16, 2_u16] {
+            let (mut client, server) = duplex(32 * 1024);
+            let (events, _receiver) = broadcast::channel(64);
+            let (shutdown_tx, shutdown_rx) = tokio::sync::watch::channel(false);
+            let session =
+                tokio::spawn(PluginSession::new(server, events.clone(), shutdown_rx).run());
+            write_json(
+                &mut client,
+                &serde_json::json!({"protocol_version": version, "plugin_id": "version-test"}),
+            )
+            .await
+            .unwrap();
+            let hello: BrokerHello = read_json(&mut client).await;
+            assert_eq!(hello.protocol_version.wire_value(), version);
+            let event: AgentEvent = serde_json::from_str(include_str!(
+                "../../../../specs/broker-plugin-protocol/v2/fixtures/agent-event.json"
+            ))
+            .unwrap();
+            events.send(Arc::new(event)).unwrap();
+            let received: serde_json::Value = read_json(&mut client).await;
+            assert_eq!(received.get("raw_body").is_some(), version == 2);
+            assert_eq!(received["text"], "I will inspect the repository.");
+            shutdown_tx.send(true).unwrap();
+            let _close: BrokerClose = read_json(&mut client).await;
+            session.await.unwrap().unwrap();
+        }
     }
 
     #[tokio::test]

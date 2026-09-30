@@ -64,7 +64,7 @@ fn real_plugin_process_delivers_a_broker_event_to_the_configured_destination() {
         !startup_info_path.exists(),
         "a spawned worker must not publish readiness before BrokerHello"
     );
-    write_frame(&mut stream, &BrokerHello::v1());
+    write_frame(&mut stream, &BrokerHello::v2());
     let startup_info = wait_for_startup_info(&startup_info_path);
     assert_eq!(startup_info["worker_pid"], child.id());
     assert_eq!(startup_info["broker_pid"], 4_242_u32);
@@ -76,6 +76,8 @@ fn real_plugin_process_delivers_a_broker_event_to_the_configured_destination() {
     let payload: Value = serde_json::from_slice(&request).expect("request JSON should decode");
     assert_eq!(payload["events"][0]["event_id"], "evt-123");
     assert_eq!(payload["events"][0]["event_type"], "response");
+    let expected = serde_json::to_value(fixture_agent_event().raw_body).unwrap();
+    assert_eq!(payload["events"][0]["metadata"]["raw_body"], expected);
     assert_eq!(
         payload["events"][0]["metadata"]["content_segments"][0]["name"],
         "exec"
@@ -141,7 +143,7 @@ fn managed_bearer_hot_update_replays_spool_without_restarting_worker() {
     let original_pid = child.id();
     let (mut stream, _) = broker.accept().expect("plugin should connect");
     let _: PluginHello = read_frame(&mut stream);
-    write_frame(&mut stream, &BrokerHello::v1());
+    write_frame(&mut stream, &BrokerHello::v2());
     let startup_info = wait_for_startup_info(&startup_info_path);
     assert_eq!(startup_info["worker_pid"], original_pid);
     assert_eq!(
@@ -189,6 +191,10 @@ fn managed_bearer_hot_update_replays_spool_without_restarting_worker() {
         serde_json::from_slice(&request.body).expect("replayed request should decode");
     assert_eq!(payload["events"][0]["event_id"], "evt-123");
     assert_eq!(child.id(), original_pid, "credential update must be hot");
+    assert_eq!(
+        payload["events"][0]["metadata"]["raw_body"],
+        serde_json::to_value(fixture_agent_event().raw_body).unwrap()
+    );
     assert!(
         !spool_path.exists(),
         "successful replay should drain the spool"
@@ -242,7 +248,7 @@ fn destination_unauthorized_invalidates_token_and_refresh_replays_without_restar
     let original_pid = child.id();
     let (mut stream, _) = broker.accept().expect("plugin should connect");
     let _: PluginHello = read_frame(&mut stream);
-    write_frame(&mut stream, &BrokerHello::v1());
+    write_frame(&mut stream, &BrokerHello::v2());
     let startup_info = wait_for_startup_info(&startup_info_path);
     let control_endpoint = startup_info["control_endpoint"]
         .as_str()
@@ -329,7 +335,7 @@ fn wait_for_startup_info(path: &std::path::Path) -> Value {
 
 fn fixture_agent_event() -> AgentEvent {
     serde_json::from_str(include_str!(
-        "../../../specs/broker-plugin-protocol/v1/fixtures/agent-event.json"
+        "../../../specs/broker-plugin-protocol/v2/fixtures/agent-event.json"
     ))
     .expect("Agent event fixture should decode")
 }

@@ -17,6 +17,7 @@ pub(crate) mod harness;
 mod hook;
 pub(crate) mod protocol;
 pub(crate) mod provider;
+mod raw_body;
 
 pub use config::{
     DeviceIdentity, HarnessConfig, HarnessMatcherConfig, HarnessUsageConfig,

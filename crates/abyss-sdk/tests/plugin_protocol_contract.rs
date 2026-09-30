@@ -16,6 +16,24 @@ struct PublishedContract {
     root: PathBuf,
 }
 
+#[test]
+fn v2_raw_body_and_handshakes_round_trip_without_changing_v1() {
+    let mut contract = PublishedContract::load();
+    contract.root = contract.root.with_file_name("v2");
+    contract.assert_fixture_round_trip::<AgentEvent>("agent-event.json");
+    contract.assert_fixture_round_trip::<PluginHello>("plugin-hello.json");
+    contract.assert_fixture_round_trip::<BrokerHello>("broker-hello.json");
+    let fixture = contract.json("fixtures/agent-event.json");
+    assert!(fixture["raw_body"]["parts"][0]["content_base64"].is_string());
+    let schema = contract.json("agent-event.schema.json");
+    assert!(schema["properties"].get("raw_body").is_some());
+    assert!(
+        PublishedContract::load().json("agent-event.schema.json")["properties"]
+            .get("raw_body")
+            .is_none()
+    );
+}
+
 impl PublishedContract {
     fn load() -> Self {
         Self {

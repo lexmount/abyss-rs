@@ -76,7 +76,7 @@ where
             .config
             .content_for_harness(detection.harness_id.as_str());
 
-        match protocol {
+        let mut events = match protocol {
             LlmProtocol::OpenAi(OpenAiProtocol::Responses | OpenAiProtocol::ChatCompletions) => {
                 let Some(parsed) = parse_openai_exchange(exchange) else {
                     return Vec::new();
@@ -85,7 +85,7 @@ where
             }
             LlmProtocol::Anthropic(AnthropicProtocol::Messages) => {
                 let Some(parsed) = parse_anthropic_messages_exchange(exchange) else {
-                    return Vec::new();
+                    return self.unparsed_http(exchange, &content, &detection, &provider);
                 };
                 self.normalize(&parsed, &content, &detection, &provider)
             }
@@ -93,13 +93,55 @@ where
                 ClaudeWebProtocol::ConversationCompletion,
             )) => {
                 let Some(mut parsed) = parse_claude_web_exchange(exchange) else {
-                    return Vec::new();
+                    return self.unparsed_http(exchange, &content, &detection, &provider);
                 };
                 self.claude_web_context
                     .attach_referenced_images(&mut parsed);
                 self.normalize(&parsed, &content, &detection, &provider)
             }
+        };
+        if crate::raw_body::enabled(&content) {
+            for event in &mut events {
+                crate::raw_body::attach(
+                    event,
+                    if event.event_type == "request" {
+                        crate::raw_body::http(exchange.request.body(), exchange.request.headers())
+                    } else {
+                        crate::raw_body::http(exchange.response.body(), exchange.response.headers())
+                    },
+                );
+            }
         }
+        events
+    }
+
+    fn unparsed_http(
+        &self,
+        exchange: &HttpExchange,
+        content: &crate::config::HarnessUsageContentConfig,
+        detection: &HarnessDetection,
+        provider: &LlmProvider,
+    ) -> Vec<NormalizedUsageEvent> {
+        if !crate::raw_body::enabled(content) {
+            return Vec::new();
+        }
+        // The generic exchange adapter supplies identity even for malformed or
+        // binary payloads. Raw retention must not depend on a successful parser.
+        let Some(parsed) = parse_openai_exchange(exchange) else {
+            return Vec::new();
+        };
+        let mut events = self.normalize(&parsed, content, detection, provider);
+        for event in &mut events {
+            crate::raw_body::attach(
+                event,
+                if event.event_type == "request" {
+                    crate::raw_body::http(exchange.request.body(), exchange.request.headers())
+                } else {
+                    crate::raw_body::http(exchange.response.body(), exchange.response.headers())
+                },
+            );
+        }
+        events
     }
 
     fn normalize<E>(
@@ -137,8 +179,16 @@ where
         else {
             return Vec::new();
         };
+        let content = policy
+            .harness_usage
+            .config
+            .content_for_harness(detection.harness_id.as_str());
         let parsed = parse_openai_websocket_message(message);
-        let Some(parsed) = self.openai_websocket.push(&message.flow.flow_id, parsed) else {
+        let raw = crate::raw_body::enabled(&content).then_some(message);
+        let Some(parsed) = self
+            .openai_websocket
+            .push(&message.flow.flow_id, parsed, raw)
+        else {
             return Vec::new();
         };
         let provider = ProviderResolver::resolve(&websocket_host(message), protocol);
@@ -146,7 +196,23 @@ where
             .harness_usage
             .config
             .content_for_harness(detection.harness_id.as_str());
-        self.normalize(&parsed, &content, &detection, &provider)
+        let mut events = self.normalize(&parsed, &content, &detection, &provider);
+        if crate::raw_body::enabled(&content) {
+            for event in &mut events {
+                crate::raw_body::attach(
+                    event,
+                    abyss_plugin_protocol::event::RawBody {
+                        transport: abyss_plugin_protocol::event::RawTransport::Websocket,
+                        parts: if event.event_type == "request" {
+                            parsed.raw_request.clone()
+                        } else {
+                            parsed.raw_response.clone()
+                        },
+                    },
+                );
+            }
+        }
+        events
     }
 }
 
@@ -262,6 +328,121 @@ mod tests {
             events
                 .iter()
                 .all(|event| { event.llm.provider.wire_name() == "gateway.example" })
+        );
+        drop(events);
+    }
+
+    #[tokio::test]
+    async fn archives_exact_http_bodies_before_parsing_and_preserves_failed_responses() {
+        use base64::{Engine as _, engine::general_purpose::STANDARD};
+        use sha2::{Digest as _, Sha256};
+        let request = b" {\"model\":\"gpt-test\",\"input\":[{\"role\":\"developer\",\"content\":\"instructions\"},{\"role\":\"user\",\"content\":\"continue\"},{\"role\":\"user\",\"content\":\"continue\"}],\"tools\":[{\"name\":\"exec\",\"schema\":{\"unknown\":42}}],\"extra\": [1,1]} \n";
+        let response = b"event: response.output_text.delta\r\ndata: {\"type\":\"response.output_text.delta\",\"delta\":\"hi\"}\r\n\r\ndata: {\"type\":\"response.completed\",\"response\":{\"id\":\"r1\",\"unknown\":true}}\r\n\r\ndata: [DONE]\r\n\r\n";
+        for response in [
+            response.as_slice(),
+            b"{\"error\":{\"code\":\"overloaded\",\"details\": [1,2]}}\n",
+            b"\xff\0\x80",
+        ] {
+            let sink = Arc::new(RecordingSink::default());
+            let hook = hook(Arc::clone(&sink));
+            let mut exchange = openai_exchange("acme-agent");
+            *exchange.request.body_mut() = CapturedBody::from_bytes(request.to_vec().into());
+            *exchange.response.body_mut() = CapturedBody::from_bytes(response.to_vec().into());
+            hook.on_http_exchange(&exchange).await.unwrap();
+            let events = sink.events.lock().unwrap();
+            assert_eq!(events.len(), 2);
+            for (event, expected) in events.iter().zip([request.as_slice(), response]) {
+                let part = &event.raw_body.as_ref().unwrap().parts[0];
+                let bytes = STANDARD.decode(&part.content_base64).unwrap();
+                assert_eq!(bytes, expected);
+                assert_eq!(part.byte_size, u64::try_from(expected.len()).unwrap());
+                assert_eq!(part.sha256, hex::encode(Sha256::digest(expected)));
+                assert!(!part.truncated);
+            }
+        }
+    }
+
+    #[tokio::test]
+    async fn separate_observations_keep_distinct_archives_even_with_identical_text() {
+        let sink = Arc::new(RecordingSink::default());
+        let hook = hook(Arc::clone(&sink));
+        let exchange = openai_exchange("acme-agent");
+        hook.on_http_exchange(&exchange).await.unwrap();
+        hook.on_http_exchange(&exchange).await.unwrap();
+        let events = sink.events.lock().unwrap();
+        assert_eq!(events.len(), 4);
+        assert_ne!(events[0].event_id, events[2].event_id);
+        assert_ne!(events[1].event_id, events[3].event_id);
+        assert_eq!(
+            serde_json::to_value(&events[0].raw_body).unwrap(),
+            serde_json::to_value(&events[2].raw_body).unwrap()
+        );
+        drop(events);
+    }
+
+    #[tokio::test]
+    async fn websocket_archives_duplicate_and_unparsed_messages_in_sequence() {
+        use abyss_mitm::{WebSocketDirection, WebSocketMessage};
+        use base64::{Engine as _, engine::general_purpose::STANDARD};
+        let sink = Arc::new(RecordingSink::default());
+        let hook = hook(Arc::clone(&sink));
+        let exchange = openai_exchange("acme-agent");
+        let (parts, _) = exchange.request.into_parts();
+        let upgrade = Request::from_parts(parts, ());
+        let request = " {\"type\":\"response.create\",\"response\":{\"model\":\"test\",\"input\":[{\"role\":\"user\",\"content\":\"hello\"}]}}\n";
+        let unknown = " {\"type\":\"unknown\",\"extra\": [1,1]} ";
+        let terminal = "{\"type\":\"response.failed\",\"response\":{\"id\":\"failed-1\",\"error\":{\"message\":\"failure\"}}}";
+        for (sequence, direction, body) in [
+            (1, WebSocketDirection::ClientToServer, request),
+            (2, WebSocketDirection::ServerToClient, unknown),
+            (3, WebSocketDirection::ServerToClient, unknown),
+            (4, WebSocketDirection::ServerToClient, terminal),
+        ] {
+            hook.on_websocket_message(&WebSocketMessage::new(
+                exchange.flow.clone(),
+                upgrade.clone(),
+                direction,
+                sequence,
+                Some(body.to_owned()),
+                None,
+            ))
+            .await
+            .unwrap();
+        }
+        let events = sink.events.lock().unwrap();
+        assert_eq!(events.len(), 2);
+        for (event, expected) in events.iter().zip([
+            vec![(1, request)],
+            vec![(2, unknown), (3, unknown), (4, terminal)],
+        ]) {
+            let parts = &event.raw_body.as_ref().unwrap().parts;
+            assert_eq!(parts.len(), expected.len());
+            for (part, (sequence, body)) in parts.iter().zip(expected) {
+                assert_eq!(part.sequence, Some(sequence));
+                assert_eq!(
+                    STANDARD.decode(&part.content_base64).unwrap(),
+                    body.as_bytes()
+                );
+            }
+        }
+    }
+
+    #[tokio::test]
+    async fn archives_malformed_anthropic_body_without_requiring_a_successful_parser() {
+        use base64::{Engine as _, engine::general_purpose::STANDARD};
+        let sink = Arc::new(RecordingSink::default());
+        let hook = hook(Arc::clone(&sink));
+        let mut exchange = anthropic_exchange("acme-agent");
+        *exchange.request.body_mut() =
+            CapturedBody::from_truncated_bytes(b"{\"messages\": [".to_vec().into());
+        hook.on_http_exchange(&exchange).await.unwrap();
+        let events = sink.events.lock().unwrap();
+        assert_eq!(events.len(), 2);
+        let part = &events[0].raw_body.as_ref().unwrap().parts[0];
+        assert!(part.truncated);
+        assert_eq!(
+            STANDARD.decode(&part.content_base64).unwrap(),
+            exchange.request.body().bytes()
         );
         drop(events);
     }
