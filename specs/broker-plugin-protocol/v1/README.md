@@ -195,6 +195,7 @@ Protocol version 1 defines one flat, normalized `AgentEvent` shape:
   },
   "session_id": "session-123",
   "turn_index": 1,
+  "turn_id": "turn-123",
   "llm": {
     "provider": "openai",
     "model": "gpt-5"
@@ -214,6 +215,14 @@ Protocol version 1 defines one flat, normalized `AgentEvent` shape:
 There is no event kind discriminator or nested payload enum because version 1
 defines only this event shape. `side` identifies whether the normalized content
 and token usage belong to an Agent request or provider response.
+
+`turn_index` is the collector's one-based turn counter. It is only unique for
+the lifetime of one broker process and restarts from one after a broker restart.
+The optional `turn_id` is the stable Agent-level turn identity: every event of
+one logical turn carries the same value, independent of broker restarts. The
+broker sets it when the Agent traffic exposes a native turn identifier or allows
+deriving one, and omits it otherwise. Consumers that group events into turns
+should prefer `turn_id` and fall back to `turn_index` only when it is absent.
 
 `token_usage` counters are disjoint regardless of how the provider reports
 them. `input_tokens` counts input neither read from nor written into a provider

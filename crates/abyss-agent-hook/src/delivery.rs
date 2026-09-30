@@ -172,6 +172,7 @@ pub mod tests {
             },
             session_id: "session-1".to_owned(),
             turn_index: 1_i32,
+            turn_id: None,
             llm: LlmPayload {
                 provider: "openai".to_owned(),
                 model: "gpt-test".to_owned(),

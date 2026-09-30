@@ -7,6 +7,8 @@ export interface AgentEvent {
   agent: AgentContext;
   session_id: string;
   turn_index: number;
+  /** Stable Agent-level turn identity; survives broker restarts unlike `turn_index`. */
+  turn_id?: string;
   llm: LlmContext;
   side: AgentEventSide;
   text?: string;
@@ -83,6 +85,7 @@ export function decodeAgentEvent(value: unknown): AgentEvent {
       "agent",
       "session_id",
       "turn_index",
+      "turn_id",
       "llm",
       "side",
       "text",
@@ -102,6 +105,7 @@ export function decodeAgentEvent(value: unknown): AgentEvent {
   decodeAgent(event.agent);
   stringField(event, "session_id");
   positiveIntegerField(event, "turn_index");
+  optionalStringField(event, "turn_id");
   decodeLlm(event.llm);
   if (event.side !== "request" && event.side !== "response") {
     throw new TypeError("AgentEvent.side must be request or response");

@@ -88,6 +88,9 @@ pub struct NormalizedUsageEvent {
     pub session_id: String,
     /// Collector-side best-effort turn number within a session.
     pub turn_index: i32,
+    /// Stable protocol turn identity shared by every event of one turn.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub turn_id: Option<String>,
     /// LLM provider and model metadata.
     pub llm: LlmPayload,
     /// Logical event side: currently `request` or `response`.
@@ -114,6 +117,7 @@ impl TryFrom<NormalizedUsageEvent> for AgentEvent {
             agent,
             session_id,
             turn_index,
+            turn_id,
             llm,
             event_type,
             text,
@@ -152,6 +156,7 @@ impl TryFrom<NormalizedUsageEvent> for AgentEvent {
             },
             session_id,
             turn_index,
+            turn_id,
             llm: LlmContext {
                 provider: LlmProvider::from_wire_name(llm.provider),
                 model: llm.model,
@@ -353,7 +358,7 @@ where
     E: NormalizableExchange,
 {
     let parts = parsed.event_parts(content, detection, provider, correlation);
-    events_for_parsed_exchange(config, &parts, content, correlation.turn_index)
+    events_for_parsed_exchange(config, &parts, content, correlation)
 }
 
 fn harness_client(detection: &HarnessDetection) -> &'static str {
@@ -394,6 +399,7 @@ struct EventSide<'a> {
     attachments: &'a [ParsedImageAttachment],
     content: &'a HarnessUsageContentConfig,
     turn_index: i32,
+    turn_id: Option<&'a str>,
 }
 
 /// Generates strictly increasing collector timestamps for one normalized
@@ -435,7 +441,7 @@ fn events_for_parsed_exchange(
     config: &HarnessUsageHookConfig,
     parts: &ParsedEventParts<'_>,
     content: &HarnessUsageContentConfig,
-    turn_index: i32,
+    correlation: &CorrelationContext,
 ) -> Vec<NormalizedUsageEvent> {
     // Most provider hooks wait until a response body or usage appears before
     // emitting events. Claude Desktop private SSE responses do not include
@@ -494,7 +500,8 @@ fn events_for_parsed_exchange(
                 metadata: request_metadata,
                 attachments: &parts.request_images,
                 content,
-                turn_index,
+                turn_index: correlation.turn_index,
+                turn_id: correlation.turn_id.as_deref(),
             },
             timestamps.next(),
         ));
@@ -516,7 +523,8 @@ fn events_for_parsed_exchange(
                 metadata: response_metadata,
                 attachments: &[],
                 content,
-                turn_index,
+                turn_index: correlation.turn_index,
+                turn_id: correlation.turn_id.as_deref(),
             },
             timestamps.next(),
         ));
@@ -647,6 +655,7 @@ fn usage_event(
         },
         session_id: parts.session_id.clone(),
         turn_index: side.turn_index,
+        turn_id: side.turn_id.map(str::to_owned),
         llm: LlmPayload {
             provider: parts.llm_provider.clone(),
             model: parts
@@ -708,7 +717,7 @@ fn merge_metadata(mut base: Value, extra: &Value) -> Value {
 
 #[cfg(test)]
 mod tests {
-    use abyss_plugin_protocol::event::LlmProvider;
+    use abyss_plugin_protocol::event::{AgentEvent, LlmProvider};
 
     use crate::{
         config::{DeviceIdentity, HarnessUsageContentConfig, HarnessUsageHookConfig},
@@ -760,6 +769,31 @@ mod tests {
         );
         assert_eq!(events[0].token_usage.input_tokens, 4);
         assert_eq!(events[1].token_usage.output_tokens, 6);
+    }
+
+    #[test]
+    fn protocol_turn_id_reaches_both_public_events() {
+        let parsed = openai_exchange();
+        let detection = detection(BuiltInHarness::Codex, "x-openai-originator");
+        let correlation = CorrelationContext {
+            turn_id: Some("turn-7".to_owned()),
+            ..correlation(3, 2)
+        };
+
+        let events = normalize_exchange(
+            &hook_config(),
+            &parsed,
+            &HarnessUsageContentConfig::default(),
+            &detection,
+            &LlmProvider::OpenAi,
+            &correlation,
+        );
+
+        assert_eq!(events.len(), 2);
+        for event in events {
+            let event = AgentEvent::try_from(event).expect("event should convert");
+            assert_eq!(event.turn_id.as_deref(), Some("turn-7"));
+        }
     }
 
     #[test]
@@ -1021,6 +1055,7 @@ mod tests {
         CorrelationContext {
             session_id: "session-1".to_owned(),
             turn_index,
+            turn_id: None,
             provider_call_index,
         }
     }

@@ -26,6 +26,11 @@ pub struct AgentEvent {
     pub session_id: String,
     /// One-based collector turn index within the session.
     pub turn_index: NonZeroU32,
+    /// Stable Agent-level turn identity shared by every event of one logical
+    /// turn, when the Agent traffic exposes or allows deriving one. Unlike
+    /// `turn_index`, it survives broker restarts.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub turn_id: Option<String>,
     /// Provider and model context.
     pub llm: LlmContext,
     /// Request or response side represented by this event.
@@ -325,6 +330,26 @@ mod tests {
     }
 
     #[test]
+    fn turn_id_is_optional_and_round_trips() {
+        let without = serde_json::to_value(sample_event(LlmProvider::Anthropic))
+            .expect("Agent event should serialize");
+        assert!(
+            without.get("turn_id").is_none(),
+            "an absent turn identity should stay off the wire"
+        );
+        serde_json::from_value::<AgentEvent>(without)
+            .expect("events without a turn identity should deserialize");
+
+        let mut event = sample_event(LlmProvider::Anthropic);
+        event.turn_id = Some("claude_turn_1".to_owned());
+        let serialized = serde_json::to_value(event).expect("Agent event should serialize");
+        let decoded: AgentEvent =
+            serde_json::from_value(serialized).expect("Agent event should deserialize");
+
+        assert_eq!(decoded.turn_id.as_deref(), Some("claude_turn_1"));
+    }
+
+    #[test]
     fn extension_provider_namespace_round_trips() {
         let serialized = serde_json::to_value(sample_event(LlmProvider::Other(
             "customer-private-llm".to_owned(),
@@ -358,6 +383,7 @@ mod tests {
             },
             session_id: "session-1".to_owned(),
             turn_index: NonZeroU32::new(1).expect("one should be non-zero"),
+            turn_id: None,
             llm: LlmContext {
                 provider,
                 model: "gpt-test".to_owned(),

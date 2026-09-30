@@ -12,6 +12,7 @@
   },
   "session_id": "session-123",
   "turn_index": 1,
+  "turn_id": "turn-123",
   "llm": {
     "provider": "openai",
     "model": "gpt-5"

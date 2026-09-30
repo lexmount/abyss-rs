@@ -369,7 +369,12 @@ impl TryFrom<AgentEvent> for IngestUsageEvent {
         let turn_index = i32::try_from(event.turn_index.get()).map_err(|_| {
             DeliveryPluginError::Translate("turn_index exceeds backend range".to_owned())
         })?;
-        let metadata = tool_activity_metadata(event.tool_calls, event.tool_results);
+        let mut metadata = tool_activity_metadata(event.tool_calls, event.tool_results);
+        if let (Some(turn_id), Some(key)) =
+            (event.turn_id, backend_turn_identity_key(&event.agent.name))
+        {
+            metadata[key] = Value::String(turn_id);
+        }
         Ok(Self {
             event_id: event.event_id,
             observed_at: event.occurred_at.to_rfc3339(),
@@ -496,6 +501,17 @@ fn token_counter(name: &str, value: u64) -> Result<i64, DeliveryPluginError> {
     })
 }
 
+/// Metadata key under which the backend recognizes an Agent's turn identity.
+/// The backend groups events into turns by this identity instead of the
+/// collector counter, which restarts with the broker.
+fn backend_turn_identity_key(agent_name: &str) -> Option<&'static str> {
+    match agent_name {
+        "codex" => Some("codex_turn_id"),
+        "claude-code" | "claude-desktop" => Some("claude_turn_id"),
+        _ => None,
+    }
+}
+
 fn tool_activity_metadata(tool_calls: Vec<ToolCall>, tool_results: Vec<ToolResult>) -> Value {
     let capacity = tool_calls.len().saturating_add(tool_results.len());
     let mut segments = Vec::with_capacity(capacity);
@@ -533,7 +549,7 @@ mod tests {
     };
     use serde_json::Value;
 
-    use super::{IngestEventsRequest, SpoolRecord};
+    use super::{IngestEventsRequest, SpoolRecord, backend_turn_identity_key};
 
     #[test]
     fn translates_public_tool_types_into_backend_metadata() {
@@ -596,6 +612,7 @@ mod tests {
             },
             session_id: "session".to_owned(),
             turn_index: NonZeroU32::new(1).unwrap(),
+            turn_id: Some("turn-1".to_owned()),
             llm: LlmContext {
                 provider: LlmProvider::OpenAi,
                 model: "gpt".to_owned(),
@@ -627,5 +644,23 @@ mod tests {
             serialized["events"][0]["metadata"]["content_segments"][0]["name"],
             "exec"
         );
+        assert_eq!(
+            serialized["events"][0]["metadata"]["codex_turn_id"],
+            "turn-1"
+        );
+    }
+
+    #[test]
+    fn maps_turn_identity_to_the_backend_key_of_each_agent() {
+        assert_eq!(backend_turn_identity_key("codex"), Some("codex_turn_id"));
+        assert_eq!(
+            backend_turn_identity_key("claude-code"),
+            Some("claude_turn_id")
+        );
+        assert_eq!(
+            backend_turn_identity_key("claude-desktop"),
+            Some("claude_turn_id")
+        );
+        assert_eq!(backend_turn_identity_key("acme-agent"), None);
     }
 }

@@ -18,6 +18,9 @@ const CORRELATION_TTL: Duration = Duration::from_hours(24);
 pub struct CorrelationContext {
     pub session_id: String,
     pub turn_index: i32,
+    /// Stable protocol turn identity; unlike `turn_index`, it does not depend
+    /// on this process's counters and so survives broker restarts.
+    pub turn_id: Option<String>,
     pub provider_call_index: i32,
 }
 
@@ -81,6 +84,7 @@ impl CorrelationState {
                 return CorrelationContext {
                     session_id: session_id.to_owned(),
                     turn_index: turn.turn_index,
+                    turn_id: Some(protocol_turn_id.to_owned()),
                     provider_call_index: turn.provider_call_index,
                 };
             }
@@ -97,6 +101,7 @@ impl CorrelationState {
             return CorrelationContext {
                 session_id: session_id.to_owned(),
                 turn_index,
+                turn_id: Some(protocol_turn_id.to_owned()),
                 provider_call_index: 1_i32,
             };
         }
@@ -106,6 +111,7 @@ impl CorrelationState {
         CorrelationContext {
             session_id: session_id.to_owned(),
             turn_index,
+            turn_id: None,
             provider_call_index: 1_i32,
         }
     }
@@ -177,6 +183,9 @@ mod tests {
         assert_eq!(second.turn_index, 1_i32);
         assert_eq!(second.provider_call_index, 2_i32);
         assert_eq!(next.turn_index, 2_i32);
+        assert_eq!(first.turn_id.as_deref(), Some("turn-1"));
+        assert_eq!(second.turn_id.as_deref(), Some("turn-1"));
+        assert_eq!(next.turn_id.as_deref(), Some("turn-2"));
     }
 
     #[test]
@@ -188,6 +197,7 @@ mod tests {
 
         assert_eq!(codex.turn_index, 1_i32);
         assert_eq!(custom.turn_index, 1_i32);
+        assert!(codex.turn_id.is_none());
     }
 
     fn detection(harness_id: &str) -> HarnessDetection {
