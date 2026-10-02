@@ -76,30 +76,34 @@ where
             .config
             .content_for_harness(detection.harness_id.as_str());
 
-        let mut events = match protocol {
+        let events = match protocol {
             LlmProtocol::OpenAi(OpenAiProtocol::Responses | OpenAiProtocol::ChatCompletions) => {
-                let Some(parsed) = parse_openai_exchange(exchange) else {
-                    return Vec::new();
-                };
-                self.normalize(&parsed, &content, &detection, &provider)
+                parse_openai_exchange(exchange)
+                    .map(|parsed| self.normalize(&parsed, &content, &detection, &provider))
             }
             LlmProtocol::Anthropic(AnthropicProtocol::Messages) => {
-                let Some(parsed) = parse_anthropic_messages_exchange(exchange) else {
-                    return self.unparsed_http(exchange, &content, &detection, &provider);
-                };
-                self.normalize(&parsed, &content, &detection, &provider)
+                parse_anthropic_messages_exchange(exchange)
+                    .map(|parsed| self.normalize(&parsed, &content, &detection, &provider))
             }
             LlmProtocol::Anthropic(AnthropicProtocol::ClaudeWeb(
                 ClaudeWebProtocol::ConversationCompletion,
-            )) => {
-                let Some(mut parsed) = parse_claude_web_exchange(exchange) else {
-                    return self.unparsed_http(exchange, &content, &detection, &provider);
-                };
+            )) => parse_claude_web_exchange(exchange).map(|mut parsed| {
                 self.claude_web_context
                     .attach_referenced_images(&mut parsed);
                 self.normalize(&parsed, &content, &detection, &provider)
-            }
+            }),
         };
+        // Retain malformed exchanges even when the selected parser has no
+        // dialogue to normalize. Both paths attach original bytes below.
+        let mut events = events
+            .or_else(|| {
+                if !crate::raw_body::enabled(&content) {
+                    return None;
+                }
+                parse_openai_exchange(exchange)
+                    .map(|parsed| self.normalize(&parsed, &content, &detection, &provider))
+            })
+            .unwrap_or_default();
         if crate::raw_body::enabled(&content) {
             for event in &mut events {
                 crate::raw_body::attach(
@@ -111,35 +115,6 @@ where
                     },
                 );
             }
-        }
-        events
-    }
-
-    fn unparsed_http(
-        &self,
-        exchange: &HttpExchange,
-        content: &crate::config::HarnessUsageContentConfig,
-        detection: &HarnessDetection,
-        provider: &LlmProvider,
-    ) -> Vec<NormalizedUsageEvent> {
-        if !crate::raw_body::enabled(content) {
-            return Vec::new();
-        }
-        // The generic exchange adapter supplies identity even for malformed or
-        // binary payloads. Raw retention must not depend on a successful parser.
-        let Some(parsed) = parse_openai_exchange(exchange) else {
-            return Vec::new();
-        };
-        let mut events = self.normalize(&parsed, content, detection, provider);
-        for event in &mut events {
-            crate::raw_body::attach(
-                event,
-                if event.event_type == "request" {
-                    crate::raw_body::http(exchange.request.body(), exchange.request.headers())
-                } else {
-                    crate::raw_body::http(exchange.response.body(), exchange.response.headers())
-                },
-            );
         }
         events
     }
@@ -185,17 +160,13 @@ where
             .content_for_harness(detection.harness_id.as_str());
         let parsed = parse_openai_websocket_message(message);
         let raw = crate::raw_body::enabled(&content).then_some(message);
-        let Some(parsed) = self
+        let Some(mut parsed) = self
             .openai_websocket
             .push(&message.flow.flow_id, parsed, raw)
         else {
             return Vec::new();
         };
         let provider = ProviderResolver::resolve(&websocket_host(message), protocol);
-        let content = policy
-            .harness_usage
-            .config
-            .content_for_harness(detection.harness_id.as_str());
         let mut events = self.normalize(&parsed, &content, &detection, &provider);
         if crate::raw_body::enabled(&content) {
             for event in &mut events {
@@ -204,9 +175,9 @@ where
                     abyss_plugin_protocol::event::RawBody {
                         transport: abyss_plugin_protocol::event::RawTransport::Websocket,
                         parts: if event.event_type == "request" {
-                            parsed.raw_request.clone()
+                            std::mem::take(&mut parsed.raw_request)
                         } else {
-                            parsed.raw_response.clone()
+                            std::mem::take(&mut parsed.raw_response)
                         },
                     },
                 );
