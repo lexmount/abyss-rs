@@ -80,12 +80,7 @@ fn real_plugin_process_delivers_a_broker_event_to_the_configured_destination() {
         payload["events"][0]["metadata"]["content_segments"][0]["name"],
         "exec"
     );
-    assert!(
-        payload["diagnostic_captures"]
-            .as_array()
-            .unwrap()
-            .is_empty()
-    );
+    assert_eq!(payload["diagnostic_captures"], serde_json::json!([]));
 
     write_frame(
         &mut stream,

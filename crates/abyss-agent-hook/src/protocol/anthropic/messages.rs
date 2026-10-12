@@ -1264,7 +1264,7 @@ mod tests {
         let parsed = parse_anthropic_messages_exchange(&exchange).expect("tool-result exchange");
 
         assert_eq!(parsed.request_tool_events.len(), 1);
-        assert!(parsed.request_texts.is_empty());
+        assert_eq!(parsed.request_texts, Vec::<String>::new());
     }
 
     #[test]

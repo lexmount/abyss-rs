@@ -350,8 +350,8 @@ mod tests {
     fn matcher_config_defaults_to_empty_selectors() {
         let matcher = serde_json::from_str::<HarnessMatcherConfig>("{}")
             .expect("empty matcher DTO should deserialize");
-        assert!(matcher.process_names.is_empty());
-        assert!(matcher.application_ids.is_empty());
+        assert_eq!(matcher.process_names, Vec::<String>::new());
+        assert_eq!(matcher.application_ids, Vec::<String>::new());
     }
 
     #[test]
