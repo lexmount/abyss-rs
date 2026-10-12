@@ -241,12 +241,10 @@ impl ProxyCommandRunner {
                     println!("Dashboard: {dashboard_url}");
                 }
                 println!("Use `abyss run -- <command>` to launch an agent through it.");
-                Ok(())
             }
             ProxyCommand::Stop(args) => {
                 platform_adapter().stop_broker(&paths, args.user.as_deref())?;
                 println!("Abyss proxy stopped.");
-                Ok(())
             }
             ProxyCommand::Env(args) => {
                 let proxy_url = if let Some(proxy_url) = args.proxy_url {
@@ -259,9 +257,9 @@ impl ProxyCommandRunner {
                 };
                 let environment = platform_adapter().proxy_environment(&proxy_url);
                 std::io::stdout().write_all(environment.as_bytes())?;
-                Ok(())
             }
         }
+        Ok(())
     }
 }
 
@@ -279,7 +277,6 @@ impl ConfigCommandRunner {
                 Self::set_context_capture(&mut hooks, enabled);
                 broker.set_hooks_config(&hooks)?;
                 println!("Context capture {}.", context_label(enabled));
-                Ok(())
             }
             ConfigCommand::Harness { command } => {
                 let (harness, enabled) = match command {
@@ -312,9 +309,9 @@ impl ConfigCommandRunner {
                         configuration.bundle_path().display()
                     );
                 }
-                Ok(())
             }
         }
+        Ok(())
     }
 
     fn set_context_capture(hooks: &mut HooksConfig, enabled: bool) {

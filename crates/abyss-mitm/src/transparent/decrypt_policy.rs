@@ -687,8 +687,8 @@ mod tests {
         let policy: TlsDecryptionPolicy =
             serde_json::from_value(json.clone()).expect("legacy policy should deserialize");
         policy.validate().expect("legacy policy should validate");
-        assert!(policy.rules[0].process_names.is_empty());
-        assert!(policy.rules[0].application_ids.is_empty());
+        assert_eq!(policy.rules[0].process_names, Vec::<String>::new());
+        assert_eq!(policy.rules[0].application_ids, Vec::<String>::new());
 
         let serialized = serde_json::to_value(policy).expect("policy should serialize");
         assert_eq!(
