@@ -1,14 +1,16 @@
-# Codex → Telegram 最小示例
+# Codex → Telegram Demo
 
-一个脚本：订阅 `abyss-broker` 的 Codex 事件，将文本、工具调用和工具结果直接发送到 Telegram。长消息自动分段。
+A single script that subscribes to Codex events from `abyss-broker` and forwards
+text, tool calls, and tool results to Telegram. Long messages are split automatically.
 
-## 准备
+## Setup
 
-- Node.js 20+。
-- 一个正在运行的 broker，Codex 已通过它的代理运行并信任对应 CA；broker 的 Codex 内容采集已开启。
-- Telegram Bot Token 和私聊 chat ID；先向 Bot 发送 `/start`。
+- Node.js 20+.
+- A running broker with Codex content capture enabled. Codex must use the broker's
+  proxy and trust its CA certificate.
+- A Telegram bot token and a private chat ID. Send `/start` to the bot first.
 
-在仓库根目录安装依赖、构建 SDK：
+Install dependencies and build the SDK from the repository root:
 
 ```bash
 npm --prefix sdks/typescript ci
@@ -16,23 +18,30 @@ npm --prefix sdks/typescript run build
 npm --prefix examples/codex-to-telegram ci
 ```
 
-## 运行
+## Run
 
 ```bash
-export TELEGRAM_BOT_TOKEN='你的 Bot Token'
-export TELEGRAM_CHAT_ID='你的私聊数字 ID'
+export TELEGRAM_BOT_TOKEN='your-bot-token'
+export TELEGRAM_CHAT_ID='your-private-chat-id'
 export ABYSS_BROKER_STARTUP_INFO='/absolute/path/to/startup-info.json'
 
 npm --prefix examples/codex-to-telegram start
 ```
 
-然后在通过该 broker 代理运行的 Codex 中发一条消息，Telegram 就会收到上下文。也可用 `ABYSS_BROKER_PLUGIN_ENDPOINT` 直接指定插件 socket。按 Ctrl-C 退出。
+Send a message in Codex while it uses the broker's proxy. Its context will appear
+in Telegram. You can also set `ABYSS_BROKER_PLUGIN_ENDPOINT` to specify the plugin
+socket directly. Press Ctrl-C to stop.
 
-Token 和 chat ID 只从环境变量读取。若使用 [.env.example](.env.example)，复制为本地 `.env` 并填写后，可在示例目录用 Node 22+ 执行 `node --env-file=.env main.mjs`；`npm start` 不自动加载该文件。
+The token and chat ID are read only from environment variables. To use
+[.env.example](.env.example), copy it to a local `.env` file and fill in the values.
+With Node.js 22+, run `node --env-file=.env main.mjs` from the example directory.
+`npm start` does not load `.env` automatically.
 
-这是单向转发 demo：发送失败或 broker 断开就退出，不保存队列，也不补发历史消息。它会转发所连接 broker 上的所有 Codex 会话；图片不转发。
+This demo forwards context in one direction. It exits on a delivery failure or
+broker disconnection, with no persistent queue or historical replay. It forwards
+all Codex sessions on the connected broker. Images are not forwarded.
 
-运行最小测试（无需真实 Token）：
+Run the basic tests without a real bot token:
 
 ```bash
 npm --prefix examples/codex-to-telegram test
