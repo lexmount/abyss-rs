@@ -16,8 +16,4 @@ export {
   UnexpectedBrokerEofError,
 } from "./errors.js";
 export { BrokerPlugin, PluginConnection } from "./plugin.js";
-export type {
-  BrokerPluginOptions,
-  BrokerClose,
-  PluginConnectOptions,
-} from "./plugin.js";
+export type { BrokerPluginOptions, BrokerClose } from "./plugin.js";

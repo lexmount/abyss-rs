@@ -218,15 +218,3 @@ jobs:
 
       - name: Run SDK unit and real broker black-box tests
         run: make test-sdks
-
-      - name: Install Node.js for Telegram example
-        uses: actions/setup-node@v4
-        with:
-          node-version: 24
-          cache: npm
-          cache-dependency-path: examples/codex-to-telegram/package-lock.json
-
-      - name: Test Codex to Telegram example without external services
-        run: |
-          npm --prefix examples/codex-to-telegram ci
-          make test-example-codex-to-telegram

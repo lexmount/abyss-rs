@@ -21,13 +21,6 @@ export interface BrokerClose {
   reason: string;
 }
 
-export interface PluginConnectOptions {
-  /** Cancels connection setup and closes the established event stream. */
-  signal?: AbortSignal;
-  /** Optional deadline for endpoint discovery, connection, and handshake. */
-  timeoutMs?: number;
-}
-
 interface BrokerHello {
   protocol_version: number;
 }
@@ -97,32 +90,11 @@ export class BrokerPlugin {
     this.#endpoint = options.endpoint;
   }
 
-  async connect(options: PluginConnectOptions = {}): Promise<PluginConnection> {
-    if (
-      options.timeoutMs !== undefined &&
-      (!Number.isSafeInteger(options.timeoutMs) || options.timeoutMs < 1)
-    ) {
-      throw new TypeError("timeoutMs must be a positive safe integer");
-    }
-    options.signal?.throwIfAborted();
-    const deadline = new AbortController();
-    const timer =
-      options.timeoutMs === undefined
-        ? undefined
-        : setTimeout(
-            () =>
-              deadline.abort(new Error("broker plugin handshake timed out")),
-            options.timeoutMs,
-          );
-    const signal =
-      options.signal === undefined
-        ? deadline.signal
-        : AbortSignal.any([options.signal, deadline.signal]);
-    let socket: Socket | undefined;
+  async connect(): Promise<PluginConnection> {
+    const endpoint = await resolvePluginEndpoint(this.#endpoint);
+    const socket = await connectPluginStream(endpoint);
+    const frames = readJsonFrames(socket)[Symbol.asyncIterator]();
     try {
-      const endpoint = await resolvePluginEndpoint(this.#endpoint);
-      socket = await connectPluginStream(endpoint, signal);
-      const frames = readJsonFrames(socket)[Symbol.asyncIterator]();
       await writeJsonFrame(socket, {
         protocol_version: 1,
         plugin_id: this.#consumerId,
@@ -145,10 +117,8 @@ export class BrokerPlugin {
       }
       return new PluginConnection(socket, frames);
     } catch (error) {
-      socket?.destroy();
+      socket.destroy();
       throw error;
-    } finally {
-      clearTimeout(timer);
     }
   }
 

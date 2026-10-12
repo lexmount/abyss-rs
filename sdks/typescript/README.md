@@ -19,22 +19,3 @@ await new BrokerPlugin({ consumerId: "company.security-exporter" }).run(
   },
 );
 ```
-
-For a long-lived subscriber, `connect({ signal, timeoutMs })` supports shutdown
-and a connection/handshake deadline. The signal also closes the established
-stream; the deadline stops once the handshake succeeds.
-
-```typescript
-const stop = new AbortController();
-const connection = await new BrokerPlugin({
-  consumerId: "example.subscriber",
-}).connect({ signal: stop.signal, timeoutMs: 10_000 });
-try {
-  for await (const event of connection) console.log(event.event_id);
-} finally {
-  connection.closeConnection();
-}
-```
-
-See [Codex to Telegram](../../examples/codex-to-telegram/README.md) for an
-independent receiver/sender with durable delivery checkpoints and reconnection.
