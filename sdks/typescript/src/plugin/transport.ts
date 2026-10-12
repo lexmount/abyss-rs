@@ -47,9 +47,16 @@ export async function resolvePluginEndpoint(
   return parsed.plugin_endpoint;
 }
 
-export async function connectPluginStream(endpoint: string): Promise<Socket> {
+export async function connectPluginStream(
+  endpoint: string,
+  signal?: AbortSignal,
+): Promise<Socket> {
+  signal?.throwIfAborted();
   return new Promise<Socket>((resolve, reject) => {
-    const socket = connectSocket(endpoint);
+    const socket = connectSocket({
+      path: endpoint,
+      ...(signal ? { signal } : {}),
+    });
     const onError = (error: Error): void => {
       socket.destroy();
       reject(

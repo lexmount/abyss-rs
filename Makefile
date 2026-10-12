@@ -21,6 +21,13 @@ test-sdks-unit:
 test-blackbox-sdks:
 	bash scripts/blackbox_sdk_real_broker.sh
 
+.PHONY: test-example-codex-to-telegram
+test-example-codex-to-telegram:
+	npm --prefix sdks/typescript run build
+	npm --prefix examples/codex-to-telegram run format:check
+	npm --prefix examples/codex-to-telegram run lint
+	npm --prefix examples/codex-to-telegram test
+
 .PHONY: test-blackbox-codex-upload test-blackbox-usage-helpers
 test-blackbox-codex-upload:
 	bash scripts/blackbox_codex_usage_upload.sh

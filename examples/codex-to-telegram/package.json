@@ -1,0 +1,29 @@
+{
+  "name": "abyss-example-codex-to-telegram",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "engines": {
+    "node": ">=22.16"
+  },
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "start": "node dist/main.js",
+    "demo": "node dist/demo.js",
+    "format": "prettier --write .",
+    "format:check": "prettier --check .",
+    "lint": "tsc -p tsconfig.json --noEmit",
+    "test": "npm run build && node --test test/*.test.mjs"
+  },
+  "dependencies": {
+    "@lexmount/abyss-sdk": "file:../../sdks/typescript",
+    "proper-lockfile": "^4.1.2",
+    "undici": "^6.29.0"
+  },
+  "devDependencies": {
+    "@types/node": "^24.0.0",
+    "@types/proper-lockfile": "^4.1.4",
+    "prettier": "^3.6.0",
+    "typescript": "^5.9.0"
+  }
+}
