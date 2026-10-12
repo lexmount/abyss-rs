@@ -3,11 +3,12 @@
 mod anthropic;
 mod openai;
 
-use std::num::NonZeroU32;
+use std::collections::BTreeMap;
 
 use abyss_plugin_protocol::event::{
-    AgentContext as PluginAgentContext, AgentEvent, AgentEventSide, DeviceContext, ImageAttachment,
-    ImageMediaType, LlmContext, LlmProvider, TokenUsage as PluginTokenUsage, ToolCall, ToolResult,
+    AgentContext as PluginAgentContext, AgentEvent, AgentEventSide, Conversation, DeviceContext,
+    ImageAttachment, ImageMediaType, LlmContext, LlmProvider, TokenUsage as PluginTokenUsage,
+    ToolCall, ToolResult,
 };
 use base64::{Engine as _, engine::general_purpose::STANDARD};
 use chrono::{DateTime, SecondsFormat, TimeDelta, Utc};
@@ -17,7 +18,6 @@ use thiserror::Error;
 
 use crate::{
     config::{DeviceIdentity, HarnessUsageContentConfig, HarnessUsageHookConfig},
-    correlation::CorrelationContext,
     event::identifier::stable_event_id,
     harness::{BuiltInHarness, HarnessDetection},
     protocol::model::digest::sha256_hex,
@@ -38,9 +38,6 @@ pub enum AgentEventConversionError {
         #[source]
         source: chrono::ParseError,
     },
-    /// The collector turn index cannot be represented by the public contract.
-    #[error("turn_index must be positive, got {value}")]
-    InvalidTurnIndex { value: i32 },
     /// The normalized event side is not part of protocol version 1.
     #[error("unsupported Agent event side `{value}`")]
     UnsupportedEventSide { value: &'static str },
@@ -86,20 +83,24 @@ pub struct NormalizedUsageEvent {
     pub agent: AgentPayload,
     /// Provider/session correlation id when available, otherwise a flow-derived id.
     pub session_id: String,
-    /// Collector-side best-effort turn number within a session.
-    pub turn_index: i32,
     /// Stable protocol turn identity shared by every event of one turn.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub turn_id: Option<String>,
+    /// Claude Code billing header pairs, values verbatim.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub claude_code_billing: Option<BTreeMap<String, String>>,
+    /// Anthropic Messages request `thread` object verbatim.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub claude_thread: Option<Map<String, Value>>,
     /// LLM provider and model metadata.
     pub llm: LlmPayload,
     /// Logical event side: currently `request` or `response`.
     pub event_type: &'static str,
     /// Plaintext request or response content extracted by the hook.
     pub text: Option<String>,
-    /// Original body bytes retained independently of the parsed projection.
+    /// Structured provider content retained independently of the text projection.
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub raw_body: Option<abyss_plugin_protocol::event::RawBody>,
+    pub conversation: Option<Conversation>,
     /// Token counters attributed to this event side.
     pub token_usage: TokenUsage,
     /// Hook-private provider context used while building typed plugin fields.
@@ -119,12 +120,13 @@ impl TryFrom<NormalizedUsageEvent> for AgentEvent {
             device,
             agent,
             session_id,
-            turn_index,
             turn_id,
+            claude_code_billing,
+            claude_thread,
             llm,
             event_type,
             text,
-            raw_body,
+            conversation,
             token_usage,
             metadata,
             attachments,
@@ -135,10 +137,6 @@ impl TryFrom<NormalizedUsageEvent> for AgentEvent {
                 source,
             })?
             .with_timezone(&Utc);
-        let turn_index = u32::try_from(turn_index)
-            .ok()
-            .and_then(NonZeroU32::new)
-            .ok_or(AgentEventConversionError::InvalidTurnIndex { value: turn_index })?;
         let side = match event_type {
             "request" => AgentEventSide::Request,
             "response" => AgentEventSide::Response,
@@ -159,15 +157,16 @@ impl TryFrom<NormalizedUsageEvent> for AgentEvent {
                 version: agent.version,
             },
             session_id,
-            turn_index,
             turn_id,
+            claude_code_billing,
+            claude_thread,
             llm: LlmContext {
                 provider: LlmProvider::from_wire_name(llm.provider),
                 model: llm.model,
             },
             side,
             text,
-            raw_body,
+            conversation,
             token_usage: token_usage.try_into()?,
             tool_calls,
             tool_results,
@@ -339,6 +338,7 @@ pub struct LlmPayload {
 pub trait NormalizableExchange {
     fn session_id(&self) -> &str;
 
+    /// Turn identity named by the traffic.
     fn protocol_turn_id(&self) -> Option<&str>;
 
     fn event_parts(
@@ -346,7 +346,6 @@ pub trait NormalizableExchange {
         content: &HarnessUsageContentConfig,
         detection: &HarnessDetection,
         provider: &LlmProvider,
-        correlation: &CorrelationContext,
     ) -> ParsedEventParts<'_>;
 }
 
@@ -357,13 +356,14 @@ pub fn normalize_exchange<E>(
     content: &HarnessUsageContentConfig,
     detection: &HarnessDetection,
     provider: &LlmProvider,
-    correlation: &CorrelationContext,
 ) -> Vec<NormalizedUsageEvent>
 where
     E: NormalizableExchange,
 {
-    let parts = parsed.event_parts(content, detection, provider, correlation);
-    events_for_parsed_exchange(config, &parts, content, correlation)
+    let parts = parsed.event_parts(content, detection, provider);
+    // Only the traffic names a turn; without its identity the events carry none.
+    let turn_id = parsed.protocol_turn_id();
+    events_for_parsed_exchange(config, &parts, content, turn_id)
 }
 
 fn harness_client(detection: &HarnessDetection) -> &'static str {
@@ -382,7 +382,11 @@ pub struct ParsedEventParts<'a> {
     llm_provider: String,
     llm_model: Option<String>,
     session_id: String,
+    claude_code_billing: Option<BTreeMap<String, String>>,
+    claude_thread: Option<Map<String, Value>>,
     response_identity: String,
+    request_conversation: &'a Conversation,
+    response_conversation: &'a Conversation,
     request_text: String,
     request_images: Vec<ParsedImageAttachment>,
     response_text: String,
@@ -398,12 +402,12 @@ pub struct ParsedEventParts<'a> {
 
 struct EventSide<'a> {
     event_type: &'static str,
+    conversation: &'a Conversation,
     text: &'a str,
     token_usage: TokenUsage,
     metadata: Value,
     attachments: &'a [ParsedImageAttachment],
     content: &'a HarnessUsageContentConfig,
-    turn_index: i32,
     turn_id: Option<&'a str>,
 }
 
@@ -446,7 +450,7 @@ fn events_for_parsed_exchange(
     config: &HarnessUsageHookConfig,
     parts: &ParsedEventParts<'_>,
     content: &HarnessUsageContentConfig,
-    correlation: &CorrelationContext,
+    turn_id: Option<&str>,
 ) -> Vec<NormalizedUsageEvent> {
     // Most provider hooks wait until a response body or usage appears before
     // emitting events. Claude Desktop private SSE responses do not include
@@ -461,7 +465,6 @@ fn events_for_parsed_exchange(
         && parts.usage.is_empty()
         && !parts.response_has_structured_content
         && !has_request_only_fallback
-        && !crate::raw_body::enabled(content)
     {
         return Vec::new();
     }
@@ -490,8 +493,7 @@ fn events_for_parsed_exchange(
     let mut events = Vec::new();
     let mut timestamps = EventTimestampSequence::new();
     let request_usage = parts.usage.request_side();
-    if crate::raw_body::enabled(content)
-        || !parts.request_text.is_empty()
+    if !parts.request_text.is_empty()
         || !parts.request_images.is_empty()
         || !request_usage.is_empty()
         || parts.request_has_structured_content
@@ -502,21 +504,20 @@ fn events_for_parsed_exchange(
             parts,
             EventSide {
                 event_type: "request",
+                conversation: parts.request_conversation,
                 text: &parts.request_text,
                 token_usage: retained_token_usage(request_usage, content),
                 metadata: request_metadata,
                 attachments: &parts.request_images,
                 content,
-                turn_index: correlation.turn_index,
-                turn_id: correlation.turn_id.as_deref(),
+                turn_id,
             },
             timestamps.next(),
         ));
     }
 
     let response_usage = parts.usage.response_side();
-    if crate::raw_body::enabled(content)
-        || !parts.response_text.is_empty()
+    if !parts.response_text.is_empty()
         || !response_usage.is_empty()
         || parts.response_has_structured_content
     {
@@ -526,13 +527,13 @@ fn events_for_parsed_exchange(
             parts,
             EventSide {
                 event_type: "response",
+                conversation: parts.response_conversation,
                 text: &parts.response_text,
                 token_usage: retained_token_usage(response_usage, content),
                 metadata: response_metadata,
                 attachments: &[],
                 content,
-                turn_index: correlation.turn_index,
-                turn_id: correlation.turn_id.as_deref(),
+                turn_id,
             },
             timestamps.next(),
         ));
@@ -547,6 +548,22 @@ fn retained_token_usage(usage: TokenUsage, content: &HarnessUsageContentConfig) 
     } else {
         TokenUsage::default()
     }
+}
+
+/// Applies content policy to one side's conversation.
+///
+/// Message text never contains tool arguments, tool results, or image bytes,
+/// so only the conversation-text category gates it.
+fn retained_conversation(
+    conversation: &Conversation,
+    content: &HarnessUsageContentConfig,
+) -> Conversation {
+    let mut conversation = conversation.clone();
+    if !content.conversation_text {
+        conversation.messages.clear();
+        conversation.policy_omitted = true;
+    }
+    conversation
 }
 
 fn content_segments_metadata(
@@ -641,9 +658,7 @@ fn usage_event(
 ) -> NormalizedUsageEvent {
     let text_hash = sha256_hex(side.text);
     let content_hash = event_content_hash(&text_hash, side.attachments);
-    // Event ids must remain deterministic across repeated observations. Do not
-    // include the collector's local turn index because a restarted collector
-    // can reuse that counter for the same provider session.
+    // Event ids must remain deterministic across repeated observations.
     let device_event_key = config.device.hostname.as_deref().unwrap_or("");
     let event_id = stable_event_id([
         device_event_key,
@@ -662,8 +677,9 @@ fn usage_event(
             version: parts.harness_version.clone(),
         },
         session_id: parts.session_id.clone(),
-        turn_index: side.turn_index,
         turn_id: side.turn_id.map(str::to_owned),
+        claude_code_billing: parts.claude_code_billing.clone(),
+        claude_thread: parts.claude_thread.clone(),
         llm: LlmPayload {
             provider: parts.llm_provider.clone(),
             model: parts
@@ -673,7 +689,7 @@ fn usage_event(
         },
         event_type: side.event_type,
         text: side.content.conversation_text.then(|| side.text.to_owned()),
-        raw_body: None,
+        conversation: Some(retained_conversation(side.conversation, side.content)),
         token_usage: side.token_usage,
         metadata: side.metadata,
         attachments: normalized_image_attachments(side.attachments, side.content),
@@ -726,11 +742,10 @@ fn merge_metadata(mut base: Value, extra: &Value) -> Value {
 
 #[cfg(test)]
 mod tests {
-    use abyss_plugin_protocol::event::{AgentEvent, LlmProvider};
+    use abyss_plugin_protocol::event::{AgentEvent, ConversationMessage, LlmProvider, MessageRole};
 
     use crate::{
         config::{DeviceIdentity, HarnessUsageContentConfig, HarnessUsageHookConfig},
-        correlation::CorrelationContext,
         harness::{BuiltInHarness, HarnessDetection, HarnessEvidence, HarnessId},
         protocol::{
             anthropic::{
@@ -738,6 +753,7 @@ mod tests {
                 claude_web::{ParsedClaudeWebExchange, conversation::ClaudeWebSessionIdSource},
             },
             model::{
+                conversation::ConversationProjection,
                 image::ParsedImageAttachment,
                 tool::ParsedToolEvent,
                 usage::{TokenUsage, TokenUsageSource},
@@ -746,13 +762,40 @@ mod tests {
         },
     };
 
-    use super::normalize_exchange;
+    use super::{normalize_exchange, retained_conversation};
 
     #[test]
-    fn openai_normalization_uses_detected_harness_provider_and_correlation() {
-        let parsed = openai_exchange();
+    fn only_conversation_text_policy_omits_messages() {
+        let mut source = ConversationProjection::empty();
+        source.messages.push(ConversationMessage {
+            id: None,
+            role: MessageRole::User,
+            text: "visible".to_owned(),
+        });
+        for conversation_text in [false, true] {
+            for tool_calls in [false, true] {
+                for images in [false, true] {
+                    for token_usage in [false, true] {
+                        let content = HarnessUsageContentConfig {
+                            token_usage,
+                            conversation_text,
+                            tool_calls,
+                            images,
+                        };
+                        let result = retained_conversation(&source, &content);
+                        assert_eq!(result.messages.is_empty(), !conversation_text);
+                        assert_eq!(result.policy_omitted, !conversation_text);
+                    }
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn openai_normalization_uses_detected_harness_and_provider() {
+        let mut parsed = openai_exchange();
+        parsed.protocol_turn_id = None;
         let detection = detection(BuiltInHarness::Codex, "x-openai-originator");
-        let correlation = correlation(3, 2);
 
         let events = normalize_exchange(
             &hook_config(),
@@ -760,7 +803,6 @@ mod tests {
             &HarnessUsageContentConfig::default(),
             &detection,
             &LlmProvider::Other("gateway.example".to_owned()),
-            &correlation,
         );
 
         assert_eq!(events.len(), 2);
@@ -770,8 +812,8 @@ mod tests {
                 .iter()
                 .all(|event| event.llm.provider == "gateway.example")
         );
-        assert!(events.iter().all(|event| event.turn_index == 3_i32));
-        assert_eq!(events[0].metadata["provider_call_index"], 2_i32);
+        // Without a protocol turn id the events carry no turn identity.
+        assert!(events.iter().all(|event| event.turn_id.is_none()));
         assert_eq!(
             events[0].metadata["source_evidence"][0],
             "header:x-openai-originator"
@@ -782,12 +824,9 @@ mod tests {
 
     #[test]
     fn protocol_turn_id_reaches_both_public_events() {
-        let parsed = openai_exchange();
+        let mut parsed = openai_exchange();
+        parsed.protocol_turn_id = Some("turn-7".to_owned());
         let detection = detection(BuiltInHarness::Codex, "x-openai-originator");
-        let correlation = CorrelationContext {
-            turn_id: Some("turn-7".to_owned()),
-            ..correlation(3, 2)
-        };
 
         let events = normalize_exchange(
             &hook_config(),
@@ -795,7 +834,6 @@ mod tests {
             &HarnessUsageContentConfig::default(),
             &detection,
             &LlmProvider::OpenAi,
-            &correlation,
         );
 
         assert_eq!(events.len(), 2);
@@ -820,7 +858,6 @@ mod tests {
             &content,
             &detection(BuiltInHarness::Codex, "x-openai-originator"),
             &LlmProvider::OpenAi,
-            &correlation(1, 1),
         );
 
         assert_eq!(events.len(), 2);
@@ -865,7 +902,6 @@ mod tests {
                 &content,
                 &detection(BuiltInHarness::Codex, "x-openai-originator"),
                 &LlmProvider::OpenAi,
-                &correlation(1, 1),
             )
             .into_iter()
             .map(|event| {
@@ -908,9 +944,13 @@ mod tests {
             session_id: "session-1".to_owned(),
             session_id_source: AnthropicSessionIdSource::Provider,
             request_hash: "request-hash".to_owned(),
+            request_conversation: ConversationProjection::empty(),
+            response_conversation: ConversationProjection::empty(),
             request_texts: vec!["hello".to_owned()],
             request_images: Vec::new(),
-            protocol_turn_id: Some("turn-1".to_owned()),
+            claude_code_billing: None,
+            claude_code_turn_id: None,
+            claude_thread: None,
             request_tool_events: Vec::new(),
             response_tool_events: Vec::new(),
             response_texts: vec!["hi".to_owned()],
@@ -933,7 +973,6 @@ mod tests {
             &HarnessUsageContentConfig::default(),
             &detection,
             &LlmProvider::Anthropic,
-            &correlation(1, 1),
         );
 
         assert_eq!(events.len(), 2);
@@ -947,7 +986,7 @@ mod tests {
     }
 
     #[test]
-    fn claude_web_keeps_empty_response_for_raw_archival() {
+    fn claude_web_keeps_request_only_interactions() {
         let parsed = ParsedClaudeWebExchange {
             host: "claude.ai".to_owned(),
             path: "/api/organizations/org/chat_conversations/conversation/completion".to_owned(),
@@ -956,6 +995,8 @@ mod tests {
             session_id: "conversation".to_owned(),
             session_id_source: ClaudeWebSessionIdSource::ConversationPath,
             request_hash: "request-hash".to_owned(),
+            request_conversation: ConversationProjection::empty(),
+            response_conversation: ConversationProjection::empty(),
             request_texts: vec!["hello".to_owned()],
             request_images: Vec::new(),
             request_file_uuids: Vec::new(),
@@ -979,12 +1020,10 @@ mod tests {
             &HarnessUsageContentConfig::default(),
             &detection(BuiltInHarness::ClaudeDesktop, "claude-web-path"),
             &LlmProvider::Anthropic,
-            &correlation(1, 1),
         );
 
-        assert_eq!(events.len(), 2);
+        assert_eq!(events.len(), 1);
         assert_eq!(events[0].event_type, "request");
-        assert_eq!(events[1].event_type, "response");
         assert_eq!(events[0].metadata["agent_client"], "desktop");
         assert_eq!(events[0].metadata["path_kind"], "claude_web_completion");
     }
@@ -1005,7 +1044,6 @@ mod tests {
             &HarnessUsageContentConfig::default(),
             &detection(BuiltInHarness::Codex, "x-openai-originator"),
             &LlmProvider::OpenAi,
-            &correlation(1, 1),
         )
         .pop()
         .expect("response event");
@@ -1023,8 +1061,8 @@ mod tests {
             transport: "https",
             session_id: "session-1".to_owned(),
             request_hash: "request-hash".to_owned(),
-            raw_request: Vec::new(),
-            raw_response: Vec::new(),
+            request_conversation: ConversationProjection::empty(),
+            response_conversation: ConversationProjection::empty(),
             request_texts: vec!["hello".to_owned()],
             request_images: Vec::new(),
             response_texts: vec!["hi".to_owned()],
@@ -1061,15 +1099,6 @@ mod tests {
 
     fn harness_id(value: &str) -> HarnessId {
         serde_json::from_value(serde_json::Value::String(value.to_owned())).unwrap()
-    }
-
-    fn correlation(turn_index: i32, provider_call_index: i32) -> CorrelationContext {
-        CorrelationContext {
-            session_id: "session-1".to_owned(),
-            turn_index,
-            turn_id: None,
-            provider_call_index,
-        }
     }
 
     fn hook_config() -> HarnessUsageHookConfig {

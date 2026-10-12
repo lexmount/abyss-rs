@@ -121,15 +121,20 @@ where
     ) -> Result<StreamAction, PluginSessionError> {
         match received {
             Ok(event) => {
-                if self.protocol_version == PluginProtocolVersion::V1 && event.raw_body.is_some() {
+                if self.protocol_version == PluginProtocolVersion::V2 {
+                    write_json(&mut self.stream, event.as_ref()).await?;
+                } else {
                     let mut legacy = serde_json::to_value(event.as_ref())
                         .map_err(|source| PluginFrameError::Json { source })?;
                     if let Some(object) = legacy.as_object_mut() {
-                        object.remove("raw_body");
+                        for v2_field in ["conversation", "claude_code_billing", "claude_thread"] {
+                            object.remove(v2_field);
+                        }
+                        // V1 requires a positive `turn_index`; the collector
+                        // no longer counts turns, so it carries no meaning.
+                        object.insert("turn_index".to_owned(), 1_u32.into());
                     }
                     write_json(&mut self.stream, &legacy).await?;
-                } else {
-                    write_json(&mut self.stream, event.as_ref()).await?;
                 }
                 Ok(StreamAction::Continue)
             }
@@ -298,8 +303,10 @@ mod tests {
         events
             .send(Arc::new(event))
             .expect("accepted session should subscribe to events");
-        let received: AgentEvent = read_json(&mut client).await;
-        assert_eq!(received.event_id, "evt-123");
+        // V1 frames carry the legacy shape, which is not an `AgentEvent`.
+        let received: serde_json::Value = read_json(&mut client).await;
+        assert_eq!(received["event_id"], "evt-123");
+        assert_eq!(received["turn_index"], 1_u32);
 
         shutdown_tx
             .send(true)
@@ -313,7 +320,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn raw_bodies_are_sent_only_to_v2_plugins() {
+    async fn v2_fields_are_sent_only_to_v2_plugins() {
         for version in [1_u16, 2_u16] {
             let (mut client, server) = duplex(32 * 1024);
             let (events, _receiver) = broadcast::channel(64);
@@ -328,13 +335,28 @@ mod tests {
             .unwrap();
             let hello: BrokerHello = read_json(&mut client).await;
             assert_eq!(hello.protocol_version.wire_value(), version);
-            let event: AgentEvent = serde_json::from_str(include_str!(
+            let fixture: serde_json::Value = serde_json::from_str(include_str!(
                 "../../../../specs/broker-plugin-protocol/v2/fixtures/agent-event.json"
             ))
             .unwrap();
+            let event: AgentEvent = serde_json::from_value(fixture.clone()).unwrap();
             events.send(Arc::new(event)).unwrap();
             let received: serde_json::Value = read_json(&mut client).await;
-            assert_eq!(received.get("raw_body").is_some(), version == 2);
+            if version == 2 {
+                assert_eq!(received, fixture, "v2 receives the event unchanged");
+            }
+            for v2_field in ["conversation", "claude_code_billing", "claude_thread"] {
+                assert_eq!(
+                    received.get(v2_field).is_some(),
+                    version == 2,
+                    "{v2_field} for v{version}"
+                );
+            }
+            assert_eq!(
+                received.get("turn_index").is_some(),
+                version == 1,
+                "only v1 gets a turn_index"
+            );
             assert_eq!(received["text"], "I will inspect the repository.");
             shutdown_tx.send(true).unwrap();
             let _close: BrokerClose = read_json(&mut client).await;

@@ -60,6 +60,7 @@ fn real_plugin_process_delivers_a_broker_event_to_the_configured_destination() {
     let (mut stream, _) = broker.accept().expect("plugin should connect");
     let hello: PluginHello = read_frame(&mut stream);
     assert_eq!(hello.plugin_id, "official-delivery-blackbox");
+    assert_eq!(hello.protocol_version.wire_value(), 2);
     assert!(
         !startup_info_path.exists(),
         "a spawned worker must not publish readiness before BrokerHello"
@@ -76,8 +77,10 @@ fn real_plugin_process_delivers_a_broker_event_to_the_configured_destination() {
     let payload: Value = serde_json::from_slice(&request).expect("request JSON should decode");
     assert_eq!(payload["events"][0]["event_id"], "evt-123");
     assert_eq!(payload["events"][0]["event_type"], "response");
-    let expected = serde_json::to_value(fixture_agent_event().raw_body).unwrap();
-    assert_eq!(payload["events"][0]["metadata"]["raw_body"], expected);
+    assert_eq!(
+        payload["events"][0]["metadata"]["conversation"],
+        serde_json::to_value(fixture_agent_event().conversation).unwrap()
+    );
     assert_eq!(
         payload["events"][0]["metadata"]["content_segments"][0]["name"],
         "exec"
@@ -191,10 +194,6 @@ fn managed_bearer_hot_update_replays_spool_without_restarting_worker() {
         serde_json::from_slice(&request.body).expect("replayed request should decode");
     assert_eq!(payload["events"][0]["event_id"], "evt-123");
     assert_eq!(child.id(), original_pid, "credential update must be hot");
-    assert_eq!(
-        payload["events"][0]["metadata"]["raw_body"],
-        serde_json::to_value(fixture_agent_event().raw_body).unwrap()
-    );
     assert!(
         !spool_path.exists(),
         "successful replay should drain the spool"

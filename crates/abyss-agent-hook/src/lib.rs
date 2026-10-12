@@ -1,7 +1,7 @@
 //! Harness detection and LLM usage MITM pipeline.
 //!
 //! This crate transforms decoded HTTP exchanges from `abyss-mitm` into typed
-//! Agent events. Harness, protocol, provider, correlation, and normalization
+//! Agent events. Harness, protocol, provider, and normalization
 //! remain independent internal dimensions behind one Broker hook.
 
 #![expect(
@@ -10,14 +10,12 @@
 )]
 
 mod config;
-pub(crate) mod correlation;
 mod delivery;
 pub(crate) mod event;
 pub(crate) mod harness;
 mod hook;
 pub(crate) mod protocol;
 pub(crate) mod provider;
-mod raw_body;
 
 pub use config::{
     DeviceIdentity, HarnessConfig, HarnessMatcherConfig, HarnessUsageConfig,

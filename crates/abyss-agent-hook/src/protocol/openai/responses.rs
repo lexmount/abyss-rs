@@ -3,25 +3,25 @@
 //! The parser consumes exchanges already selected by protocol detection and
 //! extracts wire-level content without identifying the calling Harness.
 
-use std::collections::BTreeMap;
-
 use abyss_mitm::{
-    CapturedBody, FlowContext, HttpExchange, TransparentProtocol, WebSocketDirection,
-    WebSocketMessage,
+    FlowContext, HttpExchange, TransparentProtocol, WebSocketDirection, WebSocketMessage,
 };
 use http::{HeaderMap, header::HOST};
 use serde_json::Value;
 
 use crate::{
+    protocol::model::conversation::ConversationProjection,
     protocol::model::digest::sha256_hex,
     protocol::model::image::{ParsedImageAttachment, extract_openai_request_images},
-    protocol::model::text::{json_to_text, non_empty_trimmed},
+    protocol::model::text::{MAX_PARSE_DEPTH, json_to_text, non_empty_trimmed},
     protocol::model::tool::ParsedToolEvent,
     protocol::model::usage::TokenUsage,
-    protocol::sse::parse_sse_json_values,
+    protocol::openai::{
+        conversation::{OpenAiRequest, OpenAiResponse},
+        websocket::{OpenAiWebSocketFrame, OpenAiWebSocketResponse, is_terminal_event},
+    },
+    protocol::sse::ResponseDocuments,
 };
-
-const MAX_PARSE_DEPTH: usize = 12;
 
 /// Wire-level values extracted from one OpenAI-compatible interaction.
 #[derive(Debug, Clone)]
@@ -40,15 +40,15 @@ pub struct ParsedOpenAiExchange {
     pub session_id: String,
     /// Hash of method, host, path, and request body for fallback correlation.
     pub request_hash: String,
-    /// Original WebSocket request messages, in observed sequence.
-    pub raw_request: Vec<abyss_plugin_protocol::event::RawBodyPart>,
-    /// Original WebSocket response messages, in observed sequence.
-    pub raw_response: Vec<abyss_plugin_protocol::event::RawBodyPart>,
-    /// User-visible prompt/input fragments extracted from the request body.
+    /// Structured request messages decoded from the request body.
+    pub request_conversation: abyss_plugin_protocol::event::Conversation,
+    /// Structured response messages assembled from the response documents.
+    pub response_conversation: abyss_plugin_protocol::event::Conversation,
+    /// User-visible prompt/input fragments derived from the request messages.
     pub request_texts: Vec<String>,
     /// Validated image attachments embedded in user request content.
     pub request_images: Vec<ParsedImageAttachment>,
-    /// Model-visible response fragments extracted from JSON or SSE response data.
+    /// Model-visible response fragments derived from the response messages.
     pub response_texts: Vec<String>,
     /// Best token counters found in request or response payloads.
     pub usage: TokenUsage,
@@ -77,11 +77,14 @@ pub fn parse_openai_exchange(exchange: &HttpExchange) -> Option<ParsedOpenAiExch
     // `data:` line carries a JSON event. Normalize both shapes into a list of
     // JSON values and run the same extractors over that list.
     let request_json = exchange.request.body().json();
-    let request_texts = request_json.map_or_else(Vec::new, extract_request_texts);
+    let request = OpenAiRequest::parse(request_json, exchange.request.body().truncated());
+    let request_texts = request.texts();
     let request_images = request_json.map_or_else(Vec::new, extract_openai_request_images);
     let request_tool_events = request_json.map_or_else(Vec::new, extract_request_tool_events);
-    let response_values = response_values(exchange.response.headers(), exchange.response.body());
-    let response_texts = stream_aware_response_texts(&response_values);
+    let response_documents = ResponseDocuments::decode(exchange.response.body());
+    let response_values = response_documents.values;
+    let response = OpenAiResponse::assemble(&response_values, response_documents.incomplete);
+    let response_texts = response.texts();
     let response_tool_events = response_values
         .iter()
         .flat_map(extract_response_tool_events)
@@ -89,13 +92,30 @@ pub fn parse_openai_exchange(exchange: &HttpExchange) -> Option<ParsedOpenAiExch
     // Providers usually report token usage on the final response event. Some
     // request styles may include useful usage-like fields on the request, so use
     // those as a fallback only when response usage is absent.
-    // Malformed, binary, and error bodies still produce an exchange identity
-    // so the hook can archive captured bytes independently of parsed content.
+    //
+    // Request body capture is policy bounded in the MITM relay. Large Codex
+    // turns may therefore arrive here with a truncated, non-JSON request body
+    // while the response may also be truncated before the final usage event.
+    // Treat truncation itself as evidence that an audit-relevant exchange
+    // occurred, even when the retained prefixes do not parse into text or usage.
     let usage = best_usage(&response_values).unwrap_or_else(|| {
         request_json
             .and_then(|json| best_usage(std::slice::from_ref(json)))
             .unwrap_or_default()
     });
+    let body_was_truncated =
+        exchange.request.body().truncated() || exchange.response.body().truncated();
+    if request_texts.is_empty()
+        && request_images.is_empty()
+        && request_tool_events.is_empty()
+        && response_texts.is_empty()
+        && response_tool_events.is_empty()
+        && usage.is_empty()
+        && !body_was_truncated
+    {
+        return None;
+    }
+
     let response_id = first_response_id(&response_values)
         .or_else(|| request_json.and_then(|json| first_response_id(std::slice::from_ref(json))));
     let previous_response_id = request_json
@@ -123,8 +143,8 @@ pub fn parse_openai_exchange(exchange: &HttpExchange) -> Option<ParsedOpenAiExch
         transport: transport_name(&exchange.flow.protocol),
         session_id: session_id(headers).unwrap_or_else(|| format!("flow-{}", &request_hash[..16])),
         request_hash,
-        raw_request: Vec::new(),
-        raw_response: Vec::new(),
+        request_conversation: request.conversation(),
+        response_conversation: response.conversation(),
         request_texts,
         request_images,
         response_texts,
@@ -139,96 +159,108 @@ pub fn parse_openai_exchange(exchange: &HttpExchange) -> Option<ParsedOpenAiExch
     })
 }
 
-/// Parses one OpenAI Responses WebSocket message after a successful HTTP 101.
+/// Decodes one OpenAI Responses WebSocket frame after a successful HTTP 101.
+///
+/// A frame whose payload is not JSON is reported as undecodable so the turn
+/// side it belongs to is marked partial. A decodable frame that carries no
+/// request content, response content, tools, usage, or terminal state, such as
+/// `response.created`, is irrelevant and leaves the pending turn untouched.
+/// Server frames keep their decoded document because the turn's response is
+/// assembled from the complete stream when the terminal event arrives.
 #[must_use]
-pub fn parse_openai_websocket_message(message: &WebSocketMessage) -> Option<ParsedOpenAiExchange> {
-    let host = request_host(
+pub fn parse_openai_websocket_message(message: &WebSocketMessage) -> OpenAiWebSocketFrame {
+    let Some(payload) = websocket_json_payload(message) else {
+        return OpenAiWebSocketFrame::Undecodable(message.direction);
+    };
+    // A frame that cannot be attributed to a host is not a content failure.
+    let Some(host) = request_host(
         message.upgrade_request.headers(),
         message.upgrade_request.uri(),
     )
-    .or_else(|| flow_server_name(&message.flow))?;
+    .or_else(|| flow_server_name(&message.flow)) else {
+        return OpenAiWebSocketFrame::Irrelevant;
+    };
     let path = message.upgrade_request.uri().path();
-    let payload = websocket_json_payload(message)?;
+    let is_client_message = matches!(message.direction, WebSocketDirection::ClientToServer);
     let request_payload = payload.get("response").unwrap_or(&payload);
-    let request_texts = if matches!(message.direction, WebSocketDirection::ClientToServer) {
-        extract_request_texts(request_payload)
-    } else {
-        Vec::new()
-    };
-    let request_images = if matches!(message.direction, WebSocketDirection::ClientToServer) {
-        extract_openai_request_images(request_payload)
-    } else {
-        Vec::new()
-    };
-    let request_tool_events = if matches!(message.direction, WebSocketDirection::ClientToServer) {
-        extract_request_tool_events(request_payload)
-    } else {
-        Vec::new()
-    };
-    let is_server_message = matches!(message.direction, WebSocketDirection::ServerToClient);
-    let response_values = if is_server_message {
-        vec![payload.clone()]
-    } else {
-        Vec::new()
-    };
-    let response_texts = response_values
-        .iter()
-        .flat_map(extract_response_texts)
-        .collect::<Vec<_>>();
-    let response_tool_events = response_values
-        .iter()
-        .flat_map(extract_response_tool_events)
-        .collect::<Vec<_>>();
-    let usage = best_usage(&response_values).unwrap_or_default();
-
-    if request_texts.is_empty()
-        && request_images.is_empty()
-        && request_tool_events.is_empty()
-        && response_texts.is_empty()
-        && response_tool_events.is_empty()
-        && usage.is_empty()
-        && !matches!(
-            string_field(&payload, "type"),
-            Some("response.completed" | "response.failed" | "response.incomplete" | "error")
+    let (request, request_images, request_tool_events) = if is_client_message {
+        (
+            OpenAiRequest::parse(Some(request_payload), false),
+            extract_openai_request_images(request_payload),
+            extract_request_tool_events(request_payload),
         )
-    {
-        return None;
+    } else {
+        (OpenAiRequest::parse(None, false), Vec::new(), Vec::new())
+    };
+    let (response_tool_events, usage) = if is_client_message {
+        (Vec::new(), TokenUsage::default())
+    } else {
+        (
+            extract_response_tool_events(&payload),
+            best_usage(std::slice::from_ref(&payload)).unwrap_or_default(),
+        )
+    };
+    let relevant = if is_client_message {
+        !request.is_empty() || !request_images.is_empty() || !request_tool_events.is_empty()
+    } else {
+        !OpenAiResponse::assemble(std::slice::from_ref(&payload), false).is_empty()
+            || !response_tool_events.is_empty()
+            || !usage.is_empty()
+            || string_field(&payload, "type").is_some_and(is_terminal_event)
+    };
+    if !relevant {
+        return OpenAiWebSocketFrame::Irrelevant;
     }
 
-    let payload_text = serde_json::to_string(&payload).ok()?;
+    let Ok(payload_text) = serde_json::to_string(&payload) else {
+        return OpenAiWebSocketFrame::Undecodable(message.direction);
+    };
     let request_hash = sha256_hex(&format!(
         "{:?}\0{}\0{}\0{}\0{}",
         message.direction, host, path, message.sequence, payload_text
     ));
-    Some(ParsedOpenAiExchange {
+    let exchange = ParsedOpenAiExchange {
         host,
         path: path.to_owned(),
         method: message.upgrade_request.method().to_string(),
         transport: transport_name(&message.flow.protocol),
         session_id: websocket_session_id(message, &payload),
         request_hash,
-        raw_request: Vec::new(),
-        raw_response: Vec::new(),
-        request_texts,
+        request_conversation: request.conversation(),
+        // The accumulator assembles the response once the turn terminates.
+        response_conversation: ConversationProjection::empty(),
+        request_texts: request.texts(),
         request_images,
-        response_texts,
+        response_texts: Vec::new(),
         usage,
-        response_id: if is_server_message {
-            first_response_id(std::slice::from_ref(&payload))
-        } else {
+        response_id: if is_client_message {
             None
+        } else {
+            first_response_id(std::slice::from_ref(&payload))
         },
         previous_response_id: string_field(&payload, "previous_response_id").map(str::to_owned),
         protocol_turn_id: protocol_turn_id(&payload),
         request_tool_events,
         response_tool_events,
         model: first_model(std::slice::from_ref(&payload)),
-        event_types: if is_server_message {
-            event_types(&payload)
-        } else {
+        event_types: if is_client_message {
             Vec::new()
+        } else {
+            event_types(&payload)
         },
-    })
+    };
+    if is_client_message {
+        return OpenAiWebSocketFrame::Request(Box::new(exchange));
+    }
+    let byte_len = message.text.as_ref().map_or_else(
+        || message.binary.as_deref().map_or(0, <[u8]>::len),
+        String::len,
+    );
+    OpenAiWebSocketFrame::Response(Box::new(OpenAiWebSocketResponse {
+        exchange,
+        document: payload,
+        byte_len,
+    }))
 }
 
 fn request_host(headers: &HeaderMap, uri: &http::Uri) -> Option<String> {
@@ -295,47 +327,6 @@ fn protocol_turn_id_from_metadata_json(metadata: &str) -> Option<String> {
     serde_json::from_str::<Value>(metadata)
         .ok()
         .and_then(|metadata| collect_non_empty_string_field(&metadata, "turn_id"))
-}
-
-fn response_values(headers: &HeaderMap, body: &CapturedBody) -> Vec<Value> {
-    if let Some(json) = body.json() {
-        return vec![json.clone()];
-    }
-    if !header(headers, "content-type")
-        .is_some_and(|value| value.to_ascii_lowercase().contains("text/event-stream"))
-    {
-        return Vec::new();
-    }
-    parse_sse_json_values(body.bytes())
-}
-
-fn extract_request_texts(payload: &Value) -> Vec<String> {
-    let mut texts = Vec::new();
-    // Responses API: `input` may be a string, object, or message array. The
-    // helper flattens conversation blocks while leaving tool inputs/results in
-    // `ParsedToolEvent`, where the independent tool policy can gate them.
-    if let Some(input) = payload.get("input")
-        && let Some(text) = openai_conversation_text(input, MAX_PARSE_DEPTH)
-    {
-        texts.push(text);
-    }
-    if let Some(prompt) = string_field(payload, "prompt") {
-        texts.push(prompt.to_owned());
-    }
-    if let Some(messages) = payload.get("messages").and_then(Value::as_array) {
-        // Chat Completions API: only user messages are considered request text
-        // for now. System/developer/tool messages can be added later if product
-        // policy wants to audit the full prompt envelope.
-        for message in messages {
-            if string_field(message, "role").is_some_and(|role| role == "user")
-                && let Some(content) = message.get("content")
-                && let Some(text) = openai_conversation_text(content, MAX_PARSE_DEPTH)
-            {
-                texts.push(text);
-            }
-        }
-    }
-    dedupe_texts(texts)
 }
 
 fn extract_request_tool_events(payload: &Value) -> Vec<ParsedToolEvent> {
@@ -438,247 +429,6 @@ fn optional_object_string(object: &serde_json::Map<String, Value>, key: &str) ->
 fn push_unique_tool_event(events: &mut Vec<ParsedToolEvent>, event: ParsedToolEvent) {
     if !events.contains(&event) {
         events.push(event);
-    }
-}
-
-/// Rebuilds assistant text from a Responses payload list.
-///
-/// A streaming Responses body is a sequence of edits to one response object,
-/// not a list of independent documents. The same completed text is republished
-/// by `response.output_text.done`, `response.content_part.done`,
-/// `response.output_item.done`, and `response.completed`, so collecting text
-/// from every event repeats one answer several times. Apply the events to
-/// per-slot state instead and fall back to the schema-agnostic search only when
-/// the payload carries no stream events at all.
-fn stream_aware_response_texts(values: &[Value]) -> Vec<String> {
-    let streamed = streamed_response_texts(values);
-    if !streamed.is_empty() {
-        return streamed;
-    }
-    dedupe_texts(values.iter().flat_map(extract_response_texts).collect())
-}
-
-/// Text slots keyed by `(output_index, content_index)`.
-///
-/// One output index is either a message item or a reasoning item, never both,
-/// so message content parts and reasoning summary parts share this key space
-/// and keep their provider-assigned order.
-type ResponseTextSlots = BTreeMap<(u64, u64), String>;
-
-fn streamed_response_texts(values: &[Value]) -> Vec<String> {
-    let mut slots = ResponseTextSlots::new();
-    let mut observed_stream_event = false;
-
-    for value in values {
-        let Some(event_type) = value.get("type").and_then(Value::as_str) else {
-            continue;
-        };
-        match event_type {
-            "response.output_text.delta" | "response.reasoning_summary_text.delta" => {
-                let Some(delta) = value.get("delta").and_then(Value::as_str) else {
-                    continue;
-                };
-                observed_stream_event = true;
-                slots.entry(slot_key(value)).or_default().push_str(delta);
-            }
-            "response.output_text.done" | "response.reasoning_summary_text.done" => {
-                let Some(text) = value.get("text").and_then(Value::as_str) else {
-                    continue;
-                };
-                observed_stream_event = true;
-                reconcile_slot(&mut slots, slot_key(value), text);
-            }
-            "response.content_part.done" | "response.reasoning_summary_part.done" => {
-                if let Some(text) = value.get("part").and_then(response_text_part) {
-                    observed_stream_event = true;
-                    reconcile_slot(&mut slots, slot_key(value), text);
-                }
-            }
-            "response.output_item.done" => {
-                let Some(item) = value.get("item") else {
-                    continue;
-                };
-                observed_stream_event = true;
-                reconcile_item(&mut slots, event_output_index(value), item);
-            }
-            "response.completed" | "response.done" => {
-                let Some(output) = value
-                    .get("response")
-                    .and_then(|response| response.get("output"))
-                    .and_then(Value::as_array)
-                else {
-                    continue;
-                };
-                observed_stream_event = true;
-                for (output_index, item) in output.iter().enumerate() {
-                    reconcile_item(&mut slots, slot_index(output_index), item);
-                }
-            }
-            _ => {}
-        }
-    }
-
-    if !observed_stream_event {
-        return Vec::new();
-    }
-    slots
-        .into_values()
-        .filter_map(|text| non_empty_trimmed(&text).map(str::to_owned))
-        .collect()
-}
-
-/// Applies one authoritative snapshot to an accumulated slot.
-///
-/// A snapshot that extends the accumulated text only contributes the missing
-/// suffix, a snapshot equal to it changes nothing, and a snapshot that diverges
-/// replaces it because the provider, not the accumulation, is authoritative.
-fn reconcile_slot(slots: &mut ResponseTextSlots, key: (u64, u64), authoritative: &str) {
-    if authoritative.is_empty() {
-        return;
-    }
-    let slot = slots.entry(key).or_default();
-    if authoritative.starts_with(slot.as_str()) {
-        slot.push_str(&authoritative[slot.len()..]);
-    } else if slot != authoritative {
-        authoritative.clone_into(slot);
-    }
-}
-
-/// Reconciles every text part of one completed output item.
-fn reconcile_item(slots: &mut ResponseTextSlots, output_index: u64, item: &Value) {
-    if item
-        .get("type")
-        .and_then(Value::as_str)
-        .is_some_and(is_openai_tool_block_type)
-    {
-        return;
-    }
-    let parts = item
-        .get("content")
-        .and_then(Value::as_array)
-        .or_else(|| item.get("summary").and_then(Value::as_array));
-    let Some(parts) = parts else {
-        return;
-    };
-    for (content_index, part) in parts.iter().enumerate() {
-        if let Some(text) = response_text_part(part) {
-            reconcile_slot(slots, (output_index, slot_index(content_index)), text);
-        }
-    }
-}
-
-/// Returns the text of one response content part, excluding refusals and tools.
-fn response_text_part(part: &Value) -> Option<&str> {
-    let part_type = part.get("type").and_then(Value::as_str)?;
-    matches!(part_type, "output_text" | "text" | "summary_text")
-        .then(|| part.get("text").and_then(Value::as_str))
-        .flatten()
-}
-
-/// Returns the `(output_index, content_index)` slot addressed by one event.
-///
-/// Reasoning summary events carry `summary_index` in place of `content_index`.
-fn slot_key(value: &Value) -> (u64, u64) {
-    let content_index = value
-        .get("content_index")
-        .or_else(|| value.get("summary_index"))
-        .and_then(Value::as_u64)
-        .unwrap_or(0);
-    (event_output_index(value), content_index)
-}
-
-/// Converts a provider array position into a slot index.
-fn slot_index(position: usize) -> u64 {
-    u64::try_from(position).unwrap_or(u64::MAX)
-}
-
-fn event_output_index(value: &Value) -> u64 {
-    value
-        .get("output_index")
-        .and_then(Value::as_u64)
-        .unwrap_or(0)
-}
-
-fn extract_response_texts(payload: &Value) -> Vec<String> {
-    let mut texts = Vec::new();
-    collect_response_texts(payload, MAX_PARSE_DEPTH, &mut texts);
-    dedupe_texts(texts)
-}
-
-fn openai_conversation_text(value: &Value, depth: usize) -> Option<String> {
-    if depth == 0 {
-        return None;
-    }
-
-    match value {
-        Value::String(text) => non_empty_trimmed(text).map(str::to_owned),
-        Value::Array(items) => {
-            let joined = items
-                .iter()
-                .filter_map(|item| openai_conversation_text(item, depth.saturating_sub(1)))
-                .collect::<Vec<_>>()
-                .join("\n");
-            non_empty_trimmed(&joined).map(str::to_owned)
-        }
-        Value::Object(object) => {
-            if object
-                .get("type")
-                .and_then(Value::as_str)
-                .is_some_and(is_openai_tool_block_type)
-            {
-                return None;
-            }
-            object
-                .get("text")
-                .or_else(|| object.get("content"))
-                .or_else(|| object.get("input"))
-                .or_else(|| object.get("output_text"))
-                .and_then(|child| openai_conversation_text(child, depth.saturating_sub(1)))
-        }
-        _ => None,
-    }
-}
-
-fn is_openai_tool_block_type(item_type: &str) -> bool {
-    matches!(item_type, "tool_call" | "tool_result" | "tool_use")
-        || item_type.ends_with("_call")
-        || item_type.ends_with("_call_output")
-}
-
-fn collect_response_texts(value: &Value, depth: usize, texts: &mut Vec<String>) {
-    if depth == 0 {
-        return;
-    }
-
-    match value {
-        Value::Object(object) => {
-            if object
-                .get("type")
-                .and_then(Value::as_str)
-                .is_some_and(is_openai_tool_block_type)
-            {
-                return;
-            }
-            // Provider response shapes differ across streaming/non-streaming
-            // APIs. Search common text-bearing keys recursively rather than
-            // pinning the hook to one exact response schema.
-            for key in ["output_text", "text", "content"] {
-                if let Some(child) = object.get(key)
-                    && let Some(text) = openai_conversation_text(child, depth.saturating_sub(1))
-                {
-                    texts.push(text);
-                }
-            }
-            for child in object.values() {
-                collect_response_texts(child, depth.saturating_sub(1), texts);
-            }
-        }
-        Value::Array(items) => {
-            for item in items {
-                collect_response_texts(item, depth.saturating_sub(1), texts);
-            }
-        }
-        _ => {}
     }
 }
 
@@ -906,16 +656,6 @@ const fn transport_name(protocol: &TransparentProtocol) -> &'static str {
     }
 }
 
-fn dedupe_texts(texts: Vec<String>) -> Vec<String> {
-    let mut result = Vec::new();
-    for text in texts {
-        if non_empty_trimmed(&text).is_some() && !result.contains(&text) {
-            result.push(text);
-        }
-    }
-    result
-}
-
 #[cfg(test)]
 mod tests {
     use std::net::SocketAddr;
@@ -927,7 +667,7 @@ mod tests {
     use http::{Request, Response};
     use serde_json::{Value, json};
 
-    use super::{parse_openai_exchange, parse_openai_websocket_message};
+    use super::{OpenAiWebSocketFrame, parse_openai_exchange, parse_openai_websocket_message};
 
     #[test]
     fn parses_responses_json_without_harness_assumptions() {
@@ -1097,10 +837,57 @@ mod tests {
             None,
         );
 
-        let parsed = parse_openai_websocket_message(&message).expect("WebSocket request message");
+        let OpenAiWebSocketFrame::Request(parsed) = parse_openai_websocket_message(&message) else {
+            panic!("WebSocket request message");
+        };
 
         assert_eq!(parsed.session_id, "session-1");
         assert_eq!(parsed.request_texts, vec!["hello websocket"]);
+    }
+
+    #[test]
+    fn websocket_frames_distinguish_undecodable_from_irrelevant() {
+        let frame = |direction, body: &str| {
+            parse_openai_websocket_message(&WebSocketMessage::new(
+                flow(),
+                Request::builder()
+                    .method("GET")
+                    .uri("/v1/responses")
+                    .header("host", "gateway.example")
+                    .body(())
+                    .unwrap(),
+                direction,
+                1,
+                Some(body.to_owned()),
+                None,
+            ))
+        };
+
+        assert!(matches!(
+            frame(WebSocketDirection::ServerToClient, "{broken"),
+            OpenAiWebSocketFrame::Undecodable(WebSocketDirection::ServerToClient)
+        ));
+        assert!(matches!(
+            frame(
+                WebSocketDirection::ServerToClient,
+                r#"{"type":"response.created","response":{"id":"resp_1"}}"#
+            ),
+            OpenAiWebSocketFrame::Irrelevant
+        ));
+        assert!(matches!(
+            frame(
+                WebSocketDirection::ServerToClient,
+                r#"{"type":"response.output_text.delta","output_index":0,"content_index":0,"delta":"hi"}"#
+            ),
+            OpenAiWebSocketFrame::Response(_)
+        ));
+        assert!(matches!(
+            frame(
+                WebSocketDirection::ClientToServer,
+                r#"{"type":"response.cancel"}"#
+            ),
+            OpenAiWebSocketFrame::Irrelevant
+        ));
     }
 
     #[test]

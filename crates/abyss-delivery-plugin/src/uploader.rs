@@ -352,7 +352,6 @@ struct IngestUsageEvent {
     device: DevicePayload,
     agent: AgentPayload,
     session_id: String,
-    turn_index: i32,
     llm: LlmPayload,
     event_type: String,
     text: Option<String>,
@@ -366,17 +365,19 @@ impl TryFrom<AgentEvent> for IngestUsageEvent {
     type Error = DeliveryPluginError;
 
     fn try_from(event: AgentEvent) -> Result<Self, Self::Error> {
-        let turn_index = i32::try_from(event.turn_index.get()).map_err(|_| {
-            DeliveryPluginError::Translate("turn_index exceeds backend range".to_owned())
-        })?;
         let mut metadata = tool_activity_metadata(event.tool_calls, event.tool_results);
-        if let (Some(turn_id), Some(key)) =
-            (event.turn_id, backend_turn_identity_key(&event.agent.name))
-        {
-            metadata[key] = Value::String(turn_id);
+        if let Some(turn_id) = event.turn_id {
+            metadata[backend_turn_identity_key(&event.agent.name)] = Value::String(turn_id);
         }
-        if let Some(body) = event.raw_body {
-            metadata["raw_body"] = serde_json::to_value(body)
+        if let Some(billing) = event.claude_code_billing {
+            metadata["claude_code_billing"] = serde_json::to_value(billing)
+                .map_err(|error| DeliveryPluginError::Translate(error.to_string()))?;
+        }
+        if let Some(thread) = event.claude_thread {
+            metadata["claude_thread"] = Value::Object(thread);
+        }
+        if let Some(conversation) = event.conversation {
+            metadata["conversation"] = serde_json::to_value(conversation)
                 .map_err(|error| DeliveryPluginError::Translate(error.to_string()))?;
         }
         Ok(Self {
@@ -392,7 +393,6 @@ impl TryFrom<AgentEvent> for IngestUsageEvent {
                 version: event.agent.version,
             },
             session_id: event.session_id,
-            turn_index,
             llm: LlmPayload {
                 provider: event.llm.provider.wire_name().to_owned(),
                 model: event.llm.model,
@@ -506,13 +506,12 @@ fn token_counter(name: &str, value: u64) -> Result<i64, DeliveryPluginError> {
 }
 
 /// Metadata key under which the backend recognizes an Agent's turn identity.
-/// The backend groups events into turns by this identity instead of the
-/// collector counter, which restarts with the broker.
-fn backend_turn_identity_key(agent_name: &str) -> Option<&'static str> {
+/// The backend numbers turns by this identity.
+fn backend_turn_identity_key(agent_name: &str) -> &'static str {
     match agent_name {
-        "codex" => Some("codex_turn_id"),
-        "claude-code" | "claude-desktop" => Some("claude_turn_id"),
-        _ => None,
+        "codex" => "codex_turn_id",
+        "claude-code" | "claude-desktop" => "claude_turn_id",
+        _ => "turn_id",
     }
 }
 
@@ -545,20 +544,18 @@ fn tool_activity_metadata(tool_calls: Vec<ToolCall>, tool_results: Vec<ToolResul
 
 #[cfg(test)]
 mod tests {
-    use std::num::NonZeroU32;
-
     use abyss_sdk::plugin::{
         AgentContext, AgentEvent, AgentEventSide, DeviceContext, LlmContext, LlmProvider,
         TokenUsage, ToolCall,
     };
     use serde_json::Value;
 
-    use super::{IngestEventsRequest, SpoolRecord, backend_turn_identity_key};
+    use super::{IngestEventsRequest, SpoolRecord};
 
     #[test]
     fn translates_public_tool_types_into_backend_metadata() {
         let event: AgentEvent = serde_json::from_str(include_str!(
-            "../../../specs/broker-plugin-protocol/v1/fixtures/agent-event.json"
+            "../../../specs/broker-plugin-protocol/v2/fixtures/agent-event.json"
         ))
         .expect("fixture should decode");
         let request = IngestEventsRequest::try_from(event).expect("event should translate");
@@ -577,17 +574,38 @@ mod tests {
     }
 
     #[test]
+    fn stores_the_v2_conversation_as_backend_metadata() {
+        let event: AgentEvent = serde_json::from_str(include_str!(
+            "../../../specs/broker-plugin-protocol/v2/fixtures/agent-event.json"
+        ))
+        .expect("fixture should decode");
+        let request = IngestEventsRequest::try_from(event).expect("event should translate");
+        let serialized = serde_json::to_value(request).expect("request should serialize");
+        let metadata = &serialized["events"][0]["metadata"];
+
+        let roles = metadata["conversation"]["messages"]
+            .as_array()
+            .expect("messages should be an array")
+            .iter()
+            .map(|message| message["role"].as_str().expect("role should be a string"))
+            .collect::<Vec<_>>();
+        assert_eq!(roles, ["reasoning", "assistant", "tool"]);
+    }
+
+    #[test]
     fn reads_spooled_events_written_before_attachments_were_added() {
         let event: AgentEvent = serde_json::from_str(include_str!(
-            "../../../specs/broker-plugin-protocol/v1/fixtures/agent-event.json"
+            "../../../specs/broker-plugin-protocol/v2/fixtures/agent-event.json"
         ))
         .expect("fixture should decode");
         let request = IngestEventsRequest::try_from(event).expect("event should translate");
         let mut request = serde_json::to_value(request).expect("request should serialize");
-        request["events"][0]
+        let legacy_event = request["events"][0]
             .as_object_mut()
-            .expect("event should be an object")
-            .remove("attachments");
+            .expect("event should be an object");
+        legacy_event.remove("attachments");
+        // Older spools also carry the collector-counted turn number.
+        legacy_event.insert("turn_index".to_owned(), 3_u32.into());
         let legacy_record = serde_json::json!({
             "reason": "delivery destination returned HTTP 401 Unauthorized",
             "request": request,
@@ -598,6 +616,11 @@ mod tests {
         let serialized = serde_json::to_value(record).expect("record should serialize");
 
         assert!(serialized["request"]["events"][0]["attachments"].is_null());
+        assert!(
+            serialized["request"]["events"][0]
+                .get("turn_index")
+                .is_none()
+        );
     }
 
     #[test]
@@ -615,15 +638,16 @@ mod tests {
                 version: None,
             },
             session_id: "session".to_owned(),
-            turn_index: NonZeroU32::new(1).unwrap(),
             turn_id: Some("turn-1".to_owned()),
+            claude_code_billing: None,
+            claude_thread: None,
             llm: LlmContext {
                 provider: LlmProvider::OpenAi,
                 model: "gpt".to_owned(),
             },
             side: AgentEventSide::Request,
             text: None,
-            raw_body: None,
+            conversation: None,
             token_usage: TokenUsage {
                 input_tokens: 1,
                 output_tokens: 0,
@@ -653,19 +677,35 @@ mod tests {
             serialized["events"][0]["metadata"]["codex_turn_id"],
             "turn-1"
         );
+        assert!(serialized["events"][0].get("turn_index").is_none());
     }
 
     #[test]
-    fn maps_turn_identity_to_the_backend_key_of_each_agent() {
-        assert_eq!(backend_turn_identity_key("codex"), Some("codex_turn_id"));
+    fn carries_claude_request_context_and_omits_an_absent_turn_identity() {
+        let mut event: AgentEvent = serde_json::from_str(include_str!(
+            "../../../specs/broker-plugin-protocol/v2/fixtures/agent-event.json"
+        ))
+        .expect("fixture should decode");
+        event.agent.name = "claude-code".to_owned();
+        event.turn_id = None;
+
+        let request = IngestEventsRequest::try_from(event).expect("event should translate");
+        let serialized: Value = serde_json::to_value(request).expect("request should serialize");
+        let metadata = &serialized["events"][0]["metadata"];
+
+        assert!(metadata.get("claude_turn_id").is_none());
         assert_eq!(
-            backend_turn_identity_key("claude-code"),
-            Some("claude_turn_id")
+            metadata["claude_code_billing"],
+            serde_json::json!({
+                "cc_entrypoint": "cli",
+                "cc_prompt_id": "a7e7449e-3401-4091-9857-98c73e217ce3",
+                "cc_turn_index": "13",
+                "cc_version": "2.1.293.af3",
+            })
         );
         assert_eq!(
-            backend_turn_identity_key("claude-desktop"),
-            Some("claude_turn_id")
+            metadata["claude_thread"],
+            serde_json::json!({"type": "continue", "previous_message_id": "msg_123"})
         );
-        assert_eq!(backend_turn_identity_key("acme-agent"), None);
     }
 }

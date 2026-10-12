@@ -10,7 +10,6 @@
     "device",
     "agent",
     "session_id",
-    "turn_index",
     "llm",
     "side",
     "token_usage"
@@ -32,13 +31,17 @@
     "session_id": {
       "type": "string"
     },
-    "turn_index": {
-      "type": "integer",
-      "minimum": 1,
-      "maximum": 4294967295
-    },
     "turn_id": {
       "type": "string"
+    },
+    "claude_code_billing": {
+      "type": "object",
+      "additionalProperties": {
+        "type": "string"
+      }
+    },
+    "claude_thread": {
+      "type": "object"
     },
     "llm": {
       "$ref": "#/$defs/llmContext"
@@ -73,8 +76,8 @@
         "$ref": "#/$defs/imageAttachment"
       }
     },
-    "raw_body": {
-      "$ref": "#/$defs/rawBody"
+    "conversation": {
+      "$ref": "#/$defs/conversation"
     }
   },
   "$defs": {
@@ -246,62 +249,79 @@
         }
       }
     },
-    "rawBody": {
+    "conversation": {
       "type": "object",
       "additionalProperties": false,
       "required": [
-        "transport",
-        "parts"
+        "messages",
+        "previous_response_id",
+        "thread_source",
+        "instructions_present",
+        "completeness",
+        "policy_omitted"
       ],
       "properties": {
-        "transport": {
-          "enum": [
-            "http",
-            "websocket"
-          ]
-        },
-        "parts": {
+        "messages": {
           "type": "array",
           "items": {
-            "$ref": "#/$defs/rawBodyPart"
+            "$ref": "#/$defs/conversationMessage"
           }
+        },
+        "previous_response_id": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "thread_source": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "instructions_present": {
+          "type": "boolean"
+        },
+        "completeness": {
+          "enum": [
+            "complete",
+            "partial",
+            "unsupported"
+          ]
+        },
+        "policy_omitted": {
+          "type": "boolean"
         }
       }
     },
-    "rawBodyPart": {
+    "conversationMessage": {
       "type": "object",
       "additionalProperties": false,
       "required": [
-        "content_base64",
-        "byte_size",
-        "sha256",
-        "truncated"
+        "id",
+        "role",
+        "text"
       ],
       "properties": {
-        "content_base64": {
-          "type": "string",
-          "contentEncoding": "base64"
+        "id": {
+          "type": [
+            "string",
+            "null"
+          ]
         },
-        "byte_size": {
-          "type": "integer",
-          "minimum": 0
+        "role": {
+          "enum": [
+            "system",
+            "developer",
+            "user",
+            "assistant",
+            "reasoning",
+            "tool",
+            "unknown"
+          ]
         },
-        "sha256": {
-          "type": "string",
-          "pattern": "^[0-9a-f]{64}$"
-        },
-        "truncated": {
-          "type": "boolean"
-        },
-        "content_type": {
+        "text": {
           "type": "string"
-        },
-        "content_encoding": {
-          "type": "string"
-        },
-        "sequence": {
-          "type": "integer",
-          "minimum": 0
         }
       }
     }

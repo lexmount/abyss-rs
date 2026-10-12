@@ -1,42 +1,121 @@
-# Raw request and response bodies
+# Structured Agent conversations (v2)
 
-Version 2 adds `raw_body` to Agent events. `text`, tools and token counters remain
-derived projections. A request event retains the original request body; a
-response event retains the original response body, including every SSE event.
-`raw_body.parts[*].content_base64` decodes to the bytes seen by the transport
-hook, without JSON serialization, filtering, trimming, or deduplication. The
-length and SHA-256 allow consumers to verify those bytes. HTTP chunk framing
-and TLS records are transport framing, not part of these entity bodies.
-Content-Type and Content-Encoding are retained. WebSocket messages retain their
-sequence and are not concatenated or deduplicated.
+Version 2 adds `conversation` to Agent events, a structured and role-aware
+projection built by the collector. Consumers read messages directly and never
+decode provider transport bodies. V2 carries no raw provider content: no
+transport bytes, decoded provider documents, or original content blocks.
 
-WebSocket archives are emitted when the provider sends a terminal event
-(`response.completed`, `response.failed`, `response.incomplete`, or `error`).
-The existing pending-turn assembler expires after one minute without messages
-and retains at most 64 pending flows. A disconnected turn without a terminal
-event is not durably archived by this implementation. HTTP exchanges likewise
-depend on the transport delivering an exchange to its hook. These lifecycle
-limits are separate from byte-preserving storage of emitted archives.
+## Conversation
 
-The official delivery plugin stores this object as `metadata.raw_body` in the
-existing usage-event table. Retries spool the same bytes. Event detail APIs
-return the archive; trajectory is a read-time projection and never rewrites it.
-Every observed body receives a fresh event id; two actual provider calls are
-retained even if their bodies are identical. Delivery retries preserve that id
-and are idempotent at ingestion.
+`conversation.messages` lists provider messages and standalone items in provider
+order. Each message has exactly three fields:
 
-Raw capture requires conversation text, tool content, and image content to all
-be enabled, because the original body may contain all three. Disabling a
-category omits raw bodies rather than secretly retaining excluded content.
-`truncated: true` explicitly means an incomplete capture; it must never be
-presented as a complete body. The existing HTTP capture bound is 16 MiB per
-body. V2 frames and backend ingest accept 64 MiB to accommodate base64 plus the
-derived event fields. Capture completeness is therefore verifiable, not inferred
-from successful protocol parsing.
+- `id`: the provider message or item identifier, or `null` when none was sent.
+- `role`: one of the roles below.
+- `text`: the message's text projection.
 
-The broker supports v1 and v2 concurrently and removes `raw_body` for v1
-connections. The official Rust delivery client requests v2. Existing Python
-and TypeScript v1 clients keep the unchanged v1 contract. Upgrade the broker
-before the official delivery plugin. V1 schemas are unchanged.
+| Role | Meaning |
+| --- | --- |
+| `system` | Provider system prompt, such as Anthropic `system`. |
+| `developer` | Developer instructions, including OpenAI `instructions`. |
+| `user` | End-user input. |
+| `assistant` | Model-visible assistant output. |
+| `reasoning` | Model reasoning, such as OpenAI reasoning summaries or Anthropic thinking. |
+| `tool` | A tool call or tool result item, kept in position. |
+| `unknown` | The provider did not declare a role. |
 
-Framing and control messages otherwise follow [v1](../v1/README.md).
+`text` never contains tool arguments or results; those are carried only by
+`tool_calls` and `tool_results`. Images are carried only by `attachments`.
+
+A request event carries the history as the agent sent it. Repeated messages,
+such as the same user prompt sent twice, are retained as separate messages and
+are not deduplicated. A response event carries the provider's output after the
+collector assembles streamed fragments; a streamed reply appears as one message
+with its complete text, never as per-delta fragments.
+
+OpenAI reasoning items and Anthropic thinking blocks both become `reasoning`
+messages. An Anthropic response message that contains thinking and text blocks
+is split into `reasoning` and `assistant` messages that share the Anthropic
+message id and keep the provider's block order.
+
+`previous_response_id` is the provider continuation reference; its absence does
+not invent an identity. `thread_source` is the source the agent declared, such
+as `user` or `thread_title`. `instructions_present` reports whether the request
+carried explicit instructions or a system prompt, including an explicitly empty
+one.
+
+`completeness` reports whether the captured content was decoded completely
+(`complete`), only partly because capture or decoding was incomplete
+(`partial`), or not at all because no supported structured document was found
+(`unsupported`). It is independent of whether the provider call succeeded.
+
+`policy_omitted` is `true` only when the conversation-text content policy
+omitted messages. Tool, image, and token policies govern `tool_calls`,
+`tool_results`, `attachments`, and `token_usage` independently; they never change
+`conversation` or set `policy_omitted`.
+
+## Turns
+
+V2 removes `turn_index`. In v1 it was a counter the collector kept per
+session in memory, restarted with the broker, and could not say which turn a
+request belonged to. The collector now keeps no turn state; `turn_id` carries
+the turn identity found in the traffic and consumers number turns:
+
+- the Agent's own turn identity when it exposes one, such as the Codex turn id
+  or Claude Code's `cc_turn:<cc_turn_index>`;
+- otherwise absent, including other Anthropic clients and Claude Code subagent
+  and side requests (see below). A provider call identity is never substituted
+  for a turn, so `turn_id` always names a turn and never a single call.
+
+The broker still sends v1 connections their required `turn_index`, fixed at
+`1`; it no longer carries meaning.
+
+## Claude request context
+
+Two optional fields carry Anthropic Messages request context verbatim:
+
+- `claude_code_billing` holds every `key=value` pair of the billing header
+  Claude Code writes as the first line of its first system block
+  (`x-anthropic-billing-header: cc_version=…; cc_turn_index=13;`). Values are
+  the verbatim strings, including numbers and booleans. A request with the
+  header but no pairs carries an empty object.
+- `claude_thread` is the request `thread` object, such as `{"type": "create"}`
+  or `{"type": "continue", "previous_message_id": "msg_…"}`.
+
+For Claude Code, `turn_id` is `cc_turn:<cc_turn_index>` when the billing header
+has a turn index; the index is stable across `continue` requests and the
+`create` replay of one user turn. Claude Code requests without a turn index
+(subagents, side requests, quota probes) carry no `turn_id`, so consumers place
+them by their own rules.
+
+The official delivery plugin stores both fields under the same names in the
+usage-event metadata. The broker removes them for v1 connections.
+
+## Event identity and emission
+
+Event ids are deterministic. The collector derives an id from the device,
+agent, session, event side, provider response identity, and a content digest,
+so observing the same exchange again yields the same id and ingestion stays
+idempotent. Distinct provider calls produce distinct ids.
+
+The broker emits events only for exchanges its Agent protocol parser accepted.
+An exchange the parser rejects produces no event.
+
+## Delivery and compatibility
+
+The official delivery plugin stores the object as `metadata.conversation`.
+Backend titles and trajectories consume these messages without decoding
+provider bodies.
+
+New Rust clients negotiate v2. The broker continues accepting v1 clients and
+omits `conversation`, `claude_code_billing`, and `claude_thread` for them.
+Existing Python and TypeScript v1 clients keep the unchanged v1 contract. The
+v1 schema remains unchanged apart from its optional `turn_id`. Upgrade the
+backend first, then the broker, then the delivery client.
+
+Previously stored records keep their metadata unchanged and no automatic
+database rewrite occurs. Producing role-aware projections for records stored
+before v2 requires an explicit offline conversion.
+
+The 64 MiB JSON frame limit applies to v2 frames. Framing and control messages
+otherwise follow [v1](../v1/README.md).

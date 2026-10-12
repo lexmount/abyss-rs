@@ -1,5 +1,6 @@
 //! OpenAI-family protocol parsing shared by all detected Harnesses.
 
+pub mod conversation;
 pub mod responses;
 pub mod websocket;
 

@@ -10,7 +10,7 @@ use thiserror::Error;
 pub enum PluginProtocolVersion {
     /// Initial handshake, live stream, and Agent event contract.
     V1,
-    /// Adds raw request and response bodies to Agent events.
+    /// Adds structured conversation content to Agent events.
     V2,
 }
 
@@ -69,7 +69,7 @@ pub struct PluginHello {
 }
 
 impl PluginHello {
-    /// Creates a version 2 handshake with raw-body support.
+    /// Creates a version 2 handshake with structured conversation content.
     #[must_use]
     pub const fn v2(plugin_id: String) -> Self {
         Self {

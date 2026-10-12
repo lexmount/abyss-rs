@@ -11,8 +11,17 @@
     "version": "1.2.3"
   },
   "session_id": "session-123",
-  "turn_index": 1,
   "turn_id": "turn-123",
+  "claude_code_billing": {
+    "cc_entrypoint": "cli",
+    "cc_prompt_id": "a7e7449e-3401-4091-9857-98c73e217ce3",
+    "cc_turn_index": "13",
+    "cc_version": "2.1.293.af3"
+  },
+  "claude_thread": {
+    "type": "continue",
+    "previous_message_id": "msg_123"
+  },
   "llm": {
     "provider": "openai",
     "model": "gpt-5"
@@ -44,16 +53,28 @@
       "content_base64": "iVBORw0KGgo="
     }
   ],
-  "raw_body": {
-    "transport": "http",
-    "parts": [
+  "conversation": {
+    "messages": [
       {
-        "content_base64": "eyAib3V0cHV0X3RleHQiOiAiSSB3aWxsIGluc3BlY3QgdGhlIHJlcG9zaXRvcnkuIiwgInVua25vd25fZmllbGQiOiBbMSwgMV0gfQo=",
-        "byte_size": 77,
-        "sha256": "c94e053ebd0a36bb05445e8b83bd07a7f0336dce3fda9a13a30f2c4292df5a54",
-        "truncated": false,
-        "content_type": "application/json"
+        "id": "rs-123",
+        "role": "reasoning",
+        "text": "The user wants an overview of the repository."
+      },
+      {
+        "id": "msg-123",
+        "role": "assistant",
+        "text": "I will inspect the repository."
+      },
+      {
+        "id": "fc-123",
+        "role": "tool",
+        "text": ""
       }
-    ]
+    ],
+    "previous_response_id": null,
+    "thread_source": null,
+    "instructions_present": false,
+    "completeness": "complete",
+    "policy_omitted": false
   }
 }

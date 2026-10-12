@@ -6,5 +6,5 @@
 pub mod event;
 pub mod message;
 
-/// Maximum UTF-8 JSON payload accepted by v2, including lossless body bytes.
+/// Maximum UTF-8 JSON payload accepted since protocol v2.
 pub const MAX_JSON_FRAME_BYTES: u32 = 64 * 1024 * 1024;

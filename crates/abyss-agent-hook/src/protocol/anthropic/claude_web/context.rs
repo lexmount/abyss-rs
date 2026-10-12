@@ -347,7 +347,10 @@ mod tests {
         protocol::anthropic::claude_web::{
             ParsedClaudeWebExchange, conversation::ClaudeWebSessionIdSource,
         },
-        protocol::model::usage::{TokenUsage, TokenUsageSource},
+        protocol::model::{
+            conversation::ConversationProjection,
+            usage::{TokenUsage, TokenUsageSource},
+        },
     };
 
     const PNG_BYTES: &[u8] = b"\x89PNG\r\n\x1a\nclaude-web-upload";
@@ -427,6 +430,8 @@ mod tests {
             session_id: session_id.to_owned(),
             session_id_source: ClaudeWebSessionIdSource::ConversationPath,
             request_hash: "request-hash".to_owned(),
+            request_conversation: ConversationProjection::empty(),
+            response_conversation: ConversationProjection::empty(),
             request_texts: vec!["describe the image".to_owned()],
             request_images: Vec::new(),
             request_file_uuids: file_uuids.iter().map(|value| (*value).to_owned()).collect(),
