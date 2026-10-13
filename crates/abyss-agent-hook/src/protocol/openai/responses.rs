@@ -807,8 +807,8 @@ mod tests {
 
         let parsed = parse_openai_exchange(&exchange).expect("truncated exchange");
 
-        assert!(parsed.request_texts.is_empty());
-        assert!(parsed.response_texts.is_empty());
+        assert_eq!(parsed.request_texts, Vec::<String>::new());
+        assert_eq!(parsed.response_texts, Vec::<String>::new());
     }
 
     #[test]

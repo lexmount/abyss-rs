@@ -572,12 +572,7 @@ mod tests {
             serialized["events"][0]["metadata"]["content_segments"][0]["type"],
             "tool_call"
         );
-        assert!(
-            serialized["diagnostic_captures"]
-                .as_array()
-                .unwrap()
-                .is_empty()
-        );
+        assert_eq!(serialized["diagnostic_captures"], serde_json::json!([]));
     }
 
     #[test]
