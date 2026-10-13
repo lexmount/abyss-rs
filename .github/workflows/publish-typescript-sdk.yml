@@ -81,10 +81,6 @@ jobs:
       - run: npm ci
 
       - name: Publish to npm
-        # Only needed for the first publish, before npm can trust this package.
-        # After configuring its trusted publisher, remove the NPM_TOKEN secret.
-        env:
-          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
         run: npm publish --access public --provenance
 
       - name: Verify published package

@@ -47,11 +47,20 @@ Only stable SDK versions are supported by this workflow.
 ### First publication
 
 npm requires an existing package before a trusted publisher can be configured.
-For the first release, add a short-lived granular access token as the repository
-Actions secret `NPM_TOKEN`. The account must be allowed to publish packages under
-`@lexmount.com`. In **Packages and scopes**, grant **Read and write (publish and
-stage)** for the `@lexmount.com` scope and enable **Bypass 2FA**. Organization
-management permissions alone do not grant publishing access.
+An npm account with permission to publish under `@lexmount.com` must create the
+first version locally. From a verified commit on `main`, complete npm's browser
+login and interactive 2FA, then publish:
+
+```sh
+npm login --auth-type=web --registry=https://registry.npmjs.org
+cd sdks/typescript
+npm ci
+npm test
+npm publish --access public
+```
+
+Enter any requested 2FA verification in npm's authentication flow. Do not add
+an npm publishing token or a 2FA code to GitHub Actions secrets.
 
 After the first successful release, configure the package's **Trusted Publisher**
 on npmjs.com:
@@ -65,9 +74,10 @@ on npmjs.com:
 | Environment name     | Leave blank                  |
 | Allowed actions      | Enable `npm publish`         |
 
-Remove the `NPM_TOKEN` GitHub secret and revoke the temporary token. Subsequent
-releases authenticate through OIDC. Complete the first OIDC publication within
-two days of creating the trust configuration, or recreate it when ready.
+Subsequent releases authenticate through OIDC. Use a new package version for
+the first CD release: the version published locally cannot be published again.
+Complete the first OIDC publication within two days of creating the trust
+configuration, or recreate it when ready.
 
 See npm's [trusted publishing documentation](https://docs.npmjs.com/trusted-publishers/)
-and [token configuration](https://docs.npmjs.com/creating-and-viewing-access-tokens/).
+and [interactive authentication](https://docs.npmjs.com/accessing-npm-using-2fa/).
