@@ -85,7 +85,7 @@ jobs:
     if: github.event_name == 'release'
     needs: verify
     runs-on: ubuntu-latest
-    timeout-minutes: 10
+    timeout-minutes: 15
     permissions:
       contents: read
       id-token: write
@@ -111,7 +111,19 @@ jobs:
           version="$(node -p "require('./package.json').version")"
           smoke_dir="$(mktemp -d)"
           cd "$smoke_dir"
-          npm install --ignore-scripts --package-lock=false "@lexmount.com/abyss-sdk@$version"
+          # npm may acknowledge publication before the version is available to install.
+          for attempt in {1..20}; do
+            if npm install --ignore-scripts --no-audit --no-fund --package-lock=false \
+              --fetch-retries=0 --fetch-timeout=15000 "@lexmount.com/abyss-sdk@$version"; then
+              break
+            fi
+            if [ "$attempt" -eq 20 ]; then
+              echo "Published package is still unavailable after 20 attempts." >&2
+              exit 1
+            fi
+            echo "Waiting for npm availability (attempt $attempt/20)..."
+            sleep 30
+          done
           node --input-type=module <<'JS'
           import assert from 'node:assert/strict';
           import { BrokerClient } from '@lexmount.com/abyss-sdk';
