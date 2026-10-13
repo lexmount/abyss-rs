@@ -33,6 +33,10 @@ follows the same GitHub Release and npm trusted publishing flow as
 `lexmount/abyss-dashboard`. It uses a GitHub-hosted Ubuntu runner with Node.js 24
 and npm 11.5.1 or later. No additional server is required.
 
+The SDK's major and minor versions must match `abyss-broker`; patch versions
+advance independently. For example, SDK `1.0.1` can accompany broker `1.0.2`.
+The workflow checks this rule on pull requests and before every release.
+
 1. Update `version` in `package.json` and `package-lock.json` and merge into `main`.
 2. Create a tag named `typescript-sdk-v<VERSION>` on that commit, for example
    `typescript-sdk-v1.0.0`.
