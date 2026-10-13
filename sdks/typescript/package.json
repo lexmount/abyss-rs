@@ -1,5 +1,5 @@
 {
-  "name": "@lexmount/abyss-sdk",
+  "name": "@lexmount.com/abyss-sdk",
   "version": "1.0.0",
   "description": "Node.js SDK for the Abyss broker REST API and plugin event stream",
   "type": "module",
@@ -17,10 +17,16 @@
   },
   "files": [
     "dist",
+    "src",
+    "LICENSE",
     "README.md"
   ],
   "engines": {
     "node": ">=20"
+  },
+  "publishConfig": {
+    "access": "public",
+    "registry": "https://registry.npmjs.org"
   },
   "scripts": {
     "build": "tsc -p tsconfig.json",
