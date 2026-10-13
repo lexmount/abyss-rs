@@ -127,7 +127,13 @@ where
                     let mut legacy = serde_json::to_value(event.as_ref())
                         .map_err(|source| PluginFrameError::Json { source })?;
                     if let Some(object) = legacy.as_object_mut() {
-                        for v2_field in ["conversation", "claude_code_billing", "claude_thread"] {
+                        for v2_field in [
+                            "conversation",
+                            "claude_code_billing",
+                            "claude_thread",
+                            "purpose",
+                            "session_title",
+                        ] {
                             object.remove(v2_field);
                         }
                         // V1 requires a positive `turn_index`; the collector
@@ -345,7 +351,13 @@ mod tests {
             if version == 2 {
                 assert_eq!(received, fixture, "v2 receives the event unchanged");
             }
-            for v2_field in ["conversation", "claude_code_billing", "claude_thread"] {
+            for v2_field in [
+                "conversation",
+                "claude_code_billing",
+                "claude_thread",
+                "purpose",
+                "session_title",
+            ] {
                 assert_eq!(
                     received.get(v2_field).is_some(),
                     version == 2,

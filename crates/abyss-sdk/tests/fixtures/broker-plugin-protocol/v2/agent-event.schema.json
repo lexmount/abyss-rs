@@ -43,6 +43,14 @@
     "claude_thread": {
       "type": "object"
     },
+    "purpose": {
+      "enum": [
+        "session_title"
+      ]
+    },
+    "session_title": {
+      "type": "string"
+    },
     "llm": {
       "$ref": "#/$defs/llmContext"
     },

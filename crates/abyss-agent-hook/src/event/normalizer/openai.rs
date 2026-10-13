@@ -43,6 +43,8 @@ impl NormalizableExchange for ParsedOpenAiExchange {
             session_id: self.session_id().to_owned(),
             claude_code_billing: None,
             claude_thread: None,
+            purpose: None,
+            session_title: None,
             response_identity: self
                 .response_id
                 .clone()

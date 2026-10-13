@@ -174,6 +174,8 @@ pub mod tests {
             turn_id: None,
             claude_code_billing: None,
             claude_thread: None,
+            purpose: None,
+            session_title: None,
             llm: LlmPayload {
                 provider: "openai".to_owned(),
                 model: "gpt-test".to_owned(),

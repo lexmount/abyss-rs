@@ -22,6 +22,8 @@
     "type": "continue",
     "previous_message_id": "msg_123"
   },
+  "purpose": "session_title",
+  "session_title": "Repository overview",
   "llm": {
     "provider": "openai",
     "model": "gpt-5"

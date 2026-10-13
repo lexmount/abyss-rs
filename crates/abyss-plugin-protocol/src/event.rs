@@ -38,6 +38,13 @@ pub struct AgentEvent {
     /// Anthropic Messages request `thread` object, verbatim.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub claude_thread: Option<Map<String, Value>>,
+    /// What the Agent made this provider call for, when its traffic says so.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub purpose: Option<EventPurpose>,
+    /// Title the Agent generated for the session this event belongs to;
+    /// response side of a [`EventPurpose::SessionTitle`] call only.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub session_title: Option<String>,
     /// Provider and model context.
     pub llm: LlmContext,
     /// Request or response side represented by this event.
@@ -59,6 +66,15 @@ pub struct AgentEvent {
     /// Policy-retained image attachments.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub attachments: Vec<ImageAttachment>,
+}
+
+/// Agent-declared reason for a provider call.
+#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "snake_case")]
+#[non_exhaustive]
+pub enum EventPurpose {
+    /// The Agent asks the model to name the session the call belongs to.
+    SessionTitle,
 }
 
 /// Device context attached to one Agent event.
@@ -301,6 +317,8 @@ mod tests {
             "turn_id",
             "claude_code_billing",
             "claude_thread",
+            "purpose",
+            "session_title",
             "conversation",
         ] {
             assert!(
@@ -384,6 +402,8 @@ mod tests {
             turn_id: None,
             claude_code_billing: None,
             claude_thread: None,
+            purpose: None,
+            session_title: None,
             llm: LlmContext {
                 provider,
                 model: "gpt-test".to_owned(),

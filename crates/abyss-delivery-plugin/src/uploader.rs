@@ -376,6 +376,13 @@ impl TryFrom<AgentEvent> for IngestUsageEvent {
         if let Some(thread) = event.claude_thread {
             metadata["claude_thread"] = Value::Object(thread);
         }
+        if let Some(purpose) = event.purpose {
+            metadata["purpose"] = serde_json::to_value(purpose)
+                .map_err(|error| DeliveryPluginError::Translate(error.to_string()))?;
+        }
+        if let Some(title) = event.session_title {
+            metadata["session_title"] = Value::String(title);
+        }
         if let Some(conversation) = event.conversation {
             metadata["conversation"] = serde_json::to_value(conversation)
                 .map_err(|error| DeliveryPluginError::Translate(error.to_string()))?;
@@ -641,6 +648,8 @@ mod tests {
             turn_id: Some("turn-1".to_owned()),
             claude_code_billing: None,
             claude_thread: None,
+            purpose: None,
+            session_title: None,
             llm: LlmContext {
                 provider: LlmProvider::OpenAi,
                 model: "gpt".to_owned(),
@@ -707,5 +716,7 @@ mod tests {
             metadata["claude_thread"],
             serde_json::json!({"type": "continue", "previous_message_id": "msg_123"})
         );
+        assert_eq!(metadata["purpose"], "session_title");
+        assert_eq!(metadata["session_title"], "Repository overview");
     }
 }

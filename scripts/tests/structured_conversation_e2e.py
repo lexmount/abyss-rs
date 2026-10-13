@@ -161,9 +161,39 @@ def main():
             },
         }
     )
+    # Claude Code names its session from a dedicated call.
+    fixtures.append(
+        {
+            "path": "/v1/messages",
+            "session_id": "structured-e2e-anthropic",
+            "request": {
+                "model": "test-model",
+                "system": [
+                    {
+                        "type": "text",
+                        "text": "x-anthropic-billing-header: cc_version=2.1.296.172; cc_entrypoint=cli;",
+                    },
+                    {"type": "text", "text": "You are naming a coding session."},
+                ],
+                "messages": [
+                    {"role": "user", "content": "<session>\nhello\n</session>"}
+                ],
+            },
+            "response": {
+                "id": "anthropic-title",
+                "model": "test-model",
+                "content": [{"type": "text", "text": '{"title": "Greeting"}'}],
+                "usage": {"input_tokens": 3, "output_tokens": 1},
+            },
+        }
+    )
     events = replay(args.replay_binary, fixtures)
-    assert len(events) == 6, events
-    assert_structured(events)
+    assert len(events) == 8, events
+    assert_structured(events[:6])
+    naming_request, naming_reply = events[6:]
+    assert naming_request["purpose"] == naming_reply["purpose"] == "session_title"
+    assert "session_title" not in naming_request
+    assert naming_reply["session_title"] == "Greeting"
     # Re-observing the same exchanges yields the same deterministic event ids.
     replayed = replay(args.replay_binary, fixtures)
     assert [e["event_id"] for e in replayed] == [e["event_id"] for e in events]
@@ -282,10 +312,12 @@ def main():
                             "structured-e2e-openai",
                             ["context", "user", "assistant", "user", "assistant"],
                         ),
-                        # Reasoning and the reply are both assistant-side items.
+                        # Reasoning and the reply are both assistant-side items;
+                        # the naming call forms its own stream.
                         (
                             "structured-e2e-anthropic",
-                            ["context", "user", "assistant", "assistant"],
+                            ["context", "user", "assistant", "assistant"]
+                            + ["context", "user", "assistant"],
                         ),
                     ]:
                         selected = get(
@@ -300,7 +332,7 @@ def main():
                         ] == expected, trajectory
                         outline = get("/v1/agent-usage/sessions/" + pk + "/outline")
                         assert outline["session"]["title"] == (
-                            "continue" if "openai" in session else "hello"
+                            "continue" if "openai" in session else "Greeting"
                         ), outline
                         (args.artifacts / (session + ".json")).write_text(
                             json.dumps(trajectory, indent=2)

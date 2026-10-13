@@ -7,8 +7,8 @@ use std::collections::BTreeMap;
 
 use abyss_plugin_protocol::event::{
     AgentContext as PluginAgentContext, AgentEvent, AgentEventSide, Conversation, DeviceContext,
-    ImageAttachment, ImageMediaType, LlmContext, LlmProvider, TokenUsage as PluginTokenUsage,
-    ToolCall, ToolResult,
+    EventPurpose, ImageAttachment, ImageMediaType, LlmContext, LlmProvider,
+    TokenUsage as PluginTokenUsage, ToolCall, ToolResult,
 };
 use base64::{Engine as _, engine::general_purpose::STANDARD};
 use chrono::{DateTime, SecondsFormat, TimeDelta, Utc};
@@ -92,6 +92,12 @@ pub struct NormalizedUsageEvent {
     /// Anthropic Messages request `thread` object verbatim.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub claude_thread: Option<Map<String, Value>>,
+    /// Purpose the Agent declared for this provider call.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub purpose: Option<EventPurpose>,
+    /// Title the Agent generated for this event's session.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub session_title: Option<String>,
     /// LLM provider and model metadata.
     pub llm: LlmPayload,
     /// Logical event side: currently `request` or `response`.
@@ -123,6 +129,8 @@ impl TryFrom<NormalizedUsageEvent> for AgentEvent {
             turn_id,
             claude_code_billing,
             claude_thread,
+            purpose,
+            session_title,
             llm,
             event_type,
             text,
@@ -160,6 +168,8 @@ impl TryFrom<NormalizedUsageEvent> for AgentEvent {
             turn_id,
             claude_code_billing,
             claude_thread,
+            purpose,
+            session_title,
             llm: LlmContext {
                 provider: LlmProvider::from_wire_name(llm.provider),
                 model: llm.model,
@@ -384,6 +394,8 @@ pub struct ParsedEventParts<'a> {
     session_id: String,
     claude_code_billing: Option<BTreeMap<String, String>>,
     claude_thread: Option<Map<String, Value>>,
+    purpose: Option<EventPurpose>,
+    session_title: Option<String>,
     response_identity: String,
     request_conversation: &'a Conversation,
     response_conversation: &'a Conversation,
@@ -409,6 +421,7 @@ struct EventSide<'a> {
     attachments: &'a [ParsedImageAttachment],
     content: &'a HarnessUsageContentConfig,
     turn_id: Option<&'a str>,
+    session_title: Option<&'a str>,
 }
 
 /// Generates strictly increasing collector timestamps for one normalized
@@ -511,6 +524,7 @@ fn events_for_parsed_exchange(
                 attachments: &parts.request_images,
                 content,
                 turn_id,
+                session_title: None,
             },
             timestamps.next(),
         ));
@@ -534,6 +548,7 @@ fn events_for_parsed_exchange(
                 attachments: &[],
                 content,
                 turn_id,
+                session_title: parts.session_title.as_deref(),
             },
             timestamps.next(),
         ));
@@ -680,6 +695,12 @@ fn usage_event(
         turn_id: side.turn_id.map(str::to_owned),
         claude_code_billing: parts.claude_code_billing.clone(),
         claude_thread: parts.claude_thread.clone(),
+        purpose: parts.purpose,
+        // The title is model output, retained like the reply text.
+        session_title: side
+            .session_title
+            .filter(|_| side.content.conversation_text)
+            .map(str::to_owned),
         llm: LlmPayload {
             provider: parts.llm_provider.clone(),
             model: parts
@@ -742,7 +763,9 @@ fn merge_metadata(mut base: Value, extra: &Value) -> Value {
 
 #[cfg(test)]
 mod tests {
-    use abyss_plugin_protocol::event::{AgentEvent, ConversationMessage, LlmProvider, MessageRole};
+    use abyss_plugin_protocol::event::{
+        AgentEvent, ConversationMessage, EventPurpose, LlmProvider, MessageRole,
+    };
 
     use crate::{
         config::{DeviceIdentity, HarnessUsageContentConfig, HarnessUsageHookConfig},
@@ -934,9 +957,8 @@ mod tests {
         }
     }
 
-    #[test]
-    fn anthropic_messages_normalization_does_not_infer_harness_from_protocol() {
-        let parsed = ParsedAnthropicMessagesExchange {
+    fn anthropic_messages_exchange() -> ParsedAnthropicMessagesExchange {
+        ParsedAnthropicMessagesExchange {
             host: "api.anthropic.com".to_owned(),
             path: "/v1/messages".to_owned(),
             method: "POST".to_owned(),
@@ -951,6 +973,8 @@ mod tests {
             claude_code_billing: None,
             claude_code_turn_id: None,
             claude_thread: None,
+            purpose: None,
+            session_title: None,
             request_tool_events: Vec::new(),
             response_tool_events: Vec::new(),
             response_texts: vec!["hi".to_owned()],
@@ -959,7 +983,46 @@ mod tests {
             model: Some("claude-test".to_owned()),
             anthropic_version: Some("2023-06-01".to_owned()),
             event_types: vec!["message".to_owned()],
-        };
+        }
+    }
+
+    #[test]
+    fn session_title_rides_on_the_response_and_follows_the_text_policy() {
+        let mut parsed = anthropic_messages_exchange();
+        parsed.purpose = Some(EventPurpose::SessionTitle);
+        parsed.session_title = Some("登录修复".to_owned());
+        let detection = detection(BuiltInHarness::ClaudeCode, "x-claude-code-session-id");
+
+        for conversation_text in [true, false] {
+            let content = HarnessUsageContentConfig {
+                conversation_text,
+                ..HarnessUsageContentConfig::default()
+            };
+            let events = normalize_exchange(
+                &hook_config(),
+                &parsed,
+                &content,
+                &detection,
+                &LlmProvider::Anthropic,
+            );
+
+            assert_eq!(events.len(), 2);
+            assert!(
+                events
+                    .iter()
+                    .all(|event| event.purpose == Some(EventPurpose::SessionTitle))
+            );
+            assert!(events[0].session_title.is_none());
+            assert_eq!(
+                events[1].session_title.as_deref(),
+                conversation_text.then_some("登录修复")
+            );
+        }
+    }
+
+    #[test]
+    fn anthropic_messages_normalization_does_not_infer_harness_from_protocol() {
+        let parsed = anthropic_messages_exchange();
         let detection = HarnessDetection {
             harness_id: harness_id("third-party"),
             evidence: vec![HarnessEvidence::Process("third-party".to_owned())],

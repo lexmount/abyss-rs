@@ -8,8 +8,9 @@
 use std::{collections::BTreeMap, fmt};
 
 use abyss_mitm::{FlowContext, HttpExchange, TransparentProtocol};
+use abyss_plugin_protocol::event::EventPurpose;
 use http::{HeaderMap, Method, header::HOST};
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
 use crate::{
@@ -24,6 +25,8 @@ use crate::{
 
 /// Line prefix Claude Code writes at the start of its first system block.
 const CLAUDE_CODE_BILLING_HEADER: &str = "x-anthropic-billing-header:";
+/// System instruction Claude Code sends when naming the session it runs in.
+const CLAUDE_CODE_NAMING_INSTRUCTION: &str = "You are naming a coding session";
 
 /// Source used to derive the protocol session identity.
 #[derive(Debug, Clone, Copy, Serialize)]
@@ -80,6 +83,10 @@ pub struct ParsedAnthropicMessagesExchange {
     pub claude_code_turn_id: Option<String>,
     /// Request `thread` object verbatim when present.
     pub claude_thread: Option<serde_json::Map<String, Value>>,
+    /// Purpose the Agent declared for this call, such as naming its session.
+    pub purpose: Option<EventPurpose>,
+    /// Session title answered by a Claude Code naming call.
+    pub session_title: Option<String>,
     /// Tool results submitted on the request side of this provider call.
     pub request_tool_events: Vec<ParsedToolEvent>,
     /// Tool calls streamed by the response side of this provider call.
@@ -155,6 +162,9 @@ pub fn parse_anthropic_messages_exchange(
         .map(String::as_str)
         .and_then(non_empty_trimmed)
         .map(|turn_index| format!("cc_turn:{turn_index}"));
+    let purpose = (claude_code_billing.is_some() && names_claude_code_session(request_json))
+        .then_some(EventPurpose::SessionTitle);
+    let session_title = purpose.and_then(|_| claude_code_session_title(&response_texts));
 
     Some(ParsedAnthropicMessagesExchange {
         host,
@@ -174,6 +184,8 @@ pub fn parse_anthropic_messages_exchange(
             .get("thread")
             .and_then(Value::as_object)
             .cloned(),
+        purpose,
+        session_title,
         request_tool_events,
         response_tool_events,
         response_texts,
@@ -235,6 +247,34 @@ fn claude_code_billing(payload: &Value) -> Option<BTreeMap<String, String>> {
         }
     }
     Some(billing)
+}
+
+/// Claude Code names a session from a dedicated call whose system prompt
+/// carries the naming instruction.
+fn names_claude_code_session(payload: &Value) -> bool {
+    match payload.get("system") {
+        Some(Value::String(text)) => text.contains(CLAUDE_CODE_NAMING_INSTRUCTION),
+        Some(Value::Array(blocks)) => blocks.iter().any(|block| {
+            string_field(block, "text")
+                .is_some_and(|text| text.contains(CLAUDE_CODE_NAMING_INSTRUCTION))
+        }),
+        _ => false,
+    }
+}
+
+#[derive(Deserialize)]
+struct SessionTitleAnswer {
+    title: String,
+}
+
+/// Reads the title from a naming call's reply, which is one `{"title": "…"}`
+/// object; any other reply yields none.
+fn claude_code_session_title(response_texts: &[String]) -> Option<String> {
+    let [text] = response_texts else {
+        return None;
+    };
+    let answer: SessionTitleAnswer = serde_json::from_str(text.trim()).ok()?;
+    non_empty_trimmed(&answer.title).map(str::to_owned)
 }
 
 pub(super) fn extract_request_tool_events(payload: &Value) -> Vec<ParsedToolEvent> {
@@ -877,6 +917,7 @@ mod tests {
     use abyss_mitm::{
         CapturedBody, FlowContext, HttpExchange, OriginalDestination, TransparentProtocol,
     };
+    use abyss_plugin_protocol::event::EventPurpose;
     use http::{Request, Response};
     use serde_json::{Value, json};
 
@@ -1180,6 +1221,80 @@ mod tests {
         );
         assert!(ordinary.claude_code_billing.is_none());
         assert!(ordinary.claude_code_turn_id.is_none());
+    }
+
+    fn naming_request(system: &Value) -> Value {
+        json!({
+            "model": "claude-haiku-5-5",
+            "system": system,
+            "messages": [{"role": "user", "content": "<session>\n修复登录\n</session>"}]
+        })
+    }
+
+    fn naming_system() -> Value {
+        json!([
+            {"type": "text", "text": "x-anthropic-billing-header: cc_version=2.1.296.172; cc_entrypoint=cli; cch=8007c;"},
+            {"type": "text", "text": "You are Claude Code, Anthropic's official CLI for Claude."},
+            {"type": "text", "text": "You are naming a coding session so the user can pick it out of a long list."}
+        ])
+    }
+
+    fn text_reply(text: &str) -> Value {
+        json!({"id": "msg_title", "content": [{"type": "text", "text": text}]})
+    }
+
+    #[test]
+    fn claude_code_naming_call_carries_its_session_title() {
+        let parsed = parse_anthropic_messages_exchange(&json_exchange(
+            "/v1/messages",
+            &naming_request(&naming_system()),
+            &text_reply(r#"{"title": " 登录修复 "}"#),
+        ))
+        .expect("naming exchange");
+
+        assert_eq!(parsed.purpose, Some(EventPurpose::SessionTitle));
+        assert_eq!(parsed.session_title.as_deref(), Some("登录修复"));
+    }
+
+    #[test]
+    fn naming_reply_without_one_title_object_carries_no_title() {
+        for reply in [
+            "We need a short title",
+            r#"Title: {"title": "x"}"#,
+            r#"{"title": ""}"#,
+            r#"{"name": "x"}"#,
+        ] {
+            let parsed = parse_anthropic_messages_exchange(&json_exchange(
+                "/v1/messages",
+                &naming_request(&naming_system()),
+                &text_reply(reply),
+            ))
+            .expect("naming exchange");
+
+            assert_eq!(parsed.purpose, Some(EventPurpose::SessionTitle), "{reply}");
+            assert!(parsed.session_title.is_none(), "{reply}");
+        }
+    }
+
+    #[test]
+    fn naming_instruction_outside_a_claude_code_system_prompt_is_not_a_naming_call() {
+        let quoted_by_user = json!({
+            "system": [{"type": "text", "text": CLAUDE_CODE_TURN_13}],
+            "messages": [{"role": "user", "content": "Why does it say You are naming a coding session?"}]
+        });
+        let other_client = naming_request(&json!("You are naming a coding session."));
+
+        for request in [quoted_by_user, other_client] {
+            let parsed = parse_anthropic_messages_exchange(&json_exchange(
+                "/v1/messages",
+                &request,
+                &text_reply(r#"{"title": "x"}"#),
+            ))
+            .expect("exchange");
+
+            assert!(parsed.purpose.is_none());
+            assert!(parsed.session_title.is_none());
+        }
     }
 
     #[test]

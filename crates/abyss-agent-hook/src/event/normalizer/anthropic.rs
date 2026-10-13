@@ -46,6 +46,8 @@ impl NormalizableExchange for ParsedAnthropicMessagesExchange {
             session_id: self.session_id().to_owned(),
             claude_code_billing: self.claude_code_billing.clone(),
             claude_thread: self.claude_thread.clone(),
+            purpose: self.purpose,
+            session_title: self.session_title.clone(),
             response_identity: self
                 .message_id
                 .clone()
@@ -111,6 +113,8 @@ impl NormalizableExchange for ParsedClaudeWebExchange {
             session_id: self.session_id().to_owned(),
             claude_code_billing: None,
             claude_thread: None,
+            purpose: None,
+            session_title: None,
             response_identity: self
                 .message_id
                 .clone()

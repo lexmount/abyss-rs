@@ -91,6 +91,26 @@ them by their own rules.
 The official delivery plugin stores both fields under the same names in the
 usage-event metadata. The broker removes them for v1 connections.
 
+## Call purpose and session title
+
+`purpose` states what the Agent made a provider call for, when its traffic
+says so. Both events of the call carry it. The only value is `session_title`:
+the Agent asks the model to name the session the call belongs to.
+Claude Code makes such a call with the naming instruction in its system prompt
+(`You are naming a coding session…`) and the billing header present.
+
+`session_title` is the title from the response side of a `session_title` call,
+read only when the reply is a single `{"title": "…"}` object. It names the
+event's own session. Like `text`, it is model output and is omitted when the
+content policy drops conversation text.
+
+Codex names a task from a separate thread whose requests do not say which
+session they name, so Codex events carry neither field; its naming threads
+remain visible through `conversation.thread_source`.
+
+The official delivery plugin stores both fields under the same names in the
+usage-event metadata. The broker removes them for v1 connections.
+
 ## Event identity and emission
 
 Event ids are deterministic. The collector derives an id from the device,
@@ -108,7 +128,8 @@ Backend titles and trajectories consume these messages without decoding
 provider bodies.
 
 New Rust clients negotiate v2. The broker continues accepting v1 clients and
-omits `conversation`, `claude_code_billing`, and `claude_thread` for them.
+omits `conversation`, `claude_code_billing`, `claude_thread`, `purpose`, and
+`session_title` for them.
 Existing Python and TypeScript v1 clients keep the unchanged v1 contract. The
 v1 schema remains unchanged apart from its optional `turn_id`. Upgrade the
 backend first, then the broker, then the delivery client.
