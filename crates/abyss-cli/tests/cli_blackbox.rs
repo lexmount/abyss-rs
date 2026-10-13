@@ -40,9 +40,7 @@ fn version_commands_report_the_workspace_version() {
 
 #[test]
 fn proxy_env_preserves_the_posix_explicit_proxy_output() {
-    let root = unique_test_dir();
     let output = Command::new(env!("CARGO_BIN_EXE_abyss"))
-        .env("ABYSS_HOME", &root)
         .args(["proxy", "env", "--proxy-url", "http://127.0.0.1:28999"])
         .output()
         .expect("Abyss CLI should run");
@@ -59,11 +57,6 @@ export HTTPS_PROXY='http://127.0.0.1:28999'\n\
 export http_proxy='http://127.0.0.1:28999'\n\
 export https_proxy='http://127.0.0.1:28999'\n\
 export NO_PROXY='127.0.0.1,localhost'\n"
-            .to_owned()
-            + &format!(
-                "export NODE_EXTRA_CA_CERTS='{}'\n",
-                root.join("ca").join("abyss-root-ca.pem").display()
-            )
     );
 }
 

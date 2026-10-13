@@ -76,16 +76,12 @@ impl PlatformAdapter for LinuxPlatformAdapter {
         broker::BrokerController::stop(paths, user)
     }
 
-    fn proxy_environment(&self, proxy_url: &str, ca_certificate: &Path) -> String {
-        proxy_environment(proxy_url, ca_certificate)
+    fn proxy_environment(&self, proxy_url: &str) -> String {
+        proxy_environment(proxy_url)
     }
 
-    fn proxy_environment_variables(
-        &self,
-        proxy_url: &str,
-        ca_certificate: &Path,
-    ) -> Vec<(String, String)> {
-        proxy_environment_variables(proxy_url, ca_certificate)
+    fn proxy_environment_variables(&self, proxy_url: &str) -> Vec<(String, String)> {
+        proxy_environment_variables(proxy_url)
     }
 
     fn open_browser(&self, url: &str) -> Result<(), CliError> {
@@ -140,29 +136,20 @@ fn command_output(program: &str, args: &[&str]) -> String {
     }
 }
 
-fn proxy_environment(proxy_url: &str, ca_certificate: &Path) -> String {
-    let proxy_url = shell_quote(proxy_url);
-    let ca_certificate = shell_quote(&ca_certificate.to_string_lossy());
+fn proxy_environment(proxy_url: &str) -> String {
+    let proxy_url = format!("'{}'", proxy_url.replace('\'', "'\\''"));
     format!(
-        "export HTTP_PROXY={proxy_url}\nexport HTTPS_PROXY={proxy_url}\nexport http_proxy={proxy_url}\nexport https_proxy={proxy_url}\nexport NO_PROXY='127.0.0.1,localhost'\nexport NODE_EXTRA_CA_CERTS={ca_certificate}\n"
+        "export HTTP_PROXY={proxy_url}\nexport HTTPS_PROXY={proxy_url}\nexport http_proxy={proxy_url}\nexport https_proxy={proxy_url}\nexport NO_PROXY='127.0.0.1,localhost'\n"
     )
 }
 
-fn shell_quote(value: &str) -> String {
-    format!("'{}'", value.replace('\'', "'\\''"))
-}
-
-fn proxy_environment_variables(proxy_url: &str, ca_certificate: &Path) -> Vec<(String, String)> {
+fn proxy_environment_variables(proxy_url: &str) -> Vec<(String, String)> {
     vec![
         ("HTTP_PROXY".to_owned(), proxy_url.to_owned()),
         ("HTTPS_PROXY".to_owned(), proxy_url.to_owned()),
         ("http_proxy".to_owned(), proxy_url.to_owned()),
         ("https_proxy".to_owned(), proxy_url.to_owned()),
         ("NO_PROXY".to_owned(), "127.0.0.1,localhost".to_owned()),
-        (
-            "NODE_EXTRA_CA_CERTS".to_owned(),
-            ca_certificate.to_string_lossy().into_owned(),
-        ),
     ]
 }
 
@@ -205,7 +192,6 @@ mod tests {
     use std::{
         fs,
         os::unix::fs::PermissionsExt as _,
-        path::Path,
         time::{SystemTime, UNIX_EPOCH},
     };
 
@@ -252,21 +238,16 @@ mod tests {
 
     #[test]
     fn environment_uses_explicit_proxy_for_http_and_https() {
-        let output = LinuxPlatformAdapter.proxy_environment(
-            "http://127.0.0.1:28999",
-            Path::new("/var/lib/abyss/ca/abyss-root-ca.pem"),
-        );
+        let output = LinuxPlatformAdapter.proxy_environment("http://127.0.0.1:28999");
 
         assert!(output.contains("HTTP_PROXY='http://127.0.0.1:28999'"));
         assert!(output.contains("HTTPS_PROXY='http://127.0.0.1:28999'"));
         assert!(output.contains("NO_PROXY='127.0.0.1,localhost'"));
-        assert!(output.contains("NODE_EXTRA_CA_CERTS='/var/lib/abyss/ca/abyss-root-ca.pem'"));
     }
 
     #[test]
     fn shell_quotes_proxy_url() {
-        let output = LinuxPlatformAdapter
-            .proxy_environment("http://127.0.0.1:28999/o'hare", Path::new("/tmp/ca.pem"));
+        let output = LinuxPlatformAdapter.proxy_environment("http://127.0.0.1:28999/o'hare");
         assert!(output.contains("HTTP_PROXY='http://127.0.0.1:28999/o'\\''hare'"));
     }
 }

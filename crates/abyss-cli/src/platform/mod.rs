@@ -65,16 +65,11 @@ pub trait PlatformAdapter: Send + Sync {
     /// Stops the platform-managed explicit broker.
     fn stop_broker(&self, paths: &CliPaths, user: Option<&str>) -> Result<(), CliError>;
 
-    /// Renders shell statements for the explicit proxy endpoint and the CA
-    /// certificate that Node.js agents must trust explicitly.
-    fn proxy_environment(&self, proxy_url: &str, ca_certificate: &Path) -> String;
+    /// Renders shell statements for the explicit proxy endpoint.
+    fn proxy_environment(&self, proxy_url: &str) -> String;
 
-    /// Returns proxy and CA variables injected into child processes.
-    fn proxy_environment_variables(
-        &self,
-        proxy_url: &str,
-        ca_certificate: &Path,
-    ) -> Vec<(String, String)>;
+    /// Returns proxy variables injected into child processes.
+    fn proxy_environment_variables(&self, proxy_url: &str) -> Vec<(String, String)>;
 
     /// Opens a validated HTTP(S) URL in the user's default browser.
     fn open_browser(&self, url: &str) -> Result<(), CliError>;
