@@ -10,11 +10,9 @@ text, tool calls, and tool results to Telegram. Long messages are split automati
   proxy and trust its CA certificate.
 - A Telegram bot token and a private chat ID. Send `/start` to the bot first.
 
-Install dependencies and build the SDK from the repository root:
+Install the published SDK package from npm, running from the repository root:
 
 ```bash
-npm --prefix sdks/typescript ci
-npm --prefix sdks/typescript run build
 npm --prefix examples/codex-to-telegram ci
 ```
 
