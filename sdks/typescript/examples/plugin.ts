@@ -1,4 +1,4 @@
-import { BrokerPlugin } from "@lexmount/abyss-sdk/plugin";
+import { BrokerPlugin } from "@lexmount.com/abyss-sdk/plugin";
 
 const close = await new BrokerPlugin({ consumerId: "example.typescript" }).run(
   async (event) => {

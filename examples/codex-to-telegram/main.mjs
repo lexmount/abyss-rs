@@ -1,6 +1,6 @@
 // Forward Codex text and tool context from an existing broker to Telegram.
 import { setTimeout as delay } from "node:timers/promises";
-import { BrokerPlugin } from "@lexmount/abyss-sdk/plugin";
+import { BrokerPlugin } from "@lexmount.com/abyss-sdk/plugin";
 
 async function main() {
   const token = process.env.TELEGRAM_BOT_TOKEN?.trim();

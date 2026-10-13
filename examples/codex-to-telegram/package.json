@@ -10,6 +10,6 @@
     "test": "node --test test.mjs"
   },
   "dependencies": {
-    "@lexmount/abyss-sdk": "file:../../sdks/typescript"
+    "@lexmount.com/abyss-sdk": "file:../../sdks/typescript"
   }
 }
