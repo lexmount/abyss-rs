@@ -33,7 +33,12 @@ class LlmContext:
 
 @dataclass(frozen=True)
 class TokenUsage:
-    """Normalized non-negative token counters."""
+    """Normalized non-negative token counters.
+
+    Input, cache read, cache write, and output counters are disjoint;
+    ``reasoning_tokens`` is a breakdown of ``output_tokens`` and
+    ``total_tokens`` is the sum of the four disjoint counters.
+    """
 
     input_tokens: int
     output_tokens: int
@@ -83,6 +88,7 @@ class AgentEvent:
     agent: AgentContext
     session_id: str
     turn_index: int
+    turn_id: Optional[str]
     llm: LlmContext
     side: str
     text: Optional[str]
@@ -105,6 +111,7 @@ class AgentEvent:
                 "agent",
                 "session_id",
                 "turn_index",
+                "turn_id",
                 "llm",
                 "side",
                 "text",
@@ -129,6 +136,7 @@ class AgentEvent:
             agent=_agent(_mapping(event.get("agent"), "AgentEvent.agent")),
             session_id=_string(event, "session_id"),
             turn_index=turn_index,
+            turn_id=_optional_string(event, "turn_id"),
             llm=_llm(_mapping(event.get("llm"), "AgentEvent.llm")),
             side=side,
             text=_optional_string(event, "text"),

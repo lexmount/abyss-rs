@@ -187,10 +187,11 @@ mod tests {
             .await
             .expect("broker event sink should accept the event");
 
-        let first_event: AgentEvent = read_json(&mut first).await;
-        let second_event: AgentEvent = read_json(&mut second).await;
-        assert_eq!(first_event.event_id, "evt-123");
-        assert_eq!(second_event.event_id, first_event.event_id);
+        // Both plugins negotiate v1, whose frames are not `AgentEvent`s.
+        let first_event: serde_json::Value = read_json(&mut first).await;
+        let second_event: serde_json::Value = read_json(&mut second).await;
+        assert_eq!(first_event["event_id"], "evt-123");
+        assert_eq!(second_event, first_event);
 
         shutdown_tx
             .send(true)

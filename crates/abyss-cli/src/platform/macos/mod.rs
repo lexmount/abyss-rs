@@ -66,12 +66,16 @@ impl PlatformAdapter for MacOsPlatformAdapter {
         BrokerController::stop(paths)
     }
 
-    fn proxy_environment(&self, proxy_url: &str) -> String {
-        posix_proxy_environment(proxy_url)
+    fn proxy_environment(&self, proxy_url: &str, ca_certificate: &Path) -> String {
+        posix_proxy_environment(proxy_url, ca_certificate)
     }
 
-    fn proxy_environment_variables(&self, proxy_url: &str) -> Vec<(String, String)> {
-        posix_proxy_environment_variables(proxy_url)
+    fn proxy_environment_variables(
+        &self,
+        proxy_url: &str,
+        ca_certificate: &Path,
+    ) -> Vec<(String, String)> {
+        posix_proxy_environment_variables(proxy_url, ca_certificate)
     }
 
     fn open_browser(&self, url: &str) -> Result<(), CliError> {
@@ -110,20 +114,32 @@ fn normalized_output(output: &[u8]) -> String {
     }
 }
 
-fn posix_proxy_environment(proxy_url: &str) -> String {
-    let proxy_url = format!("'{}'", proxy_url.replace('\'', "'\\''"));
+fn posix_proxy_environment(proxy_url: &str, ca_certificate: &Path) -> String {
+    let proxy_url = shell_quote(proxy_url);
+    let ca_certificate = shell_quote(&ca_certificate.to_string_lossy());
     format!(
-        "export HTTP_PROXY={proxy_url}\nexport HTTPS_PROXY={proxy_url}\nexport http_proxy={proxy_url}\nexport https_proxy={proxy_url}\nexport NO_PROXY='127.0.0.1,localhost'\n"
+        "export HTTP_PROXY={proxy_url}\nexport HTTPS_PROXY={proxy_url}\nexport http_proxy={proxy_url}\nexport https_proxy={proxy_url}\nexport NO_PROXY='127.0.0.1,localhost'\nexport NODE_EXTRA_CA_CERTS={ca_certificate}\n"
     )
 }
 
-fn posix_proxy_environment_variables(proxy_url: &str) -> Vec<(String, String)> {
+fn shell_quote(value: &str) -> String {
+    format!("'{}'", value.replace('\'', "'\\''"))
+}
+
+fn posix_proxy_environment_variables(
+    proxy_url: &str,
+    ca_certificate: &Path,
+) -> Vec<(String, String)> {
     vec![
         ("HTTP_PROXY".to_owned(), proxy_url.to_owned()),
         ("HTTPS_PROXY".to_owned(), proxy_url.to_owned()),
         ("http_proxy".to_owned(), proxy_url.to_owned()),
         ("https_proxy".to_owned(), proxy_url.to_owned()),
         ("NO_PROXY".to_owned(), "127.0.0.1,localhost".to_owned()),
+        (
+            "NODE_EXTRA_CA_CERTS".to_owned(),
+            ca_certificate.to_string_lossy().into_owned(),
+        ),
     ]
 }
 
@@ -160,7 +176,7 @@ mod tests {
     use std::{
         fs,
         os::unix::fs::PermissionsExt as _,
-        path::PathBuf,
+        path::{Path, PathBuf},
         time::{SystemTime, UNIX_EPOCH},
     };
 
@@ -241,19 +257,29 @@ mod tests {
 
     #[test]
     fn shell_quote_escapes_single_quotes() {
-        let output = MacOsPlatformAdapter.proxy_environment("http://127.0.0.1:28999/o'hare");
+        let output = MacOsPlatformAdapter.proxy_environment(
+            "http://127.0.0.1:28999/o'hare",
+            Path::new("/Users/o'hare/ca.pem"),
+        );
         assert!(output.contains("HTTP_PROXY='http://127.0.0.1:28999/o'\\''hare'"));
+        assert!(output.contains("NODE_EXTRA_CA_CERTS='/Users/o'\\''hare/ca.pem'"));
     }
 
     #[test]
     fn proxy_environment_matches_posix_contract() {
         assert_eq!(
-            MacOsPlatformAdapter.proxy_environment("http://127.0.0.1:28999"),
+            MacOsPlatformAdapter.proxy_environment(
+                "http://127.0.0.1:28999",
+                Path::new(
+                    "/Users/example/Library/Application Support/Abyss/cli/ca/abyss-root-ca.pem"
+                ),
+            ),
             "export HTTP_PROXY='http://127.0.0.1:28999'\n\
              export HTTPS_PROXY='http://127.0.0.1:28999'\n\
              export http_proxy='http://127.0.0.1:28999'\n\
              export https_proxy='http://127.0.0.1:28999'\n\
-             export NO_PROXY='127.0.0.1,localhost'\n"
+             export NO_PROXY='127.0.0.1,localhost'\n\
+             export NODE_EXTRA_CA_CERTS='/Users/example/Library/Application Support/Abyss/cli/ca/abyss-root-ca.pem'\n"
         );
     }
 }

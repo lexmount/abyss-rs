@@ -15,6 +15,7 @@ test("shared AgentEvent fixture decodes through the TypeScript SDK", async () =>
   const event = decodeAgentEvent(fixture);
 
   assert.equal(event.event_id, "evt-123");
+  assert.equal(event.turn_id, "turn-123");
   assert.equal(event.llm.provider, "openai");
   assert.equal(event.tool_calls[0].name, "exec");
 });

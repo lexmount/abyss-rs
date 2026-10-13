@@ -60,11 +60,12 @@ fn real_plugin_process_delivers_a_broker_event_to_the_configured_destination() {
     let (mut stream, _) = broker.accept().expect("plugin should connect");
     let hello: PluginHello = read_frame(&mut stream);
     assert_eq!(hello.plugin_id, "official-delivery-blackbox");
+    assert_eq!(hello.protocol_version.wire_value(), 2);
     assert!(
         !startup_info_path.exists(),
         "a spawned worker must not publish readiness before BrokerHello"
     );
-    write_frame(&mut stream, &BrokerHello::v1());
+    write_frame(&mut stream, &BrokerHello::v2());
     let startup_info = wait_for_startup_info(&startup_info_path);
     assert_eq!(startup_info["worker_pid"], child.id());
     assert_eq!(startup_info["broker_pid"], 4_242_u32);
@@ -76,6 +77,10 @@ fn real_plugin_process_delivers_a_broker_event_to_the_configured_destination() {
     let payload: Value = serde_json::from_slice(&request).expect("request JSON should decode");
     assert_eq!(payload["events"][0]["event_id"], "evt-123");
     assert_eq!(payload["events"][0]["event_type"], "response");
+    assert_eq!(
+        payload["events"][0]["metadata"]["conversation"],
+        serde_json::to_value(fixture_agent_event().conversation).unwrap()
+    );
     assert_eq!(
         payload["events"][0]["metadata"]["content_segments"][0]["name"],
         "exec"
@@ -136,7 +141,7 @@ fn managed_bearer_hot_update_replays_spool_without_restarting_worker() {
     let original_pid = child.id();
     let (mut stream, _) = broker.accept().expect("plugin should connect");
     let _: PluginHello = read_frame(&mut stream);
-    write_frame(&mut stream, &BrokerHello::v1());
+    write_frame(&mut stream, &BrokerHello::v2());
     let startup_info = wait_for_startup_info(&startup_info_path);
     assert_eq!(startup_info["worker_pid"], original_pid);
     assert_eq!(
@@ -237,7 +242,7 @@ fn destination_unauthorized_invalidates_token_and_refresh_replays_without_restar
     let original_pid = child.id();
     let (mut stream, _) = broker.accept().expect("plugin should connect");
     let _: PluginHello = read_frame(&mut stream);
-    write_frame(&mut stream, &BrokerHello::v1());
+    write_frame(&mut stream, &BrokerHello::v2());
     let startup_info = wait_for_startup_info(&startup_info_path);
     let control_endpoint = startup_info["control_endpoint"]
         .as_str()
@@ -324,7 +329,7 @@ fn wait_for_startup_info(path: &std::path::Path) -> Value {
 
 fn fixture_agent_event() -> AgentEvent {
     serde_json::from_str(include_str!(
-        "../../../specs/broker-plugin-protocol/v1/fixtures/agent-event.json"
+        "../../../specs/broker-plugin-protocol/v2/fixtures/agent-event.json"
     ))
     .expect("Agent event fixture should decode")
 }

@@ -22,6 +22,7 @@ class AgentEventContractTests(unittest.TestCase):
         event = AgentEvent.from_dict(json.loads(FIXTURE.read_text(encoding="utf-8")))
 
         self.assertEqual(event.event_id, "evt-123")
+        self.assertEqual(event.turn_id, "turn-123")
         self.assertEqual(event.llm.provider, "openai")
         self.assertEqual(event.tool_calls[0].name, "exec")
 

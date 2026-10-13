@@ -6,10 +6,14 @@
 //! Agent event compatibility is part of the broker plugin protocol version, so
 //! an individual event does not carry a separate schema version.
 
-use std::num::NonZeroU32;
+use std::collections::BTreeMap;
 
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Deserializer, Serialize, Serializer};
+use serde_json::{Map, Value};
+mod conversation;
+pub use conversation::{ContentCompleteness, Conversation, ConversationMessage, MessageRole};
+
 /// One event decoded with the contract defined by the active plugin protocol.
 #[derive(Debug, Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
@@ -24,8 +28,16 @@ pub struct AgentEvent {
     pub agent: AgentContext,
     /// Provider or collector session identifier.
     pub session_id: String,
-    /// One-based collector turn index within the session.
-    pub turn_index: NonZeroU32,
+    /// Turn identity named by the traffic and shared by every event of one turn;
+    /// absent when the traffic names none.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub turn_id: Option<String>,
+    /// Claude Code billing header pairs, values verbatim.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub claude_code_billing: Option<BTreeMap<String, String>>,
+    /// Anthropic Messages request `thread` object, verbatim.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub claude_thread: Option<Map<String, Value>>,
     /// Provider and model context.
     pub llm: LlmContext,
     /// Request or response side represented by this event.
@@ -33,6 +45,9 @@ pub struct AgentEvent {
     /// Policy-retained request or response text.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub text: Option<String>,
+    /// Role-aware request or response messages.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub conversation: Option<Conversation>,
     /// Token counters attributed to this event side.
     pub token_usage: TokenUsage,
     /// Normalized tool calls associated with this event side.
@@ -181,20 +196,23 @@ pub struct ToolResult {
 }
 
 /// Normalized non-negative token counters.
+///
+/// Input, cache read, cache write, and output counters are disjoint;
+/// `reasoning_tokens` is a breakdown of `output_tokens`.
 #[derive(Debug, Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct TokenUsage {
-    /// Tokens consumed by prompt or input content.
+    /// Input tokens neither read from nor written into a provider cache.
     pub input_tokens: u64,
-    /// Tokens produced by model output.
+    /// Tokens produced by model output, including reasoning.
     pub output_tokens: u64,
     /// Input tokens read from a provider cache.
     pub cache_read_tokens: u64,
     /// Input tokens written into a provider cache.
     pub cache_write_tokens: u64,
-    /// Tokens spent in model reasoning traces.
+    /// Part of `output_tokens` spent in model reasoning traces.
     pub reasoning_tokens: u64,
-    /// Provider total or a total derived by the producer.
+    /// Sum of input, cache read, cache write, and output counters.
     pub total_tokens: u64,
 }
 
@@ -248,8 +266,6 @@ impl ImageMediaType {
 
 #[cfg(test)]
 mod tests {
-    use std::num::NonZeroU32;
-
     use super::{
         AgentContext, AgentEvent, AgentEventSide, DeviceContext, LlmContext, LlmProvider,
         TokenUsage, ToolCall, ToolResult,
@@ -281,6 +297,17 @@ mod tests {
             serialized.get("text").is_none(),
             "absent optional content should be omitted"
         );
+        for field in [
+            "turn_id",
+            "claude_code_billing",
+            "claude_thread",
+            "conversation",
+        ] {
+            assert!(
+                serialized.get(field).is_none(),
+                "absent {field} should be omitted"
+            );
+        }
     }
 
     #[test]
@@ -354,13 +381,16 @@ mod tests {
                 version: None,
             },
             session_id: "session-1".to_owned(),
-            turn_index: NonZeroU32::new(1).expect("one should be non-zero"),
+            turn_id: None,
+            claude_code_billing: None,
+            claude_thread: None,
             llm: LlmContext {
                 provider,
                 model: "gpt-test".to_owned(),
             },
             side: AgentEventSide::Request,
             text: None,
+            conversation: None,
             token_usage: TokenUsage {
                 input_tokens: 10,
                 output_tokens: 0,

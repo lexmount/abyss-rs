@@ -618,9 +618,10 @@ validate_claude_pair() {
       and .response.llm_provider == $expected_provider
       and (.request.llm_model | type == "string" and length > 0 and . != "unknown")
       and .response.llm_model == .request.llm_model
-      and .request.input_tokens > 0
+      and (.request.input_tokens + .request.cache_read_tokens + .request.cache_write_tokens) > 0
       and .request.output_tokens == 0
-      and .request.total_tokens == .request.input_tokens
+      and .request.total_tokens
+        == (.request.input_tokens + .request.cache_read_tokens + .request.cache_write_tokens)
       and (.response.text | type == "string" and length > 0)
       and .response.input_tokens == 0
       and .response.output_tokens > 0

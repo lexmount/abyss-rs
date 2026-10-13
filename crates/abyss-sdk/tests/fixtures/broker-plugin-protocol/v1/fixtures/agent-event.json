@@ -12,6 +12,7 @@
   },
   "session_id": "session-123",
   "turn_index": 1,
+  "turn_id": "turn-123",
   "llm": {
     "provider": "openai",
     "model": "gpt-5"
@@ -24,7 +25,7 @@
     "cache_read_tokens": 0,
     "cache_write_tokens": 0,
     "reasoning_tokens": 4,
-    "total_tokens": 16
+    "total_tokens": 12
   },
   "tool_calls": [
     {

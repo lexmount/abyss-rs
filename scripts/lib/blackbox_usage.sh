@@ -104,7 +104,10 @@ blackbox_assert_codex_usage_matches_pair() {
     --argjson usage "${usage_json}" \
     --argjson pair "${pair_json}" \
     '
-      $usage.input_tokens == $pair.request.input_tokens
+      $usage.input_tokens
+        == ($pair.request.input_tokens
+          + $pair.request.cache_read_tokens
+          + $pair.request.cache_write_tokens)
       and $usage.cached_input_tokens == $pair.request.cache_read_tokens
       and $usage.cache_write_input_tokens == $pair.request.cache_write_tokens
       and $usage.output_tokens == $pair.response.output_tokens

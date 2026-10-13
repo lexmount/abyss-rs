@@ -171,13 +171,16 @@ pub mod tests {
                 version: None,
             },
             session_id: "session-1".to_owned(),
-            turn_index: 1_i32,
+            turn_id: None,
+            claude_code_billing: None,
+            claude_thread: None,
             llm: LlmPayload {
                 provider: "openai".to_owned(),
                 model: "gpt-test".to_owned(),
             },
             event_type: "request",
             text: Some("hello".to_owned()),
+            conversation: None,
             token_usage: TokenUsage {
                 input_tokens: 1_i64,
                 total_tokens: 1_i64,

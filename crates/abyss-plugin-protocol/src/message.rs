@@ -1,4 +1,4 @@
-//! Handshake and broker control wire payloads for plugin protocol version 1.
+//! Version negotiation and broker control wire payloads.
 
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
@@ -10,6 +10,8 @@ use thiserror::Error;
 pub enum PluginProtocolVersion {
     /// Initial handshake, live stream, and Agent event contract.
     V1,
+    /// Adds structured conversation content to Agent events.
+    V2,
 }
 
 impl PluginProtocolVersion {
@@ -18,6 +20,7 @@ impl PluginProtocolVersion {
     pub const fn wire_value(self) -> u16 {
         match self {
             Self::V1 => 1,
+            Self::V2 => 2,
         }
     }
 }
@@ -34,6 +37,7 @@ impl TryFrom<u16> for PluginProtocolVersion {
     fn try_from(version: u16) -> Result<Self, Self::Error> {
         match version {
             1 => Ok(Self::V1),
+            2 => Ok(Self::V2),
             version => Err(UnsupportedPluginProtocolVersion { version }),
         }
     }
@@ -65,6 +69,15 @@ pub struct PluginHello {
 }
 
 impl PluginHello {
+    /// Creates a version 2 handshake with structured conversation content.
+    #[must_use]
+    pub const fn v2(plugin_id: String) -> Self {
+        Self {
+            protocol_version: PluginProtocolVersion::V2,
+            plugin_id,
+        }
+    }
+
     /// Creates a version 1 plugin handshake.
     #[must_use]
     // Valid plugin identifiers are non-empty runtime strings, so exposing this
@@ -90,6 +103,14 @@ pub struct BrokerHello {
 }
 
 impl BrokerHello {
+    /// Creates a version 2 broker handshake response.
+    #[must_use]
+    pub const fn v2() -> Self {
+        Self {
+            protocol_version: PluginProtocolVersion::V2,
+        }
+    }
+
     /// Creates a version 1 broker handshake response.
     #[must_use]
     pub const fn v1() -> Self {

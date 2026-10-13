@@ -4,7 +4,7 @@
 //! one OS adapter from the sibling directories so callers can install, remove,
 //! and query the Abyss root CA without knowing how each OS stores trust anchors.
 
-use super::{CaResult, CertificateFingerprint, TrustStoreScope, TrustStoreStatus};
+use super::{CaError, CaResult, CertificateFingerprint, TrustStoreScope, TrustStoreStatus};
 
 #[cfg(target_os = "linux")]
 mod linux;
@@ -82,11 +82,26 @@ fn install_root_certificate_with_adapter<A: TrustStoreAdapter>(
     // install command again; re-importing an already trusted certificate can
     // trigger another platform authorization prompt even though the CA has
     // not changed.
+    //
+    // The skip is driven by trust status, never by certificate presence alone.
+    // A platform that stores the certificate before it applies trust settings
+    // can end up holding an untrusted copy, and that state has to be repaired
+    // by running the install again rather than reported as already installed.
     let status = adapter.root_certificate_status(fingerprint, scope)?;
     if status.installed {
         return Ok(status);
     }
-    adapter.install_root_certificate(certificate_der, fingerprint, scope)
+    let status = adapter.install_root_certificate(certificate_der, fingerprint, scope)?;
+    if status.installed {
+        return Ok(status);
+    }
+    // The adapter reported success while the trust store still does not trust
+    // the root. A denied or dismissed authorization prompt lands here, and
+    // silently continuing would leave every intercepted TLS handshake failing.
+    Err(CaError::platform(
+        "install root certificate",
+        "the platform trust store does not trust the Abyss root certificate after installation",
+    ))
 }
 
 fn uninstall_root_certificate_with_adapter<A: TrustStoreAdapter>(
@@ -169,6 +184,25 @@ mod tests {
     }
 
     #[test]
+    fn install_fails_when_the_trust_store_still_distrusts_the_root() {
+        // Models a denied authorization prompt: the adapter reports success
+        // while the trust store keeps reporting the root as untrusted.
+        let adapter = RecordingTrustStoreAdapter::never_trusted();
+        let fingerprint = CertificateFingerprint::from_der(b"test certificate");
+
+        let error = install_root_certificate_with_adapter(
+            &adapter,
+            b"der",
+            &fingerprint,
+            TrustStoreScope::CurrentUser,
+        )
+        .expect_err("install should fail when the root is still not trusted");
+
+        assert!(error.to_string().contains("does not trust"));
+        assert_eq!(adapter.install_calls.get(), 1);
+    }
+
+    #[test]
     fn status_delegates_to_adapter() {
         let adapter = RecordingTrustStoreAdapter::new(true);
         let fingerprint = CertificateFingerprint::from_der(b"test certificate");
@@ -204,6 +238,7 @@ mod tests {
     struct RecordingTrustStoreAdapter {
         installed: Cell<bool>,
         install_calls: Cell<usize>,
+        install_succeeds: bool,
     }
 
     impl RecordingTrustStoreAdapter {
@@ -211,6 +246,15 @@ mod tests {
             Self {
                 installed: Cell::new(installed),
                 install_calls: Cell::new(0),
+                install_succeeds: true,
+            }
+        }
+
+        fn never_trusted() -> Self {
+            Self {
+                installed: Cell::new(false),
+                install_calls: Cell::new(0),
+                install_succeeds: false,
             }
         }
     }
@@ -224,7 +268,7 @@ mod tests {
         ) -> CaResult<TrustStoreStatus> {
             self.install_calls
                 .set(self.install_calls.get().saturating_add(1));
-            self.installed.set(true);
+            self.installed.set(self.install_succeeds);
             Ok(TrustStoreStatus {
                 scope,
                 installed: self.installed.get(),

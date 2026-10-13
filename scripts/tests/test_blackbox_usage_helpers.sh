@@ -26,7 +26,7 @@ jq -n \
         session_id: "session-test",
         turn_index: 3,
         text: $marker,
-        input_tokens: 11,
+        input_tokens: 8,
         output_tokens: 0,
         cache_read_tokens: 2,
         cache_write_tokens: 1,
@@ -66,7 +66,7 @@ blackbox_assert_codex_usage_matches_pair "${USAGE_JSON}" "${PAIR_JSON}"
 
 SUMMARY_JSON='{
   "rows": [
-    {"event_type":"request","requests":1,"responses":0,"input_tokens":11,"output_tokens":0,"cache_read_tokens":2,"cache_write_tokens":1,"reasoning_tokens":0,"total_tokens":11},
+    {"event_type":"request","requests":1,"responses":0,"input_tokens":8,"output_tokens":0,"cache_read_tokens":2,"cache_write_tokens":1,"reasoning_tokens":0,"total_tokens":11},
     {"event_type":"response","requests":0,"responses":1,"input_tokens":0,"output_tokens":7,"cache_read_tokens":0,"cache_write_tokens":0,"reasoning_tokens":3,"total_tokens":7}
   ]
 }'
@@ -75,7 +75,7 @@ blackbox_assert_summary_matches_pair "${SUMMARY_JSON}" "${PAIR_JSON}"
 TWO_PAIRS_JSON="$(jq -cn --argjson pair "${PAIR_JSON}" '[ $pair, $pair ]')"
 SUMMARY_TWO_JSON='{
   "rows": [
-    {"event_type":"request","requests":2,"responses":0,"input_tokens":22,"output_tokens":0,"cache_read_tokens":4,"cache_write_tokens":2,"reasoning_tokens":0,"total_tokens":22},
+    {"event_type":"request","requests":2,"responses":0,"input_tokens":16,"output_tokens":0,"cache_read_tokens":4,"cache_write_tokens":2,"reasoning_tokens":0,"total_tokens":22},
     {"event_type":"response","requests":0,"responses":2,"input_tokens":0,"output_tokens":14,"cache_read_tokens":0,"cache_write_tokens":0,"reasoning_tokens":6,"total_tokens":14}
   ]
 }'

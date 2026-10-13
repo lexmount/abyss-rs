@@ -3,7 +3,7 @@
 //! Public commands describe product intent. CA installation, broker lifecycle,
 //! broker RPC, and proxy environment setup stay behind this boundary.
 
-use std::{io::Write as _, process::Command as ProcessCommand};
+use std::{io::Write as _, path::PathBuf, process::Command as ProcessCommand};
 
 use abyss_agent_hook::{
     BuiltInHarness, HarnessConfig, HarnessId, HarnessUsageContentConfig, HooksConfig,
@@ -21,7 +21,7 @@ use crate::{
         LogCommand, ProxyCommand, RunArgs,
     },
     error::CliError,
-    local_config::LocalRuntimePolicy,
+    local_config::{LocalConfig, LocalRuntimePolicy},
     paths::CliPaths,
     platform::platform_adapter,
     product_config::CliProductConfig,
@@ -35,6 +35,8 @@ use crate::{
     deploy_local::{DeployProgress, DeployProgressRenderer, LocalDeployment},
     runtime::{RuntimeStartProgress, ensure_started_with_progress},
 };
+
+const ROOT_CERTIFICATE_FILE_NAME: &str = "abyss-root-ca.pem";
 
 /// Parsed endpoint command ready for execution.
 pub struct CliCommand {
@@ -255,7 +257,8 @@ impl ProxyCommandRunner {
                         require_bootstrapped_runtime(running)?.proxy_addr()
                     )
                 };
-                let environment = platform_adapter().proxy_environment(&proxy_url);
+                let environment = platform_adapter()
+                    .proxy_environment(&proxy_url, &root_certificate_path(&paths)?);
                 std::io::stdout().write_all(environment.as_bytes())?;
             }
         }
@@ -532,14 +535,26 @@ impl DiagnosticsCommandRunner {
     }
 }
 
+/// Resolves the Abyss root certificate that Node.js agents must trust.
+///
+/// Node.js ignores the platform trust store where the CA is installed, so
+/// launched agents receive it through `NODE_EXTRA_CA_CERTS`.
+fn root_certificate_path(paths: &CliPaths) -> Result<PathBuf, CliError> {
+    let config_path = paths.config_file();
+    Ok(LocalConfig::load(&config_path)?
+        .ca_path(&config_path)?
+        .join(ROOT_CERTIFICATE_FILE_NAME))
+}
+
 fn run_agent(args: &RunArgs, running: Option<&RunningBroker>) -> Result<(), CliError> {
     let running = require_bootstrapped_runtime(running)?;
     let proxy_addr = running.proxy_addr();
     let mut command = ProcessCommand::new(&args.command[0]);
     let proxy_url = format!("http://{proxy_addr}");
+    let ca_certificate = root_certificate_path(&CliPaths::from_env()?)?;
     command
         .args(&args.command[1..])
-        .envs(platform_adapter().proxy_environment_variables(&proxy_url));
+        .envs(platform_adapter().proxy_environment_variables(&proxy_url, &ca_certificate));
     let status = command
         .status()
         .map_err(|source| CliError::filesystem("start agent command", &args.command[0], source))?;
