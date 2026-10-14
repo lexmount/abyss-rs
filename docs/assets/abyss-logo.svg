@@ -1,0 +1,39 @@
+<svg
+  xmlns="http://www.w3.org/2000/svg"
+  viewBox="0 0 48 48"
+  fill="none"
+>
+  <style>
+    .abyss-mark {
+      stroke: #6848bc;
+    }
+
+    @media (prefers-color-scheme: dark) {
+      .abyss-mark {
+        stroke: #c4b5fd;
+      }
+    }
+  </style>
+  <path
+    class="abyss-mark"
+    d="M24 4.75C19.1 8.63 14.1 10.6 8.25 12.05V22.15C8.25 31.05 13.18 38.02 24 44.25C34.82 38.02 39.75 31.05 39.75 22.15V12.05C33.9 10.6 28.9 8.63 24 4.75Z"
+    stroke="#6848bc"
+    stroke-width="3.25"
+    stroke-linejoin="round"
+  />
+  <circle
+    class="abyss-mark"
+    cx="24"
+    cy="24"
+    r="7.25"
+    stroke="#6848bc"
+    stroke-width="3.25"
+  />
+  <path
+    class="abyss-mark"
+    d="M31.25 24H34.2"
+    stroke="#6848bc"
+    stroke-width="3.25"
+    stroke-linecap="round"
+  />
+</svg>
