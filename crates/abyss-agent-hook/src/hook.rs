@@ -220,7 +220,7 @@ mod tests {
         CapturedBody, FlowContext, HttpExchange, MitmHook, OriginalDestination, SourceProcess,
         TransparentProtocol,
     };
-    use abyss_plugin_protocol::event::AgentEvent;
+    use abyss_plugin_protocol::event::{AgentEvent, LlmProvider};
     use http::{Request, Response};
 
     use crate::{
@@ -264,6 +264,244 @@ mod tests {
                 .all(|event| { event.llm.provider.wire_name() == "gateway.example" })
         );
         drop(events);
+    }
+
+    #[tokio::test]
+    async fn deepseek_provider_is_preserved_through_both_protocol_normalizers() {
+        let mut messages = anthropic_exchange("acme-agent");
+        *messages.request.uri_mut() = "/anthropic/v1/messages".parse().unwrap();
+
+        for mut exchange in [openai_exchange("acme-agent"), messages] {
+            let sink = Arc::new(RecordingSink::default());
+            let hook = hook(Arc::clone(&sink));
+            exchange
+                .request
+                .headers_mut()
+                .insert("host", "api.deepseek.com".parse().unwrap());
+
+            hook.on_http_exchange(&exchange).await.unwrap();
+
+            let events = sink.events.lock().unwrap();
+            assert_eq!(events.len(), 2);
+            assert!(events.iter().all(|event| event.agent.name == "acme-agent"));
+            assert!(
+                events
+                    .iter()
+                    .all(|event| event.llm.provider == LlmProvider::DeepSeek)
+            );
+            drop(events);
+        }
+    }
+
+    #[tokio::test]
+    async fn deepseek_user_agent_produces_events_without_process_metadata() {
+        for host in ["api.deepseek.com", "gateway.example"] {
+            for mut exchange in deepseek_exchanges() {
+                let sink = Arc::new(RecordingSink::default());
+                let hook = hook(Arc::clone(&sink));
+                exchange
+                    .request
+                    .headers_mut()
+                    .insert("host", host.parse().unwrap());
+
+                hook.on_http_exchange(&exchange).await.unwrap();
+
+                let events = sink.events.lock().unwrap();
+                assert_eq!(events.len(), 2);
+                for event in events.iter() {
+                    assert_eq!(event.agent.name, "deepseek-harness");
+                    assert_eq!(event.agent.version.as_deref(), Some("0.2.0-rc.2"));
+                    assert_eq!(
+                        event.llm.provider.wire_name(),
+                        if host == "api.deepseek.com" {
+                            "deepseek"
+                        } else {
+                            host
+                        }
+                    );
+                }
+                assert_eq!(events[0].text.as_deref(), Some("hello"));
+                assert_eq!(events[1].text.as_deref(), Some("hi"));
+                drop(events);
+            }
+        }
+    }
+
+    #[tokio::test]
+    async fn deepseek_harness_respects_enablement_and_content_policy() {
+        for enabled in [true, false] {
+            let sink = Arc::new(RecordingSink::default());
+            let config = serde_json::from_value::<HooksConfig>(serde_json::json!({
+                "harness_usage": {"config": {"harnesses": {"deepseek-harness": {
+                    "enabled": enabled,
+                    "content": {
+                        "token_usage": true,
+                        "conversation_text": false,
+                        "tool_calls": false,
+                        "images": false
+                    }
+                }}}}
+            }))
+            .unwrap();
+            let hook = HarnessUsageHook::with_runtime_config_and_event_sink(
+                HarnessUsageHookConfig::new(DeviceIdentity::new()),
+                HooksRuntimeConfig::new(config),
+                Arc::clone(&sink),
+            );
+            hook.on_http_exchange(&deepseek_exchanges()[0])
+                .await
+                .unwrap();
+
+            let events = sink.events.lock().unwrap();
+            if enabled {
+                assert_eq!(events.len(), 2);
+                assert!(events.iter().all(|event| event.text.is_none()));
+                assert!(
+                    events
+                        .iter()
+                        .any(|event| event.token_usage.total_tokens > 0)
+                );
+            } else {
+                assert!(events.is_empty());
+            }
+            drop(events);
+        }
+    }
+
+    #[test]
+    fn deepseek_headers_keep_requests_together_and_sessions_separate() {
+        for header in [
+            "x-deepseek-harness-session-id",
+            "session_id",
+            "x-session-id",
+        ] {
+            for mut exchange in deepseek_exchanges() {
+                let hook = hook(Arc::new(RecordingSink::default()));
+                for session in ["session-one", "session-two"] {
+                    for call in 0_i32..2_i32 {
+                        exchange
+                            .request
+                            .headers_mut()
+                            .insert(header, session.parse().unwrap());
+                        let mut body = exchange.request.body().json().unwrap().clone();
+                        // Distinct requests must remain in the same Harness session.
+                        if body.get("input").is_some() {
+                            body["input"][0]["content"] =
+                                serde_json::json!(format!("question {call}"));
+                        } else {
+                            body["messages"][0]["content"] =
+                                serde_json::json!(format!("question {call}"));
+                        }
+                        body["prompt_cache_key"] = serde_json::json!("shared-cache");
+                        *exchange.request.body_mut() =
+                            CapturedBody::from_bytes(serde_json::to_vec(&body).unwrap().into());
+                        let events = hook.http_events(&exchange);
+                        assert_eq!(events.len(), 2);
+                        for event in events {
+                            assert_eq!(event.session_id, session);
+                            assert_eq!(event.turn_index, call + 1_i32);
+                            assert_eq!(event.metadata["session_id_source"], "harness");
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn deepseek_body_markers_correlate_all_protocols_through_a_gateway() {
+        let hook = hook(Arc::new(RecordingSink::default()));
+        for mut exchange in deepseek_exchanges() {
+            exchange
+                .request
+                .headers_mut()
+                .insert("host", "gateway.example".parse().unwrap());
+            let mut body = exchange.request.body().json().unwrap().clone();
+            if exchange.request.uri().path().ends_with("/messages") {
+                body["dsh_session_log"] = serde_json::json!({
+                    "version": 1_u64, "session": {"id": "same-session"}
+                });
+            } else {
+                body["prompt_cache_key"] = serde_json::json!("same-session");
+            }
+            *exchange.request.body_mut() =
+                CapturedBody::from_bytes(serde_json::to_vec(&body).unwrap().into());
+            let events = hook.http_events(&exchange);
+            assert_eq!(events.len(), 2);
+            for event in events {
+                assert_eq!(event.session_id, "same-session");
+                assert_eq!(event.metadata["session_id_source"], "harness");
+                assert_eq!(event.llm.provider, "gateway.example");
+            }
+        }
+    }
+
+    #[test]
+    fn deepseek_session_conventions_do_not_override_other_harnesses() {
+        let hook = hook(Arc::new(RecordingSink::default()));
+        for mut exchange in [
+            openai_exchange("codex"),
+            openai_exchange("acme-agent"),
+            anthropic_exchange("claude"),
+        ] {
+            let mut body = exchange.request.body().json().unwrap().clone();
+            body["prompt_cache_key"] = serde_json::json!("shared-cache");
+            body["dsh_session_log"] = serde_json::json!({
+                "version": 1_u64, "session": {"id": "unrelated-extension"}
+            });
+            *exchange.request.body_mut() =
+                CapturedBody::from_bytes(serde_json::to_vec(&body).unwrap().into());
+            exchange
+                .request
+                .headers_mut()
+                .insert("session-id", "original-session".parse().unwrap());
+            exchange.request.headers_mut().insert(
+                "x-deepseek-harness-session-id",
+                "unrelated-session".parse().unwrap(),
+            );
+            let events = hook.http_events(&exchange);
+            assert_eq!(events.len(), 2);
+            for event in events {
+                assert_eq!(event.session_id, "original-session");
+                assert_ne!(event.metadata["session_id_source"], "harness");
+            }
+        }
+    }
+
+    #[test]
+    fn deepseek_session_headers_are_detected_with_truncated_request_bodies() {
+        for mut exchange in deepseek_exchanges() {
+            exchange.request.headers_mut().insert(
+                "x-deepseek-harness-session-id",
+                "session-1".parse().unwrap(),
+            );
+            *exchange.request.body_mut() = CapturedBody::from_truncated_bytes(
+                br#"{"model":"deepseek-flash","messages":["#.as_slice().into(),
+            );
+            let detection = crate::harness::HarnessRegistry::detect_http(
+                &exchange,
+                &HooksConfig::default().harness_usage.config,
+            )
+            .unwrap();
+            assert_eq!(detection.session_id.as_deref(), Some("session-1"));
+        }
+    }
+
+    #[test]
+    fn deepseek_without_session_markers_keeps_protocol_fallbacks() {
+        let hook = hook(Arc::new(RecordingSink::default()));
+        for exchange in deepseek_exchanges() {
+            let events = hook.http_events(&exchange);
+            assert_eq!(events.len(), 2);
+            for event in events {
+                if exchange.request.uri().path().ends_with("/messages") {
+                    assert!(event.session_id.starts_with("anthropic-unattributed-"));
+                    assert_eq!(event.metadata["session_id_source"], "unattributed");
+                } else {
+                    assert!(event.session_id.starts_with("flow-"));
+                }
+            }
+        }
     }
 
     #[tokio::test]
@@ -311,6 +549,34 @@ mod tests {
             HooksRuntimeConfig::new(config),
             sink,
         )
+    }
+
+    fn deepseek_exchanges() -> [HttpExchange; 3] {
+        let mut chat = anthropic_exchange("dsh");
+        *chat.request.uri_mut() = "/chat/completions".parse().unwrap();
+        *chat.response.body_mut() = CapturedBody::from_bytes(
+            serde_json::to_vec(&serde_json::json!({
+                "id": "chatcmpl-test",
+                "model": "deepseek-flash",
+                "choices": [{"message": {"role": "assistant", "content": "hi"}}],
+                "usage": {"prompt_tokens": 1_i32, "completion_tokens": 1_i32, "total_tokens": 2_i32}
+            }))
+            .unwrap()
+            .into(),
+        );
+        let mut messages = anthropic_exchange("dsh");
+        *messages.request.uri_mut() = "/anthropic/v1/messages".parse().unwrap();
+        let mut exchanges = [openai_exchange("dsh"), chat, messages];
+        for exchange in &mut exchanges {
+            exchange.flow.source_process = None;
+            exchange.request.headers_mut().insert(
+                "user-agent",
+                "deepseek-harness/0.2.0-rc.2 (+https://github.com/deepseek-ai/deepseek-harness)"
+                    .parse()
+                    .unwrap(),
+            );
+        }
+        exchanges
     }
 
     fn openai_exchange(process_name: &str) -> HttpExchange {

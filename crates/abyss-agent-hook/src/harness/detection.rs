@@ -22,6 +22,8 @@ pub struct HarnessDetection {
     pub evidence: Vec<HarnessEvidence>,
     pub version: Option<String>,
     pub working_directory: Option<String>,
+    /// Explicit Harness session metadata, independent of the LLM wire protocol.
+    pub session_id: Option<String>,
 }
 
 impl HarnessDetection {

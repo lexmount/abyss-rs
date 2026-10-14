@@ -68,6 +68,7 @@ impl HarnessDetector for ClaudeCodeDetector {
                 ],
             ),
             working_directory: flow.source_working_directory().map(str::to_owned),
+            session_id: None,
         })
     }
 }

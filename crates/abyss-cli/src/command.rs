@@ -473,6 +473,10 @@ impl StatusCommandRunner {
             enabled_label(&hooks, BuiltInHarness::ClaudeCode)
         );
         println!(
+            "  deepseek-harness: {}",
+            enabled_label(&hooks, BuiltInHarness::DeepSeekHarness)
+        );
+        println!(
             "Context capture: {}",
             if hooks.harness_usage.config.content.conversation_text {
                 "on"
@@ -595,8 +599,9 @@ fn parse_harness(value: &str) -> Result<BuiltInHarness, CliError> {
     match value.trim().to_ascii_lowercase().as_str() {
         "codex" => Ok(BuiltInHarness::Codex),
         "claude-code" | "claude-cli" => Ok(BuiltInHarness::ClaudeCode),
+        "deepseek-harness" => Ok(BuiltInHarness::DeepSeekHarness),
         _ => Err(CliError::InvalidConfiguration(
-            "Harness must be codex or claude-code".to_owned(),
+            "Harness must be codex, claude-code, or deepseek-harness".to_owned(),
         )),
     }
 }
@@ -606,6 +611,7 @@ const fn harness_label(harness: BuiltInHarness) -> &'static str {
         BuiltInHarness::Codex => "codex",
         BuiltInHarness::ClaudeCode => "claude-code",
         BuiltInHarness::ClaudeDesktop => "claude-desktop",
+        BuiltInHarness::DeepSeekHarness => "deepseek-harness",
         _ => "unknown",
     }
 }
@@ -641,6 +647,7 @@ mod tests {
                         "codex": {"enabled": true, "content": {"token_usage": false}},
                         "claude-code": {"enabled": true},
                         "claude-desktop": {"enabled": false, "content": {}},
+                        "deepseek-harness": {"enabled": true, "content": {}},
                         "custom-agent": {
                             "enabled": true,
                             "content": {"token_usage": false},
@@ -660,6 +667,7 @@ mod tests {
                 "codex",
                 "claude-code",
                 "claude-desktop",
+                "deepseek-harness",
                 "custom-agent",
                 "inherited",
             ] {
@@ -676,6 +684,7 @@ mod tests {
             assert!(!config.enabled_for_harness("claude-desktop"));
             assert!(config.enabled_for_harness("codex"));
             assert!(config.enabled_for_harness("claude-code"));
+            assert!(config.enabled_for_harness("deepseek-harness"));
             assert!(config.enabled_for_harness("custom-agent"));
             assert!(config.harnesses["claude-code"].content.is_none());
             assert_eq!(

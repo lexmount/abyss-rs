@@ -54,6 +54,7 @@ impl CorrelationRegistry {
         session_id: &str,
         protocol_turn_id: Option<&str>,
     ) -> CorrelationContext {
+        let session_id = detection.session_id.as_deref().unwrap_or(session_id);
         self.state
             .lock()
             .assign(detection.harness_id.as_str(), session_id, protocol_turn_id)
@@ -202,6 +203,7 @@ mod tests {
             evidence: Vec::new(),
             version: None,
             working_directory: None,
+            session_id: None,
         }
     }
 }

@@ -22,6 +22,12 @@ enabled = true
 action = "intercept"
 destination_hosts = ["anthropic.com", "*.anthropic.com", "claude.ai", "*.claude.ai"]
 
+[[mitm.tls_decryption.rules]]
+id = "decrypt-deepseek-api"
+enabled = true
+action = "intercept"
+destination_hosts = ["api.deepseek.com"]
+
 [hooks.harness_usage]
 enabled = true
 

@@ -289,6 +289,12 @@ fn packaged_default_tls_decryption_policy() -> TlsDecryptionPolicy {
                     "*.claude.ai",
                 ],
             ),
+            tls_rule(
+                "decrypt-deepseek-api",
+                TlsDecryptionAction::Intercept,
+                true,
+                &["api.deepseek.com"],
+            ),
         ],
     }
 }
@@ -393,6 +399,7 @@ mod tests {
 
     use super::{LocalConfig, LocalProxyMode, LocalRuntimePolicy};
     use abyss_agent_hook::BuiltInHarness;
+    use abyss_mitm::TlsDecryptionDecision;
 
     fn test_directory() -> PathBuf {
         let nonce = SystemTime::now()
@@ -547,6 +554,29 @@ mod tests {
                 .config
                 .enabled_for_harness(BuiltInHarness::ClaudeCode.id())
         );
+    }
+
+    #[test]
+    fn default_policies_intercept_only_the_deepseek_api_host() {
+        let packaged = toml::from_str::<LocalRuntimePolicy>(super::PACKAGED_RUNTIME_POLICY)
+            .expect("open CLI runtime policy default should parse");
+        for policy in [packaged, LocalRuntimePolicy::default()] {
+            assert!(matches!(
+                policy.mitm.tls_decryption.decide(Some("api.deepseek.com")),
+                TlsDecryptionDecision::Intercept { .. }
+            ));
+            for host in [
+                None,
+                Some("chat.deepseek.com"),
+                Some("api.deepseek.com.example"),
+                Some("gateway.example"),
+            ] {
+                assert!(matches!(
+                    policy.mitm.tls_decryption.decide(host),
+                    TlsDecryptionDecision::Passthrough { .. }
+                ));
+            }
+        }
     }
 
     #[test]

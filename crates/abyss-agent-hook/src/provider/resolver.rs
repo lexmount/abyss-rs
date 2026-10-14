@@ -29,6 +29,43 @@ impl ProviderResolver {
         {
             return LlmProvider::Anthropic;
         }
+        if host == "api.deepseek.com" {
+            return LlmProvider::DeepSeek;
+        }
         LlmProvider::Other(host)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::ProviderResolver;
+    use crate::protocol::{AnthropicProtocol, LlmProtocol, OpenAiProtocol};
+    use abyss_plugin_protocol::event::LlmProvider;
+
+    #[test]
+    fn deepseek_identity_depends_on_the_official_host_not_the_protocol() {
+        for protocol in [
+            LlmProtocol::OpenAi(OpenAiProtocol::Responses),
+            LlmProtocol::OpenAi(OpenAiProtocol::ChatCompletions),
+            LlmProtocol::Anthropic(AnthropicProtocol::Messages),
+        ] {
+            for host in ["api.deepseek.com", "API.DEEPSEEK.COM.:443"] {
+                assert_eq!(
+                    ProviderResolver::resolve(host, protocol),
+                    LlmProvider::DeepSeek
+                );
+            }
+            for host in [
+                "gateway.example",
+                "chat.deepseek.com",
+                "api.deepseek.com.example",
+                "other-api.deepseek.com",
+            ] {
+                assert_eq!(
+                    ProviderResolver::resolve(host, protocol),
+                    LlmProvider::Other(host.to_owned())
+                );
+            }
+        }
     }
 }

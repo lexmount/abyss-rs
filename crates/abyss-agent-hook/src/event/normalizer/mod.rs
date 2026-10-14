@@ -352,7 +352,10 @@ pub fn normalize_exchange<E>(
 where
     E: NormalizableExchange,
 {
-    let parts = parsed.event_parts(content, detection, provider, correlation);
+    let mut parts = parsed.event_parts(content, detection, provider, correlation);
+    if detection.session_id.is_some() {
+        parts.metadata["session_id_source"] = json!("harness");
+    }
     events_for_parsed_exchange(config, &parts, content, correlation.turn_index)
 }
 
@@ -882,6 +885,7 @@ mod tests {
             evidence: vec![HarnessEvidence::Process("third-party".to_owned())],
             version: Some("1.2.3".to_owned()),
             working_directory: None,
+            session_id: None,
         };
 
         let events = normalize_exchange(
@@ -1010,6 +1014,7 @@ mod tests {
             evidence: vec![HarnessEvidence::Header(header)],
             version: None,
             working_directory: Some("/workspace".to_owned()),
+            session_id: None,
         }
     }
 

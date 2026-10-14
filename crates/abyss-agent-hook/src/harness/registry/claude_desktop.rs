@@ -57,6 +57,7 @@ impl HarnessDetector for ClaudeDesktopDetector {
             version: header(headers, "user-agent")
                 .and_then(|user_agent| client_version(user_agent, &["claude/"])),
             working_directory: flow.source_working_directory().map(str::to_owned),
+            session_id: None,
         })
     }
 }

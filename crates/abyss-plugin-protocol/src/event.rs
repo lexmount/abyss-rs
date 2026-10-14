@@ -88,6 +88,8 @@ pub enum LlmProvider {
     OpenAi,
     /// Anthropic first-party API traffic.
     Anthropic,
+    /// `DeepSeek` first-party API traffic.
+    DeepSeek,
     /// Provider namespace not yet represented by a built-in variant.
     Other(String),
 }
@@ -99,6 +101,7 @@ impl LlmProvider {
         match provider.as_str() {
             "openai" => Self::OpenAi,
             "anthropic" => Self::Anthropic,
+            "deepseek" => Self::DeepSeek,
             _ => Self::Other(provider),
         }
     }
@@ -109,6 +112,7 @@ impl LlmProvider {
         match self {
             Self::OpenAi => "openai",
             Self::Anthropic => "anthropic",
+            Self::DeepSeek => "deepseek",
             Self::Other(provider) => provider,
         }
     }
@@ -319,6 +323,17 @@ mod tests {
             error.to_string().contains("unknown field `metadata`"),
             "error should identify metadata as outside the public contract"
         );
+    }
+
+    #[test]
+    fn deepseek_provider_namespace_round_trips() {
+        let serialized = serde_json::to_value(sample_event(LlmProvider::DeepSeek))
+            .expect("Agent event should serialize");
+        assert_eq!(serialized["llm"]["provider"], "deepseek");
+
+        let decoded: AgentEvent =
+            serde_json::from_value(serialized).expect("Agent event should deserialize");
+        assert_eq!(decoded.llm.provider, LlmProvider::DeepSeek);
     }
 
     #[test]

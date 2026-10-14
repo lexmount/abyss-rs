@@ -49,6 +49,7 @@ impl HarnessDetector for CodexDetector {
             evidence,
             version: client_version(user_agent, &["codex/tui/", "codex/desktop/", "codex/"]),
             working_directory: flow.source_working_directory().map(str::to_owned),
+            session_id: None,
         })
     }
 }
