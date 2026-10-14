@@ -1,224 +1,130 @@
-# Abyss
+# Abyss: Non-invasive observability platform for AI Agent
 
-## About Abyss
+## Overview
 
-Abyss is an open-source endpoint runtime for observing and controlling AI agent
-network traffic. It provides an explicit HTTP/HTTPS proxy, TLS interception,
-AI agent and provider protocol parsing, local capture policy, normalized audit
-events, pluggable event delivery, and Rust, TypeScript, and Python SDKs.
+Abyss is an open-source observability platform for AI agents. It observes
+agent-to-provider network traffic through a local proxy, helping developers and
+teams understand conversations, tool activity, token usage, and network failures
+without modifying agent source code or adding instrumentation to agent applications.
 
-The shared runtime is implemented in Rust. Platform integrations feed traffic
-into stable broker ingress contracts while policy, interception, parsing, and
-event production remain platform independent.
+Built in Rust, Abyss provides:
 
-## Quick Start
+- Explicit HTTP/HTTPS proxying and transparent proxying through macOS Network
+  Extension and Windows WFP adapters.
+- Policy-controlled TLS interception and content capture for supported agent protocols.
+- Normalized events for model API protocols, including OpenAI's Responses API and
+  Chat Completions API, and Anthropic's Messages API.
+- Plugins and Rust, TypeScript, and Python SDKs for custom integrations and event delivery.
 
-For the standalone broker, install it from crates.io:
+## Install
 
-```bash
-cargo install --locked abyss-broker
-```
-
-Follow the [broker setup guide](crates/abyss-broker/README.md) to prepare its CA,
-select explicit-proxy mode, and start it. For maintainers, the
-[crates.io release guide](docs/crates-io-release.md) describes version tags and
-the GitHub Actions publication workflow.
-
-### Install a prebuilt CLI release
-
-The public CLI release supports Linux x86_64 with systemd and macOS ARM64.
-Once a CLI release is published, install it without Rust or a compiler:
+Install the prebuilt CLI on Linux x86_64 (with systemd) or macOS ARM64:
 
 ```bash
 curl --proto '=https' --tlsv1.2 -fsSL \
   https://github.com/lexmount/abyss-rs/releases/latest/download/install.sh | sh
-abyss version
 ```
 
-The POSIX shell installer downloads the matching release archive, verifies its
-SHA-256, and installs `abyss`, `abyss-broker`, and `abyss-delivery-plugin` together
-in `/usr/local/bin`. Linux also gets the systemd service template and a daemon
-reload. Run as your normal user; installation requests `sudo` when necessary.
-Keep configuration and CA initialization separate by running
-`abyss deploy-local start` afterward, with Node.js 22+ and npm 10+ installed.
+## Quick Start
 
-Pass options after `sh -s --`, for example `sh -s -- --prefix /opt/abyss` or
-`sh -s -- --version 1.0.0`. Stop the local environment before upgrading. The
-installer preserves existing configuration and data. Other platforms can use
-the source installer below. See the [CLI release guide](docs/cli-release.md)
-for release assets, validation, and publishing the first release.
-
-### Complete local environment from source
-
-The local environment supports Linux x86_64 and macOS ARM64 without Docker.
-Install the Rust stable toolchain and a native C/C++ build toolchain first
-(Xcode Command Line Tools on macOS; on Linux, also install CMake and pkg-config).
-Clone the repository and build and install the complete CLI runtime:
-
-```bash
-git clone https://github.com/lexmount/abyss-rs.git
-cd abyss-rs
-bash scripts/install-cli.sh
-abyss version
-abyss --help
-```
-
-The script builds `abyss`, `abyss-broker`, and `abyss-delivery-plugin` together
-with `cargo build --release --locked`, checks that all three programs run, and
-installs them into `/usr/local/bin`. Run it as your normal user; it requests
-`sudo` only for installation when needed. Linux requires a running systemd and
-also installs the broker service template and reloads systemd. See the
-[Linux integration notes](platform/linux/README.md) for its user-home layout.
-
-Use `bash scripts/install-cli.sh --prefix "$HOME/.local"` for a user-writable
-macOS installation, or another absolute prefix on either platform. Add the
-printed `PREFIX/bin` directory to `PATH` if needed. Keep all three binaries
-together because the CLI discovers its delivery worker, and its macOS broker,
-beside its own executable. Stop the local environment before rerunning the
-script to upgrade it. The script supports `CARGO_TARGET_DIR` and stages packages
-under `DESTDIR` without reloading systemd when that variable is set.
-
-Installation prepares the executables and Linux service template. Configuration,
-CA trust, backend, and dashboard setup happen when you start the runtime. With
-Node.js 22 or newer and npm 10 or newer installed, run:
+With Node.js 22+ and npm 10+ installed, start the local environment and run an
+installed agent through Abyss:
 
 ```bash
 abyss deploy-local start
-```
-
-The first start downloads the checksummed native backend from the public
-`lexmount/abyss-backend` GitHub Release and installs the pinned public dashboard
-package below the private Abyss state directory. Neither component is added to
-`PATH`; `abyss` remains the only management command.
-
-The CLI keeps all services on IPv4 loopback and stores downloaded runtimes, the
-SQLite database, logs, and private bearer files under
-`~/Library/Application Support/Abyss/cli/local` on macOS or `~/.abyss/local` on
-Linux. It automatically selects and persists available backend and dashboard
-ports. `abyss status` and `abyss proxy start` also print the selected dashboard
-URL. Inspect the complete local environment and run an agent through it:
-
-```bash
-abyss deploy-local status
-abyss dashboard
 abyss run -- codex
 ```
 
-`abyss dashboard` opens the configured dashboard URL in your default browser
-using `open` on macOS or `xdg-open` on Linux. It prints the URL for manual access
-if the browser cannot be opened. Start a stopped local environment with
-`abyss deploy-local start` before opening its dashboard.
-
-Manage the environment without reinstalling it:
+Open the dashboard to review captured activity, or inspect the runtime from your terminal:
 
 ```bash
-abyss deploy-local stop
-abyss deploy-local start
-```
-
-`deploy-local` refuses to replace an unrelated existing `product-config.json`
-in the platform state directory; set `ABYSS_HOME` to another absolute directory
-when the machine already has a different deployment. Linux proxy startup uses
-the existing systemd broker integration; CA trust changes may request `sudo`.
-
-The CLI requires a deployment-supplied `product-config.json` for proxy and agent
-commands. `abyss deploy-local start` creates a local profile that delivers
-events to its authenticated backend. Other distributions can provide their own
-delivery destination and authentication mode; `managed_bearer` deployments
-also require a control plane and `abyss login`.
-
-Run another AI agent without changing the parent shell:
-
-```bash
-abyss run -- claude
-```
-
-Alternatively, export the proxy variables into the current shell:
-
-```bash
-eval "$(abyss proxy env)"
-```
-
-Common operational commands are:
-
-```bash
+abyss dashboard
 abyss status
 abyss diagnostics
-abyss config context off
-abyss config harness enable codex
-abyss log dump
-abyss proxy stop
-abyss logout
 ```
 
-See [Endpoint configuration](docs/configuration.md) for the complete runtime and
-deployment configuration boundary.
+See the [Abyss CLI guide](https://abyss.lexmount.cn/docs/product/open-source-software/abyss-cli)
+for configuration, capture controls, and lifecycle commands.
 
-### CLI build features
+## Broker
 
-The `abyss-cli` crate enables the `local` Cargo feature by default. It
-includes the `abyss deploy-local start|stop|status` commands, backend and dashboard
-installation, generated local configuration, and local service management.
-Public CLI releases and the source installer retain this default. Releases also
-provide `-no-local` CLI archives for downstream products and a Windows x64
-broker/delivery runtime ZIP; see the [release assets](docs/cli-release.md#release-assets).
+`abyss-broker` is Abyss's standalone endpoint runtime. It
+accepts explicit proxy connections or flows from external platform adapters,
+applies TLS and capture policies, parses supported agent traffic, and publishes
+normalized events. Its local REST API exposes runtime configuration, status,
+and diagnostics for CLI and application integrations.
 
-Distributions that supply their own service configuration, such as Office or
-SaaS, can build a CLI without local deployment:
+See the [broker setup guide](https://abyss.lexmount.cn/docs/development/basics/start-abyss-broker)
+to install, configure, and start it independently.
 
-```bash
-cargo build --release --locked -p abyss-cli --no-default-features
-```
+## Plugin
 
-This removes the command from help and command parsing, and excludes its
-implementation and dedicated direct dependencies. Login, explicit proxy,
-capture policy, diagnostics, and event delivery remain available. The broker
-and delivery worker must still be packaged alongside the CLI.
+Broker plugins are separate processes that subscribe to normalized `AgentEvent`
+messages over a local Unix socket or Windows Named Pipe. Use them to build
+custom exporters, audit integrations, and automation. The official
+`abyss-delivery-plugin` uploads events to a configured HTTP endpoint and can
+persist failed uploads for later replay.
 
-To enable local deployment explicitly when disabling default features:
+The broker provides a live event stream; plugins own remote authentication,
+persistence, and retries. See the [plugin mechanism](https://abyss.lexmount.cn/docs/development/basics/abyss-broker-mechanism#plugins)
+for the integration model and protocol details.
 
-```bash
-cargo build --release --locked -p abyss-cli --no-default-features --features local
-```
+## SDK
+
+The SDKs provide clients for the broker REST API and plugin event stream, making
+it easier to manage local policies, inspect diagnostics, and consume typed events.
+Choose the reference for your integration language:
+
+- [Rust SDK](https://abyss.lexmount.cn/docs/reference/sdk/rust)
+- [TypeScript / Node.js SDK](https://abyss.lexmount.cn/docs/reference/sdk/typescript)
+- [Python SDK](https://abyss.lexmount.cn/docs/reference/sdk/python)
 
 ## Architecture
 
 ```mermaid
 flowchart LR
-    Agent[AI agents, IDEs, CLIs, and SDKs]
+    Agent[AI agents, IDEs, and CLIs]
+    Adapter[External platform adapters]
     Provider[AI providers]
-    EventAPI[Agent event API]
+    EventAPI[Configured event API]
 
     subgraph Endpoint[Abyss endpoint runtime]
         CLI[abyss CLI]
-        Ingress[abyss-broker ingress]
-        MITM[abyss-mitm<br/>TLS and HTTP relay]
-        Hook[abyss-agent-hook<br/>protocol parsing]
-        Protocol[abyss-plugin-protocol<br/>normalized AgentEvent]
-        Delivery[abyss-delivery-plugin]
-        State[(Policy, CA, diagnostics,<br/>and durable local state)]
 
-        CLI -->|lifecycle, auth, and policy| Ingress
-        CLI -->|delivery credentials| Delivery
-        Ingress <--> MITM
-        MITM --> Hook
-        Hook --> Protocol
-        Protocol --> Delivery
-        Ingress <--> State
-        MITM <--> State
-        Delivery <--> State
+        subgraph Broker[abyss-broker]
+            Ingress[Ingress contracts]
+            Control[REST control API]
+            MITM[abyss-mitm<br/>TLS, HTTP, and WebSocket relay]
+            Hook[abyss-agent-hook<br/>detection, parsing, and normalization]
+            Events[Plugin server<br/>abyss-plugin-protocol / AgentEvent]
+            State[(Runtime policy / TOML<br/>network diagnostics / SQLite)]
+
+            Ingress <--> MITM
+            MITM -->|decoded exchanges and messages| Hook
+            Hook -->|normalized events| Events
+            Control -->|TLS policy| MITM
+            Control -->|capture policy| Hook
+            Control <--> State
+            Ingress -->|flow observations| State
+        end
+
+        CA[(Local CA)]
+        Delivery[abyss-delivery-plugin]
+        Custom[Custom plugins<br/>Rust, TypeScript, or Python SDK]
+        Spool[(Failed-upload spool)]
+
+        CLI -->|lifecycle and policy| Control
+        CLI -->|CA setup| CA
+        CA --> MITM
+        CLI -->|lifecycle and credentials| Delivery
+        Events -->|local event stream| Delivery
+        Events -->|local event stream| Custom
+        Delivery <--> Spool
     end
 
-    Agent <-->|HTTP, HTTPS, and WebSocket| Ingress
+    Agent <-->|explicit HTTP proxy| Ingress
+    Agent <--> Adapter
+    Adapter <-->|platform ingress| Ingress
     MITM <-->|upstream traffic| Provider
-    Delivery -->|authenticated event upload| EventAPI
+    Delivery -->|event upload| EventAPI
 ```
-
-Explicit-proxy clients connect directly to `abyss-broker`. External macOS and
-Windows platform adapters can use the same broker ingress contracts to attach
-process identity and transparently redirect traffic. The broker and shared Rust
-crates do not depend on those platform implementations.
-
-## License
-
-Abyss is licensed under the [GNU General Public License, version 3](LICENSE).
