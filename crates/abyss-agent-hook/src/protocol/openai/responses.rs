@@ -23,6 +23,9 @@ use crate::{
     protocol::sse::ResponseDocuments,
 };
 
+/// Header carrying Codex turn context as JSON, read only for the session id.
+const CODEX_TURN_METADATA: &str = "x-codex-turn-metadata";
+
 /// Wire-level values extracted from one OpenAI-compatible interaction.
 #[derive(Debug, Clone)]
 #[non_exhaustive]
@@ -54,10 +57,12 @@ pub struct ParsedOpenAiExchange {
     pub usage: TokenUsage,
     /// Provider response id when present.
     pub response_id: Option<String>,
-    /// Previous provider response id for conversation linkage.
+    /// The response this request continues after: the request body
+    /// `previous_response_id`.
     pub previous_response_id: Option<String>,
-    /// Stable logical turn id carried by request/item metadata when present.
-    pub protocol_turn_id: Option<String>,
+    /// The request `client_metadata` object, where a client may declare its
+    /// own context; read by the Harness registry.
+    pub client_metadata: Option<Value>,
     /// Tool results carried by the provider request side of this exchange.
     pub request_tool_events: Vec<ParsedToolEvent>,
     /// Tool calls carried by the provider response side of this exchange.
@@ -85,10 +90,7 @@ pub fn parse_openai_exchange(exchange: &HttpExchange) -> Option<ParsedOpenAiExch
     let response_values = response_documents.values;
     let response = OpenAiResponse::assemble(&response_values, response_documents.incomplete);
     let response_texts = response.texts();
-    let response_tool_events = response_values
-        .iter()
-        .flat_map(extract_response_tool_events)
-        .collect::<Vec<_>>();
+    let response_tool_events = response.tool_calls();
     // Providers usually report token usage on the final response event. Some
     // request styles may include useful usage-like fields on the request, so use
     // those as a fallback only when response usage is absent.
@@ -116,15 +118,10 @@ pub fn parse_openai_exchange(exchange: &HttpExchange) -> Option<ParsedOpenAiExch
         return None;
     }
 
-    let response_id = first_response_id(&response_values)
-        .or_else(|| request_json.and_then(|json| first_response_id(std::slice::from_ref(json))));
+    let response_id = response_id(&response_values);
     let previous_response_id = request_json
         .and_then(|json| string_field(json, "previous_response_id"))
         .map(str::to_owned);
-    let protocol_turn_id = request_json
-        .and_then(protocol_turn_id)
-        .or_else(|| response_values.iter().find_map(protocol_turn_id))
-        .or_else(|| protocol_turn_id_from_headers(exchange.request.headers()));
     let model = first_model(&response_values)
         .or_else(|| request_json.and_then(|json| string_field(json, "model").map(str::to_owned)));
     let headers = exchange.request.headers();
@@ -151,7 +148,7 @@ pub fn parse_openai_exchange(exchange: &HttpExchange) -> Option<ParsedOpenAiExch
         usage,
         response_id,
         previous_response_id,
-        protocol_turn_id,
+        client_metadata: request_json.and_then(|json| json.get("client_metadata").cloned()),
         request_tool_events,
         response_tool_events,
         model,
@@ -192,19 +189,17 @@ pub fn parse_openai_websocket_message(message: &WebSocketMessage) -> OpenAiWebSo
     } else {
         (OpenAiRequest::parse(None, false), Vec::new(), Vec::new())
     };
-    let (response_tool_events, usage) = if is_client_message {
-        (Vec::new(), TokenUsage::default())
+    let usage = if is_client_message {
+        TokenUsage::default()
     } else {
-        (
-            extract_response_tool_events(&payload),
-            best_usage(std::slice::from_ref(&payload)).unwrap_or_default(),
-        )
+        best_usage(std::slice::from_ref(&payload)).unwrap_or_default()
     };
+    // Tool calls are output items, so a frame that carries one assembles a
+    // non-empty response; the turn reads them from its assembled response.
     let relevant = if is_client_message {
         !request.is_empty() || !request_images.is_empty() || !request_tool_events.is_empty()
     } else {
         !OpenAiResponse::assemble(std::slice::from_ref(&payload), false).is_empty()
-            || !response_tool_events.is_empty()
             || !usage.is_empty()
             || string_field(&payload, "type").is_some_and(is_terminal_event)
     };
@@ -236,12 +231,17 @@ pub fn parse_openai_websocket_message(message: &WebSocketMessage) -> OpenAiWebSo
         response_id: if is_client_message {
             None
         } else {
-            first_response_id(std::slice::from_ref(&payload))
+            response_id(std::slice::from_ref(&payload))
         },
-        previous_response_id: string_field(&payload, "previous_response_id").map(str::to_owned),
-        protocol_turn_id: protocol_turn_id(&payload),
+        previous_response_id: string_field(request_payload, "previous_response_id")
+            .map(str::to_owned),
+        client_metadata: if is_client_message {
+            request_payload.get("client_metadata").cloned()
+        } else {
+            None
+        },
         request_tool_events,
-        response_tool_events,
+        response_tool_events: Vec::new(),
         model: first_model(std::slice::from_ref(&payload)),
         event_types: if is_client_message {
             Vec::new()
@@ -302,31 +302,8 @@ fn websocket_session_id(message: &WebSocketMessage, payload: &Value) -> String {
         .or_else(|| collect_string_field(payload, "thread_id"))
         .or_else(|| collect_string_field(payload, "conversation_id"))
         .or_else(|| collect_string_field(payload, "response_id"))
-        .or_else(|| first_response_id(std::slice::from_ref(payload)))
+        .or_else(|| response_id(std::slice::from_ref(payload)))
         .unwrap_or_else(|| format!("flow-{}", message.flow.flow_id))
-}
-
-fn protocol_turn_id_from_headers(headers: &HeaderMap) -> Option<String> {
-    header(headers, "x-codex-turn-metadata")
-        .and_then(protocol_turn_id_from_metadata_json)
-        .or_else(|| {
-            header(headers, "x-codex-turn-id")
-                .and_then(non_empty_trimmed)
-                .map(str::to_owned)
-        })
-}
-
-fn protocol_turn_id(payload: &Value) -> Option<String> {
-    collect_non_empty_string_field(payload, "turn_id").or_else(|| {
-        collect_non_empty_string_field(payload, "x-codex-turn-metadata")
-            .and_then(|metadata| protocol_turn_id_from_metadata_json(&metadata))
-    })
-}
-
-fn protocol_turn_id_from_metadata_json(metadata: &str) -> Option<String> {
-    serde_json::from_str::<Value>(metadata)
-        .ok()
-        .and_then(|metadata| collect_non_empty_string_field(&metadata, "turn_id"))
 }
 
 fn extract_request_tool_events(payload: &Value) -> Vec<ParsedToolEvent> {
@@ -366,52 +343,6 @@ fn collect_request_tool_events(value: &Value, depth: usize, events: &mut Vec<Par
         Value::Array(items) => {
             for item in items {
                 collect_request_tool_events(item, depth.saturating_sub(1), events);
-            }
-        }
-        _ => {}
-    }
-}
-
-fn extract_response_tool_events(payload: &Value) -> Vec<ParsedToolEvent> {
-    let mut events = Vec::new();
-    collect_response_tool_events(payload, MAX_PARSE_DEPTH, &mut events);
-    events
-}
-
-fn collect_response_tool_events(value: &Value, depth: usize, events: &mut Vec<ParsedToolEvent>) {
-    if depth == 0 {
-        return;
-    }
-
-    match value {
-        Value::Object(object) => {
-            if matches!(
-                object.get("type").and_then(Value::as_str),
-                Some("custom_tool_call" | "function_call")
-            ) && let Some(input) = object
-                .get("input")
-                .or_else(|| object.get("arguments"))
-                .and_then(|input| json_to_text(input, depth.saturating_sub(1)))
-                .and_then(|input| non_empty_trimmed(&input).map(str::to_owned))
-            {
-                push_unique_tool_event(
-                    events,
-                    ParsedToolEvent::ToolCall {
-                        item_id: optional_object_string(object, "id"),
-                        call_id: optional_object_string(object, "call_id"),
-                        name: optional_object_string(object, "name"),
-                        input,
-                    },
-                );
-            } else {
-                for child in object.values() {
-                    collect_response_tool_events(child, depth.saturating_sub(1), events);
-                }
-            }
-        }
-        Value::Array(items) => {
-            for item in items {
-                collect_response_tool_events(item, depth.saturating_sub(1), events);
             }
         }
         _ => {}
@@ -523,25 +454,19 @@ fn nested_int_field(
         .and_then(|nested| int_field(nested, child))
 }
 
-fn first_response_id(values: &[Value]) -> Option<String> {
+/// The response identity where the protocol puts it: `response.id` on a
+/// Responses stream event, and the top-level `id` of a whole Responses or
+/// Chat Completions document, which every Chat Completions stream chunk
+/// repeats.
+fn response_id(values: &[Value]) -> Option<String> {
     values.iter().find_map(|value| {
-        collect_string_field(value, "response_id").or_else(|| collect_response_id(value))
+        let id = if value.get("type").is_some() {
+            value.pointer("/response/id")
+        } else {
+            value.get("id")
+        };
+        id.and_then(Value::as_str).map(str::to_owned)
     })
-}
-
-fn collect_response_id(value: &Value) -> Option<String> {
-    match value {
-        Value::Object(object) => {
-            if let Some(id) = object.get("id").and_then(Value::as_str)
-                && id.starts_with("resp")
-            {
-                return Some(id.to_owned());
-            }
-            object.values().find_map(collect_response_id)
-        }
-        Value::Array(items) => items.iter().find_map(collect_response_id),
-        _ => None,
-    }
 }
 
 fn first_model(values: &[Value]) -> Option<String> {
@@ -564,25 +489,6 @@ fn collect_string_field(value: &Value, key: &str) -> Option<String> {
         Value::Array(items) => items
             .iter()
             .find_map(|child| collect_string_field(child, key)),
-        _ => None,
-    }
-}
-
-fn collect_non_empty_string_field(value: &Value, key: &str) -> Option<String> {
-    match value {
-        Value::Object(object) => object
-            .get(key)
-            .and_then(Value::as_str)
-            .and_then(non_empty_trimmed)
-            .map(str::to_owned)
-            .or_else(|| {
-                object
-                    .values()
-                    .find_map(|child| collect_non_empty_string_field(child, key))
-            }),
-        Value::Array(items) => items
-            .iter()
-            .find_map(|child| collect_non_empty_string_field(child, key)),
         _ => None,
     }
 }
@@ -625,7 +531,7 @@ fn session_id(headers: &HeaderMap) -> Option<String> {
 }
 
 fn metadata_header_value(headers: &HeaderMap, key: &str) -> Option<String> {
-    let metadata = header(headers, "x-codex-turn-metadata")?;
+    let metadata = header(headers, CODEX_TURN_METADATA)?;
     let value = serde_json::from_str::<Value>(metadata).ok()?;
     value
         .get(key)
@@ -668,6 +574,7 @@ mod tests {
     use serde_json::{Value, json};
 
     use super::{OpenAiWebSocketFrame, parse_openai_exchange, parse_openai_websocket_message};
+    use crate::protocol::model::tool::ParsedToolEvent;
 
     #[test]
     fn parses_responses_json_without_harness_assumptions() {
@@ -846,6 +753,56 @@ mod tests {
     }
 
     #[test]
+    fn request_carries_its_client_metadata_and_continuation() {
+        let client_metadata = json!({"x-codex-turn-metadata": "{\"thread_id\":\"session-1\"}"});
+        let exchange = json_exchange(
+            "/v1/responses",
+            &json!({"input": "hello", "previous_response_id": "resp-0",
+                "client_metadata": client_metadata}),
+            &json!({"id": "resp-1", "output": [{"content": [{"type": "output_text", "text": "hi"}]}]}),
+        );
+
+        let parsed = parse_openai_exchange(&exchange).expect("OpenAI exchange");
+
+        assert_eq!(parsed.client_metadata.as_ref(), Some(&client_metadata));
+        assert_eq!(parsed.previous_response_id.as_deref(), Some("resp-0"));
+        assert_eq!(parsed.response_id.as_deref(), Some("resp-1"));
+    }
+
+    #[test]
+    fn websocket_request_carries_the_frame_client_metadata() {
+        let client_metadata = json!({"x-codex-turn-metadata": "{\"thread_id\":\"thread-g\"}"});
+        let message = WebSocketMessage::new(
+            flow(),
+            Request::builder()
+                .method("GET")
+                .uri("/v1/responses")
+                .header("host", "gateway.example")
+                .header("session-id", "session-1")
+                .body(())
+                .unwrap(),
+            WebSocketDirection::ClientToServer,
+            1,
+            Some(
+                json!({"type": "response.create", "response": {
+                    "previous_response_id": "resp-0",
+                    "input": "hello",
+                    "client_metadata": client_metadata
+                }})
+                .to_string(),
+            ),
+            None,
+        );
+
+        let OpenAiWebSocketFrame::Request(parsed) = parse_openai_websocket_message(&message) else {
+            panic!("WebSocket request message");
+        };
+
+        assert_eq!(parsed.client_metadata.as_ref(), Some(&client_metadata));
+        assert_eq!(parsed.previous_response_id.as_deref(), Some("resp-0"));
+    }
+
+    #[test]
     fn websocket_frames_distinguish_undecodable_from_irrelevant() {
         let frame = |direction, body: &str| {
             parse_openai_websocket_message(&WebSocketMessage::new(
@@ -984,6 +941,77 @@ mod tests {
         let parsed = parse_openai_exchange(&exchange).expect("streaming exchange");
 
         assert_eq!(parsed.response_texts, vec!["answer"]);
+    }
+
+    #[test]
+    fn a_streamed_tool_call_item_yields_one_tool_call() {
+        // Codex streams each output item when it is added and done, then
+        // republishes the whole output in `response.completed`.
+        let call = r#"{"type":"function_call","id":"fc_1","call_id":"call_1","name":"exec_command","arguments":"{\"cmd\":\"pwd\"}"}"#;
+        let parallel = r#"{"type":"function_call","id":"fc_2","call_id":"call_2","name":"exec_command","arguments":"{\"cmd\":\"ls\"}"}"#;
+        let added = r#"{"type":"response.output_item.added","output_index":0,"item":{"type":"function_call","id":"fc_1","call_id":"call_1","name":"exec_command","arguments":""}}"#;
+        let delta = r#"{"type":"response.function_call_arguments.delta","output_index":0,"item_id":"fc_1","delta":"{\"cmd\""}"#;
+        let done =
+            format!(r#"{{"type":"response.output_item.done","output_index":0,"item":{call}}}"#);
+        let done_parallel =
+            format!(r#"{{"type":"response.output_item.done","output_index":1,"item":{parallel}}}"#);
+        let completed = format!(
+            r#"{{"type":"response.completed","response":{{"id":"resp_1","output":[{call},{parallel}]}}}}"#
+        );
+        let parsed = parse_openai_exchange(&sse_exchange(&[
+            added,
+            delta,
+            &done,
+            &done_parallel,
+            &completed,
+        ]))
+        .expect("SSE exchange");
+
+        assert_eq!(
+            parsed.response_tool_events,
+            [
+                ParsedToolEvent::ToolCall {
+                    item_id: Some("fc_1".to_owned()),
+                    call_id: Some("call_1".to_owned()),
+                    name: Some("exec_command".to_owned()),
+                    input: r#"{"cmd":"pwd"}"#.to_owned(),
+                },
+                ParsedToolEvent::ToolCall {
+                    item_id: Some("fc_2".to_owned()),
+                    call_id: Some("call_2".to_owned()),
+                    name: Some("exec_command".to_owned()),
+                    input: r#"{"cmd":"ls"}"#.to_owned(),
+                },
+            ]
+        );
+    }
+
+    #[test]
+    fn response_id_is_read_where_the_protocol_puts_it() {
+        // A stream names the response in `response.id`, whatever its format.
+        let streamed = parse_openai_exchange(&sse_exchange(&[
+            r#"{"type":"response.created","response":{"id":"r1"}}"#,
+            r#"{"type":"response.output_item.done","output_index":0,"item":{"id":"resp_item","type":"message","role":"assistant","content":[{"type":"output_text","text":"hi"}]}}"#,
+            r#"{"type":"response.completed","response":{"id":"r1"}}"#,
+        ]))
+        .expect("SSE exchange");
+        assert_eq!(streamed.response_id.as_deref(), Some("r1"));
+
+        // A whole Chat Completions document names it in its top-level `id`.
+        let chat = parse_openai_exchange(&json_exchange(
+            "/v1/chat/completions",
+            &json!({"messages": [{"role": "user", "content": "hello"}]}),
+            &json!({"id": "chatcmpl-1", "choices": [{"message": {"role": "assistant", "content": "hi"}}]}),
+        ))
+        .expect("chat exchange");
+        assert_eq!(chat.response_id.as_deref(), Some("chatcmpl-1"));
+
+        // Ids elsewhere, such as an output item's or the request's, are not it.
+        let unnamed = parse_openai_exchange(&sse_exchange(&[
+            r#"{"type":"response.output_item.done","output_index":0,"item":{"id":"resp_item","type":"message","role":"assistant","content":[{"type":"output_text","text":"hi"}]}}"#,
+        ]))
+        .expect("SSE exchange");
+        assert_eq!(unnamed.response_id, None);
     }
 
     fn sse_exchange(events: &[&str]) -> HttpExchange {

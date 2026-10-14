@@ -210,6 +210,9 @@ impl AnthropicRequest {
 
 /// Response-side messages assembled from JSON or streamed documents.
 pub struct AnthropicResponse {
+    /// Message id: `message_start.message.id` of a stream, or the top-level
+    /// `id` of a whole message.
+    id: Option<String>,
     /// Role groups of the assistant message.
     messages: Vec<MessageDraft>,
     /// Decoding state of the response body.
@@ -287,8 +290,15 @@ impl AnthropicResponse {
         let blocks = snapshot.unwrap_or_else(|| blocks.into_values().collect());
         Self {
             messages: AnthropicContent::groups(blocks, MessageRole::Assistant, id.as_deref()),
+            id,
             completeness: ConversationProjection::completeness(!values.is_empty(), incomplete),
         }
+    }
+
+    /// The message id, shared by every message of the response.
+    #[must_use]
+    pub fn id(&self) -> Option<&str> {
+        self.id.as_deref()
     }
 
     /// Event text: assistant text blocks, excluding reasoning.

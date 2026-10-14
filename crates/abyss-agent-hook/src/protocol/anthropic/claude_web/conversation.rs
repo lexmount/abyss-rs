@@ -23,9 +23,8 @@ use crate::protocol::{
 
 use super::super::messages::{
     best_usage, claude_web_file_uuids, estimated_visible_usage, event_types,
-    extract_request_tool_events, extract_response_tool_events, first_message_id, first_model,
-    first_stop_reason, flow_server_name, request_host, string_field, transport_name,
-    turn_message_uuids,
+    extract_request_tool_events, extract_response_tool_events, first_model, first_stop_reason,
+    flow_server_name, request_host, string_field, transport_name, turn_message_uuids,
 };
 
 /// Source used to derive the Claude Web session id.
@@ -180,7 +179,9 @@ pub fn parse_claude_web_exchange(exchange: &HttpExchange) -> Option<ParsedClaude
         response_texts,
         usage,
         usage_source,
-        message_id: first_message_id(&response_values)
+        message_id: response
+            .id()
+            .map(str::to_owned)
             .or_else(|| turn_message_uuids.assistant.clone()),
         model: first_model(&response_values)
             .or_else(|| string_field(request_json, "model").map(str::to_owned)),

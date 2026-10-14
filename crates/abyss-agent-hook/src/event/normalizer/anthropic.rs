@@ -13,7 +13,8 @@ use crate::{
 };
 
 use super::{
-    HttpMetadata, NormalizableExchange, ParsedEventParts, content_segments_metadata, harness_client,
+    Continuation, HttpMetadata, NormalizableExchange, ParsedEventParts, content_segments_metadata,
+    harness_client,
 };
 
 impl NormalizableExchange for ParsedAnthropicMessagesExchange {
@@ -21,8 +22,11 @@ impl NormalizableExchange for ParsedAnthropicMessagesExchange {
         &self.session_id
     }
 
-    fn protocol_turn_id(&self) -> Option<&str> {
-        self.claude_code_turn_id.as_deref()
+    fn continuation(&self) -> Continuation<'_> {
+        Continuation {
+            response_id: self.message_id.as_deref(),
+            previous_response_id: self.previous_response_id.as_deref(),
+        }
     }
 
     fn event_parts(
@@ -44,10 +48,6 @@ impl NormalizableExchange for ParsedAnthropicMessagesExchange {
             llm_provider: provider.wire_name().to_owned(),
             llm_model: self.model.clone(),
             session_id: self.session_id().to_owned(),
-            claude_code_billing: self.claude_code_billing.clone(),
-            claude_thread: self.claude_thread.clone(),
-            purpose: self.purpose,
-            session_title: self.session_title.clone(),
             response_identity: self
                 .message_id
                 .clone()
@@ -61,7 +61,6 @@ impl NormalizableExchange for ParsedAnthropicMessagesExchange {
             usage_source: TokenUsageSource::provider_or_absent(&self.usage),
             metadata: json!({
                 "message_id": self.message_id,
-                "protocol_turn_id": self.claude_code_turn_id,
                 "request_hash": self.request_hash,
                 "source_evidence": detection.evidence_names(),
                 "working_directory": detection.working_directory,
@@ -88,8 +87,11 @@ impl NormalizableExchange for ParsedClaudeWebExchange {
         &self.session_id
     }
 
-    fn protocol_turn_id(&self) -> Option<&str> {
-        self.protocol_turn_id.as_deref()
+    fn continuation(&self) -> Continuation<'_> {
+        Continuation {
+            response_id: self.message_id.as_deref(),
+            previous_response_id: None,
+        }
     }
 
     fn event_parts(
@@ -111,10 +113,6 @@ impl NormalizableExchange for ParsedClaudeWebExchange {
             llm_provider: provider.wire_name().to_owned(),
             llm_model: self.model.clone(),
             session_id: self.session_id().to_owned(),
-            claude_code_billing: None,
-            claude_thread: None,
-            purpose: None,
-            session_title: None,
             response_identity: self
                 .message_id
                 .clone()
@@ -129,7 +127,7 @@ impl NormalizableExchange for ParsedClaudeWebExchange {
             usage_source: self.usage_source,
             metadata: json!({
                 "message_id": self.message_id,
-                "protocol_turn_id": self.protocol_turn_id,
+                "turn_id": self.protocol_turn_id,
                 "request_hash": self.request_hash,
                 "source_evidence": detection.evidence_names(),
                 "working_directory": detection.working_directory,

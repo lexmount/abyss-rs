@@ -172,8 +172,10 @@ pub mod tests {
             },
             session_id: "session-1".to_owned(),
             turn_id: None,
-            claude_code_billing: None,
-            claude_thread: None,
+            naming_thread: false,
+            stream_id: None,
+            response_id: None,
+            previous_response_id: None,
             purpose: None,
             session_title: None,
             llm: LlmPayload {

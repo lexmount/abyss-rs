@@ -154,8 +154,7 @@ impl PendingTurn {
     /// A turn normally has one `response.create`. When a client sends several
     /// content frames before the terminal response, the first frame supplies
     /// the turn's request conversation and later frames append their messages
-    /// in arrival order. The first declared continuation id and thread source
-    /// are kept, instructions count as present when any frame carried them,
+    /// in arrival order. Instructions count as present when any frame carried them,
     /// and an incompletely decoded frame downgrades the whole request side.
     fn merge_request_conversation(&mut self, next: Conversation) {
         let Some(current) = self.request_conversation.as_mut() else {
@@ -163,12 +162,6 @@ impl PendingTurn {
             return;
         };
         current.messages.extend(next.messages);
-        if current.previous_response_id.is_none() {
-            current.previous_response_id = next.previous_response_id;
-        }
-        if current.thread_source.is_none() {
-            current.thread_source = next.thread_source;
-        }
         current.instructions_present |= next.instructions_present;
         if next.completeness != ContentCompleteness::Complete {
             ConversationProjection::mark_partial(current);
@@ -212,7 +205,6 @@ impl PendingTurn {
         }
         append_unique(&mut current.event_types, next.event_types);
         append_unique_tools(&mut current.request_tool_events, next.request_tool_events);
-        append_unique_tools(&mut current.response_tool_events, next.response_tool_events);
         if !next.usage.is_empty() && next.usage.total_tokens >= current.usage.total_tokens {
             current.usage = next.usage;
         }
@@ -222,8 +214,8 @@ impl PendingTurn {
         if current.previous_response_id.is_none() {
             current.previous_response_id = next.previous_response_id;
         }
-        if current.protocol_turn_id.is_none() {
-            current.protocol_turn_id = next.protocol_turn_id;
+        if current.client_metadata.is_none() {
+            current.client_metadata = next.client_metadata;
         }
         if current.model.is_none() {
             current.model = next.model;
@@ -238,6 +230,7 @@ impl PendingTurn {
             self.response_overflowed || self.response_decode_failed,
         );
         exchange.response_texts = response.texts();
+        exchange.response_tool_events = response.tool_calls();
         exchange.response_conversation = response.conversation();
         exchange.request_conversation = self.request_conversation.unwrap_or_else(|| {
             let mut unobserved = ConversationProjection::empty();
@@ -441,7 +434,7 @@ mod tests {
             .expect("terminal response should complete the interaction");
         let conversation = &completed.request_conversation;
 
-        assert_eq!(conversation.previous_response_id.as_deref(), Some("resp_1"));
+        assert_eq!(completed.previous_response_id.as_deref(), Some("resp_1"));
         assert!(conversation.instructions_present);
         assert_eq!(
             conversation
@@ -467,6 +460,10 @@ mod tests {
         let mut parsed = exchange();
         parsed.request_texts = request.texts();
         parsed.request_conversation = request.conversation();
+        parsed.previous_response_id = payload
+            .get("previous_response_id")
+            .and_then(Value::as_str)
+            .map(str::to_owned);
         OpenAiWebSocketFrame::Request(Box::new(parsed))
     }
 
@@ -509,7 +506,7 @@ mod tests {
             usage: TokenUsage::default(),
             response_id: None,
             previous_response_id: None,
-            protocol_turn_id: Some("turn-1".to_owned()),
+            client_metadata: None,
             request_tool_events: Vec::new(),
             response_tool_events: Vec::new(),
             model: Some("model-test".to_owned()),

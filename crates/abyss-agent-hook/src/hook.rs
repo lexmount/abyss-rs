@@ -10,7 +10,7 @@ use crate::{
     config::{HarnessUsageHookConfig, HooksRuntimeConfig},
     delivery::{AgentEventSink, EventDelivery},
     event::{NormalizableExchange, NormalizedUsageEvent, normalize_exchange},
-    harness::{HarnessDetection, HarnessRegistry},
+    harness::{AgentDeclaration, DeclarationSource, HarnessDetection, HarnessRegistry},
     protocol::{
         AnthropicProtocol, ClaudeWebProtocol, LlmProtocol, OpenAiProtocol, ProtocolDetector,
         anthropic::{
@@ -75,19 +75,34 @@ where
 
         match protocol {
             LlmProtocol::OpenAi(OpenAiProtocol::Responses | OpenAiProtocol::ChatCompletions) => {
-                parse_openai_exchange(exchange)
-                    .map(|parsed| self.normalize(&parsed, &content, &detection, &provider))
+                parse_openai_exchange(exchange).map(|parsed| {
+                    let declaration = http_declaration(
+                        &detection,
+                        exchange,
+                        parsed.client_metadata.as_ref(),
+                        &parsed.response_texts,
+                    );
+                    self.normalize(&parsed, &content, &detection, &provider, &declaration)
+                })
             }
             LlmProtocol::Anthropic(AnthropicProtocol::Messages) => {
-                parse_anthropic_messages_exchange(exchange)
-                    .map(|parsed| self.normalize(&parsed, &content, &detection, &provider))
+                parse_anthropic_messages_exchange(exchange).map(|parsed| {
+                    let declaration =
+                        http_declaration(&detection, exchange, None, &parsed.response_texts);
+                    self.normalize(&parsed, &content, &detection, &provider, &declaration)
+                })
             }
             LlmProtocol::Anthropic(AnthropicProtocol::ClaudeWeb(
                 ClaudeWebProtocol::ConversationCompletion,
             )) => parse_claude_web_exchange(exchange).map(|mut parsed| {
                 self.claude_web_context
                     .attach_referenced_images(&mut parsed);
-                self.normalize(&parsed, &content, &detection, &provider)
+                // The claude.ai completion protocol names its own turn.
+                let declaration = AgentDeclaration {
+                    turn_id: parsed.protocol_turn_id.clone(),
+                    ..http_declaration(&detection, exchange, None, &parsed.response_texts)
+                };
+                self.normalize(&parsed, &content, &detection, &provider, &declaration)
             }),
         }
         .unwrap_or_default()
@@ -99,11 +114,19 @@ where
         content: &crate::config::HarnessUsageContentConfig,
         detection: &HarnessDetection,
         provider: &LlmProvider,
+        declaration: &AgentDeclaration,
     ) -> Vec<NormalizedUsageEvent>
     where
         E: NormalizableExchange,
     {
-        normalize_exchange(&self.config, parsed, content, detection, provider)
+        normalize_exchange(
+            &self.config,
+            parsed,
+            content,
+            detection,
+            provider,
+            declaration,
+        )
     }
 
     fn websocket_events(&self, message: &WebSocketMessage) -> Vec<NormalizedUsageEvent> {
@@ -127,7 +150,17 @@ where
             return Vec::new();
         };
         let provider = ProviderResolver::resolve(&websocket_host(message), protocol);
-        self.normalize(&parsed, &content, &detection, &provider)
+        // Frames after the upgrade carry no headers of their own.
+        let declaration = HarnessRegistry::declare(
+            &detection.harness_id,
+            &DeclarationSource {
+                headers: None,
+                body: None,
+                client_metadata: parsed.client_metadata.as_ref(),
+                response_texts: &parsed.response_texts,
+            },
+        );
+        self.normalize(&parsed, &content, &detection, &provider, &declaration)
     }
 }
 
@@ -162,6 +195,24 @@ where
                 .map_err(|error| HookError::failed(error.to_string()))
         })
     }
+}
+
+/// What the detected Agent declared about one HTTP request.
+fn http_declaration(
+    detection: &HarnessDetection,
+    exchange: &HttpExchange,
+    client_metadata: Option<&serde_json::Value>,
+    response_texts: &[String],
+) -> AgentDeclaration {
+    HarnessRegistry::declare(
+        &detection.harness_id,
+        &DeclarationSource {
+            headers: Some(exchange.request.headers()),
+            body: exchange.request.body().json(),
+            client_metadata,
+            response_texts,
+        },
+    )
 }
 
 fn http_host(exchange: &HttpExchange) -> String {
@@ -201,7 +252,9 @@ mod tests {
         CapturedBody, FlowContext, HttpExchange, MitmHook, OriginalDestination, SourceProcess,
         TransparentProtocol,
     };
-    use abyss_plugin_protocol::event::{AgentEvent, ContentCompleteness, MessageRole};
+    use abyss_plugin_protocol::event::{
+        AgentEvent, ContentCompleteness, EventPurpose, MessageRole,
+    };
     use http::{Request, Response};
 
     use crate::{
@@ -419,91 +472,85 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn claude_code_turns_follow_the_billing_turn_index() {
+    async fn claude_code_declarations_follow_its_request_headers() {
         let sink = Arc::new(RecordingSink::default());
         let hook = hook(Arc::clone(&sink));
-        let header = |fields: &str| {
-            serde_json::json!([{
-                "type": "text",
-                "text": format!("x-anthropic-billing-header: cc_version=2.1.293.af3; cc_entrypoint=cli; {fields}")
-            }])
-        };
+        let user = |text: &str| serde_json::json!([{"role": "user", "content": text}]);
+        let continue_from =
+            |id: &str| serde_json::json!({"type": "continue", "previous_message_id": id});
         let requests = [
-            // Main loop: `continue` that failed with `thread_not_found`, its
-            // `create` replay under a new prompt id, then a tool-result-only
-            // `continue`.
-            serde_json::json!({
-                "system": header("cc_prompt_id=p1; cc_prompt_index=13; cc_turn_index=13;"),
-                "messages": [{"role": "user", "content": "look at the thread field"}],
-                "thread": {"type": "continue", "previous_message_id": "msg_1"}
-            }),
-            serde_json::json!({
-                "system": header("cc_prompt_id=p2; cc_prompt_index=13; cc_turn_index=13;"),
-                "messages": [
-                    {"role": "user", "content": "earlier prompt"},
-                    {"role": "assistant", "content": "earlier answer"},
-                    {"role": "user", "content": "look at the thread field"}
-                ],
-                "thread": {"type": "create"}
-            }),
-            serde_json::json!({
-                "system": header("cc_prompt_id=p2; cc_prompt_index=13; cc_turn_index=13;"),
-                "messages": [{"role": "user", "content": [
-                    {"type": "tool_result", "tool_use_id": "toolu_1", "content": "ok"}
-                ]}],
-                "thread": {"type": "continue", "previous_message_id": "msg_2"}
-            }),
-            // Subagent, side request, and a quota probe without a header.
-            serde_json::json!({
-                "system": header("cc_is_subagent=true; cc_prompt_id=p2;"),
-                "messages": [{"role": "user", "content": "explore the repo"}],
-                "thread": {"type": "create"}
-            }),
-            serde_json::json!({
-                "system": header("cc_prev_req=req_1;"),
-                "messages": [{"role": "user", "content": "Recap in under 40 words."}]
-            }),
-            serde_json::json!({"messages": [{"role": "user", "content": "quota"}]}),
+            // Main loop: `create`, then `continue`.
+            (
+                vec![("main", None, Some("p1"))],
+                serde_json::json!({"messages": user("hello"), "thread": {"type": "create"}}),
+            ),
+            (
+                vec![("main", None, Some("p1"))],
+                serde_json::json!({"messages": user("next"), "thread": continue_from("msg_1")}),
+            ),
+            // Two subagents serving prompt p1.
+            (
+                vec![("subagent", Some("agent-a"), Some("p1"))],
+                serde_json::json!({"messages": user("explore"), "thread": {"type": "create"}}),
+            ),
+            (
+                vec![("subagent", Some("agent-b"), Some("p1"))],
+                serde_json::json!({"messages": user("search"), "thread": continue_from("msg_b")}),
+            ),
+            // Auxiliary request, compaction, and a request without headers
+            // whose billing header still names a prompt.
+            (
+                vec![("auxiliary", None, None)],
+                serde_json::json!({"messages": user("Recap in under 40 words.")}),
+            ),
+            (
+                vec![("compaction", None, None)],
+                serde_json::json!({"messages": user("Summarize the conversation.")}),
+            ),
+            (
+                Vec::new(),
+                serde_json::json!({
+                    "system": [{"type": "text", "text": "x-anthropic-billing-header: cc_prompt_id=p9; cc_turn_index=9;"}],
+                    "messages": user("quota")
+                }),
+            ),
         ];
-        for request in &requests {
-            hook.on_http_exchange(&anthropic_exchange_with_request("claude", request))
-                .await
-                .unwrap();
+        for (declared, request) in &requests {
+            let mut headers = vec![("x-claude-code-session-id", "session-1")];
+            for (class, agent, prompt) in declared {
+                headers.push(("x-claude-code-request-class", class));
+                headers.extend(agent.map(|agent| ("x-claude-code-agent-id", agent)));
+                headers.extend(prompt.map(|prompt| ("x-claude-code-prompt-id", prompt)));
+            }
+            hook.on_http_exchange(&anthropic_exchange_with_headers(
+                "claude", &headers, request,
+            ))
+            .await
+            .unwrap();
         }
 
         let events = sink.events.lock().unwrap();
         assert_eq!(events.len(), requests.len() * 2);
-        let expected_turns = [
-            Some("cc_turn:13"),
-            Some("cc_turn:13"),
-            Some("cc_turn:13"),
-            None,
-            None,
-            None,
+        let expected = [
+            (Some("p1"), Some("session-1"), None, None),
+            (Some("p1"), Some("session-1"), Some("msg_1"), None),
+            (Some("p1"), Some("agent-a"), None, None),
+            (Some("p1"), Some("agent-b"), Some("msg_b"), None),
+            (None, None, None, None),
+            (None, None, None, Some(EventPurpose::Compaction)),
+            (None, None, None, None),
         ];
-        for ((exchange_events, request), expected_turn) in
-            events.chunks(2).zip(&requests).zip(expected_turns)
-        {
+        for (exchange_events, (turn, stream, previous, purpose)) in events.chunks(2).zip(expected) {
             for event in exchange_events {
                 assert_eq!(event.agent.name, "claude-code");
-                assert_eq!(event.turn_id.as_deref(), expected_turn);
-                assert_eq!(
-                    event.claude_thread.clone().map(serde_json::Value::Object),
-                    request.get("thread").cloned()
-                );
-                assert_eq!(
-                    event.claude_code_billing.is_some(),
-                    request.get("system").is_some()
-                );
+                assert_eq!(event.turn_id.as_deref(), turn);
+                assert_eq!(event.stream_id.as_deref(), stream);
+                assert_eq!(event.previous_response_id.as_deref(), previous);
+                assert_eq!(event.purpose, purpose);
+                assert_eq!(event.response_id.as_deref(), Some("msg_test"));
+                assert!(!event.naming_thread);
             }
         }
-        let billing = events[0].claude_code_billing.as_ref().unwrap();
-        assert_eq!(billing["cc_prompt_id"], "p1");
-        assert_eq!(billing["cc_turn_index"], "13");
-        assert_eq!(
-            events[7].claude_code_billing.as_ref().unwrap()["cc_is_subagent"],
-            "true"
-        );
         drop(events);
     }
 
@@ -531,11 +578,6 @@ mod tests {
         let events = sink.events.lock().unwrap();
         assert_eq!(events.len(), 4);
         assert!(events.iter().all(|event| event.turn_id.is_none()));
-        assert!(
-            events
-                .iter()
-                .all(|event| event.claude_code_billing.is_none())
-        );
         drop(events);
     }
 
@@ -610,6 +652,18 @@ mod tests {
         process_name: &str,
         request_body: &serde_json::Value,
     ) -> HttpExchange {
+        anthropic_exchange_with_headers(
+            process_name,
+            &[("x-claude-code-session-id", "session-1")],
+            request_body,
+        )
+    }
+
+    fn anthropic_exchange_with_headers(
+        process_name: &str,
+        headers: &[(&str, &str)],
+        request_body: &serde_json::Value,
+    ) -> HttpExchange {
         let flow = FlowContext::from_optional_addrs(
             None,
             None,
@@ -621,12 +675,15 @@ mod tests {
                 None,
             )),
         );
-        let request = Request::builder()
+        let mut request = Request::builder()
             .method("POST")
             .uri("/v1/messages")
             .header("host", "api.anthropic.com")
-            .header("content-type", "application/json")
-            .header("x-claude-code-session-id", "session-1")
+            .header("content-type", "application/json");
+        for (name, value) in headers {
+            request = request.header(*name, *value);
+        }
+        let request = request
             .body(CapturedBody::from_bytes(
                 serde_json::to_vec(request_body).unwrap().into(),
             ))

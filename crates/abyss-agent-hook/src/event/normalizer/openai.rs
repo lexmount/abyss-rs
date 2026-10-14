@@ -10,7 +10,8 @@ use crate::{
 };
 
 use super::{
-    HttpMetadata, NormalizableExchange, ParsedEventParts, content_segments_metadata, harness_client,
+    Continuation, HttpMetadata, NormalizableExchange, ParsedEventParts, content_segments_metadata,
+    harness_client,
 };
 
 impl NormalizableExchange for ParsedOpenAiExchange {
@@ -18,8 +19,11 @@ impl NormalizableExchange for ParsedOpenAiExchange {
         &self.session_id
     }
 
-    fn protocol_turn_id(&self) -> Option<&str> {
-        self.protocol_turn_id.as_deref()
+    fn continuation(&self) -> Continuation<'_> {
+        Continuation {
+            response_id: self.response_id.as_deref(),
+            previous_response_id: self.previous_response_id.as_deref(),
+        }
     }
 
     fn event_parts(
@@ -41,10 +45,6 @@ impl NormalizableExchange for ParsedOpenAiExchange {
             llm_provider: provider.wire_name().to_owned(),
             llm_model: self.model.clone(),
             session_id: self.session_id().to_owned(),
-            claude_code_billing: None,
-            claude_thread: None,
-            purpose: None,
-            session_title: None,
             response_identity: self
                 .response_id
                 .clone()
@@ -59,7 +59,6 @@ impl NormalizableExchange for ParsedOpenAiExchange {
             metadata: json!({
                 "response_id": self.response_id,
                 "previous_response_id": self.previous_response_id,
-                "protocol_turn_id": self.protocol_turn_id,
                 "request_hash": self.request_hash,
                 "source_evidence": detection.evidence_names(),
                 "working_directory": detection.working_directory,

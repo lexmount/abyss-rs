@@ -20,8 +20,6 @@ impl ConversationProjection {
     pub const fn empty() -> Conversation {
         Conversation {
             messages: Vec::new(),
-            previous_response_id: None,
-            thread_source: None,
             instructions_present: false,
             completeness: ContentCompleteness::Complete,
             policy_omitted: false,

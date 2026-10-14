@@ -1,8 +1,8 @@
 //! OpenAI Responses and Chat Completions conversation projection.
 //!
 //! Requests map `instructions`, Responses `input` items, Chat `messages`, and a
-//! string `prompt` onto ordered messages, together with the continuation id and
-//! the Codex-declared thread source. Responses replay streamed deltas onto
+//! string `prompt` onto ordered messages, together with the continuation id.
+//! Responses replay streamed deltas onto
 //! per-output slots and reconcile them with provider snapshots, so an answer
 //! republished by several terminal events is reported once.
 
@@ -13,7 +13,8 @@ use serde_json::Value;
 
 use crate::protocol::model::{
     conversation::{ConversationProjection, MessageDraft},
-    text::{MAX_PARSE_DEPTH, dedupe_texts, non_empty_trimmed, visible_text},
+    text::{MAX_PARSE_DEPTH, dedupe_texts, json_to_text, non_empty_trimmed, visible_text},
+    tool::ParsedToolEvent,
 };
 
 /// OpenAI-specific text, tool-item, and message-item rules.
@@ -81,10 +82,6 @@ pub struct OpenAiRequest {
     messages: Vec<MessageDraft>,
     /// Plain string `prompt`.
     prompt: Option<MessageDraft>,
-    /// Provider continuation reference.
-    previous_response_id: Option<String>,
-    /// Agent-declared thread source.
-    thread_source: Option<String>,
     /// Decoding state of the request body.
     completeness: ContentCompleteness,
 }
@@ -98,18 +95,11 @@ impl OpenAiRequest {
             input: Vec::new(),
             messages: Vec::new(),
             prompt: None,
-            previous_response_id: None,
-            thread_source: None,
             completeness: ConversationProjection::completeness(payload.is_some(), truncated),
         };
         let Some(payload) = payload else {
             return request;
         };
-        request.previous_response_id = payload
-            .get("previous_response_id")
-            .and_then(Value::as_str)
-            .map(str::to_owned);
-        request.thread_source = request.codex_thread_source(payload);
         request.instructions = payload.get("instructions").map(|instructions| {
             let mut draft = MessageDraft::new(MessageRole::Developer, None);
             draft
@@ -157,29 +147,6 @@ impl OpenAiRequest {
         request
     }
 
-    /// Reads the Codex thread source from `client_metadata`.
-    ///
-    /// Codex nests its turn metadata as a JSON string; a value that does not
-    /// decode to an object marks the request partial instead of silently
-    /// reporting an absent thread source.
-    fn codex_thread_source(&mut self, payload: &Value) -> Option<String> {
-        let client = payload.get("client_metadata")?;
-        let declared = client.get("x-codex-turn-metadata");
-        let context = declared
-            .and_then(Value::as_str)
-            .and_then(|metadata| serde_json::from_str::<Value>(metadata).ok())
-            .filter(Value::is_object);
-        if declared.is_some() && context.is_none() {
-            self.completeness = ContentCompleteness::Partial;
-        }
-        context
-            .as_ref()
-            .unwrap_or(client)
-            .get("thread_source")
-            .and_then(Value::as_str)
-            .map(str::to_owned)
-    }
-
     /// Whether the request carried no message-bearing field.
     #[must_use]
     pub const fn is_empty(&self) -> bool {
@@ -222,10 +189,6 @@ impl OpenAiRequest {
                 .chain(&self.prompt),
             self.completeness,
         );
-        conversation
-            .previous_response_id
-            .clone_from(&self.previous_response_id);
-        conversation.thread_source.clone_from(&self.thread_source);
         conversation.instructions_present = self.instructions.is_some();
         conversation
     }
@@ -239,6 +202,8 @@ struct OutputSlot {
     role: MessageRole,
     /// Accumulated or reconciled text per content or summary index.
     parts: BTreeMap<u64, String>,
+    /// Tool call the item requests, from its latest snapshot with input.
+    tool_call: Option<ParsedToolEvent>,
 }
 
 impl OutputSlot {
@@ -247,6 +212,7 @@ impl OutputSlot {
             id: None,
             role,
             parts: BTreeMap::new(),
+            tool_call: None,
         }
     }
 
@@ -273,6 +239,9 @@ impl OutputSlot {
             self.id = Some(id);
         }
         self.role = OpenAiContent::item_role(item, MessageRole::Assistant);
+        if let Some(call) = tool_call(item) {
+            self.tool_call = Some(call);
+        }
         if self.role == MessageRole::Tool {
             return;
         }
@@ -308,6 +277,8 @@ impl OutputSlot {
 pub struct OpenAiResponse {
     /// One message per output item or chat choice, in index order.
     messages: Vec<MessageDraft>,
+    /// One tool call per tool-call output item, in index order.
+    tool_calls: Vec<ParsedToolEvent>,
     /// Decoding state of the response documents.
     completeness: ContentCompleteness,
 }
@@ -320,8 +291,13 @@ impl OpenAiResponse {
         for value in values {
             Self::apply(&mut slots, value);
         }
+        let tool_calls = slots
+            .values()
+            .filter_map(|slot| slot.tool_call.clone())
+            .collect();
         Self {
             messages: slots.into_values().map(OutputSlot::into_draft).collect(),
+            tool_calls,
             completeness: ConversationProjection::completeness(!values.is_empty(), incomplete),
         }
     }
@@ -444,6 +420,41 @@ impl OpenAiResponse {
     pub fn conversation(&self) -> Conversation {
         ConversationProjection::from_drafts(&self.messages, self.completeness)
     }
+
+    /// Tool calls the response requests, one per output item.
+    #[must_use]
+    pub fn tool_calls(&self) -> Vec<ParsedToolEvent> {
+        self.tool_calls.clone()
+    }
+}
+
+/// The tool call a `function_call` or `custom_tool_call` item requests, once
+/// its input has arrived; earlier snapshots such as `output_item.added` carry
+/// none.
+fn tool_call(item: &Value) -> Option<ParsedToolEvent> {
+    if !matches!(
+        item.get("type").and_then(Value::as_str),
+        Some("custom_tool_call" | "function_call")
+    ) {
+        return None;
+    }
+    let input = item
+        .get("input")
+        .or_else(|| item.get("arguments"))
+        .and_then(|input| json_to_text(input, MAX_PARSE_DEPTH))
+        .and_then(|input| non_empty_trimmed(&input).map(str::to_owned))?;
+    let field = |key: &str| {
+        item.get(key)
+            .and_then(Value::as_str)
+            .and_then(non_empty_trimmed)
+            .map(str::to_owned)
+    };
+    Some(ParsedToolEvent::ToolCall {
+        item_id: field("id"),
+        call_id: field("call_id"),
+        name: field("name"),
+        input,
+    })
 }
 
 /// Returns the text of one response part, excluding refusals and tools.
@@ -531,11 +542,10 @@ mod tests {
     }
 
     #[test]
-    fn request_preserves_roles_repeated_messages_and_thread_source() {
+    fn request_preserves_roles_and_repeated_messages() {
         let request = OpenAiRequest::parse(
             Some(&json!({
                 "instructions":"", "previous_response_id":"r1",
-                "client_metadata":{"x-codex-turn-metadata":"{\"thread_source\":\"thread_title\"}"},
                 "input":[{"role":"developer","content":"rules"},
                     {"role":"user","content":[{"type":"input_text","text":"hello","future":42_i32}]},
                     {"role":"user","content":"hello"},
@@ -546,8 +556,6 @@ mod tests {
         );
         let conversation = request.conversation();
 
-        assert_eq!(conversation.previous_response_id.as_deref(), Some("r1"));
-        assert_eq!(conversation.thread_source.as_deref(), Some("thread_title"));
         assert!(conversation.instructions_present);
         let roles = conversation
             .messages
@@ -571,21 +579,6 @@ mod tests {
             request.texts(),
             vec!["rules\nhello\nhello\nrole unavailable"]
         );
-    }
-
-    #[test]
-    fn malformed_agent_metadata_is_not_treated_as_an_absent_thread_source() {
-        let request = OpenAiRequest::parse(
-            Some(&json!({
-                "input":"naming instruction", "client_metadata":{"x-codex-turn-metadata":"{broken"}
-            })),
-            false,
-        );
-        let conversation = request.conversation();
-
-        assert_eq!(conversation.completeness, ContentCompleteness::Partial);
-        assert_eq!(conversation.messages[0].role, MessageRole::User);
-        assert_eq!(conversation.messages[0].text, "naming instruction");
     }
 
     #[test]
