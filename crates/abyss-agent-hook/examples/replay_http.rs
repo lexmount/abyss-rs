@@ -39,8 +39,16 @@ impl AgentEventSink for JsonSink {
 struct Exchange {
     path: String,
     session_id: String,
+    /// Source process, which selects the detected Harness; `replay-agent`
+    /// matches the custom Harness configured below.
+    #[serde(default = "replay_process")]
+    process: String,
     request: Value,
     response: Value,
+}
+
+fn replay_process() -> String {
+    "replay-agent".to_owned()
 }
 
 fn body(value: Value) -> Result<CapturedBody, serde_json::Error> {
@@ -70,11 +78,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             None,
             OriginalDestination::from(SocketAddr::from(([127, 0, 0, 1], 443))),
             TransparentProtocol::PlainHttp,
-            Some(SourceProcess::new(
-                Some(42),
-                Some("replay-agent".to_owned()),
-                None,
-            )),
+            Some(SourceProcess::new(Some(42), Some(exchange.process), None)),
         );
         let request = Request::builder()
             .method("POST")

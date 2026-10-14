@@ -45,7 +45,16 @@ def assert_structured(events):
         assert conversation["completeness"] == "complete", event
         assert conversation["policy_omitted"] is False, event
     first_request, first_reply, second_request, second_reply = events[:4]
-    assert first_request["conversation"]["thread_source"] == "user"
+    # Codex declares the user turn each request works for as `root_turn_id`.
+    for turn, (request, reply) in enumerate(
+        [(first_request, first_reply), (second_request, second_reply)]
+    ):
+        assert request["turn_id"] == reply["turn_id"] == f"turn-{turn}", request
+        assert "naming_thread" not in request, request
+        # Both events of an exchange carry its thread and response identity.
+        assert request["stream_id"] == reply["stream_id"] == "codex-thread", request
+        assert request["response_id"] == reply["response_id"] == f"resp_{turn}", request
+        assert "previous_response_id" not in request, request
     assert first_request["conversation"]["instructions_present"] is True
     assert messages(first_request) == [
         ("developer", "system rules"),
@@ -63,6 +72,14 @@ def assert_structured(events):
         assert messages(reply) == [("assistant", "working")], reply
         assert reply["conversation"]["messages"][0]["id"] == f"m{turn}", reply
     anthropic_request, anthropic_reply = events[4:]
+    # A plain Anthropic client declares no thread; the message id is the
+    # response identity.
+    assert "stream_id" not in anthropic_request, anthropic_request
+    assert (
+        anthropic_request["response_id"]
+        == anthropic_reply["response_id"]
+        == "msg_anthropic"
+    ), anthropic_request
     assert messages(anthropic_request) == [
         ("system", "system rules"),
         ("user", "hello"),
@@ -70,7 +87,7 @@ def assert_structured(events):
     # Anthropic thinking is a separate reasoning message sharing the message id.
     assert messages(anthropic_reply) == [("reasoning", "plan"), ("assistant", "hi")]
     assert {m["id"] for m in anthropic_reply["conversation"]["messages"]} == {
-        "anthropic-message"
+        "msg_anthropic"
     }
 
 
@@ -96,12 +113,20 @@ def main():
             {
                 "path": "/v1/responses",
                 "session_id": "structured-e2e-openai",
+                "process": "codex",
                 "request": {
                     "model": "test-model",
                     "instructions": "system rules",
                     "input": history,
                     "client_metadata": {
-                        "x-codex-turn-metadata": '{"thread_source":"user"}'
+                        "x-codex-turn-metadata": json.dumps(
+                            {
+                                "thread_source": "user",
+                                "thread_id": "codex-thread",
+                                "turn_id": f"turn-{turn}",
+                                "root_turn_id": f"turn-{turn}",
+                            }
+                        )
                     },
                 },
                 "response": "\n\n".join(
@@ -122,7 +147,7 @@ def main():
                         {
                             "type": "response.completed",
                             "response": {
-                                "id": f"r{turn}",
+                                "id": f"resp_{turn}",
                                 "model": "test-model",
                                 "output": [
                                     {
@@ -145,13 +170,14 @@ def main():
         {
             "path": "/v1/messages",
             "session_id": "structured-e2e-anthropic",
+            "process": "claude",
             "request": {
                 "model": "test-model",
                 "system": "system rules",
                 "messages": [{"role": "user", "content": "hello"}],
             },
             "response": {
-                "id": "anthropic-message",
+                "id": "msg_anthropic",
                 "model": "test-model",
                 "content": [
                     {"type": "thinking", "thinking": "plan", "signature": "sig"},
@@ -166,6 +192,7 @@ def main():
         {
             "path": "/v1/messages",
             "session_id": "structured-e2e-anthropic",
+            "process": "claude",
             "request": {
                 "model": "test-model",
                 "system": [
@@ -180,7 +207,7 @@ def main():
                 ],
             },
             "response": {
-                "id": "anthropic-title",
+                "id": "msg_title",
                 "model": "test-model",
                 "content": [{"type": "text", "text": '{"title": "Greeting"}'}],
                 "usage": {"input_tokens": 3, "output_tokens": 1},
@@ -192,6 +219,11 @@ def main():
     assert_structured(events[:6])
     naming_request, naming_reply = events[6:]
     assert naming_request["purpose"] == naming_reply["purpose"] == "session_title"
+    # The naming call carries no prompt id, so it works for no user turn.
+    assert "turn_id" not in naming_request and "turn_id" not in naming_reply
+    # Without a turn index it is not a main-loop request, so it names no stream.
+    assert "stream_id" not in naming_request and "stream_id" not in naming_reply
+    assert naming_request["response_id"] == "msg_title"
     assert "session_title" not in naming_request
     assert naming_reply["session_title"] == "Greeting"
     # Re-observing the same exchanges yields the same deterministic event ids.
@@ -307,17 +339,46 @@ def main():
                         time.sleep(0.1)
                     else:
                         raise AssertionError("delivery did not persist all events")
+                    # The backend keeps each exchange's placement as sent.
+                    placement = ("stream_id", "response_id", "previous_response_id")
+                    by_id = {e["event_id"]: e for e in stored["events"]}
+                    for event in events:
+                        for field in placement:
+                            assert by_id[event["event_id"]].get(field) == event.get(
+                                field
+                            ), (field, event["event_id"])
+                    # Items as (kind, role, stream); roles are the conversation's
+                    # own strings.
                     for session, expected in [
+                        # Both exchanges share the declared thread. The first
+                        # request shows its instructions and prompt; the second
+                        # repeats the same instructions and replays the history,
+                        # so only its new user message is added. Each reply adds
+                        # its assistant message.
                         (
                             "structured-e2e-openai",
-                            ["context", "user", "assistant", "user", "assistant"],
+                            [
+                                ("message", "developer", 0),
+                                ("message", "user", 0),
+                                ("message", "assistant", 0),
+                                ("message", "user", 0),
+                                ("message", "assistant", 0),
+                            ],
                         ),
-                        # Reasoning and the reply are both assistant-side items;
-                        # the naming call forms its own stream.
+                        # Reasoning and the reply stay separate messages with
+                        # their own roles. The naming call names no stream and
+                        # continues no response, so it opens a stream of its own.
                         (
                             "structured-e2e-anthropic",
-                            ["context", "user", "assistant", "assistant"]
-                            + ["context", "user", "assistant"],
+                            [
+                                ("message", "system", 0),
+                                ("message", "user", 0),
+                                ("message", "reasoning", 0),
+                                ("message", "assistant", 0),
+                                ("message", "system", 1),
+                                ("message", "user", 1),
+                                ("message", "assistant", 1),
+                            ],
                         ),
                     ]:
                         selected = get(
@@ -328,7 +389,8 @@ def main():
                             "/v1/agent-usage/sessions/" + pk + "/trajectory"
                         )
                         assert [
-                            item["kind"] for item in trajectory["items"]
+                            (item["kind"], item.get("role"), item["stream"])
+                            for item in trajectory["items"]
                         ] == expected, trajectory
                         outline = get("/v1/agent-usage/sessions/" + pk + "/outline")
                         assert outline["session"]["title"] == (

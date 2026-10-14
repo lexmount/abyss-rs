@@ -27,8 +27,9 @@ Judging rules:
    When Backend says content is available, use the downloaded attachment hash
    as additional evidence.
 6. Compare session/thread and logical-turn grouping using B thread ids,
-   `codex_turn_id`, turn indexes, provider response chains and call ids when
-   available. Do not require fields the wire protocol did not expose.
+   Backend `turn_id` values (the Codex `root_turn_id`), turn indexes, provider
+   response chains and call ids when available. Do not require fields the wire
+   protocol did not expose.
 7. Compare B's `turn.completed.usage` with the sum of Backend events for the
    same B run. Cached input is a subset of input and must not be added to input
    again. Provider calls inside one agent turn may span several Backend event
