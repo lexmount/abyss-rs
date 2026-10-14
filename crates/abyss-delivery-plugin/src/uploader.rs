@@ -352,6 +352,16 @@ struct IngestUsageEvent {
     device: DevicePayload,
     agent: AgentPayload,
     session_id: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    turn_id: Option<String>,
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    naming_thread: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    stream_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    response_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    previous_response_id: Option<String>,
     llm: LlmPayload,
     event_type: String,
     text: Option<String>,
@@ -366,16 +376,6 @@ impl TryFrom<AgentEvent> for IngestUsageEvent {
 
     fn try_from(event: AgentEvent) -> Result<Self, Self::Error> {
         let mut metadata = tool_activity_metadata(event.tool_calls, event.tool_results);
-        if let Some(turn_id) = event.turn_id {
-            metadata[backend_turn_identity_key(&event.agent.name)] = Value::String(turn_id);
-        }
-        if let Some(billing) = event.claude_code_billing {
-            metadata["claude_code_billing"] = serde_json::to_value(billing)
-                .map_err(|error| DeliveryPluginError::Translate(error.to_string()))?;
-        }
-        if let Some(thread) = event.claude_thread {
-            metadata["claude_thread"] = Value::Object(thread);
-        }
         if let Some(purpose) = event.purpose {
             metadata["purpose"] = serde_json::to_value(purpose)
                 .map_err(|error| DeliveryPluginError::Translate(error.to_string()))?;
@@ -400,6 +400,11 @@ impl TryFrom<AgentEvent> for IngestUsageEvent {
                 version: event.agent.version,
             },
             session_id: event.session_id,
+            turn_id: event.turn_id,
+            naming_thread: event.naming_thread,
+            stream_id: event.stream_id,
+            response_id: event.response_id,
+            previous_response_id: event.previous_response_id,
             llm: LlmPayload {
                 provider: event.llm.provider.wire_name().to_owned(),
                 model: event.llm.model,
@@ -510,16 +515,6 @@ fn token_counter(name: &str, value: u64) -> Result<i64, DeliveryPluginError> {
     i64::try_from(value).map_err(|_| {
         DeliveryPluginError::Translate(format!("{name} exceeds backend counter range"))
     })
-}
-
-/// Metadata key under which the backend recognizes an Agent's turn identity.
-/// The backend numbers turns by this identity.
-fn backend_turn_identity_key(agent_name: &str) -> &'static str {
-    match agent_name {
-        "codex" => "codex_turn_id",
-        "claude-code" | "claude-desktop" => "claude_turn_id",
-        _ => "turn_id",
-    }
 }
 
 fn tool_activity_metadata(tool_calls: Vec<ToolCall>, tool_results: Vec<ToolResult>) -> Value {
@@ -641,8 +636,10 @@ mod tests {
             },
             session_id: "session".to_owned(),
             turn_id: Some("turn-1".to_owned()),
-            claude_code_billing: None,
-            claude_thread: None,
+            naming_thread: true,
+            stream_id: Some("thread-1".to_owned()),
+            response_id: Some("resp-1".to_owned()),
+            previous_response_id: None,
             purpose: None,
             session_title: None,
             llm: LlmContext {
@@ -677,39 +674,46 @@ mod tests {
             serialized["events"][0]["metadata"]["content_segments"][0]["name"],
             "exec"
         );
-        assert_eq!(
-            serialized["events"][0]["metadata"]["codex_turn_id"],
-            "turn-1"
+        assert_eq!(serialized["events"][0]["turn_id"], "turn-1");
+        assert_eq!(serialized["events"][0]["naming_thread"], true);
+        assert_eq!(serialized["events"][0]["stream_id"], "thread-1");
+        assert_eq!(serialized["events"][0]["response_id"], "resp-1");
+        assert!(
+            serialized["events"][0]
+                .get("previous_response_id")
+                .is_none()
         );
+        assert!(serialized["events"][0]["metadata"].get("turn_id").is_none());
         assert!(serialized["events"][0].get("turn_index").is_none());
     }
 
     #[test]
-    fn carries_claude_request_context_and_omits_an_absent_turn_identity() {
+    fn carries_exchange_placement_and_omits_an_absent_turn_identity() {
         let mut event: AgentEvent = serde_json::from_str(include_str!(
             "../../../specs/broker-plugin-protocol/v2/fixtures/agent-event.json"
         ))
         .expect("fixture should decode");
         event.agent.name = "claude-code".to_owned();
         event.turn_id = None;
+        event.naming_thread = false;
 
         let request = IngestEventsRequest::try_from(event).expect("event should translate");
         let serialized: Value = serde_json::to_value(request).expect("request should serialize");
-        let metadata = &serialized["events"][0]["metadata"];
+        let ingest_event = &serialized["events"][0];
+        let metadata = &ingest_event["metadata"];
 
+        assert!(ingest_event.get("turn_id").is_none());
+        assert!(ingest_event.get("naming_thread").is_none());
+        assert_eq!(ingest_event["stream_id"], "thread-123");
+        assert_eq!(ingest_event["response_id"], "resp-123");
+        assert_eq!(ingest_event["previous_response_id"], "resp-122");
         assert!(metadata.get("claude_turn_id").is_none());
-        assert_eq!(
-            metadata["claude_code_billing"],
-            serde_json::json!({
-                "cc_entrypoint": "cli",
-                "cc_prompt_id": "a7e7449e-3401-4091-9857-98c73e217ce3",
-                "cc_turn_index": "13",
-                "cc_version": "2.1.293.af3",
-            })
-        );
-        assert_eq!(
-            metadata["claude_thread"],
-            serde_json::json!({"type": "continue", "previous_message_id": "msg_123"})
+        assert!(metadata.get("claude_code_billing").is_none());
+        assert!(metadata.get("claude_thread").is_none());
+        assert!(
+            metadata["conversation"]
+                .get("previous_response_id")
+                .is_none()
         );
         assert_eq!(metadata["purpose"], "session_title");
         assert_eq!(metadata["session_title"], "Repository overview");
