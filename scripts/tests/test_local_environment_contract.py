@@ -27,12 +27,13 @@ class LocalEnvironmentContractTests(unittest.TestCase):
         )
         self.assertIn("SHA256SUMS", artifacts)
 
-    def test_readme_builds_the_original_cli_runtime_from_source(self) -> None:
+    def test_readme_installs_the_published_cli_runtime(self) -> None:
         source = README.read_text(encoding="utf-8")
 
-        self.assertIn("git clone https://github.com/lexmount/abyss-rs.git", source)
-        self.assertIn("bash scripts/install-cli.sh", source)
-        self.assertIn("cargo build --release --locked", source)
+        self.assertIn(
+            "https://github.com/lexmount/abyss-rs/releases/latest/download/install.sh | sh",
+            source,
+        )
 
     def test_cli_owns_loopback_ports_and_private_credentials(self) -> None:
         source = (DEPLOY_LOCAL / "mod.rs").read_text(encoding="utf-8")
@@ -48,9 +49,11 @@ class LocalEnvironmentContractTests(unittest.TestCase):
         source = README.read_text(encoding="utf-8")
 
         self.assertIn("abyss deploy-local start", source)
-        self.assertIn("abyss deploy-local status", source)
-        self.assertIn("abyss deploy-local stop", source)
         self.assertIn("abyss run -- codex", source)
+        self.assertIn(
+            "https://abyss.lexmount.cn/docs/product/open-source-software/abyss-cli",
+            source,
+        )
         self.assertNotIn("abyss-local", source)
 
 
