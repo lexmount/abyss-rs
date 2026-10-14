@@ -38,9 +38,7 @@ messages. An Anthropic response message that contains thinking and text blocks
 is split into `reasoning` and `assistant` messages that share the Anthropic
 message id and keep the provider's block order.
 
-`previous_response_id` is the provider continuation reference; its absence does
-not invent an identity. `thread_source` is the source the agent declared, such
-as `user` or `thread_title`. `instructions_present` reports whether the request
+`instructions_present` reports whether the request
 carried explicit instructions or a system prompt, including an explicitly empty
 one.
 
@@ -56,48 +54,68 @@ omitted messages. Tool, image, and token policies govern `tool_calls`,
 
 ## Turns
 
-V2 removes `turn_index`. In v1 it was a counter the collector kept per
-session in memory, restarted with the broker, and could not say which turn a
-request belonged to. The collector now keeps no turn state; `turn_id` carries
-the turn identity found in the traffic and consumers number turns:
+V2 removes `turn_index`. The collector keeps no turn state. `turn_id` names
+the user turn a request works for, as the Agent declares it in its own request
+headers. It is unique within the session and opaque to consumers, who number
+turns themselves:
 
-- the Agent's own turn identity when it exposes one, such as the Codex turn id
-  or Claude Code's `cc_turn:<cc_turn_index>`;
-- otherwise absent, including other Anthropic clients and Claude Code subagent
-  and side requests (see below). A provider call identity is never substituted
-  for a turn, so `turn_id` always names a turn and never a single call.
+- Codex: `root_turn_id` from `x-codex-turn-metadata`. On the main thread it
+  equals the request's own `turn_id`; on a thread Codex opens for that turn,
+  such as a guardian review, it names the user turn that thread works for.
+- Claude Code: the `x-claude-code-prompt-id` header. Main-loop requests and the
+  subagents they start carry the same value.
+- Otherwise absent: the request works for no particular user turn. Examples are
+  Claude Code auxiliary requests (recaps, input suggestions, naming calls, quota
+  probes) and compaction, and other Anthropic clients. Consumers place such
+  requests by their own rules.
 
-The broker still sends v1 connections their required `turn_index`, fixed at
-`1`; it no longer carries meaning.
+A provider call identity is never substituted for a turn, so `turn_id` always
+names a turn and never a single call.
 
-## Claude request context
+## Naming threads
 
-Two optional fields carry Anthropic Messages request context verbatim:
+`naming_thread` is `true` when the request comes from a thread the Agent opened
+only to name another session. Codex names a task from a separate session whose
+`x-codex-turn-metadata` declares `thread_source` `thread_title`; the collector
+reports those requests with `naming_thread` and does not forward the Agent's own
+value. The field is omitted when `false`.
 
-- `claude_code_billing` holds every `key=value` pair of the billing header
-  Claude Code writes as the first line of its first system block
-  (`x-anthropic-billing-header: cc_version=…; cc_turn_index=13;`). Values are
-  the verbatim strings, including numbers and booleans. A request with the
-  header but no pairs carries an empty object.
-- `claude_thread` is the request `thread` object, such as `{"type": "create"}`
-  or `{"type": "continue", "previous_message_id": "msg_…"}`.
+## Streams and continuation
 
-For Claude Code, `turn_id` is `cc_turn:<cc_turn_index>` when the billing header
-has a turn index; the index is stable across `continue` requests and the
-`create` replay of one user turn. Claude Code requests without a turn index
-(subagents, side requests, quota probes) carry no `turn_id`, so consumers place
-them by their own rules.
+Three optional fields place one exchange among the conversations of a session.
+Both events of the exchange carry the same values, and each is omitted when
+the traffic declares none:
 
-The official delivery plugin stores both fields under the same names in the
-usage-event metadata. The broker removes them for v1 connections.
+- `stream_id`: the thread that sent the request, as the Agent declares it.
+  Requests with the same value continue one conversation.
+  - Codex: `thread_id` from `x-codex-turn-metadata`. The main thread's value
+    equals the session id; a thread Codex opens for a turn, such as a guardian
+    review, has its own value.
+  - Claude Code: by `x-claude-code-request-class`, the session id
+    (`x-claude-code-session-id`) for `main` requests and the subagent instance
+    (`x-claude-code-agent-id`) for `subagent` requests. Other Claude Code
+    requests carry none.
+- `response_id`: the provider identity of the response the exchange produced:
+  the OpenAI response id (`resp_…`) or the Anthropic message id (`msg_…`).
+  Later requests name it to continue after that response.
+- `previous_response_id`: the response the request continues after. The
+  request then carries only the messages added since that response.
+  - Anthropic: `previous_message_id` of a `thread` `continue` request.
+  - OpenAI: the request's `previous_response_id`.
 
 ## Call purpose and session title
 
 `purpose` states what the Agent made a provider call for, when its traffic
-says so. Both events of the call carry it. The only value is `session_title`:
-the Agent asks the model to name the session the call belongs to.
-Claude Code makes such a call with the naming instruction in its system prompt
-(`You are naming a coding session…`) and the billing header present.
+says so. Both events of the call carry it. Values:
+
+- `session_title`: the Agent asks the model to name the session the call
+  belongs to. Claude Code makes such a call with the naming instruction in its
+  system prompt (`You are naming a coding session…`) and the billing header
+  present.
+- `compaction`: the Agent asks the model to summarize the conversation so far,
+  to continue from the summary instead of the full history. Codex declares it
+  as `request_kind` `compaction` in `x-codex-turn-metadata`, Claude Code as
+  `x-claude-code-request-class` `compaction`.
 
 `session_title` is the title from the response side of a `session_title` call,
 read only when the reply is a single `{"title": "…"}` object. It names the
@@ -106,7 +124,7 @@ content policy drops conversation text.
 
 Codex names a task from a separate thread whose requests do not say which
 session they name, so Codex events carry neither field; its naming threads
-remain visible through `conversation.thread_source`.
+carry `naming_thread` instead.
 
 The official delivery plugin stores both fields under the same names in the
 usage-event metadata. The broker removes them for v1 connections.
@@ -127,12 +145,17 @@ The official delivery plugin stores the object as `metadata.conversation`.
 Backend titles and trajectories consume these messages without decoding
 provider bodies.
 
+The official delivery plugin sends `turn_id`, `naming_thread`, `stream_id`,
+`response_id`, and `previous_response_id` as top-level fields of the usage
+event.
+
 New Rust clients negotiate v2. The broker continues accepting v1 clients and
-omits `conversation`, `claude_code_billing`, `claude_thread`, `purpose`, and
-`session_title` for them.
+omits `naming_thread`, `stream_id`, `response_id`, `previous_response_id`,
+`conversation`, `purpose`, and `session_title` for them.
 Existing Python and TypeScript v1 clients keep the unchanged v1 contract. The
-v1 schema remains unchanged apart from its optional `turn_id`. Upgrade the
-backend first, then the broker, then the delivery client.
+v1 schema remains unchanged apart from its optional `turn_id`, which carries
+the same value as in v2. Upgrade the backend first, then the broker, then the
+delivery client.
 
 Previously stored records keep their metadata unchanged and no automatic
 database rewrite occurs. Producing role-aware projections for records stored

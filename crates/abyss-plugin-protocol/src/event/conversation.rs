@@ -8,10 +8,6 @@ use serde::{Deserialize, Serialize};
 pub struct Conversation {
     /// Ordered messages, with streamed fragments assembled by the collector.
     pub messages: Vec<ConversationMessage>,
-    /// Provider continuation reference; absence does not invent an identity.
-    pub previous_response_id: Option<String>,
-    /// Agent-declared source, such as `user` or `thread_title`.
-    pub thread_source: Option<String>,
     /// Whether the request carried explicit instructions or a system prompt,
     /// including an explicitly empty one.
     pub instructions_present: bool,
@@ -112,8 +108,6 @@ mod tests {
                     text: "hi".to_owned(),
                 },
             ],
-            previous_response_id: None,
-            thread_source: None,
             instructions_present: false,
             completeness: ContentCompleteness::Complete,
             policy_omitted: false,
@@ -126,8 +120,6 @@ mod tests {
                     {"id": "msg_1", "role": "reasoning", "text": "plan"},
                     {"id": "msg_1", "role": "assistant", "text": "hi"}
                 ],
-                "previous_response_id": null,
-                "thread_source": null,
                 "instructions_present": false,
                 "completeness": "complete",
                 "policy_omitted": false
@@ -139,8 +131,6 @@ mod tests {
     fn raw_content_carriers_are_rejected() {
         let conversation = json!({
             "messages": [{"id": null, "role": "user", "text": "hello"}],
-            "previous_response_id": null,
-            "thread_source": null,
             "instructions_present": true,
             "completeness": "partial",
             "policy_omitted": false

@@ -6,11 +6,8 @@
 //! Agent event compatibility is part of the broker plugin protocol version, so
 //! an individual event does not carry a separate schema version.
 
-use std::collections::BTreeMap;
-
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Deserializer, Serialize, Serializer};
-use serde_json::{Map, Value};
 mod conversation;
 pub use conversation::{ContentCompleteness, Conversation, ConversationMessage, MessageRole};
 
@@ -28,16 +25,29 @@ pub struct AgentEvent {
     pub agent: AgentContext,
     /// Provider or collector session identifier.
     pub session_id: String,
-    /// Turn identity named by the traffic and shared by every event of one turn;
-    /// absent when the traffic names none.
+    /// The user turn this request works for, as the Agent declares it in its
+    /// request headers; unique within the session. Absent when the request
+    /// works for no particular turn.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub turn_id: Option<String>,
-    /// Claude Code billing header pairs, values verbatim.
+    /// Whether the request comes from a thread the Agent opened only to name
+    /// another session.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub naming_thread: bool,
+    /// The thread that sent this exchange's request, as the Agent declares it.
+    /// Requests with the same value continue one conversation. Absent when
+    /// the Agent declares none.
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub claude_code_billing: Option<BTreeMap<String, String>>,
-    /// Anthropic Messages request `thread` object, verbatim.
+    pub stream_id: Option<String>,
+    /// Provider identity of the response this exchange produced. Both events
+    /// of the exchange carry it, and later requests continue after it by this
+    /// value.
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub claude_thread: Option<Map<String, Value>>,
+    pub response_id: Option<String>,
+    /// The response this exchange's request continues after; the request then
+    /// carries only the messages added since that response.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub previous_response_id: Option<String>,
     /// What the Agent made this provider call for, when its traffic says so.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub purpose: Option<EventPurpose>,
@@ -75,6 +85,9 @@ pub struct AgentEvent {
 pub enum EventPurpose {
     /// The Agent asks the model to name the session the call belongs to.
     SessionTitle,
+    /// The Agent asks the model to summarize the conversation so far, to
+    /// continue from the summary instead of the full history.
+    Compaction,
 }
 
 /// Device context attached to one Agent event.
@@ -315,8 +328,10 @@ mod tests {
         );
         for field in [
             "turn_id",
-            "claude_code_billing",
-            "claude_thread",
+            "naming_thread",
+            "stream_id",
+            "response_id",
+            "previous_response_id",
             "purpose",
             "session_title",
             "conversation",
@@ -400,8 +415,10 @@ mod tests {
             },
             session_id: "session-1".to_owned(),
             turn_id: None,
-            claude_code_billing: None,
-            claude_thread: None,
+            naming_thread: false,
+            stream_id: None,
+            response_id: None,
+            previous_response_id: None,
             purpose: None,
             session_title: None,
             llm: LlmContext {

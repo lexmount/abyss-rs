@@ -27,6 +27,22 @@ fn v2_conversation_and_handshakes_round_trip_without_changing_v1() {
     let schema = contract.json("agent-event.schema.json");
     assert!(schema["properties"].get("conversation").is_some());
     assert!(schema["properties"].get("raw_body").is_none());
+    assert!(schema["properties"].get("claude_code_billing").is_none());
+    assert!(schema["properties"].get("claude_thread").is_none());
+    assert_eq!(schema["properties"]["naming_thread"]["type"], "boolean");
+    assert_eq!(
+        schema["properties"]["purpose"]["enum"],
+        serde_json::json!(["session_title", "compaction"])
+    );
+    assert_eq!(
+        serde_json::to_value(abyss_sdk::event::EventPurpose::Compaction).unwrap(),
+        "compaction"
+    );
+    assert_eq!(fixture["naming_thread"], true);
+    for field in ["stream_id", "response_id", "previous_response_id"] {
+        assert_eq!(schema["properties"][field]["type"], "string", "{field}");
+        assert!(fixture[field].is_string(), "{field}");
+    }
     let messages = contract.json("messages.schema.json");
     for name in ["pluginHello", "brokerHello"] {
         assert_eq!(
@@ -63,8 +79,6 @@ fn v2_conversation_carries_only_role_aware_messages() {
         conversation["required"],
         serde_json::json!([
             "messages",
-            "previous_response_id",
-            "thread_source",
             "instructions_present",
             "completeness",
             "policy_omitted"

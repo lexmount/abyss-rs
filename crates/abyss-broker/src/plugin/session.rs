@@ -129,8 +129,10 @@ where
                     if let Some(object) = legacy.as_object_mut() {
                         for v2_field in [
                             "conversation",
-                            "claude_code_billing",
-                            "claude_thread",
+                            "naming_thread",
+                            "stream_id",
+                            "response_id",
+                            "previous_response_id",
                             "purpose",
                             "session_title",
                         ] {
@@ -353,8 +355,10 @@ mod tests {
             }
             for v2_field in [
                 "conversation",
-                "claude_code_billing",
-                "claude_thread",
+                "naming_thread",
+                "stream_id",
+                "response_id",
+                "previous_response_id",
                 "purpose",
                 "session_title",
             ] {

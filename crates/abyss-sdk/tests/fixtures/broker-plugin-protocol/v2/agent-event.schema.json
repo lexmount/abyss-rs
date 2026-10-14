@@ -34,18 +34,22 @@
     "turn_id": {
       "type": "string"
     },
-    "claude_code_billing": {
-      "type": "object",
-      "additionalProperties": {
-        "type": "string"
-      }
+    "naming_thread": {
+      "type": "boolean"
     },
-    "claude_thread": {
-      "type": "object"
+    "stream_id": {
+      "type": "string"
+    },
+    "response_id": {
+      "type": "string"
+    },
+    "previous_response_id": {
+      "type": "string"
     },
     "purpose": {
       "enum": [
-        "session_title"
+        "session_title",
+        "compaction"
       ]
     },
     "session_title": {
@@ -262,8 +266,6 @@
       "additionalProperties": false,
       "required": [
         "messages",
-        "previous_response_id",
-        "thread_source",
         "instructions_present",
         "completeness",
         "policy_omitted"
@@ -274,18 +276,6 @@
           "items": {
             "$ref": "#/$defs/conversationMessage"
           }
-        },
-        "previous_response_id": {
-          "type": [
-            "string",
-            "null"
-          ]
-        },
-        "thread_source": {
-          "type": [
-            "string",
-            "null"
-          ]
         },
         "instructions_present": {
           "type": "boolean"

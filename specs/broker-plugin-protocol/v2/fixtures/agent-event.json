@@ -12,16 +12,10 @@
   },
   "session_id": "session-123",
   "turn_id": "turn-123",
-  "claude_code_billing": {
-    "cc_entrypoint": "cli",
-    "cc_prompt_id": "a7e7449e-3401-4091-9857-98c73e217ce3",
-    "cc_turn_index": "13",
-    "cc_version": "2.1.293.af3"
-  },
-  "claude_thread": {
-    "type": "continue",
-    "previous_message_id": "msg_123"
-  },
+  "naming_thread": true,
+  "stream_id": "thread-123",
+  "response_id": "resp-123",
+  "previous_response_id": "resp-122",
   "purpose": "session_title",
   "session_title": "Repository overview",
   "llm": {
@@ -73,8 +67,6 @@
         "text": ""
       }
     ],
-    "previous_response_id": null,
-    "thread_source": null,
     "instructions_present": false,
     "completeness": "complete",
     "policy_omitted": false
