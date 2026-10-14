@@ -82,6 +82,12 @@ Choose the reference for your integration language:
 ## Architecture
 
 ```mermaid
+---
+config:
+  layout: dagre
+  flowchart:
+    curve: basis
+---
 flowchart LR
     Agent[AI agents, IDEs, and CLIs]
     Adapter[External platform adapters]
