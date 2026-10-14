@@ -83,31 +83,48 @@ Choose the reference for your integration language:
 
 ```mermaid
 flowchart LR
-    Agent[AI agents, IDEs, CLIs, and SDKs]
+    Agent[AI agents, IDEs, and CLIs]
+    Adapter[External platform adapters]
     Provider[AI providers]
-    EventAPI[Agent event API]
+    EventAPI[Configured event API]
 
     subgraph Endpoint[Abyss endpoint runtime]
         CLI[abyss CLI]
-        Ingress[abyss-broker ingress]
-        MITM[abyss-mitm<br/>TLS and HTTP relay]
-        Hook[abyss-agent-hook<br/>protocol parsing]
-        Protocol[abyss-plugin-protocol<br/>normalized AgentEvent]
-        Delivery[abyss-delivery-plugin]
-        State[(Policy, CA, diagnostics,<br/>and durable local state)]
 
-        CLI -->|lifecycle, auth, and policy| Ingress
-        CLI -->|delivery credentials| Delivery
-        Ingress <--> MITM
-        MITM --> Hook
-        Hook --> Protocol
-        Protocol --> Delivery
-        Ingress <--> State
-        MITM <--> State
-        Delivery <--> State
+        subgraph Broker[abyss-broker]
+            Ingress[Ingress contracts]
+            Control[REST control API]
+            MITM[abyss-mitm<br/>TLS, HTTP, and WebSocket relay]
+            Hook[abyss-agent-hook<br/>detection, parsing, and normalization]
+            Events[Plugin server<br/>abyss-plugin-protocol / AgentEvent]
+            State[(Runtime policy / TOML<br/>network diagnostics / SQLite)]
+
+            Ingress <--> MITM
+            MITM -->|decoded exchanges and messages| Hook
+            Hook -->|normalized events| Events
+            Control -->|TLS policy| MITM
+            Control -->|capture policy| Hook
+            Control <--> State
+            Ingress -->|flow observations| State
+        end
+
+        CA[(Local CA)]
+        Delivery[abyss-delivery-plugin]
+        Custom[Custom plugins<br/>Rust, TypeScript, or Python SDK]
+        Spool[(Failed-upload spool)]
+
+        CLI -->|lifecycle and policy| Control
+        CLI -->|CA setup| CA
+        CA --> MITM
+        CLI -->|lifecycle and credentials| Delivery
+        Events -->|local event stream| Delivery
+        Events -->|local event stream| Custom
+        Delivery <--> Spool
     end
 
-    Agent <-->|HTTP, HTTPS, and WebSocket| Ingress
+    Agent <-->|explicit HTTP proxy| Ingress
+    Agent <--> Adapter
+    Adapter <-->|platform ingress| Ingress
     MITM <-->|upstream traffic| Provider
-    Delivery -->|authenticated event upload| EventAPI
+    Delivery -->|event upload| EventAPI
 ```
