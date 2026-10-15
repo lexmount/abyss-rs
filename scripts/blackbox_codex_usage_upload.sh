@@ -530,51 +530,34 @@ validate_codex_pair() {
 validate_codex_summary() {
   local first_pair="$1"
   local second_pair="$2"
-  local first_session
-  local second_session
+  local sessions_json
+  local session_id
   local summary_json
-  local pairs_json
+  local events_json
 
-  first_session="$(jq -r '.request.session_id' <<<"${first_pair}")"
-  second_session="$(jq -r '.request.session_id' <<<"${second_pair}")"
-  if [[ "${first_session}" == "${second_session}" ]]; then
-    pairs_json="$(jq -cn \
-      --argjson first "${first_pair}" \
-      --argjson second "${second_pair}" \
-      '[ $first, $second ]')"
+  sessions_json="$(jq -cn \
+    --argjson first "${first_pair}" \
+    --argjson second "${second_pair}" \
+    '[ $first.request.session_id, $second.request.session_id ] | unique')"
+  while IFS= read -r session_id; do
+    # Codex can also send a WebSocket prewarm request with input usage and no
+    # response text. Session summaries include these observations as well as the
+    # marker pair, whose native Codex usage is checked separately above.
+    events_json="$(jq -c --arg session_id "${session_id}" \
+      '[.events[] | select(.session_id == $session_id
+        and .agent_name == "codex" and .llm_provider == "openai")]' \
+      "${EVENTS_RESPONSE}")"
     summary_json="$(blackbox_fetch_summary \
       "${BACKEND_BASE_URL}" \
       "${NATIVE_TOKEN}" \
       codex \
       openai \
-      "${first_session}" \
+      "${session_id}" \
       "${CURL_TIMEOUT_SECONDS}")" \
-      || fail "backend usage summary request failed for Codex sessions"
-    blackbox_assert_summary_matches_pairs "${summary_json}" "${pairs_json}" \
-      || fail "backend usage summary did not match the Codex event pairs"
-    return 0
-  fi
-
-  summary_json="$(blackbox_fetch_summary \
-    "${BACKEND_BASE_URL}" \
-    "${NATIVE_TOKEN}" \
-    codex \
-    openai \
-    "${first_session}" \
-    "${CURL_TIMEOUT_SECONDS}")" \
-    || fail "backend usage summary request failed for first Codex session"
-  blackbox_assert_summary_matches_pair "${summary_json}" "${first_pair}" \
-    || fail "backend usage summary did not match the first Codex event pair"
-  summary_json="$(blackbox_fetch_summary \
-    "${BACKEND_BASE_URL}" \
-    "${NATIVE_TOKEN}" \
-    codex \
-    openai \
-    "${second_session}" \
-    "${CURL_TIMEOUT_SECONDS}")" \
-    || fail "backend usage summary request failed for second Codex session"
-  blackbox_assert_summary_matches_pair "${summary_json}" "${second_pair}" \
-    || fail "backend usage summary did not match the second Codex event pair"
+      || fail "backend usage summary request failed for Codex session"
+    blackbox_assert_summary_matches_events "${summary_json}" "${events_json}" \
+      || fail "backend usage summary did not match all Codex session events"
+  done < <(jq -r '.[]' <<<"${sessions_json}")
 }
 
 wait_for_uploaded_events() {

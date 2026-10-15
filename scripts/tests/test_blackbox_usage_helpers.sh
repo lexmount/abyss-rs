@@ -81,6 +81,30 @@ SUMMARY_TWO_JSON='{
 }'
 blackbox_assert_summary_matches_pairs "${SUMMARY_TWO_JSON}" "${TWO_PAIRS_JSON}"
 
+# A completed WebSocket prewarm can report input usage without a response
+# message. The session summary must include that request, while the native
+# turn.completed usage still matches only the marker request/response pair.
+PREWARM_EVENTS_JSON="$(jq -c '.events + [(.events[0] | .event_id = "prewarm-event"
+  | .text = "prewarm instructions" | .input_tokens = 6 | .cache_read_tokens = 0
+  | .cache_write_tokens = 0 | .total_tokens = 6)]' "${EVENTS_FILE}")"
+PREWARM_SUMMARY_JSON="$(jq -c '.rows[0].requests += 1
+  | .rows[0].input_tokens += 6 | .rows[0].total_tokens += 6' <<<"${SUMMARY_JSON}")"
+blackbox_assert_summary_matches_events "${PREWARM_SUMMARY_JSON}" "${PREWARM_EVENTS_JSON}"
+blackbox_assert_codex_usage_matches_pair "${USAGE_JSON}" "${PAIR_JSON}"
+if blackbox_assert_summary_matches_pair "${PREWARM_SUMMARY_JSON}" "${PAIR_JSON}" >/dev/null 2>&1; then
+  echo "Pair-only summary must detect the additional prewarm request" >&2
+  exit 1
+fi
+if blackbox_assert_summary_matches_events "${SUMMARY_JSON}" "${PREWARM_EVENTS_JSON}" >/dev/null 2>&1; then
+  echo "Summary must not omit prewarm request counts and tokens" >&2
+  exit 1
+fi
+BAD_PREWARM_SUMMARY="$(jq -c '.rows[0].input_tokens += 1' <<<"${PREWARM_SUMMARY_JSON}")"
+if blackbox_assert_summary_matches_events "${BAD_PREWARM_SUMMARY}" "${PREWARM_EVENTS_JSON}" >/dev/null 2>&1; then
+  echo "Summary must still reject a one-token mismatch" >&2
+  exit 1
+fi
+
 printf '%s\n' \
   '{"type":"turn.completed","usage":{"input_tokens":5,"output_tokens":4}}' \
   >"${TMP_DIR}/codex-optional-fields.jsonl"

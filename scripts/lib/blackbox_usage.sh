@@ -147,12 +147,21 @@ blackbox_assert_summary_matches_pair() {
 blackbox_assert_summary_matches_pairs() {
   local summary_json="$1"
   local pairs_json="$2"
+  local events_json
+
+  events_json="$(jq -c '[.[] | .request, .response]' <<<"${pairs_json}")"
+  blackbox_assert_summary_matches_events "${summary_json}" "${events_json}"
+}
+
+blackbox_assert_summary_matches_events() {
+  local summary_json="$1"
+  local events_json="$2"
 
   jq -e \
-    --argjson pairs "${pairs_json}" \
+    --argjson events "${events_json}" \
     '
       (.rows // []) as $rows
-      | if ($rows | length) == 0 or ($pairs | length) == 0 then
+      | if ($rows | length) == 0 or ($events | length) == 0 then
           error("usage summary has no rows")
         else
           (reduce $rows[] as $row
@@ -168,20 +177,18 @@ blackbox_assert_summary_matches_pairs() {
               | .reasoning_tokens += ($row.reasoning_tokens // 0)
               | .total_tokens += ($row.total_tokens // 0)
             )) as $actual
-          | (reduce $pairs[] as $pair
+          | (reduce $events[] as $event
             ({requests: 0, responses: 0, input_tokens: 0, output_tokens: 0,
               cache_read_tokens: 0, cache_write_tokens: 0, reasoning_tokens: 0,
               total_tokens: 0};
-              .requests += 1
-              | .responses += 1
-              | .input_tokens += $pair.request.input_tokens
-              | .output_tokens += $pair.response.output_tokens
-              | .cache_read_tokens
-                += ($pair.request.cache_read_tokens + $pair.response.cache_read_tokens)
-              | .cache_write_tokens
-                += ($pair.request.cache_write_tokens + $pair.response.cache_write_tokens)
-              | .reasoning_tokens += $pair.response.reasoning_tokens
-              | .total_tokens += ($pair.request.total_tokens + $pair.response.total_tokens)
+              .requests += (if $event.event_type == "request" then 1 else 0 end)
+              | .responses += (if $event.event_type == "response" then 1 else 0 end)
+              | .input_tokens += $event.input_tokens
+              | .output_tokens += $event.output_tokens
+              | .cache_read_tokens += $event.cache_read_tokens
+              | .cache_write_tokens += $event.cache_write_tokens
+              | .reasoning_tokens += $event.reasoning_tokens
+              | .total_tokens += $event.total_tokens
             )) as $expected
           | if (
               $actual.requests == $expected.requests
@@ -196,7 +203,7 @@ blackbox_assert_summary_matches_pairs() {
               true
             else
               error(({
-                message: "usage summary does not match expected event pairs",
+                message: "usage summary does not match expected events",
                 actual: $actual,
                 expected: $expected
               } | tojson))
