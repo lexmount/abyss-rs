@@ -96,4 +96,19 @@ if blackbox_extract_codex_usage "${TMP_DIR}/codex-failed.jsonl" >/dev/null 2>&1;
   exit 1
 fi
 
+printf '%s\n' \
+  'not a JSON event' \
+  '["not an event object"]' \
+  '{"type":"item.completed","item":{"text":"private conversation"}}' \
+  '{"type":"error","message":"request failed: Bearer test-token and sk-test-secret"}' \
+  '{"type":"turn.failed","error":{"message":"provider failure"}}' \
+  >"${TMP_DIR}/codex-errors.jsonl"
+ERROR_SUMMARY="$(blackbox_codex_error_summary "${TMP_DIR}/codex-errors.jsonl")"
+jq -e '. == ["provider failure", "request failed: <redacted> and <redacted>"]' \
+  <<<"${ERROR_SUMMARY}" >/dev/null
+jq -cn '{type: "error", message: ("x" * 2000)}' >"${TMP_DIR}/codex-long-error.jsonl"
+blackbox_codex_error_summary "${TMP_DIR}/codex-long-error.jsonl" \
+  | jq -e 'length == 1 and (.[0] | length) == 1200' >/dev/null
+blackbox_codex_error_summary "${CODEX_LOG}" | jq -e '. == []' >/dev/null
+
 echo "blackbox helper tests: ok"

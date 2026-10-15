@@ -487,6 +487,8 @@ run_codex() {
       "${prompt}" \
       </dev/null
   ) >"${jsonl_log}" 2>"${stderr_log}"; then
+    echo "---- Codex error summary ----" >&2
+    blackbox_codex_error_summary "${jsonl_log}" >&2 || true
     fail "Codex did not complete against its configured OpenAI service"
   fi
 

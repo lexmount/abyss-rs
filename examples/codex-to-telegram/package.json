@@ -1,0 +1,15 @@
+{
+  "name": "abyss-example-codex-to-telegram",
+  "private": true,
+  "type": "module",
+  "engines": {
+    "node": ">=20"
+  },
+  "scripts": {
+    "start": "node main.mjs",
+    "test": "node --test test.mjs"
+  },
+  "dependencies": {
+    "@lexmount.com/abyss-sdk": "file:../../sdks/typescript"
+  }
+}

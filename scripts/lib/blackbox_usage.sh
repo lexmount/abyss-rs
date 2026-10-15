@@ -3,6 +3,26 @@
 # Shared assertions for provider black-box tests. These helpers keep the
 # provider scripts focused on starting services and issuing native requests.
 
+blackbox_codex_error_summary() {
+  local jsonl_file="$1"
+
+  # Report only error messages, never conversation or tool-output events.
+  jq -Rnc '
+    [inputs | fromjson?
+      | select(type == "object")
+      | if .type == "error" then .message
+        elif .type == "turn.failed" then .error.message
+        else empty
+        end
+      | select(type == "string")
+      | gsub("Bearer[[:space:]]+[A-Za-z0-9._~+/-]+"; "<redacted>")
+      | gsub("sk-[A-Za-z0-9_-]+"; "<redacted>")
+      | gsub("[[:space:]]+"; " ")
+      | .[0:1200]]
+    | unique | .[0:6]
+  ' "${jsonl_file}"
+}
+
 blackbox_extract_codex_usage() {
   local jsonl_file="$1"
 

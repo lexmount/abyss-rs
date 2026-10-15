@@ -1,0 +1,133 @@
+name: Publish TypeScript SDK
+
+on:
+  pull_request:
+    paths:
+      - '.github/workflows/publish-typescript-sdk.yml'
+      - 'Cargo.toml'
+      - 'crates/abyss-broker/Cargo.toml'
+      - 'sdks/typescript/**'
+      - 'specs/broker-plugin-protocol/**'
+      - 'LICENSE'
+  workflow_dispatch:
+  release:
+    types: [published]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: typescript-sdk-${{ github.ref }}
+  cancel-in-progress: false
+
+defaults:
+  run:
+    working-directory: sdks/typescript
+
+jobs:
+  verify:
+    if: github.event_name != 'release' || startsWith(github.event.release.tag_name, 'typescript-sdk-v')
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
+
+      - uses: actions/setup-node@v6
+        with:
+          node-version: 24
+          registry-url: https://registry.npmjs.org
+          package-manager-cache: false
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Verify SDK and broker version alignment
+        run: |
+          python3 - <<'PY'
+          import json
+          from pathlib import Path
+          import sys
+          import tomllib
+
+          broker = tomllib.loads(Path('../../crates/abyss-broker/Cargo.toml').read_text())['package']['version']
+          if isinstance(broker, dict) and broker.get('workspace'):
+              broker = tomllib.loads(Path('../../Cargo.toml').read_text())['workspace']['package']['version']
+          sdk = json.loads(Path('package.json').read_text())['version']
+          if sdk.split('.')[:2] != broker.split('.')[:2]:
+              sys.exit(f'SDK {sdk} must match abyss-broker {broker} major/minor; patch versions may differ.')
+          print(f'SDK {sdk} matches abyss-broker {broker} major/minor.')
+          PY
+
+      - name: Verify release commit and version
+        if: github.event_name == 'release'
+        env:
+          RELEASE_TAG: ${{ github.event.release.tag_name }}
+        run: |
+          git merge-base --is-ancestor HEAD origin/main
+          node --input-type=module <<'JS'
+          import assert from 'node:assert/strict';
+          import { readFileSync } from 'node:fs';
+          const { version } = JSON.parse(readFileSync('package.json', 'utf8'));
+          assert.match(version, /^\d+\.\d+\.\d+$/, 'Publish a stable SDK version');
+          assert.equal(process.env.RELEASE_TAG, `typescript-sdk-v${version}`);
+          JS
+
+      - run: npm ci
+      - run: npm run format:check
+      - run: npm run lint
+      - run: npm test
+      - run: npm pack --dry-run
+
+  publish:
+    if: github.event_name == 'release'
+    needs: verify
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    permissions:
+      contents: read
+      id-token: write
+    concurrency:
+      group: typescript-sdk-publish
+      cancel-in-progress: false
+    steps:
+      - uses: actions/checkout@v6
+
+      - uses: actions/setup-node@v6
+        with:
+          node-version: 24
+          registry-url: https://registry.npmjs.org
+          package-manager-cache: false
+
+      - run: npm ci
+
+      - name: Publish to npm
+        run: npm publish --access public --provenance
+
+      - name: Verify published package
+        run: |
+          version="$(node -p "require('./package.json').version")"
+          smoke_dir="$(mktemp -d)"
+          cd "$smoke_dir"
+          # npm may acknowledge publication before the version is available to install.
+          for attempt in {1..20}; do
+            if npm install --ignore-scripts --no-audit --no-fund --package-lock=false \
+              --fetch-retries=0 --fetch-timeout=15000 "@lexmount.com/abyss-sdk@$version"; then
+              break
+            fi
+            if [ "$attempt" -eq 20 ]; then
+              echo "Published package is still unavailable after 20 attempts." >&2
+              exit 1
+            fi
+            echo "Waiting for npm availability (attempt $attempt/20)..."
+            sleep 30
+          done
+          node --input-type=module <<'JS'
+          import assert from 'node:assert/strict';
+          import { BrokerClient } from '@lexmount.com/abyss-sdk';
+          import { BrokerPlugin } from '@lexmount.com/abyss-sdk/plugin';
+          assert.equal(typeof BrokerClient, 'function');
+          assert.equal(typeof BrokerPlugin, 'function');
+          JS
