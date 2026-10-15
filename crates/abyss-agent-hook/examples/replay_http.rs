@@ -1,4 +1,4 @@
-//! Replay isolated HTTP fixtures through the real hook, emitting v2 Agent events.
+//! Replay isolated HTTP fixtures through the real hook, emitting structured Agent events.
 
 use std::{
     convert::Infallible,

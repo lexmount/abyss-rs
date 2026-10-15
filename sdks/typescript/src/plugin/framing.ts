@@ -5,7 +5,7 @@ import type { Socket } from "node:net";
 import { BrokerPluginError } from "./errors.js";
 
 const FRAME_HEADER_BYTES = 4;
-const MAX_JSON_FRAME_BYTES = 16 * 1024 * 1024;
+const MAX_JSON_FRAME_BYTES = 64 * 1024 * 1024;
 
 export async function writeJsonFrame(
   socket: Socket,

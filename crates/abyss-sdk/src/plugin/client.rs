@@ -155,7 +155,7 @@ impl BrokerPlugin {
         self
     }
 
-    /// Connects, requests protocol version 2, and returns the Agent event stream.
+    /// Connects, requests protocol version 1, and returns the Agent event stream.
     ///
     /// # Errors
     ///
@@ -205,7 +205,7 @@ impl BrokerPlugin {
     where
         S: AsyncRead + AsyncWrite + Send + Unpin + ?Sized,
     {
-        codec::write_json(stream, &PluginHello::v2(self.plugin_id.clone())).await?;
+        codec::write_json(stream, &PluginHello::new(self.plugin_id.clone())).await?;
         let payload = codec::read_payload(stream)
             .await?
             .ok_or(BrokerPluginError::UnexpectedEof)?;
@@ -216,16 +216,7 @@ impl BrokerPlugin {
             }
         })?;
         match response {
-            HandshakeResponse::Accepted(hello) if hello.protocol_version.wire_value() == 2 => {
-                Ok(())
-            }
-            HandshakeResponse::Accepted(hello) => Err(BrokerPluginError::HandshakeRejected {
-                code: 1,
-                reason: format!(
-                    "expected plugin protocol 2, received {}",
-                    hello.protocol_version.wire_value()
-                ),
-            }),
+            HandshakeResponse::Accepted(_hello) => Ok(()),
             HandshakeResponse::Rejected(error) => Err(BrokerPluginError::HandshakeRejected {
                 code: error.code,
                 reason: error.reason,
@@ -353,11 +344,12 @@ mod tests {
         let server_task = tokio::spawn(async move {
             let hello: PluginHello = read_json(&mut server).await;
             assert_eq!(hello.plugin_id, "sdk-test-plugin");
-            write_json(&mut server, &BrokerHello::v2())
+            assert_eq!(hello.protocol_version.wire_value(), 1_u16);
+            write_json(&mut server, &BrokerHello::v1())
                 .await
                 .expect("BrokerHello should write");
             let event: AgentEvent = serde_json::from_str(include_str!(
-                "../../tests/fixtures/broker-plugin-protocol/v2/fixtures/agent-event.json"
+                "../../tests/fixtures/broker-plugin-protocol/v1/fixtures/agent-event.json"
             ))
             .expect("published AgentEvent fixture should decode");
             write_json(&mut server, &event)

@@ -8,10 +8,8 @@ use thiserror::Error;
 #[non_exhaustive]
 #[serde(try_from = "u16", into = "u16")]
 pub enum PluginProtocolVersion {
-    /// Initial handshake, live stream, and Agent event contract.
+    /// Handshake, live stream, and structured Agent event contract.
     V1,
-    /// Adds structured conversation content to Agent events.
-    V2,
 }
 
 impl PluginProtocolVersion {
@@ -20,7 +18,6 @@ impl PluginProtocolVersion {
     pub const fn wire_value(self) -> u16 {
         match self {
             Self::V1 => 1,
-            Self::V2 => 2,
         }
     }
 }
@@ -37,7 +34,6 @@ impl TryFrom<u16> for PluginProtocolVersion {
     fn try_from(version: u16) -> Result<Self, Self::Error> {
         match version {
             1 => Ok(Self::V1),
-            2 => Ok(Self::V2),
             version => Err(UnsupportedPluginProtocolVersion { version }),
         }
     }
@@ -69,15 +65,6 @@ pub struct PluginHello {
 }
 
 impl PluginHello {
-    /// Creates a version 2 handshake with structured conversation content.
-    #[must_use]
-    pub const fn v2(plugin_id: String) -> Self {
-        Self {
-            protocol_version: PluginProtocolVersion::V2,
-            plugin_id,
-        }
-    }
-
     /// Creates a version 1 plugin handshake.
     #[must_use]
     // Valid plugin identifiers are non-empty runtime strings, so exposing this
@@ -103,14 +90,6 @@ pub struct BrokerHello {
 }
 
 impl BrokerHello {
-    /// Creates a version 2 broker handshake response.
-    #[must_use]
-    pub const fn v2() -> Self {
-        Self {
-            protocol_version: PluginProtocolVersion::V2,
-        }
-    }
-
     /// Creates a version 1 broker handshake response.
     #[must_use]
     pub const fn v1() -> Self {
@@ -221,13 +200,13 @@ mod tests {
 
     #[test]
     fn unsupported_protocol_version_is_rejected() {
-        let error = serde_json::from_value::<PluginProtocolVersion>(json!(7_u16))
-            .expect_err("protocol version 7 must be rejected");
+        let error = serde_json::from_value::<PluginProtocolVersion>(json!(2_u16))
+            .expect_err("protocol version 2 must be rejected");
 
         assert!(
             error
                 .to_string()
-                .contains("unsupported broker plugin protocol version 7"),
+                .contains("unsupported broker plugin protocol version 2"),
             "error should identify the unsupported protocol version"
         );
     }

@@ -10,7 +10,6 @@
     "device",
     "agent",
     "session_id",
-    "turn_index",
     "llm",
     "side",
     "token_usage"
@@ -32,12 +31,28 @@
     "session_id": {
       "type": "string"
     },
-    "turn_index": {
-      "type": "integer",
-      "minimum": 1,
-      "maximum": 4294967295
-    },
     "turn_id": {
+      "type": "string"
+    },
+    "naming_thread": {
+      "type": "boolean"
+    },
+    "stream_id": {
+      "type": "string"
+    },
+    "response_id": {
+      "type": "string"
+    },
+    "previous_response_id": {
+      "type": "string"
+    },
+    "purpose": {
+      "enum": [
+        "session_title",
+        "compaction"
+      ]
+    },
+    "session_title": {
       "type": "string"
     },
     "llm": {
@@ -72,6 +87,9 @@
       "items": {
         "$ref": "#/$defs/imageAttachment"
       }
+    },
+    "conversation": {
+      "$ref": "#/$defs/conversation"
     }
   },
   "$defs": {
@@ -240,6 +258,68 @@
         "content_base64": {
           "type": "string",
           "contentEncoding": "base64"
+        }
+      }
+    },
+    "conversation": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "messages",
+        "instructions_present",
+        "completeness",
+        "policy_omitted"
+      ],
+      "properties": {
+        "messages": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/conversationMessage"
+          }
+        },
+        "instructions_present": {
+          "type": "boolean"
+        },
+        "completeness": {
+          "enum": [
+            "complete",
+            "partial",
+            "unsupported"
+          ]
+        },
+        "policy_omitted": {
+          "type": "boolean"
+        }
+      }
+    },
+    "conversationMessage": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "id",
+        "role",
+        "text"
+      ],
+      "properties": {
+        "id": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "role": {
+          "enum": [
+            "system",
+            "developer",
+            "user",
+            "assistant",
+            "reasoning",
+            "tool",
+            "unknown"
+          ]
+        },
+        "text": {
+          "type": "string"
         }
       }
     }

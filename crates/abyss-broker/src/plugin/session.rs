@@ -41,7 +41,6 @@ pub struct PluginSession<S> {
     stream: S,
     events: broadcast::Sender<Arc<AgentEvent>>,
     shutdown: watch::Receiver<bool>,
-    protocol_version: PluginProtocolVersion,
 }
 
 enum StreamAction {
@@ -63,7 +62,6 @@ where
             stream,
             events,
             shutdown,
-            protocol_version: PluginProtocolVersion::V1,
         }
     }
 
@@ -121,29 +119,7 @@ where
     ) -> Result<StreamAction, PluginSessionError> {
         match received {
             Ok(event) => {
-                if self.protocol_version == PluginProtocolVersion::V2 {
-                    write_json(&mut self.stream, event.as_ref()).await?;
-                } else {
-                    let mut legacy = serde_json::to_value(event.as_ref())
-                        .map_err(|source| PluginFrameError::Json { source })?;
-                    if let Some(object) = legacy.as_object_mut() {
-                        for v2_field in [
-                            "conversation",
-                            "naming_thread",
-                            "stream_id",
-                            "response_id",
-                            "previous_response_id",
-                            "purpose",
-                            "session_title",
-                        ] {
-                            object.remove(v2_field);
-                        }
-                        // V1 requires a positive `turn_index`; the collector
-                        // no longer counts turns, so it carries no meaning.
-                        object.insert("turn_index".to_owned(), 1_u32.into());
-                    }
-                    write_json(&mut self.stream, &legacy).await?;
-                }
+                write_json(&mut self.stream, event.as_ref()).await?;
                 Ok(StreamAction::Continue)
             }
             Err(broadcast::error::RecvError::Lagged(skipped)) => {
@@ -212,7 +188,6 @@ where
         }
 
         let events = self.events.subscribe();
-        self.protocol_version = protocol_version;
         write_json(&mut self.stream, &BrokerHello { protocol_version }).await?;
         Ok(Some((hello.plugin_id, events)))
     }
@@ -306,15 +281,21 @@ mod tests {
         let hello: BrokerHello = read_json(&mut client).await;
         assert_eq!(hello.protocol_version.wire_value(), 1_u16);
 
-        let event: AgentEvent = serde_json::from_str(include_str!("fixtures/agent-event.json"))
+        let fixture: serde_json::Value =
+            serde_json::from_str(include_str!("fixtures/agent-event.json"))
+                .expect("published fixture should be JSON");
+        let event: AgentEvent = serde_json::from_value(fixture.clone())
             .expect("published AgentEvent fixture should decode");
         events
             .send(Arc::new(event))
             .expect("accepted session should subscribe to events");
-        // V1 frames carry the legacy shape, which is not an `AgentEvent`.
-        let received: serde_json::Value = read_json(&mut client).await;
-        assert_eq!(received["event_id"], "evt-123");
-        assert_eq!(received["turn_index"], 1_u32);
+        let received: AgentEvent = read_json(&mut client).await;
+        let received = serde_json::to_value(received).expect("event should serialize");
+        assert_eq!(
+            received, fixture,
+            "v1 must forward every structured field unchanged"
+        );
+        assert!(received.get("turn_index").is_none());
 
         shutdown_tx
             .send(true)
@@ -328,59 +309,6 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn v2_fields_are_sent_only_to_v2_plugins() {
-        for version in [1_u16, 2_u16] {
-            let (mut client, server) = duplex(32 * 1024);
-            let (events, _receiver) = broadcast::channel(64);
-            let (shutdown_tx, shutdown_rx) = tokio::sync::watch::channel(false);
-            let session =
-                tokio::spawn(PluginSession::new(server, events.clone(), shutdown_rx).run());
-            write_json(
-                &mut client,
-                &serde_json::json!({"protocol_version": version, "plugin_id": "version-test"}),
-            )
-            .await
-            .unwrap();
-            let hello: BrokerHello = read_json(&mut client).await;
-            assert_eq!(hello.protocol_version.wire_value(), version);
-            let fixture: serde_json::Value = serde_json::from_str(include_str!(
-                "../../../../specs/broker-plugin-protocol/v2/fixtures/agent-event.json"
-            ))
-            .unwrap();
-            let event: AgentEvent = serde_json::from_value(fixture.clone()).unwrap();
-            events.send(Arc::new(event)).unwrap();
-            let received: serde_json::Value = read_json(&mut client).await;
-            if version == 2 {
-                assert_eq!(received, fixture, "v2 receives the event unchanged");
-            }
-            for v2_field in [
-                "conversation",
-                "naming_thread",
-                "stream_id",
-                "response_id",
-                "previous_response_id",
-                "purpose",
-                "session_title",
-            ] {
-                assert_eq!(
-                    received.get(v2_field).is_some(),
-                    version == 2,
-                    "{v2_field} for v{version}"
-                );
-            }
-            assert_eq!(
-                received.get("turn_index").is_some(),
-                version == 1,
-                "only v1 gets a turn_index"
-            );
-            assert_eq!(received["text"], "I will inspect the repository.");
-            shutdown_tx.send(true).unwrap();
-            let _close: BrokerClose = read_json(&mut client).await;
-            session.await.unwrap().unwrap();
-        }
-    }
-
-    #[tokio::test]
     async fn rejects_an_unsupported_protocol_version_with_a_typed_error() {
         let (mut client, server) = duplex(1024);
         let (events, _receiver) = broadcast::channel(64);
@@ -390,7 +318,7 @@ mod tests {
         write_json(
             &mut client,
             &serde_json::json!({
-                "protocol_version": 77_u16,
+                "protocol_version": 2_u16,
                 "plugin_id": "future-plugin"
             }),
         )
@@ -399,7 +327,7 @@ mod tests {
         let error: BrokerError = read_json(&mut client).await;
 
         assert_eq!(error.code, 1_u32);
-        assert!(error.reason.contains("77"));
+        assert!(error.reason.contains("unsupported protocol version 2"));
         session
             .await
             .expect("session task should finish")

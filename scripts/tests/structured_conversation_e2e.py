@@ -33,7 +33,7 @@ def messages(event):
 
 
 def assert_structured(events):
-    """Check the v2 conversation shape the hook emits before delivery."""
+    """Check the structured conversation shape the hook emits before delivery."""
     assert len({event["event_id"] for event in events}) == len(events), events
     for event in events:
         assert "raw_body" not in event, event
@@ -231,7 +231,7 @@ def main():
     assert [e["event_id"] for e in replayed] == [e["event_id"] for e in events]
     assert [e["conversation"] for e in replayed] == [e["conversation"] for e in events]
     (args.artifacts / "agent-events.json").write_text(json.dumps(events, indent=2))
-    with tempfile.TemporaryDirectory(prefix="abyss-v2-") as temporary:
+    with tempfile.TemporaryDirectory(prefix="abyss-structured-") as temporary:
         temp = Path(temporary)
         with socket.socket() as reserved:
             reserved.bind(("127.0.0.1", 0))
@@ -323,13 +323,13 @@ def main():
                     hello = json.loads(
                         read_exact(struct.unpack("!I", read_exact(4))[0])
                     )
-                    assert hello["protocol_version"] == 2
+                    assert hello["protocol_version"] == 1
 
                     def send(value):
                         data = json.dumps(value).encode()
                         stream.sendall(struct.pack("!I", len(data)) + data)
 
-                    send({"protocol_version": 2})
+                    send({"protocol_version": 1})
                     for event in events:
                         send(event)
                     for _ in range(100):
@@ -418,7 +418,7 @@ def main():
                         )
                     send({"code": 100, "reason": "test complete"})
             print(
-                "PASS: hook -> v2 delivery -> SQLite storage -> titles and trajectory;"
+                "PASS: hook -> delivery -> SQLite storage -> titles and trajectory;"
                 " role-aware messages, deterministic ids, no raw content"
             )
         finally:

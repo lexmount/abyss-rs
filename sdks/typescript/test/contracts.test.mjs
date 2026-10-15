@@ -18,6 +18,88 @@ test("shared AgentEvent fixture decodes through the TypeScript SDK", async () =>
   assert.equal(event.turn_id, "turn-123");
   assert.equal(event.llm.provider, "openai");
   assert.equal(event.tool_calls[0].name, "exec");
+  assert.equal(event.naming_thread, true);
+  assert.equal(event.stream_id, "thread-123");
+  assert.equal(event.response_id, "resp-123");
+  assert.equal(event.previous_response_id, "resp-122");
+  assert.equal(event.purpose, "session_title");
+  assert.equal(event.session_title, "Repository overview");
+  assert.deepEqual(event.conversation, fixture.conversation);
+  assert.equal("turn_index" in event, false);
+});
+
+test("undeclared context may be omitted and message IDs may be null", async () => {
+  const fixture = JSON.parse(await readFile(fixtureUrl, "utf8"));
+  for (const field of [
+    "turn_id",
+    "naming_thread",
+    "stream_id",
+    "response_id",
+    "previous_response_id",
+    "purpose",
+    "session_title",
+    "conversation",
+  ]) {
+    delete fixture[field];
+  }
+  assert.equal(decodeAgentEvent(fixture).turn_id, undefined);
+  fixture.purpose = "compaction";
+  fixture.conversation = {
+    messages: [{ id: null, role: "unknown", text: "" }],
+    instructions_present: false,
+    completeness: "partial",
+    policy_omitted: true,
+  };
+  assert.deepEqual(
+    decodeAgentEvent(fixture).conversation,
+    fixture.conversation,
+  );
+});
+
+test("structured events reject obsolete fields and malformed content", async () => {
+  const original = JSON.parse(await readFile(fixtureUrl, "utf8"));
+  for (const mutate of [
+    (e) => {
+      e.turn_index = 1;
+    },
+    (e) => {
+      e.naming_thread = 1;
+    },
+    (e) => {
+      e.stream_id = 1;
+    },
+    (e) => {
+      e.purpose = "other";
+    },
+    (e) => {
+      e.conversation.messages[0].role = "request";
+    },
+    (e) => {
+      delete e.conversation.messages[0].id;
+    },
+    (e) => {
+      e.conversation.messages[0].blocks = [];
+    },
+    (e) => {
+      e.conversation.messages[0].text = 1;
+    },
+    (e) => {
+      e.conversation.messages = {};
+    },
+    (e) => {
+      e.conversation.completeness = "failed";
+    },
+    (e) => {
+      e.conversation.instructions_present = "true";
+    },
+    (e) => {
+      delete e.conversation.policy_omitted;
+    },
+  ]) {
+    const fixture = structuredClone(original);
+    mutate(fixture);
+    assert.throws(() => decodeAgentEvent(fixture), TypeError);
+  }
 });
 
 test("AgentEvent decoder rejects invalid counters and unknown sides", () => {
@@ -27,7 +109,6 @@ test("AgentEvent decoder rejects invalid counters and unknown sides", () => {
     device: { host_name: "host", platform: "linux" },
     agent: { name: "codex" },
     session_id: "session",
-    turn_index: 1,
     llm: { provider: "openai", model: "gpt-test" },
     side: "request",
     token_usage: {

@@ -67,7 +67,7 @@ def check_release(tag):
         ["cargo", "metadata", "--locked", "--no-deps", "--format-version", "1"], cwd=ROOT
     ))
     version = validate_release(workspace, metadata, tag)
-    fixture = ROOT / "specs/broker-plugin-protocol/v2/fixtures/agent-event.json"
+    fixture = ROOT / "specs/broker-plugin-protocol/v1/fixtures/agent-event.json"
     packaged_fixture = ROOT / "crates/abyss-broker/src/plugin/fixtures/agent-event.json"
     if fixture.read_bytes() != packaged_fixture.read_bytes():
         raise ValueError("broker's packaged AgentEvent fixture must match the public specification")

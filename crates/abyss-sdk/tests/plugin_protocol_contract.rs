@@ -17,8 +17,8 @@ struct PublishedContract {
 }
 
 #[test]
-fn v2_conversation_and_handshakes_round_trip_without_changing_v1() {
-    let contract = PublishedContract::load_version("v2");
+fn structured_conversation_and_handshakes_round_trip() {
+    let contract = PublishedContract::load();
     contract.assert_fixture_round_trip::<AgentEvent>("agent-event.json");
     contract.assert_fixture_round_trip::<PluginHello>("plugin-hello.json");
     contract.assert_fixture_round_trip::<BrokerHello>("broker-hello.json");
@@ -47,7 +47,7 @@ fn v2_conversation_and_handshakes_round_trip_without_changing_v1() {
     for name in ["pluginHello", "brokerHello"] {
         assert_eq!(
             messages["$defs"][name]["properties"]["protocol_version"]["const"],
-            2_u16
+            1_u16
         );
     }
     let mut obsolete = fixture;
@@ -58,20 +58,14 @@ fn v2_conversation_and_handshakes_round_trip_without_changing_v1() {
     counted["turn_index"] = 1_u32.into();
     assert!(
         serde_json::from_value::<AgentEvent>(counted).is_err(),
-        "v2 has no collector-counted turn_index"
+        "v1 has no collector-counted turn_index"
     );
     assert!(schema["properties"].get("turn_index").is_none());
-
-    assert!(
-        PublishedContract::load().json("agent-event.schema.json")["properties"]
-            .get("conversation")
-            .is_none()
-    );
 }
 
 #[test]
-fn v2_conversation_carries_only_role_aware_messages() {
-    let contract = PublishedContract::load_version("v2");
+fn conversation_carries_only_role_aware_messages() {
+    let contract = PublishedContract::load();
     let schema = contract.json("agent-event.schema.json");
     let conversation = &schema["$defs"]["conversation"];
     let message = &schema["$defs"]["conversationMessage"];
@@ -88,7 +82,7 @@ fn v2_conversation_carries_only_role_aware_messages() {
     assert!(
         conversation["properties"].get("payloads").is_none()
             && message["properties"].get("blocks").is_none(),
-        "v2 must not carry raw provider documents or original content blocks"
+        "v1 must not carry raw provider documents or original content blocks"
     );
     assert_eq!(
         message["required"],
@@ -110,10 +104,10 @@ fn v2_conversation_carries_only_role_aware_messages() {
 
     let fixture = contract.json("fixtures/agent-event.json");
     let event: AgentEvent =
-        serde_json::from_value(fixture.clone()).expect("the v2 fixture should decode");
+        serde_json::from_value(fixture.clone()).expect("the v1 fixture should decode");
     let roles = event
         .conversation
-        .expect("the v2 fixture should carry a conversation")
+        .expect("the v1 fixture should carry a conversation")
         .messages
         .into_iter()
         .map(|message| message.role)
@@ -131,13 +125,13 @@ fn v2_conversation_carries_only_role_aware_messages() {
     payloads["conversation"]["payloads"] = serde_json::json!([]);
     assert!(
         serde_json::from_value::<AgentEvent>(payloads).is_err(),
-        "decoded provider documents are not part of the v2 contract"
+        "decoded provider documents are not part of the v1 contract"
     );
     let mut blocks = fixture.clone();
     blocks["conversation"]["messages"][0]["blocks"] = serde_json::json!([]);
     assert!(
         serde_json::from_value::<AgentEvent>(blocks).is_err(),
-        "original content blocks are not part of the v2 contract"
+        "original content blocks are not part of the v1 contract"
     );
     let mut placeholder = fixture;
     placeholder["conversation"]["messages"][0]["role"] = "request".into();
@@ -148,14 +142,14 @@ fn v2_conversation_carries_only_role_aware_messages() {
 }
 
 #[test]
-fn packaged_v2_contract_matches_the_public_specification() {
+fn packaged_contract_matches_the_public_specification() {
     let specification =
-        PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../specs/broker-plugin-protocol/v2");
+        PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../specs/broker-plugin-protocol/v1");
     if !specification.is_dir() {
         // A packaged crate carries only its copy of the contract.
         return;
     }
-    let packaged = PublishedContract::load_version("v2").root;
+    let packaged = PublishedContract::load().root;
     for relative in [
         "README.md",
         "agent-event.schema.json",
@@ -169,21 +163,16 @@ fn packaged_v2_contract_matches_the_public_specification() {
         assert_eq!(
             fs::read(packaged.join(relative)).expect("packaged contract file should exist"),
             fs::read(specification.join(relative)).expect("specification file should exist"),
-            "SDK's packaged v2 {relative} must match the public specification"
+            "SDK's packaged v1 {relative} must match the public specification"
         );
     }
 }
 
 impl PublishedContract {
     fn load() -> Self {
-        Self::load_version("v1")
-    }
-
-    fn load_version(version: &str) -> Self {
         Self {
             root: PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-                .join("tests/fixtures/broker-plugin-protocol")
-                .join(version),
+                .join("tests/fixtures/broker-plugin-protocol/v1"),
         }
     }
 
@@ -246,12 +235,9 @@ fn published_agent_event_fixture_matches_the_public_sdk() {
         event["tool_calls"][0]["name"], "exec",
         "tool activity should use the public structured contract"
     );
-    // The SDK speaks v2, which carries `turn_id` instead of the
-    // collector-counted `turn_index` of the unchanged v1 contract.
-    assert!(event["turn_index"].is_u64());
-    assert!(serde_json::from_value::<AgentEvent>(event).is_err());
-    PublishedContract::load_version("v2")
-        .assert_fixture_round_trip::<AgentEvent>("agent-event.json");
+    assert!(event.get("turn_index").is_none());
+    assert_eq!(event["turn_id"], "turn-123");
+    contract.assert_fixture_round_trip::<AgentEvent>("agent-event.json");
 }
 
 #[test]

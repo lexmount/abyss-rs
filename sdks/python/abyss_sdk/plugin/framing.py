@@ -7,7 +7,7 @@ from typing import Any, Optional
 from .errors import BrokerPluginError
 from .transport import PluginTransport
 
-MAX_JSON_FRAME_BYTES = 16 * 1024 * 1024
+MAX_JSON_FRAME_BYTES = 64 * 1024 * 1024
 
 
 def write_json_frame(stream: PluginTransport, value: object) -> None:

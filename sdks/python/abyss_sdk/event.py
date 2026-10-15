@@ -3,7 +3,30 @@
 from collections.abc import Mapping
 from dataclasses import dataclass
 from datetime import datetime
-from typing import Any, Optional
+from typing import Any, Literal, Optional, cast
+
+MessageRole = Literal["system", "developer", "user", "assistant", "reasoning", "tool", "unknown"]
+ContentCompleteness = Literal["complete", "partial", "unsupported"]
+EventPurpose = Literal["session_title", "compaction"]
+
+
+@dataclass(frozen=True)
+class ConversationMessage:
+    """One ordered message; tool arguments and results use the event's tool fields."""
+
+    id: Optional[str]
+    role: MessageRole
+    text: str
+
+
+@dataclass(frozen=True)
+class Conversation:
+    """Role-aware content and its capture and content-policy status."""
+
+    messages: tuple[ConversationMessage, ...]
+    instructions_present: bool
+    completeness: ContentCompleteness
+    policy_omitted: bool
 
 
 @dataclass(frozen=True)
@@ -87,11 +110,17 @@ class AgentEvent:
     device: DeviceContext
     agent: AgentContext
     session_id: str
-    turn_index: int
     turn_id: Optional[str]
+    naming_thread: bool
+    stream_id: Optional[str]
+    response_id: Optional[str]
+    previous_response_id: Optional[str]
+    purpose: Optional[EventPurpose]
+    session_title: Optional[str]
     llm: LlmContext
     side: str
     text: Optional[str]
+    conversation: Optional[Conversation]
     token_usage: TokenUsage
     tool_calls: tuple[ToolCall, ...]
     tool_results: tuple[ToolResult, ...]
@@ -110,11 +139,17 @@ class AgentEvent:
                 "device",
                 "agent",
                 "session_id",
-                "turn_index",
                 "turn_id",
+                "naming_thread",
+                "stream_id",
+                "response_id",
+                "previous_response_id",
+                "purpose",
+                "session_title",
                 "llm",
                 "side",
                 "text",
+                "conversation",
                 "token_usage",
                 "tool_calls",
                 "tool_results",
@@ -125,9 +160,9 @@ class AgentEvent:
         side = _string(event, "side")
         if side not in {"request", "response"}:
             raise ValueError("AgentEvent.side must be request or response")
-        turn_index = _integer(event, "turn_index")
-        if turn_index < 1:
-            raise ValueError("AgentEvent.turn_index must be greater than zero")
+        purpose = _optional_string(event, "purpose")
+        if purpose is not None and purpose not in {"session_title", "compaction"}:
+            raise ValueError("purpose must be session_title or compaction")
         occurred_at = _datetime(_string(event, "occurred_at"))
         return cls(
             event_id=_string(event, "event_id"),
@@ -135,11 +170,21 @@ class AgentEvent:
             device=_device(_mapping(event.get("device"), "AgentEvent.device")),
             agent=_agent(_mapping(event.get("agent"), "AgentEvent.agent")),
             session_id=_string(event, "session_id"),
-            turn_index=turn_index,
             turn_id=_optional_string(event, "turn_id"),
+            naming_thread=_boolean(event, "naming_thread") if "naming_thread" in event else False,
+            stream_id=_optional_string(event, "stream_id"),
+            response_id=_optional_string(event, "response_id"),
+            previous_response_id=_optional_string(event, "previous_response_id"),
+            purpose=cast(Optional[EventPurpose], purpose),
+            session_title=_optional_string(event, "session_title"),
             llm=_llm(_mapping(event.get("llm"), "AgentEvent.llm")),
             side=side,
             text=_optional_string(event, "text"),
+            conversation=(
+                _conversation(event["conversation"])
+                if event.get("conversation") is not None
+                else None
+            ),
             token_usage=_token_usage(_mapping(event.get("token_usage"), "AgentEvent.token_usage")),
             tool_calls=tuple(
                 _tool_call(item)
@@ -154,6 +199,38 @@ class AgentEvent:
                 for item in _list(event.get("attachments", []), "AgentEvent.attachments")
             ),
         )
+
+
+def _conversation(value: Any) -> Conversation:
+    item = _mapping(value, "AgentEvent.conversation")
+    _reject_unknown(
+        item, {"messages", "instructions_present", "completeness", "policy_omitted"}, "conversation"
+    )
+    completeness = _string(item, "completeness")
+    if completeness not in {"complete", "partial", "unsupported"}:
+        raise ValueError("completeness must be complete, partial, or unsupported")
+    return Conversation(
+        messages=tuple(
+            _conversation_message(message)
+            for message in _list(item.get("messages"), "conversation.messages")
+        ),
+        instructions_present=_boolean(item, "instructions_present"),
+        completeness=cast(ContentCompleteness, completeness),
+        policy_omitted=_boolean(item, "policy_omitted"),
+    )
+
+
+def _conversation_message(value: Any) -> ConversationMessage:
+    item = _mapping(value, "conversation.messages[]")
+    _reject_unknown(item, {"id", "role", "text"}, "conversation message")
+    if "id" not in item:
+        raise ValueError("conversation message must include id (string or null)")
+    role = _string(item, "role")
+    if role not in {"system", "developer", "user", "assistant", "reasoning", "tool", "unknown"}:
+        raise ValueError(f"unsupported conversation role {role}")
+    return ConversationMessage(
+        id=_optional_string(item, "id"), role=cast(MessageRole, role), text=_string(item, "text")
+    )
 
 
 def _device(value: Mapping[str, Any]) -> DeviceContext:
@@ -266,6 +343,13 @@ def _optional_string(value: Mapping[str, Any], field: str) -> Optional[str]:
         return None
     if not isinstance(result, str):
         raise TypeError(f"{field} must be a string when present")
+    return result
+
+
+def _boolean(value: Mapping[str, Any], field: str) -> bool:
+    result = value.get(field)
+    if not isinstance(result, bool):
+        raise TypeError(f"{field} must be a boolean")
     return result
 
 

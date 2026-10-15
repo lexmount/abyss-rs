@@ -557,7 +557,7 @@ mod tests {
     #[test]
     fn translates_public_tool_types_into_backend_metadata() {
         let event: AgentEvent = serde_json::from_str(include_str!(
-            "../../../specs/broker-plugin-protocol/v2/fixtures/agent-event.json"
+            "../../../specs/broker-plugin-protocol/v1/fixtures/agent-event.json"
         ))
         .expect("fixture should decode");
         let request = IngestEventsRequest::try_from(event).expect("event should translate");
@@ -571,9 +571,9 @@ mod tests {
     }
 
     #[test]
-    fn stores_the_v2_conversation_as_backend_metadata() {
+    fn stores_the_conversation_as_backend_metadata() {
         let event: AgentEvent = serde_json::from_str(include_str!(
-            "../../../specs/broker-plugin-protocol/v2/fixtures/agent-event.json"
+            "../../../specs/broker-plugin-protocol/v1/fixtures/agent-event.json"
         ))
         .expect("fixture should decode");
         let request = IngestEventsRequest::try_from(event).expect("event should translate");
@@ -592,7 +592,7 @@ mod tests {
     #[test]
     fn reads_spooled_events_written_before_attachments_were_added() {
         let event: AgentEvent = serde_json::from_str(include_str!(
-            "../../../specs/broker-plugin-protocol/v2/fixtures/agent-event.json"
+            "../../../specs/broker-plugin-protocol/v1/fixtures/agent-event.json"
         ))
         .expect("fixture should decode");
         let request = IngestEventsRequest::try_from(event).expect("event should translate");
@@ -690,7 +690,7 @@ mod tests {
     #[test]
     fn carries_exchange_placement_and_omits_an_absent_turn_identity() {
         let mut event: AgentEvent = serde_json::from_str(include_str!(
-            "../../../specs/broker-plugin-protocol/v2/fixtures/agent-event.json"
+            "../../../specs/broker-plugin-protocol/v1/fixtures/agent-event.json"
         ))
         .expect("fixture should decode");
         event.agent.name = "claude-code".to_owned();
