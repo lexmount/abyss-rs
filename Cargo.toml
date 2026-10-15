@@ -90,3 +90,4 @@ unwrap_in_result = "warn"
 [profile.release]
 opt-level = 3
 lto = true
+strip = "symbols"
