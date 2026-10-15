@@ -46,12 +46,13 @@ complete dependency closure even before the supporting crates exist on crates.io
 1. Update `workspace.package.version` in the root `Cargo.toml` and the versions
    of its five publishable workspace dependencies together. Keep the lockfile
    current.
-2. Update crate READMEs as needed. If the public AgentEvent fixture changes, copy
+2. Update crate READMEs as needed. If the public v1 AgentEvent fixture changes, copy
    it to `crates/abyss-broker/src/plugin/fixtures/agent-event.json`; the release check
    verifies that they match so packaged tests remain self-contained. Also copy
    the protocol's JSON schemas and fixtures into
    `crates/abyss-sdk/tests/fixtures/broker-plugin-protocol/v1/`; the same check
-   rejects SDK copies that differ from the public specification.
+   rejects SDK copies that differ from the public specification. Include the
+   protocol README too; SDK contract tests reject stale copies in a checkout.
 3. Validate locally:
 
    ```bash

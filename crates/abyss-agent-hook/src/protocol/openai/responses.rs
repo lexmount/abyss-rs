@@ -4,27 +4,35 @@
 //! extracts wire-level content without identifying the calling Harness.
 
 use abyss_mitm::{
-    CapturedBody, FlowContext, HttpExchange, TransparentProtocol, WebSocketDirection,
-    WebSocketMessage,
+    FlowContext, HttpExchange, TransparentProtocol, WebSocketDirection, WebSocketMessage,
 };
 use http::{HeaderMap, header::HOST};
 use serde_json::Value;
 
 use crate::{
+    protocol::model::conversation::ConversationProjection,
     protocol::model::digest::sha256_hex,
     protocol::model::image::{ParsedImageAttachment, extract_openai_request_images},
-    protocol::model::text::{json_to_text, non_empty_trimmed},
+    protocol::model::text::{MAX_PARSE_DEPTH, json_to_text, non_empty_trimmed},
     protocol::model::tool::ParsedToolEvent,
     protocol::model::usage::TokenUsage,
-    protocol::sse::parse_sse_json_values,
+    protocol::openai::{
+        conversation::{OpenAiRequest, OpenAiResponse},
+        websocket::{OpenAiWebSocketFrame, OpenAiWebSocketResponse, is_terminal_event},
+    },
+    protocol::sse::ResponseDocuments,
 };
 
-const MAX_PARSE_DEPTH: usize = 12;
+/// Header carrying Codex turn context as JSON, read only for the session id.
+const CODEX_TURN_METADATA: &str = "x-codex-turn-metadata";
 
 /// Wire-level values extracted from one OpenAI-compatible interaction.
 #[derive(Debug, Clone)]
 #[non_exhaustive]
 pub struct ParsedOpenAiExchange {
+    /// WebSocket client generation mode. Only `response.create` with the boolean
+    /// `generate: false` disables it; server frames and HTTP exchanges carry none.
+    pub generates_output: Option<bool>,
     /// Normalized request host.
     pub host: String,
     /// Request path used to distinguish OpenAI/Codex API families.
@@ -38,20 +46,26 @@ pub struct ParsedOpenAiExchange {
     pub session_id: String,
     /// Hash of method, host, path, and request body for fallback correlation.
     pub request_hash: String,
-    /// User-visible prompt/input fragments extracted from the request body.
+    /// Structured request messages decoded from the request body.
+    pub request_conversation: abyss_plugin_protocol::event::Conversation,
+    /// Structured response messages assembled from the response documents.
+    pub response_conversation: abyss_plugin_protocol::event::Conversation,
+    /// User-visible prompt/input fragments derived from the request messages.
     pub request_texts: Vec<String>,
     /// Validated image attachments embedded in user request content.
     pub request_images: Vec<ParsedImageAttachment>,
-    /// Model-visible response fragments extracted from JSON or SSE response data.
+    /// Model-visible response fragments derived from the response messages.
     pub response_texts: Vec<String>,
     /// Best token counters found in request or response payloads.
     pub usage: TokenUsage,
     /// Provider response id when present.
     pub response_id: Option<String>,
-    /// Previous provider response id for conversation linkage.
+    /// The response this request continues after: the request body
+    /// `previous_response_id`.
     pub previous_response_id: Option<String>,
-    /// Stable logical turn id carried by request/item metadata when present.
-    pub protocol_turn_id: Option<String>,
+    /// The request `client_metadata` object, where a client may declare its
+    /// own context; read by the Harness registry.
+    pub client_metadata: Option<Value>,
     /// Tool results carried by the provider request side of this exchange.
     pub request_tool_events: Vec<ParsedToolEvent>,
     /// Tool calls carried by the provider response side of this exchange.
@@ -71,18 +85,15 @@ pub fn parse_openai_exchange(exchange: &HttpExchange) -> Option<ParsedOpenAiExch
     // `data:` line carries a JSON event. Normalize both shapes into a list of
     // JSON values and run the same extractors over that list.
     let request_json = exchange.request.body().json();
-    let request_texts = request_json.map_or_else(Vec::new, extract_request_texts);
+    let request = OpenAiRequest::parse(request_json, exchange.request.body().truncated());
+    let request_texts = request.texts();
     let request_images = request_json.map_or_else(Vec::new, extract_openai_request_images);
     let request_tool_events = request_json.map_or_else(Vec::new, extract_request_tool_events);
-    let response_values = response_values(exchange.response.headers(), exchange.response.body());
-    let response_texts = response_values
-        .iter()
-        .flat_map(extract_response_texts)
-        .collect::<Vec<_>>();
-    let response_tool_events = response_values
-        .iter()
-        .flat_map(extract_response_tool_events)
-        .collect::<Vec<_>>();
+    let response_documents = ResponseDocuments::decode(exchange.response.body());
+    let response_values = response_documents.values;
+    let response = OpenAiResponse::assemble(&response_values, response_documents.incomplete);
+    let response_texts = response.texts();
+    let response_tool_events = response.tool_calls();
     // Providers usually report token usage on the final response event. Some
     // request styles may include useful usage-like fields on the request, so use
     // those as a fallback only when response usage is absent.
@@ -110,15 +121,10 @@ pub fn parse_openai_exchange(exchange: &HttpExchange) -> Option<ParsedOpenAiExch
         return None;
     }
 
-    let response_id = first_response_id(&response_values)
-        .or_else(|| request_json.and_then(|json| first_response_id(std::slice::from_ref(json))));
+    let response_id = response_id(&response_values);
     let previous_response_id = request_json
         .and_then(|json| string_field(json, "previous_response_id"))
         .map(str::to_owned);
-    let protocol_turn_id = request_json
-        .and_then(protocol_turn_id)
-        .or_else(|| response_values.iter().find_map(protocol_turn_id))
-        .or_else(|| protocol_turn_id_from_headers(exchange.request.headers()));
     let model = first_model(&response_values)
         .or_else(|| request_json.and_then(|json| string_field(json, "model").map(str::to_owned)));
     let headers = exchange.request.headers();
@@ -131,19 +137,22 @@ pub fn parse_openai_exchange(exchange: &HttpExchange) -> Option<ParsedOpenAiExch
     ));
 
     Some(ParsedOpenAiExchange {
+        generates_output: None,
         host,
         path: path.to_owned(),
         method: exchange.request.method().to_string(),
         transport: transport_name(&exchange.flow.protocol),
         session_id: session_id(headers).unwrap_or_else(|| format!("flow-{}", &request_hash[..16])),
         request_hash,
+        request_conversation: request.conversation(),
+        response_conversation: response.conversation(),
         request_texts,
         request_images,
         response_texts,
         usage,
         response_id,
         previous_response_id,
-        protocol_turn_id,
+        client_metadata: request_json.and_then(|json| json.get("client_metadata").cloned()),
         request_tool_events,
         response_tool_events,
         model,
@@ -151,90 +160,115 @@ pub fn parse_openai_exchange(exchange: &HttpExchange) -> Option<ParsedOpenAiExch
     })
 }
 
-/// Parses one OpenAI Responses WebSocket message after a successful HTTP 101.
+/// Decodes one OpenAI Responses WebSocket frame after a successful HTTP 101.
+///
+/// A frame whose payload is not JSON is reported as undecodable so the turn
+/// side it belongs to is marked partial. A decodable frame that carries no
+/// request content, response content, tools, usage, or terminal state, such as
+/// `response.created`, is irrelevant and leaves the pending turn untouched.
+/// Server frames keep their decoded document because the turn's response is
+/// assembled from the complete stream when the terminal event arrives.
 #[must_use]
-pub fn parse_openai_websocket_message(message: &WebSocketMessage) -> Option<ParsedOpenAiExchange> {
-    let host = request_host(
+pub fn parse_openai_websocket_message(message: &WebSocketMessage) -> OpenAiWebSocketFrame {
+    let Some(payload) = websocket_json_payload(message) else {
+        return OpenAiWebSocketFrame::Undecodable(message.direction);
+    };
+    // A frame that cannot be attributed to a host is not a content failure.
+    let Some(host) = request_host(
         message.upgrade_request.headers(),
         message.upgrade_request.uri(),
     )
-    .or_else(|| flow_server_name(&message.flow))?;
+    .or_else(|| flow_server_name(&message.flow)) else {
+        return OpenAiWebSocketFrame::Irrelevant;
+    };
     let path = message.upgrade_request.uri().path();
-    let payload = websocket_json_payload(message)?;
+    let is_client_message = matches!(message.direction, WebSocketDirection::ClientToServer);
     let request_payload = payload.get("response").unwrap_or(&payload);
-    let request_texts = if matches!(message.direction, WebSocketDirection::ClientToServer) {
-        extract_request_texts(request_payload)
+    let (request, request_images, request_tool_events) = if is_client_message {
+        (
+            OpenAiRequest::parse(Some(request_payload), false),
+            extract_openai_request_images(request_payload),
+            extract_request_tool_events(request_payload),
+        )
     } else {
-        Vec::new()
+        (OpenAiRequest::parse(None, false), Vec::new(), Vec::new())
     };
-    let request_images = if matches!(message.direction, WebSocketDirection::ClientToServer) {
-        extract_openai_request_images(request_payload)
+    let usage = if is_client_message {
+        TokenUsage::default()
     } else {
-        Vec::new()
+        best_usage(std::slice::from_ref(&payload)).unwrap_or_default()
     };
-    let request_tool_events = if matches!(message.direction, WebSocketDirection::ClientToServer) {
-        extract_request_tool_events(request_payload)
+    // Tool calls are output items, so a frame that carries one assembles a
+    // non-empty response; the turn reads them from its assembled response.
+    let relevant = if is_client_message {
+        !request.is_empty() || !request_images.is_empty() || !request_tool_events.is_empty()
     } else {
-        Vec::new()
+        !OpenAiResponse::assemble(std::slice::from_ref(&payload), false).is_empty()
+            || !usage.is_empty()
+            || string_field(&payload, "type").is_some_and(is_terminal_event)
     };
-    let is_server_message = matches!(message.direction, WebSocketDirection::ServerToClient);
-    let response_values = if is_server_message {
-        vec![payload.clone()]
-    } else {
-        Vec::new()
-    };
-    let response_texts = response_values
-        .iter()
-        .flat_map(extract_response_texts)
-        .collect::<Vec<_>>();
-    let response_tool_events = response_values
-        .iter()
-        .flat_map(extract_response_tool_events)
-        .collect::<Vec<_>>();
-    let usage = best_usage(&response_values).unwrap_or_default();
-
-    if request_texts.is_empty()
-        && request_images.is_empty()
-        && request_tool_events.is_empty()
-        && response_texts.is_empty()
-        && response_tool_events.is_empty()
-        && usage.is_empty()
-    {
-        return None;
+    if !relevant {
+        return OpenAiWebSocketFrame::Irrelevant;
     }
 
-    let payload_text = serde_json::to_string(&payload).ok()?;
+    let Ok(payload_text) = serde_json::to_string(&payload) else {
+        return OpenAiWebSocketFrame::Undecodable(message.direction);
+    };
     let request_hash = sha256_hex(&format!(
         "{:?}\0{}\0{}\0{}\0{}",
         message.direction, host, path, message.sequence, payload_text
     ));
-    Some(ParsedOpenAiExchange {
+    let exchange = ParsedOpenAiExchange {
+        generates_output: is_client_message.then(|| {
+            string_field(&payload, "type") != Some("response.create")
+                || request_payload.get("generate").and_then(Value::as_bool) != Some(false)
+        }),
         host,
         path: path.to_owned(),
         method: message.upgrade_request.method().to_string(),
         transport: transport_name(&message.flow.protocol),
         session_id: websocket_session_id(message, &payload),
         request_hash,
-        request_texts,
+        request_conversation: request.conversation(),
+        // The accumulator assembles the response once the turn terminates.
+        response_conversation: ConversationProjection::empty(),
+        request_texts: request.texts(),
         request_images,
-        response_texts,
+        response_texts: Vec::new(),
         usage,
-        response_id: if is_server_message {
-            first_response_id(std::slice::from_ref(&payload))
+        response_id: if is_client_message {
+            None
+        } else {
+            response_id(std::slice::from_ref(&payload))
+        },
+        previous_response_id: string_field(request_payload, "previous_response_id")
+            .map(str::to_owned),
+        client_metadata: if is_client_message {
+            request_payload.get("client_metadata").cloned()
         } else {
             None
         },
-        previous_response_id: string_field(&payload, "previous_response_id").map(str::to_owned),
-        protocol_turn_id: protocol_turn_id(&payload),
         request_tool_events,
-        response_tool_events,
+        response_tool_events: Vec::new(),
         model: first_model(std::slice::from_ref(&payload)),
-        event_types: if is_server_message {
-            event_types(&payload)
-        } else {
+        event_types: if is_client_message {
             Vec::new()
+        } else {
+            event_types(&payload)
         },
-    })
+    };
+    if is_client_message {
+        return OpenAiWebSocketFrame::Request(Box::new(exchange));
+    }
+    let byte_len = message.text.as_ref().map_or_else(
+        || message.binary.as_deref().map_or(0, <[u8]>::len),
+        String::len,
+    );
+    OpenAiWebSocketFrame::Response(Box::new(OpenAiWebSocketResponse {
+        exchange,
+        document: payload,
+        byte_len,
+    }))
 }
 
 fn request_host(headers: &HeaderMap, uri: &http::Uri) -> Option<String> {
@@ -276,72 +310,8 @@ fn websocket_session_id(message: &WebSocketMessage, payload: &Value) -> String {
         .or_else(|| collect_string_field(payload, "thread_id"))
         .or_else(|| collect_string_field(payload, "conversation_id"))
         .or_else(|| collect_string_field(payload, "response_id"))
-        .or_else(|| first_response_id(std::slice::from_ref(payload)))
+        .or_else(|| response_id(std::slice::from_ref(payload)))
         .unwrap_or_else(|| format!("flow-{}", message.flow.flow_id))
-}
-
-fn protocol_turn_id_from_headers(headers: &HeaderMap) -> Option<String> {
-    header(headers, "x-codex-turn-metadata")
-        .and_then(protocol_turn_id_from_metadata_json)
-        .or_else(|| {
-            header(headers, "x-codex-turn-id")
-                .and_then(non_empty_trimmed)
-                .map(str::to_owned)
-        })
-}
-
-fn protocol_turn_id(payload: &Value) -> Option<String> {
-    collect_non_empty_string_field(payload, "turn_id").or_else(|| {
-        collect_non_empty_string_field(payload, "x-codex-turn-metadata")
-            .and_then(|metadata| protocol_turn_id_from_metadata_json(&metadata))
-    })
-}
-
-fn protocol_turn_id_from_metadata_json(metadata: &str) -> Option<String> {
-    serde_json::from_str::<Value>(metadata)
-        .ok()
-        .and_then(|metadata| collect_non_empty_string_field(&metadata, "turn_id"))
-}
-
-fn response_values(headers: &HeaderMap, body: &CapturedBody) -> Vec<Value> {
-    if let Some(json) = body.json() {
-        return vec![json.clone()];
-    }
-    if !header(headers, "content-type")
-        .is_some_and(|value| value.to_ascii_lowercase().contains("text/event-stream"))
-    {
-        return Vec::new();
-    }
-    parse_sse_json_values(body.bytes())
-}
-
-fn extract_request_texts(payload: &Value) -> Vec<String> {
-    let mut texts = Vec::new();
-    // Responses API: `input` may be a string, object, or message array. The
-    // helper flattens conversation blocks while leaving tool inputs/results in
-    // `ParsedToolEvent`, where the independent tool policy can gate them.
-    if let Some(input) = payload.get("input")
-        && let Some(text) = openai_conversation_text(input, MAX_PARSE_DEPTH)
-    {
-        texts.push(text);
-    }
-    if let Some(prompt) = string_field(payload, "prompt") {
-        texts.push(prompt.to_owned());
-    }
-    if let Some(messages) = payload.get("messages").and_then(Value::as_array) {
-        // Chat Completions API: only user messages are considered request text
-        // for now. System/developer/tool messages can be added later if product
-        // policy wants to audit the full prompt envelope.
-        for message in messages {
-            if string_field(message, "role").is_some_and(|role| role == "user")
-                && let Some(content) = message.get("content")
-                && let Some(text) = openai_conversation_text(content, MAX_PARSE_DEPTH)
-            {
-                texts.push(text);
-            }
-        }
-    }
-    dedupe_texts(texts)
 }
 
 fn extract_request_tool_events(payload: &Value) -> Vec<ParsedToolEvent> {
@@ -387,52 +357,6 @@ fn collect_request_tool_events(value: &Value, depth: usize, events: &mut Vec<Par
     }
 }
 
-fn extract_response_tool_events(payload: &Value) -> Vec<ParsedToolEvent> {
-    let mut events = Vec::new();
-    collect_response_tool_events(payload, MAX_PARSE_DEPTH, &mut events);
-    events
-}
-
-fn collect_response_tool_events(value: &Value, depth: usize, events: &mut Vec<ParsedToolEvent>) {
-    if depth == 0 {
-        return;
-    }
-
-    match value {
-        Value::Object(object) => {
-            if matches!(
-                object.get("type").and_then(Value::as_str),
-                Some("custom_tool_call" | "function_call")
-            ) && let Some(input) = object
-                .get("input")
-                .or_else(|| object.get("arguments"))
-                .and_then(|input| json_to_text(input, depth.saturating_sub(1)))
-                .and_then(|input| non_empty_trimmed(&input).map(str::to_owned))
-            {
-                push_unique_tool_event(
-                    events,
-                    ParsedToolEvent::ToolCall {
-                        item_id: optional_object_string(object, "id"),
-                        call_id: optional_object_string(object, "call_id"),
-                        name: optional_object_string(object, "name"),
-                        input,
-                    },
-                );
-            } else {
-                for child in object.values() {
-                    collect_response_tool_events(child, depth.saturating_sub(1), events);
-                }
-            }
-        }
-        Value::Array(items) => {
-            for item in items {
-                collect_response_tool_events(item, depth.saturating_sub(1), events);
-            }
-        }
-        _ => {}
-    }
-}
-
 fn optional_object_string(object: &serde_json::Map<String, Value>, key: &str) -> Option<String> {
     object
         .get(key)
@@ -447,100 +371,13 @@ fn push_unique_tool_event(events: &mut Vec<ParsedToolEvent>, event: ParsedToolEv
     }
 }
 
-fn extract_response_texts(payload: &Value) -> Vec<String> {
-    let mut texts = Vec::new();
-    collect_response_texts(payload, MAX_PARSE_DEPTH, &mut texts);
-    dedupe_texts(texts)
-}
-
-fn openai_conversation_text(value: &Value, depth: usize) -> Option<String> {
-    if depth == 0 {
-        return None;
-    }
-
-    match value {
-        Value::String(text) => non_empty_trimmed(text).map(str::to_owned),
-        Value::Array(items) => {
-            let joined = items
-                .iter()
-                .filter_map(|item| openai_conversation_text(item, depth.saturating_sub(1)))
-                .collect::<Vec<_>>()
-                .join("\n");
-            non_empty_trimmed(&joined).map(str::to_owned)
-        }
-        Value::Object(object) => {
-            if object
-                .get("type")
-                .and_then(Value::as_str)
-                .is_some_and(is_openai_tool_block_type)
-            {
-                return None;
-            }
-            object
-                .get("text")
-                .or_else(|| object.get("content"))
-                .or_else(|| object.get("input"))
-                .or_else(|| object.get("output_text"))
-                .and_then(|child| openai_conversation_text(child, depth.saturating_sub(1)))
-        }
-        _ => None,
-    }
-}
-
-fn is_openai_tool_block_type(item_type: &str) -> bool {
-    matches!(item_type, "tool_call" | "tool_result" | "tool_use")
-        || item_type.ends_with("_call")
-        || item_type.ends_with("_call_output")
-}
-
-fn collect_response_texts(value: &Value, depth: usize, texts: &mut Vec<String>) {
-    if depth == 0 {
-        return;
-    }
-
-    match value {
-        Value::Object(object) => {
-            if object
-                .get("type")
-                .and_then(Value::as_str)
-                .is_some_and(is_openai_tool_block_type)
-            {
-                return;
-            }
-            // Provider response shapes differ across streaming/non-streaming
-            // APIs. Search common text-bearing keys recursively rather than
-            // pinning the hook to one exact response schema.
-            for key in ["output_text", "text", "content"] {
-                if let Some(child) = object.get(key)
-                    && let Some(text) = openai_conversation_text(child, depth.saturating_sub(1))
-                {
-                    texts.push(text);
-                }
-            }
-            for child in object.values() {
-                collect_response_texts(child, depth.saturating_sub(1), texts);
-            }
-        }
-        Value::Array(items) => {
-            for item in items {
-                collect_response_texts(item, depth.saturating_sub(1), texts);
-            }
-        }
-        _ => {}
-    }
-}
-
 fn best_usage(values: &[Value]) -> Option<TokenUsage> {
     // Streaming responses can contain several partial usage objects. Prefer the
     // one with the largest total because final events tend to be cumulative.
     values
         .iter()
         .flat_map(|value| find_usage(value, MAX_PARSE_DEPTH))
-        .max_by_key(|usage| {
-            usage
-                .total_tokens
-                .max(usage.input_tokens.saturating_add(usage.output_tokens))
-        })
+        .max_by_key(|usage| usage.total_tokens)
 }
 
 fn find_usage(value: &Value, depth: usize) -> Vec<TokenUsage> {
@@ -590,29 +427,21 @@ fn usage_from_object(object: &serde_json::Map<String, Value>) -> Option<TokenUsa
     let reasoning = nested_int_field(object, "output_tokens_details", "reasoning_tokens")
         .or_else(|| int_field(object, "reasoning_tokens"))
         .unwrap_or(0);
-    let input = input.unwrap_or(0);
-    let output = output.unwrap_or(0);
-    let total = int_field(object, "total_tokens")
-        .unwrap_or_else(|| input.saturating_add(output).saturating_add(reasoning));
-
-    if input == 0
-        && output == 0
-        && cache_read == 0
-        && cache_write == 0
-        && reasoning == 0
-        && total == 0
-    {
-        return None;
-    }
-
-    Some(TokenUsage {
-        input_tokens: input,
-        output_tokens: output,
-        cache_read_tokens: cache_read,
-        cache_write_tokens: cache_write,
-        reasoning_tokens: reasoning,
-        total_tokens: total,
-    })
+    // OpenAI input counts include cached tokens and output counts include
+    // reasoning; keep the cache counters disjoint from input.
+    let input = input
+        .unwrap_or(0)
+        .saturating_sub(cache_read)
+        .saturating_sub(cache_write)
+        .max(0);
+    let usage = TokenUsage::from_parts(
+        input,
+        cache_read,
+        cache_write,
+        output.unwrap_or(0),
+        reasoning,
+    );
+    (!usage.is_empty()).then_some(usage)
 }
 
 fn int_field(object: &serde_json::Map<String, Value>, key: &str) -> Option<i64> {
@@ -633,25 +462,19 @@ fn nested_int_field(
         .and_then(|nested| int_field(nested, child))
 }
 
-fn first_response_id(values: &[Value]) -> Option<String> {
+/// The response identity where the protocol puts it: `response.id` on a
+/// Responses stream event, and the top-level `id` of a whole Responses or
+/// Chat Completions document, which every Chat Completions stream chunk
+/// repeats.
+fn response_id(values: &[Value]) -> Option<String> {
     values.iter().find_map(|value| {
-        collect_string_field(value, "response_id").or_else(|| collect_response_id(value))
+        let id = if value.get("type").is_some() {
+            value.pointer("/response/id")
+        } else {
+            value.get("id")
+        };
+        id.and_then(Value::as_str).map(str::to_owned)
     })
-}
-
-fn collect_response_id(value: &Value) -> Option<String> {
-    match value {
-        Value::Object(object) => {
-            if let Some(id) = object.get("id").and_then(Value::as_str)
-                && id.starts_with("resp")
-            {
-                return Some(id.to_owned());
-            }
-            object.values().find_map(collect_response_id)
-        }
-        Value::Array(items) => items.iter().find_map(collect_response_id),
-        _ => None,
-    }
 }
 
 fn first_model(values: &[Value]) -> Option<String> {
@@ -674,25 +497,6 @@ fn collect_string_field(value: &Value, key: &str) -> Option<String> {
         Value::Array(items) => items
             .iter()
             .find_map(|child| collect_string_field(child, key)),
-        _ => None,
-    }
-}
-
-fn collect_non_empty_string_field(value: &Value, key: &str) -> Option<String> {
-    match value {
-        Value::Object(object) => object
-            .get(key)
-            .and_then(Value::as_str)
-            .and_then(non_empty_trimmed)
-            .map(str::to_owned)
-            .or_else(|| {
-                object
-                    .values()
-                    .find_map(|child| collect_non_empty_string_field(child, key))
-            }),
-        Value::Array(items) => items
-            .iter()
-            .find_map(|child| collect_non_empty_string_field(child, key)),
         _ => None,
     }
 }
@@ -735,7 +539,7 @@ fn session_id(headers: &HeaderMap) -> Option<String> {
 }
 
 fn metadata_header_value(headers: &HeaderMap, key: &str) -> Option<String> {
-    let metadata = header(headers, "x-codex-turn-metadata")?;
+    let metadata = header(headers, CODEX_TURN_METADATA)?;
     let value = serde_json::from_str::<Value>(metadata).ok()?;
     value
         .get(key)
@@ -766,16 +570,6 @@ const fn transport_name(protocol: &TransparentProtocol) -> &'static str {
     }
 }
 
-fn dedupe_texts(texts: Vec<String>) -> Vec<String> {
-    let mut result = Vec::new();
-    for text in texts {
-        if non_empty_trimmed(&text).is_some() && !result.contains(&text) {
-            result.push(text);
-        }
-    }
-    result
-}
-
 #[cfg(test)]
 mod tests {
     use std::net::SocketAddr;
@@ -787,7 +581,8 @@ mod tests {
     use http::{Request, Response};
     use serde_json::{Value, json};
 
-    use super::{parse_openai_exchange, parse_openai_websocket_message};
+    use super::{OpenAiWebSocketFrame, parse_openai_exchange, parse_openai_websocket_message};
+    use crate::protocol::model::tool::ParsedToolEvent;
 
     #[test]
     fn parses_responses_json_without_harness_assumptions() {
@@ -846,6 +641,37 @@ mod tests {
         assert_eq!(parsed.response_texts, vec!["hello user"]);
         assert_eq!(parsed.usage.input_tokens, 2);
         assert_eq!(parsed.usage.output_tokens, 3);
+    }
+
+    #[test]
+    fn removes_cached_tokens_from_input() {
+        let exchange = json_exchange(
+            "/v1/responses",
+            &json!({
+                "model": "gpt-5",
+                "input": [{"role": "user", "content": "hello"}]
+            }),
+            &json!({
+                "id": "resp-2",
+                "model": "gpt-5",
+                "output": [{"content": [{"type": "output_text", "text": "hi"}]}],
+                "usage": {
+                    "input_tokens": 1000_i32,
+                    "input_tokens_details": {"cached_tokens": 900_i32},
+                    "output_tokens": 50_i32,
+                    "output_tokens_details": {"reasoning_tokens": 20_i32},
+                    "total_tokens": 1050_i32
+                }
+            }),
+        );
+
+        let parsed = parse_openai_exchange(&exchange).expect("OpenAI exchange");
+
+        assert_eq!(parsed.usage.input_tokens, 100);
+        assert_eq!(parsed.usage.cache_read_tokens, 900);
+        assert_eq!(parsed.usage.output_tokens, 50);
+        assert_eq!(parsed.usage.reasoning_tokens, 20);
+        assert_eq!(parsed.usage.total_tokens, 1050);
     }
 
     #[test]
@@ -926,10 +752,290 @@ mod tests {
             None,
         );
 
-        let parsed = parse_openai_websocket_message(&message).expect("WebSocket request message");
+        let OpenAiWebSocketFrame::Request(parsed) = parse_openai_websocket_message(&message) else {
+            panic!("WebSocket request message");
+        };
 
         assert_eq!(parsed.session_id, "session-1");
         assert_eq!(parsed.request_texts, vec!["hello websocket"]);
+    }
+
+    #[test]
+    fn request_carries_its_client_metadata_and_continuation() {
+        let client_metadata = json!({"x-codex-turn-metadata": "{\"thread_id\":\"session-1\"}"});
+        let exchange = json_exchange(
+            "/v1/responses",
+            &json!({"input": "hello", "previous_response_id": "resp-0",
+                "client_metadata": client_metadata}),
+            &json!({"id": "resp-1", "output": [{"content": [{"type": "output_text", "text": "hi"}]}]}),
+        );
+
+        let parsed = parse_openai_exchange(&exchange).expect("OpenAI exchange");
+
+        assert_eq!(parsed.client_metadata.as_ref(), Some(&client_metadata));
+        assert_eq!(parsed.previous_response_id.as_deref(), Some("resp-0"));
+        assert_eq!(parsed.response_id.as_deref(), Some("resp-1"));
+    }
+
+    #[test]
+    fn websocket_request_carries_the_frame_client_metadata() {
+        let client_metadata = json!({"x-codex-turn-metadata": "{\"thread_id\":\"thread-g\"}"});
+        let message = WebSocketMessage::new(
+            flow(),
+            Request::builder()
+                .method("GET")
+                .uri("/v1/responses")
+                .header("host", "gateway.example")
+                .header("session-id", "session-1")
+                .body(())
+                .unwrap(),
+            WebSocketDirection::ClientToServer,
+            1,
+            Some(
+                json!({"type": "response.create", "response": {
+                    "previous_response_id": "resp-0",
+                    "input": "hello",
+                    "client_metadata": client_metadata
+                }})
+                .to_string(),
+            ),
+            None,
+        );
+
+        let OpenAiWebSocketFrame::Request(parsed) = parse_openai_websocket_message(&message) else {
+            panic!("WebSocket request message");
+        };
+
+        assert_eq!(parsed.client_metadata.as_ref(), Some(&client_metadata));
+        assert_eq!(parsed.previous_response_id.as_deref(), Some("resp-0"));
+    }
+
+    #[test]
+    fn websocket_frames_distinguish_undecodable_from_irrelevant() {
+        let frame = |direction, body: &str| {
+            parse_openai_websocket_message(&WebSocketMessage::new(
+                flow(),
+                Request::builder()
+                    .method("GET")
+                    .uri("/v1/responses")
+                    .header("host", "gateway.example")
+                    .body(())
+                    .unwrap(),
+                direction,
+                1,
+                Some(body.to_owned()),
+                None,
+            ))
+        };
+
+        assert!(matches!(
+            frame(WebSocketDirection::ServerToClient, "{broken"),
+            OpenAiWebSocketFrame::Undecodable(WebSocketDirection::ServerToClient)
+        ));
+        assert!(matches!(
+            frame(
+                WebSocketDirection::ServerToClient,
+                r#"{"type":"response.created","response":{"id":"resp_1"}}"#
+            ),
+            OpenAiWebSocketFrame::Irrelevant
+        ));
+        assert!(matches!(
+            frame(
+                WebSocketDirection::ServerToClient,
+                r#"{"type":"response.output_text.delta","output_index":0,"content_index":0,"delta":"hi"}"#
+            ),
+            OpenAiWebSocketFrame::Response(_)
+        ));
+        assert!(matches!(
+            frame(
+                WebSocketDirection::ClientToServer,
+                r#"{"type":"response.cancel"}"#
+            ),
+            OpenAiWebSocketFrame::Irrelevant
+        ));
+    }
+
+    #[test]
+    fn streaming_response_text_is_not_repeated_by_terminal_events() {
+        // The Responses stream republishes one completed answer through several
+        // terminal events. The parser must report the answer once.
+        let exchange = sse_exchange(&[
+            r#"{"type":"response.output_text.delta","output_index":0,"content_index":0,"delta":"Hello "}"#,
+            r#"{"type":"response.output_text.delta","output_index":0,"content_index":0,"delta":"world"}"#,
+            r#"{"type":"response.output_text.done","output_index":0,"content_index":0,"text":"Hello world"}"#,
+            r#"{"type":"response.content_part.done","output_index":0,"content_index":0,"part":{"type":"output_text","text":"Hello world"}}"#,
+            r#"{"type":"response.output_item.done","output_index":0,"item":{"id":"msg_1","type":"message","role":"assistant","content":[{"type":"output_text","text":"Hello world"}]}}"#,
+            r#"{"type":"response.completed","response":{"id":"resp_1","model":"gpt-5","output":[{"id":"msg_1","type":"message","role":"assistant","content":[{"type":"output_text","text":"Hello world"}]}],"usage":{"input_tokens":1,"output_tokens":2,"total_tokens":3}}}"#,
+        ]);
+
+        let parsed = parse_openai_exchange(&exchange).expect("streaming exchange");
+
+        assert_eq!(parsed.response_texts, vec!["Hello world"]);
+        assert_eq!(parsed.usage.total_tokens, 3);
+    }
+
+    #[test]
+    fn streaming_response_keeps_accumulated_text_without_terminal_events() {
+        // A response body truncated by the capture budget keeps its deltas but
+        // loses every terminal event.
+        let exchange = sse_exchange(&[
+            r#"{"type":"response.output_text.delta","output_index":0,"content_index":0,"delta":"partial "}"#,
+            r#"{"type":"response.output_text.delta","output_index":0,"content_index":0,"delta":"answer"}"#,
+        ]);
+
+        let parsed = parse_openai_exchange(&exchange).expect("truncated streaming exchange");
+
+        assert_eq!(parsed.response_texts, vec!["partial answer"]);
+    }
+
+    #[test]
+    fn streaming_response_recovers_text_lost_from_deltas() {
+        // A terminal snapshot extends an incomplete accumulation instead of
+        // replacing or duplicating it.
+        let exchange = sse_exchange(&[
+            r#"{"type":"response.output_text.delta","output_index":0,"content_index":0,"delta":"Hello "}"#,
+            r#"{"type":"response.output_text.done","output_index":0,"content_index":0,"text":"Hello world"}"#,
+        ]);
+
+        let parsed = parse_openai_exchange(&exchange).expect("streaming exchange");
+
+        assert_eq!(parsed.response_texts, vec!["Hello world"]);
+    }
+
+    #[test]
+    fn streaming_response_prefers_the_provider_snapshot_when_it_diverges() {
+        let exchange = sse_exchange(&[
+            r#"{"type":"response.output_text.delta","output_index":0,"content_index":0,"delta":"draft"}"#,
+            r#"{"type":"response.output_text.done","output_index":0,"content_index":0,"text":"final"}"#,
+        ]);
+
+        let parsed = parse_openai_exchange(&exchange).expect("streaming exchange");
+
+        assert_eq!(parsed.response_texts, vec!["final"]);
+    }
+
+    #[test]
+    fn streaming_response_keeps_reasoning_summary_and_message_order() {
+        let exchange = sse_exchange(&[
+            r#"{"type":"response.reasoning_summary_text.delta","output_index":0,"summary_index":0,"delta":"thinking"}"#,
+            r#"{"type":"response.output_text.delta","output_index":1,"content_index":0,"delta":"answer"}"#,
+            r#"{"type":"response.completed","response":{"id":"resp_1","model":"gpt-5","output":[{"id":"rs_1","type":"reasoning","summary":[{"type":"summary_text","text":"thinking"}]},{"id":"msg_1","type":"message","role":"assistant","content":[{"type":"output_text","text":"answer"}]}]}}"#,
+        ]);
+
+        let parsed = parse_openai_exchange(&exchange).expect("streaming exchange");
+
+        assert_eq!(parsed.response_texts, vec!["thinking", "answer"]);
+    }
+
+    #[test]
+    fn streaming_response_keeps_parallel_message_parts_separate() {
+        let exchange = sse_exchange(&[
+            r#"{"type":"response.output_text.delta","output_index":0,"content_index":1,"delta":"second"}"#,
+            r#"{"type":"response.output_text.delta","output_index":0,"content_index":0,"delta":"first"}"#,
+        ]);
+
+        let parsed = parse_openai_exchange(&exchange).expect("streaming exchange");
+
+        assert_eq!(parsed.response_texts, vec!["first", "second"]);
+    }
+
+    #[test]
+    fn streaming_response_ignores_tool_call_items() {
+        let exchange = sse_exchange(&[
+            r#"{"type":"response.output_text.delta","output_index":0,"content_index":0,"delta":"answer"}"#,
+            r#"{"type":"response.output_item.done","output_index":1,"item":{"id":"fc_1","type":"function_call","name":"read_file","arguments":"{}"}}"#,
+        ]);
+
+        let parsed = parse_openai_exchange(&exchange).expect("streaming exchange");
+
+        assert_eq!(parsed.response_texts, vec!["answer"]);
+    }
+
+    #[test]
+    fn a_streamed_tool_call_item_yields_one_tool_call() {
+        // Codex streams each output item when it is added and done, then
+        // republishes the whole output in `response.completed`.
+        let call = r#"{"type":"function_call","id":"fc_1","call_id":"call_1","name":"exec_command","arguments":"{\"cmd\":\"pwd\"}"}"#;
+        let parallel = r#"{"type":"function_call","id":"fc_2","call_id":"call_2","name":"exec_command","arguments":"{\"cmd\":\"ls\"}"}"#;
+        let added = r#"{"type":"response.output_item.added","output_index":0,"item":{"type":"function_call","id":"fc_1","call_id":"call_1","name":"exec_command","arguments":""}}"#;
+        let delta = r#"{"type":"response.function_call_arguments.delta","output_index":0,"item_id":"fc_1","delta":"{\"cmd\""}"#;
+        let done =
+            format!(r#"{{"type":"response.output_item.done","output_index":0,"item":{call}}}"#);
+        let done_parallel =
+            format!(r#"{{"type":"response.output_item.done","output_index":1,"item":{parallel}}}"#);
+        let completed = format!(
+            r#"{{"type":"response.completed","response":{{"id":"resp_1","output":[{call},{parallel}]}}}}"#
+        );
+        let parsed = parse_openai_exchange(&sse_exchange(&[
+            added,
+            delta,
+            &done,
+            &done_parallel,
+            &completed,
+        ]))
+        .expect("SSE exchange");
+
+        assert_eq!(
+            parsed.response_tool_events,
+            [
+                ParsedToolEvent::ToolCall {
+                    item_id: Some("fc_1".to_owned()),
+                    call_id: Some("call_1".to_owned()),
+                    name: Some("exec_command".to_owned()),
+                    input: r#"{"cmd":"pwd"}"#.to_owned(),
+                },
+                ParsedToolEvent::ToolCall {
+                    item_id: Some("fc_2".to_owned()),
+                    call_id: Some("call_2".to_owned()),
+                    name: Some("exec_command".to_owned()),
+                    input: r#"{"cmd":"ls"}"#.to_owned(),
+                },
+            ]
+        );
+    }
+
+    #[test]
+    fn response_id_is_read_where_the_protocol_puts_it() {
+        // A stream names the response in `response.id`, whatever its format.
+        let streamed = parse_openai_exchange(&sse_exchange(&[
+            r#"{"type":"response.created","response":{"id":"r1"}}"#,
+            r#"{"type":"response.output_item.done","output_index":0,"item":{"id":"resp_item","type":"message","role":"assistant","content":[{"type":"output_text","text":"hi"}]}}"#,
+            r#"{"type":"response.completed","response":{"id":"r1"}}"#,
+        ]))
+        .expect("SSE exchange");
+        assert_eq!(streamed.response_id.as_deref(), Some("r1"));
+
+        // A whole Chat Completions document names it in its top-level `id`.
+        let chat = parse_openai_exchange(&json_exchange(
+            "/v1/chat/completions",
+            &json!({"messages": [{"role": "user", "content": "hello"}]}),
+            &json!({"id": "chatcmpl-1", "choices": [{"message": {"role": "assistant", "content": "hi"}}]}),
+        ))
+        .expect("chat exchange");
+        assert_eq!(chat.response_id.as_deref(), Some("chatcmpl-1"));
+
+        // Ids elsewhere, such as an output item's or the request's, are not it.
+        let unnamed = parse_openai_exchange(&sse_exchange(&[
+            r#"{"type":"response.output_item.done","output_index":0,"item":{"id":"resp_item","type":"message","role":"assistant","content":[{"type":"output_text","text":"hi"}]}}"#,
+        ]))
+        .expect("SSE exchange");
+        assert_eq!(unnamed.response_id, None);
+    }
+
+    fn sse_exchange(events: &[&str]) -> HttpExchange {
+        let mut body = String::new();
+        for event in events {
+            body.push_str("data: ");
+            body.push_str(event);
+            body.push_str("\n\n");
+        }
+        body.push_str("data: [DONE]\n\n");
+        exchange(
+            "/v1/responses",
+            &json!({"model": "gpt-5", "input": [{"role": "user", "content": "hi"}], "stream": true}),
+            "text/event-stream",
+            body.into_bytes(),
+        )
     }
 
     fn json_exchange(path: &str, request: &Value, response: &Value) -> HttpExchange {

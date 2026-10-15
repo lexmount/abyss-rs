@@ -7,21 +7,20 @@
 
 use std::{collections::BTreeMap, fmt};
 
-use abyss_mitm::{CapturedBody, FlowContext, HttpExchange, TransparentProtocol};
+use abyss_mitm::{FlowContext, HttpExchange, TransparentProtocol};
 use http::{HeaderMap, Method, header::HOST};
 use serde::Serialize;
 use serde_json::Value;
 
 use crate::{
+    protocol::anthropic::conversation::{AnthropicRequest, AnthropicResponse},
     protocol::model::digest::sha256_hex,
     protocol::model::image::{ParsedImageAttachment, extract_anthropic_request_images},
-    protocol::model::text::{json_to_text, non_empty_trimmed},
+    protocol::model::text::{MAX_PARSE_DEPTH, json_to_text, non_empty_trimmed},
     protocol::model::tool::ParsedToolEvent,
     protocol::model::usage::TokenUsage,
-    protocol::sse::parse_sse_json_values,
+    protocol::sse::ResponseDocuments,
 };
-
-const MAX_PARSE_DEPTH: usize = 12;
 
 /// Source used to derive the protocol session identity.
 #[derive(Debug, Clone, Copy, Serialize)]
@@ -61,17 +60,22 @@ pub struct ParsedAnthropicMessagesExchange {
     pub session_id_source: AnthropicSessionIdSource,
     /// Hash of method, host, path, and request body for event correlation.
     pub request_hash: String,
-    /// User-visible prompt/input fragments extracted from the request body.
+    /// Structured request messages decoded from the request body.
+    pub request_conversation: abyss_plugin_protocol::event::Conversation,
+    /// Structured response messages assembled from the response documents.
+    pub response_conversation: abyss_plugin_protocol::event::Conversation,
+    /// User-visible prompt/input fragments derived from the request messages.
     pub request_texts: Vec<String>,
     /// Validated image attachments embedded in user request content.
     pub request_images: Vec<ParsedImageAttachment>,
-    /// Stable logical turn id derived from the latest non-tool-result user message.
-    pub protocol_turn_id: Option<String>,
+    /// The response this request continues after: `previous_message_id` of a
+    /// `thread` `continue`.
+    pub previous_response_id: Option<String>,
     /// Tool results submitted on the request side of this provider call.
     pub request_tool_events: Vec<ParsedToolEvent>,
     /// Tool calls streamed by the response side of this provider call.
     pub response_tool_events: Vec<ParsedToolEvent>,
-    /// Model-visible response fragments extracted from JSON or SSE response data.
+    /// Model-visible response fragments derived from the response messages.
     pub response_texts: Vec<String>,
     /// Best token counters found in request or response payloads.
     pub usage: TokenUsage,
@@ -104,7 +108,8 @@ pub fn parse_anthropic_messages_exchange(
     };
     let headers = exchange.request.headers();
 
-    let request_texts = extract_request_texts(request_json, is_compact_messages_endpoint(path));
+    let request = AnthropicRequest::parse(request_json, exchange.request.body().truncated());
+    let request_texts = request.texts();
     let request_images = extract_anthropic_request_images(request_json);
     let request_tool_events = extract_request_tool_events(request_json);
     // Bootstrap, registry, and telemetry calls are useful transport evidence but
@@ -114,14 +119,15 @@ pub fn parse_anthropic_messages_exchange(
         return None;
     }
 
-    let response_values = response_values(exchange.response.headers(), exchange.response.body());
-    let response_texts = extract_response_texts(&response_values);
+    let response_documents = ResponseDocuments::decode(exchange.response.body());
+    let response_values = response_documents.values;
+    let response = AnthropicResponse::assemble(&response_values, response_documents.incomplete);
+    let response_texts = response.texts();
     let response_tool_events = extract_response_tool_events(&response_values);
     let usage = best_usage(&response_values)
         .or_else(|| best_usage(std::slice::from_ref(request_json)))
         .unwrap_or_default();
-    let message_id = first_message_id(&response_values)
-        .or_else(|| first_message_id(std::slice::from_ref(request_json)));
+    let message_id = response.id().map(str::to_owned);
     let model = first_model(&response_values)
         .or_else(|| string_field(request_json, "model").map(str::to_owned));
     let request_hash = sha256_hex(&format!(
@@ -132,7 +138,11 @@ pub fn parse_anthropic_messages_exchange(
         String::from_utf8_lossy(exchange.request.body().bytes())
     ));
     let session = anthropic_session_id(headers, request_json, &host);
-    let protocol_turn_id = protocol_turn_id(request_json, &session.id);
+    let previous_response_id = request_json
+        .get("thread")
+        .filter(|thread| string_field(thread, "type") == Some("continue"))
+        .and_then(|thread| string_field(thread, "previous_message_id"))
+        .map(str::to_owned);
 
     Some(ParsedAnthropicMessagesExchange {
         host,
@@ -142,9 +152,11 @@ pub fn parse_anthropic_messages_exchange(
         session_id: session.id,
         session_id_source: session.source,
         request_hash,
+        request_conversation: request.conversation(),
+        response_conversation: response.conversation(),
         request_texts,
         request_images,
-        protocol_turn_id,
+        previous_response_id,
         request_tool_events,
         response_tool_events,
         response_texts,
@@ -172,181 +184,10 @@ fn normalize_host(host: &str) -> String {
         .to_ascii_lowercase()
 }
 
-fn is_compact_messages_endpoint(path: &str) -> bool {
-    matches!(path, "/v1/m" | "/v1/b")
-}
-
 pub(super) fn flow_server_name(flow: &FlowContext) -> Option<String> {
     match &flow.protocol {
         TransparentProtocol::TlsHttp { server_name } => Some(normalize_host(server_name)),
         _ => None,
-    }
-}
-
-pub(super) fn response_values(headers: &HeaderMap, body: &CapturedBody) -> Vec<Value> {
-    if let Some(json) = body.json() {
-        return vec![json.clone()];
-    }
-    if !header(headers, "content-type")
-        .is_some_and(|value| value.to_ascii_lowercase().contains("text/event-stream"))
-    {
-        return Vec::new();
-    }
-    parse_sse_json_values(body.bytes())
-}
-
-pub(super) fn extract_request_texts(
-    payload: &Value,
-    include_compact_dialogue: bool,
-) -> Vec<String> {
-    let mut texts = Vec::new();
-    if let Some(system) = payload.get("system")
-        && let Some(text) = anthropic_conversation_text(system, MAX_PARSE_DEPTH)
-    {
-        texts.push(format!("system: {text}"));
-    }
-    if let Some(prompt) = string_field(payload, "prompt") {
-        texts.push(prompt.to_owned());
-    }
-    if let Some(input) = payload.get("input")
-        && let Some(text) = anthropic_conversation_text(input, MAX_PARSE_DEPTH)
-    {
-        texts.push(text);
-    }
-    if let Some(messages) = payload.get("messages").and_then(Value::as_array) {
-        for message in messages {
-            if string_field(message, "role") != Some("user") {
-                continue;
-            }
-            if let Some(content) = message.get("content")
-                && let Some(text) = anthropic_conversation_text(content, MAX_PARSE_DEPTH)
-            {
-                texts.push(text);
-            }
-        }
-    }
-    if include_compact_dialogue {
-        // Compact Claude Code payloads may abbreviate the standard Messages API
-        // shape, so recurse through only conversation-like containers rather
-        // than scanning arbitrary metadata, tool schemas, or telemetry fields.
-        collect_dialogue_request_texts(payload, MAX_PARSE_DEPTH, &mut texts);
-    }
-    dedupe_texts(texts)
-}
-
-fn anthropic_conversation_text(value: &Value, depth: usize) -> Option<String> {
-    if depth == 0 {
-        return None;
-    }
-
-    match value {
-        Value::String(text) => non_empty_trimmed(text).map(str::to_owned),
-        Value::Array(items) => {
-            let joined = items
-                .iter()
-                .filter_map(|item| anthropic_conversation_text(item, depth.saturating_sub(1)))
-                .collect::<Vec<_>>()
-                .join("\n");
-            non_empty_trimmed(&joined).map(str::to_owned)
-        }
-        Value::Object(object) => {
-            if object
-                .get("type")
-                .and_then(Value::as_str)
-                .is_some_and(is_anthropic_tool_block_type)
-            {
-                return None;
-            }
-            object
-                .get("text")
-                .or_else(|| object.get("content"))
-                .or_else(|| object.get("input"))
-                .or_else(|| object.get("output_text"))
-                .and_then(|child| anthropic_conversation_text(child, depth.saturating_sub(1)))
-        }
-        _ => None,
-    }
-}
-
-fn is_anthropic_tool_block_type(block_type: &str) -> bool {
-    matches!(block_type, "tool_use" | "tool_result")
-        || block_type.ends_with("_tool_use")
-        || block_type.ends_with("_tool_result")
-}
-
-fn protocol_turn_id(payload: &Value, session_id: &str) -> Option<String> {
-    let messages = payload.get("messages")?.as_array()?;
-    let (message_index, normalized_content) =
-        messages
-            .iter()
-            .enumerate()
-            .rev()
-            .find_map(|(index, message)| {
-                (string_field(message, "role") == Some("user"))
-                    .then(|| message.get("content"))
-                    .flatten()
-                    .and_then(normalized_user_turn_content)
-                    .map(|content| (index, content))
-            })?;
-    let digest = sha256_hex(&format!(
-        "{session_id}\0{message_index}\0{normalized_content}"
-    ));
-    Some(format!("claude_turn_{}", &digest[..32]))
-}
-
-fn normalized_user_turn_content(content: &Value) -> Option<String> {
-    let mut parts = Vec::new();
-    match content {
-        Value::String(text) => {
-            parts.extend(non_empty_trimmed(text).map(str::to_owned));
-        }
-        Value::Array(items) => {
-            for item in items {
-                normalized_user_turn_part(item, &mut parts);
-            }
-        }
-        Value::Object(_) => normalized_user_turn_part(content, &mut parts),
-        _ => {}
-    }
-    (!parts.is_empty()).then(|| parts.join("\0"))
-}
-
-fn normalized_user_turn_part(value: &Value, parts: &mut Vec<String>) {
-    let Some(object) = value.as_object() else {
-        return;
-    };
-    match object.get("type").and_then(Value::as_str) {
-        Some(block_type) if is_anthropic_tool_block_type(block_type) => {}
-        Some("text") => {
-            if let Some(text) = object
-                .get("text")
-                .and_then(Value::as_str)
-                .and_then(non_empty_trimmed)
-            {
-                parts.push(text.to_owned());
-            }
-        }
-        Some("image") => {
-            let source = object.get("source").and_then(Value::as_object);
-            let media_type = source
-                .and_then(|source| source.get("media_type"))
-                .and_then(Value::as_str)
-                .unwrap_or("unknown");
-            let digest = source
-                .and_then(|source| source.get("data"))
-                .and_then(Value::as_str)
-                .map_or_else(|| sha256_hex(""), sha256_hex);
-            parts.push(format!("image:{media_type}:{digest}"));
-        }
-        _ => {
-            if let Some(text) = json_to_text(value, MAX_PARSE_DEPTH)
-                .and_then(|text| non_empty_trimmed(&text).map(str::to_owned))
-            {
-                parts.push(text);
-            } else if let Ok(serialized) = serde_json::to_string(value) {
-                parts.push(serialized);
-            }
-        }
     }
 }
 
@@ -605,164 +446,6 @@ fn push_unique_tool_event(events: &mut Vec<ParsedToolEvent>, event: ParsedToolEv
     }
 }
 
-fn collect_dialogue_request_texts(value: &Value, depth: usize, texts: &mut Vec<String>) {
-    if depth == 0 {
-        return;
-    }
-
-    match value {
-        Value::Object(object) => {
-            if object_role_is_user(object) || object_type_is_user_event(object) {
-                collect_dialogue_object_text_fields(object, depth, texts);
-            }
-
-            // Restrict recursion to known dialogue containers so unrelated
-            // descriptive strings, such as tool definitions, do not become
-            // prompt evidence.
-            for (key, child) in object {
-                if is_dialogue_container_key(key) {
-                    collect_dialogue_request_texts(child, depth.saturating_sub(1), texts);
-                }
-            }
-        }
-        Value::Array(items) => {
-            for item in items {
-                collect_dialogue_request_texts(item, depth.saturating_sub(1), texts);
-            }
-        }
-        _ => {}
-    }
-}
-
-fn collect_dialogue_object_text_fields(
-    object: &serde_json::Map<String, Value>,
-    depth: usize,
-    texts: &mut Vec<String>,
-) {
-    for key in ["content", "c", "input", "message", "prompt", "text"] {
-        if let Some(value) = object.get(key)
-            && let Some(text) = anthropic_conversation_text(value, depth.saturating_sub(1))
-        {
-            texts.push(text);
-        }
-    }
-}
-
-fn object_role_is_user(object: &serde_json::Map<String, Value>) -> bool {
-    string_field_from_object(object, "role")
-        .or_else(|| string_field_from_object(object, "r"))
-        .or_else(|| string_field_from_object(object, "sender"))
-        .is_some_and(is_user_role_value)
-}
-
-fn object_type_is_user_event(object: &serde_json::Map<String, Value>) -> bool {
-    string_field_from_object(object, "type").is_some_and(is_user_event_type_value)
-}
-
-fn string_field_from_object<'a>(
-    object: &'a serde_json::Map<String, Value>,
-    key: &str,
-) -> Option<&'a str> {
-    object
-        .get(key)
-        .and_then(Value::as_str)
-        .and_then(non_empty_trimmed)
-}
-
-fn is_user_role_value(value: &str) -> bool {
-    matches!(value.trim().to_ascii_lowercase().as_str(), "user" | "human")
-}
-
-fn is_user_event_type_value(value: &str) -> bool {
-    matches!(
-        value.trim().to_ascii_lowercase().as_str(),
-        "user" | "human" | "user.message" | "human_message"
-    )
-}
-
-fn is_dialogue_container_key(key: &str) -> bool {
-    matches!(key, "messages" | "msgs" | "m" | "events" | "e" | "message")
-}
-
-pub(super) fn extract_response_texts(values: &[Value]) -> Vec<String> {
-    let streaming = streaming_text_deltas(values);
-    if !streaming.is_empty() {
-        return streaming;
-    }
-
-    let mut texts = Vec::new();
-    for value in values {
-        collect_message_content_texts(value, MAX_PARSE_DEPTH, &mut texts);
-    }
-    dedupe_texts(texts)
-}
-
-fn streaming_text_deltas(values: &[Value]) -> Vec<String> {
-    let mut blocks = BTreeMap::<u64, String>::new();
-    for value in values {
-        if value.get("type").and_then(Value::as_str) != Some("content_block_delta") {
-            continue;
-        }
-        let Some(delta) = value.get("delta").and_then(Value::as_object) else {
-            continue;
-        };
-        if delta.get("type").and_then(Value::as_str) != Some("text_delta") {
-            continue;
-        }
-        let Some(text) = delta.get("text").and_then(Value::as_str) else {
-            continue;
-        };
-        let index = value.get("index").and_then(Value::as_u64).unwrap_or(0);
-        blocks.entry(index).or_default().push_str(text);
-    }
-
-    blocks
-        .into_values()
-        .filter_map(|text| non_empty_trimmed(&text).map(str::to_owned))
-        .collect()
-}
-
-fn collect_message_content_texts(value: &Value, depth: usize, texts: &mut Vec<String>) {
-    if depth == 0 {
-        return;
-    }
-
-    match value {
-        Value::Object(object) => {
-            if object
-                .get("type")
-                .and_then(Value::as_str)
-                .is_some_and(is_anthropic_tool_block_type)
-            {
-                return;
-            }
-            if object.get("type").and_then(Value::as_str) == Some("text")
-                && let Some(text) = object.get("text").and_then(Value::as_str)
-                && let Some(text) = non_empty_trimmed(text)
-            {
-                texts.push(text.to_owned());
-            }
-            if let Some(content) = object.get("content").and_then(Value::as_array) {
-                for block in content {
-                    collect_message_content_texts(block, depth.saturating_sub(1), texts);
-                }
-            }
-            for (key, child) in object {
-                if key == "content" {
-                    continue;
-                }
-                collect_message_content_texts(child, depth.saturating_sub(1), texts);
-            }
-        }
-        Value::Array(items) => {
-            for item in items {
-                collect_message_content_texts(item, depth.saturating_sub(1), texts);
-            }
-        }
-        _ => {}
-    }
-}
-
 pub(super) fn best_usage(values: &[Value]) -> Option<TokenUsage> {
     let usages = values
         .iter()
@@ -772,6 +455,8 @@ pub(super) fn best_usage(values: &[Value]) -> Option<TokenUsage> {
         return None;
     }
 
+    // Streaming Messages responses report input-side counters in
+    // `message_start` and cumulative output in `message_delta`.
     let mut combined = TokenUsage::default();
     for usage in usages {
         combined.input_tokens = combined.input_tokens.max(usage.input_tokens);
@@ -779,17 +464,14 @@ pub(super) fn best_usage(values: &[Value]) -> Option<TokenUsage> {
         combined.cache_read_tokens = combined.cache_read_tokens.max(usage.cache_read_tokens);
         combined.cache_write_tokens = combined.cache_write_tokens.max(usage.cache_write_tokens);
         combined.reasoning_tokens = combined.reasoning_tokens.max(usage.reasoning_tokens);
-        combined.total_tokens = combined.total_tokens.max(usage.total_tokens);
     }
-    combined.total_tokens = combined.total_tokens.max(
-        combined
-            .input_tokens
-            .saturating_add(combined.output_tokens)
-            .saturating_add(combined.cache_read_tokens)
-            .saturating_add(combined.cache_write_tokens)
-            .saturating_add(combined.reasoning_tokens),
-    );
-    Some(combined)
+    Some(TokenUsage::from_parts(
+        combined.input_tokens,
+        combined.cache_read_tokens,
+        combined.cache_write_tokens,
+        combined.output_tokens,
+        combined.reasoning_tokens,
+    ))
 }
 
 pub(super) fn estimated_visible_usage(
@@ -800,13 +482,7 @@ pub(super) fn estimated_visible_usage(
 ) -> TokenUsage {
     let input_tokens = estimate_visible_tokens(request_texts, request_tool_events);
     let output_tokens = estimate_visible_tokens(response_texts, response_tool_events);
-    let total_tokens = input_tokens.saturating_add(output_tokens);
-    TokenUsage {
-        input_tokens,
-        output_tokens,
-        total_tokens,
-        ..TokenUsage::default()
-    }
+    TokenUsage::from_parts(input_tokens, 0, 0, output_tokens, 0)
 }
 
 fn estimate_visible_tokens(texts: &[String], tool_events: &[ParsedToolEvent]) -> i64 {
@@ -865,42 +541,33 @@ fn find_usage(value: &Value, depth: usize) -> Vec<TokenUsage> {
 fn usage_from_object(object: &serde_json::Map<String, Value>) -> Option<TokenUsage> {
     let input = int_field(object, "input_tokens").unwrap_or(0);
     let output = int_field(object, "output_tokens").unwrap_or(0);
-    let cache_read = int_field(object, "cache_read_input_tokens")
-        .or_else(|| nested_int_field(object, "input_tokens_details", "cached_tokens"))
+    let native_cache_read = int_field(object, "cache_read_input_tokens");
+    let native_cache_write = int_field(object, "cache_creation_input_tokens");
+    // Native Messages usage keeps cache counters outside `input_tokens`.
+    // OpenAI-style details from compatible gateways count them inside it.
+    let detail_cache_read = native_cache_read
+        .is_none()
+        .then(|| nested_int_field(object, "input_tokens_details", "cached_tokens"))
+        .flatten()
         .unwrap_or(0);
-    let cache_write = int_field(object, "cache_creation_input_tokens")
-        .or_else(|| nested_int_field(object, "input_tokens_details", "cache_creation_tokens"))
+    let detail_cache_write = native_cache_write
+        .is_none()
+        .then(|| nested_int_field(object, "input_tokens_details", "cache_creation_tokens"))
+        .flatten()
         .unwrap_or(0);
+    let cache_read = native_cache_read.unwrap_or(detail_cache_read);
+    let cache_write = native_cache_write.unwrap_or(detail_cache_write);
+    let input = input
+        .saturating_sub(detail_cache_read)
+        .saturating_sub(detail_cache_write)
+        .max(0);
     let reasoning = nested_int_field(object, "output_tokens_details", "thinking_tokens")
         .or_else(|| int_field(object, "thinking_tokens"))
         .or_else(|| int_field(object, "reasoning_tokens"))
         .unwrap_or(0);
-    let total = int_field(object, "total_tokens").unwrap_or_else(|| {
-        input
-            .saturating_add(output)
-            .saturating_add(cache_read)
-            .saturating_add(cache_write)
-            .saturating_add(reasoning)
-    });
 
-    if input == 0
-        && output == 0
-        && cache_read == 0
-        && cache_write == 0
-        && reasoning == 0
-        && total == 0
-    {
-        return None;
-    }
-
-    Some(TokenUsage {
-        input_tokens: input,
-        output_tokens: output,
-        cache_read_tokens: cache_read,
-        cache_write_tokens: cache_write,
-        reasoning_tokens: reasoning,
-        total_tokens: total,
-    })
+    let usage = TokenUsage::from_parts(input, cache_read, cache_write, output, reasoning);
+    (!usage.is_empty()).then_some(usage)
 }
 
 fn int_field(object: &serde_json::Map<String, Value>, key: &str) -> Option<i64> {
@@ -919,28 +586,6 @@ fn nested_int_field(
         .get(parent)
         .and_then(Value::as_object)
         .and_then(|nested| int_field(nested, child))
-}
-
-pub(super) fn first_message_id(values: &[Value]) -> Option<String> {
-    values.iter().find_map(collect_message_id)
-}
-
-fn collect_message_id(value: &Value) -> Option<String> {
-    match value {
-        Value::Object(object) => {
-            if let Some(id) = object.get("id").and_then(Value::as_str)
-                && id.starts_with("msg_")
-            {
-                return Some(id.to_owned());
-            }
-            if let Some(message) = object.get("message") {
-                return collect_message_id(message);
-            }
-            object.values().find_map(collect_message_id)
-        }
-        Value::Array(items) => items.iter().find_map(collect_message_id),
-        _ => None,
-    }
 }
 
 pub(super) fn first_model(values: &[Value]) -> Option<String> {
@@ -1118,11 +763,10 @@ fn header<'a>(headers: &'a HeaderMap, name: &str) -> Option<&'a str> {
 
 fn log_parse_skip(exchange: &HttpExchange, host: Option<&str>, path: &str, reason: &'static str) {
     // Empty-body GETs are common Claude bootstrap traffic. Logging every one at
-    // info would bury the compact endpoint diagnostics this path was added for.
+    // info would bury the remaining parser-miss diagnostics.
     if reason == "request_body_not_json"
         && exchange.request.body().bytes().is_empty()
         && exchange.request.method() != Method::POST
-        && !is_compact_messages_endpoint(path)
     {
         return;
     }
@@ -1156,16 +800,6 @@ pub(super) const fn transport_name(protocol: &TransparentProtocol) -> &'static s
         TransparentProtocol::TlsHttp { .. } => "https",
         _ => "unknown",
     }
-}
-
-fn dedupe_texts(texts: Vec<String>) -> Vec<String> {
-    let mut result = Vec::new();
-    for text in texts {
-        if non_empty_trimmed(&text).is_some() && !result.contains(&text) {
-            result.push(text);
-        }
-    }
-    result
 }
 
 #[cfg(test)]
@@ -1211,7 +845,6 @@ mod tests {
         assert_eq!(parsed.model.as_deref(), Some("claude-test"));
         assert_eq!(parsed.usage.input_tokens, 3);
         assert_eq!(parsed.usage.output_tokens, 4);
-        assert!(parsed.protocol_turn_id.is_some());
     }
 
     #[test]
@@ -1237,6 +870,32 @@ mod tests {
         assert_eq!(parsed.response_tool_events.len(), 1);
         assert_eq!(parsed.usage.input_tokens, 5);
         assert_eq!(parsed.usage.output_tokens, 2);
+    }
+
+    #[test]
+    fn keeps_messages_cache_counters_disjoint_from_input() {
+        let request = json!({
+            "model": "claude-test",
+            "messages": [{"role": "user", "content": "continue"}]
+        });
+        let response = concat!(
+            "data: {\"type\":\"message_start\",\"message\":{\"id\":\"msg_3\",",
+            "\"model\":\"claude-test\",\"usage\":{\"input_tokens\":2,",
+            "\"cache_read_input_tokens\":77000,\"cache_creation_input_tokens\":400,",
+            "\"output_tokens\":1}}}\n\n",
+            "data: {\"type\":\"message_delta\",\"usage\":{\"input_tokens\":2,",
+            "\"cache_read_input_tokens\":77000,\"cache_creation_input_tokens\":400,",
+            "\"output_tokens\":150}}\n\n"
+        );
+        let exchange = sse_exchange("/v1/messages", &request, response.as_bytes());
+
+        let parsed = parse_anthropic_messages_exchange(&exchange).expect("Anthropic SSE exchange");
+
+        assert_eq!(parsed.usage.input_tokens, 2);
+        assert_eq!(parsed.usage.cache_read_tokens, 77_000);
+        assert_eq!(parsed.usage.cache_write_tokens, 400);
+        assert_eq!(parsed.usage.output_tokens, 150);
+        assert_eq!(parsed.usage.total_tokens, 77_552);
     }
 
     #[test]
@@ -1289,6 +948,110 @@ mod tests {
             AnthropicSessionIdSource::Unattributed
         ));
         assert_eq!(parsed.session_id, "anthropic-unattributed-gateway-example");
+    }
+
+    const CLAUDE_CODE_TURN_13: &str = "x-anthropic-billing-header: cc_version=2.1.293.af3; cc_entrypoint=cli; cch=71184; cc_prev_req=req_011Cfp63WyExutpXM23Swg97; cc_prompt_id=a7e7449e-3401-4091-9857-98c73e217ce3; cc_turn_origin=human; cc_prompt_index=13; cc_turn_index=13;";
+
+    /// Trimmed Claude Code 2.1.293 request bodies of one user turn
+    /// (`cc_turn_index=13`): a `continue` that failed with `thread_not_found`,
+    /// its `create` replay under a new `cc_prompt_id`, and a later
+    /// tool-result-only `continue`.
+    fn claude_code_turn_13_requests() -> [Value; 3] {
+        [
+            json!({
+                "model": "claude-opus-5-5",
+                "system": [{"type": "text", "text": "x-anthropic-billing-header: cc_version=2.1.293.af3; cc_entrypoint=cli; cch=3ceb5; cc_prev_req=req_011Cfp5Uve7sxQqhVCrv4MHM; cc_prompt_id=100bbd47-4661-4476-a802-eb9bad30b029; cc_turn_origin=human; cc_prompt_index=13; cc_turn_index=13;"}],
+                "messages": [
+                    {"role": "user", "content": "look at the thread field"},
+                    {"role": "system", "content": [{"type": "text", "text": "<total_tokens>14998716 tokens left</total_tokens>"}]}
+                ],
+                "thread": {"type": "continue", "previous_message_id": "msg_011Cfp5UzgwXz5ZQcfs9WXCP"},
+                "stream": true
+            }),
+            json!({
+                "model": "claude-opus-5-5",
+                "system": [
+                    {"type": "text", "text": "x-anthropic-billing-header: cc_version=2.1.293.af3; cc_entrypoint=cli; cch=feaae; cc_prev_req=req_011Cfp5Uve7sxQqhVCrv4MHM; cc_prompt_id=a7e7449e-3401-4091-9857-98c73e217ce3; cc_turn_origin=human; cc_prompt_index=13; cc_turn_index=13;"},
+                    {"type": "text", "text": "You are Claude Code, Anthropic's official CLI for Claude."}
+                ],
+                "messages": [
+                    {"role": "user", "content": "earlier prompt"},
+                    {"role": "assistant", "content": [{"type": "text", "text": "earlier answer"}]},
+                    {"role": "user", "content": "look at the thread field"},
+                    {"role": "system", "content": [{"type": "text", "text": "<total_tokens>14998716 tokens left</total_tokens>"}]}
+                ],
+                "tools": [{"name": "Bash", "input_schema": {"type": "object"}}],
+                "thread": {"type": "create"},
+                "stream": true
+            }),
+            json!({
+                "model": "claude-opus-5-5",
+                "system": [{"type": "text", "text": CLAUDE_CODE_TURN_13}],
+                "messages": [
+                    {"role": "user", "content": [
+                        {"tool_use_id": "toolu_01NTVfgULERMfiZJkqtEfMcX", "type": "tool_result", "content": "ok"}
+                    ]},
+                    {"role": "system", "content": [{"type": "text", "text": "<total_tokens>14998716 tokens left</total_tokens>"}]}
+                ],
+                "thread": {"type": "continue", "previous_message_id": "msg_011Cfp64Grx3HXuyQSqYibkp"},
+                "stream": true
+            }),
+        ]
+    }
+
+    #[test]
+    fn only_a_thread_continue_names_the_response_it_continues_after() {
+        let parsed = claude_code_turn_13_requests().map(|request| {
+            parse_anthropic_messages_exchange(&json_exchange("/v1/messages", &request, &json!({})))
+                .expect("Claude Code exchange")
+        });
+
+        assert_eq!(
+            parsed
+                .each_ref()
+                .map(|exchange| exchange.previous_response_id.as_deref()),
+            [
+                Some("msg_011Cfp5UzgwXz5ZQcfs9WXCP"),
+                None,
+                Some("msg_011Cfp64Grx3HXuyQSqYibkp"),
+            ]
+        );
+    }
+
+    #[test]
+    fn response_id_is_the_message_id_of_the_conversation() {
+        let request = json!({"messages": [{"role": "user", "content": "hello"}]});
+        // A stream names its message in `message_start.message.id`.
+        let streamed = parse_anthropic_messages_exchange(&sse_exchange(
+            "/v1/messages",
+            &request,
+            concat!(
+                "data: {\"type\":\"message_start\",\"message\":{\"id\":\"m1\",\"content\":[]}}\n\n",
+                "data: {\"type\":\"content_block_delta\",\"index\":0,\"delta\":{\"type\":\"text_delta\",\"text\":\"hi\"}}\n\n",
+                "data: {\"type\":\"message_stop\"}\n\n"
+            )
+            .as_bytes(),
+        ))
+        .expect("SSE exchange");
+        assert_eq!(streamed.message_id.as_deref(), Some("m1"));
+        assert_eq!(
+            streamed.response_conversation.messages[0].id.as_deref(),
+            Some("m1")
+        );
+
+        // A whole message names itself in its top-level `id`; an id in the
+        // request is never the response's.
+        let whole = parse_anthropic_messages_exchange(&json_exchange(
+            "/v1/messages",
+            &json!({"id": "msg_request", "messages": [{"role": "user", "content": "hello"}]}),
+            &json!({"id": "m2", "type": "message", "content": [{"type": "text", "text": "hi"}]}),
+        ))
+        .expect("JSON exchange");
+        assert_eq!(whole.message_id.as_deref(), Some("m2"));
+        assert_eq!(
+            whole.response_conversation.messages[0].id.as_deref(),
+            Some("m2")
+        );
     }
 
     #[test]

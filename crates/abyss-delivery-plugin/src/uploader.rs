@@ -352,7 +352,16 @@ struct IngestUsageEvent {
     device: DevicePayload,
     agent: AgentPayload,
     session_id: String,
-    turn_index: i32,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    turn_id: Option<String>,
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    naming_thread: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    stream_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    response_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    previous_response_id: Option<String>,
     llm: LlmPayload,
     event_type: String,
     text: Option<String>,
@@ -366,10 +375,18 @@ impl TryFrom<AgentEvent> for IngestUsageEvent {
     type Error = DeliveryPluginError;
 
     fn try_from(event: AgentEvent) -> Result<Self, Self::Error> {
-        let turn_index = i32::try_from(event.turn_index.get()).map_err(|_| {
-            DeliveryPluginError::Translate("turn_index exceeds backend range".to_owned())
-        })?;
-        let metadata = tool_activity_metadata(event.tool_calls, event.tool_results);
+        let mut metadata = tool_activity_metadata(event.tool_calls, event.tool_results);
+        if let Some(purpose) = event.purpose {
+            metadata["purpose"] = serde_json::to_value(purpose)
+                .map_err(|error| DeliveryPluginError::Translate(error.to_string()))?;
+        }
+        if let Some(title) = event.session_title {
+            metadata["session_title"] = Value::String(title);
+        }
+        if let Some(conversation) = event.conversation {
+            metadata["conversation"] = serde_json::to_value(conversation)
+                .map_err(|error| DeliveryPluginError::Translate(error.to_string()))?;
+        }
         Ok(Self {
             event_id: event.event_id,
             observed_at: event.occurred_at.to_rfc3339(),
@@ -383,7 +400,11 @@ impl TryFrom<AgentEvent> for IngestUsageEvent {
                 version: event.agent.version,
             },
             session_id: event.session_id,
-            turn_index,
+            turn_id: event.turn_id,
+            naming_thread: event.naming_thread,
+            stream_id: event.stream_id,
+            response_id: event.response_id,
+            previous_response_id: event.previous_response_id,
             llm: LlmPayload {
                 provider: event.llm.provider.wire_name().to_owned(),
                 model: event.llm.model,
@@ -525,8 +546,6 @@ fn tool_activity_metadata(tool_calls: Vec<ToolCall>, tool_results: Vec<ToolResul
 
 #[cfg(test)]
 mod tests {
-    use std::num::NonZeroU32;
-
     use abyss_sdk::plugin::{
         AgentContext, AgentEvent, AgentEventSide, DeviceContext, LlmContext, LlmProvider,
         TokenUsage, ToolCall,
@@ -552,6 +571,25 @@ mod tests {
     }
 
     #[test]
+    fn stores_the_conversation_as_backend_metadata() {
+        let event: AgentEvent = serde_json::from_str(include_str!(
+            "../../../specs/broker-plugin-protocol/v1/fixtures/agent-event.json"
+        ))
+        .expect("fixture should decode");
+        let request = IngestEventsRequest::try_from(event).expect("event should translate");
+        let serialized = serde_json::to_value(request).expect("request should serialize");
+        let metadata = &serialized["events"][0]["metadata"];
+
+        let roles = metadata["conversation"]["messages"]
+            .as_array()
+            .expect("messages should be an array")
+            .iter()
+            .map(|message| message["role"].as_str().expect("role should be a string"))
+            .collect::<Vec<_>>();
+        assert_eq!(roles, ["reasoning", "assistant", "tool"]);
+    }
+
+    #[test]
     fn reads_spooled_events_written_before_attachments_were_added() {
         let event: AgentEvent = serde_json::from_str(include_str!(
             "../../../specs/broker-plugin-protocol/v1/fixtures/agent-event.json"
@@ -559,10 +597,12 @@ mod tests {
         .expect("fixture should decode");
         let request = IngestEventsRequest::try_from(event).expect("event should translate");
         let mut request = serde_json::to_value(request).expect("request should serialize");
-        request["events"][0]
+        let legacy_event = request["events"][0]
             .as_object_mut()
-            .expect("event should be an object")
-            .remove("attachments");
+            .expect("event should be an object");
+        legacy_event.remove("attachments");
+        // Older spools also carry the collector-counted turn number.
+        legacy_event.insert("turn_index".to_owned(), 3_u32.into());
         let legacy_record = serde_json::json!({
             "reason": "delivery destination returned HTTP 401 Unauthorized",
             "request": request,
@@ -573,6 +613,11 @@ mod tests {
         let serialized = serde_json::to_value(record).expect("record should serialize");
 
         assert!(serialized["request"]["events"][0]["attachments"].is_null());
+        assert!(
+            serialized["request"]["events"][0]
+                .get("turn_index")
+                .is_none()
+        );
     }
 
     #[test]
@@ -590,13 +635,20 @@ mod tests {
                 version: None,
             },
             session_id: "session".to_owned(),
-            turn_index: NonZeroU32::new(1).unwrap(),
+            turn_id: Some("turn-1".to_owned()),
+            naming_thread: true,
+            stream_id: Some("thread-1".to_owned()),
+            response_id: Some("resp-1".to_owned()),
+            previous_response_id: None,
+            purpose: None,
+            session_title: None,
             llm: LlmContext {
                 provider: LlmProvider::OpenAi,
                 model: "gpt".to_owned(),
             },
             side: AgentEventSide::Request,
             text: None,
+            conversation: None,
             token_usage: TokenUsage {
                 input_tokens: 1,
                 output_tokens: 0,
@@ -622,5 +674,63 @@ mod tests {
             serialized["events"][0]["metadata"]["content_segments"][0]["name"],
             "exec"
         );
+        assert_eq!(serialized["events"][0]["turn_id"], "turn-1");
+        assert_eq!(serialized["events"][0]["naming_thread"], true);
+        assert_eq!(serialized["events"][0]["stream_id"], "thread-1");
+        assert_eq!(serialized["events"][0]["response_id"], "resp-1");
+        assert!(
+            serialized["events"][0]
+                .get("previous_response_id")
+                .is_none()
+        );
+        assert!(serialized["events"][0]["metadata"].get("turn_id").is_none());
+        assert!(serialized["events"][0].get("turn_index").is_none());
+    }
+
+    #[test]
+    fn carries_exchange_placement_and_omits_an_absent_turn_identity() {
+        let mut event: AgentEvent = serde_json::from_str(include_str!(
+            "../../../specs/broker-plugin-protocol/v1/fixtures/agent-event.json"
+        ))
+        .expect("fixture should decode");
+        event.agent.name = "claude-code".to_owned();
+        event.turn_id = None;
+        event.naming_thread = false;
+
+        let request = IngestEventsRequest::try_from(event).expect("event should translate");
+        let serialized: Value = serde_json::to_value(request).expect("request should serialize");
+        let ingest_event = &serialized["events"][0];
+        let metadata = &ingest_event["metadata"];
+
+        assert!(ingest_event.get("turn_id").is_none());
+        assert!(ingest_event.get("naming_thread").is_none());
+        assert_eq!(ingest_event["stream_id"], "thread-123");
+        assert_eq!(ingest_event["response_id"], "resp-123");
+        assert_eq!(ingest_event["previous_response_id"], "resp-122");
+        assert!(metadata.get("claude_turn_id").is_none());
+        assert!(metadata.get("claude_code_billing").is_none());
+        assert!(metadata.get("claude_thread").is_none());
+        assert!(
+            metadata["conversation"]
+                .get("previous_response_id")
+                .is_none()
+        );
+        assert_eq!(metadata["purpose"], "session_title");
+        assert_eq!(metadata["session_title"], "Repository overview");
+    }
+
+    #[test]
+    fn retains_prewarm_purpose_and_observed_usage_for_backend_accounting() {
+        let mut event: AgentEvent = serde_json::from_str(include_str!(
+            "../../../specs/broker-plugin-protocol/v1/fixtures/agent-event.json"
+        ))
+        .expect("fixture should decode");
+        event.purpose = Some(abyss_sdk::plugin::EventPurpose::Prewarm);
+        event.session_title = None;
+        let expected_usage = serde_json::to_value(&event.token_usage).unwrap();
+        let request = IngestEventsRequest::try_from(event).expect("event should translate");
+        let serialized = serde_json::to_value(request).unwrap();
+        assert_eq!(serialized["events"][0]["metadata"]["purpose"], "prewarm");
+        assert_eq!(serialized["events"][0]["token_usage"], expected_usage);
     }
 }

@@ -49,10 +49,7 @@ impl ProtocolDetector {
         if path.starts_with("/v1/chat/completions") || path.ends_with("/chat/completions") {
             return Some(LlmProtocol::OpenAi(OpenAiProtocol::ChatCompletions));
         }
-        if matches!(path, "/v1/m" | "/v1/b")
-            || path.starts_with("/v1/messages")
-            || path.ends_with("/messages")
-        {
+        if path.starts_with("/v1/messages") || path.ends_with("/messages") {
             return Some(LlmProtocol::Anthropic(AnthropicProtocol::Messages));
         }
 

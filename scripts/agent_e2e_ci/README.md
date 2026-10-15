@@ -27,6 +27,17 @@ code validates and materializes that plan. A2 runs in a fresh Codex session and
 compares B's real JSONL trace with Backend events, attachment downloads, spool
 state, and broker diagnostics.
 
+Usage comparisons use the shared `UsageAccounting` calculation also exercised
+by the fixed Codex black-box test. All captured events and provider counters
+remain in the evidence. Only explicit `metadata.purpose: prewarm` events
+(WebSocket `response.create` with `generate: false`) are reported separately
+from completed inference usage. Event position, prompt text and token gaps are
+never classification signals. The evidence includes all-observed, prewarm,
+inference and native Codex totals, plus exact per-counter differences. Abyss's
+disjoint input/cache counters are converted to Codex's inclusive-input convention;
+reasoning is a subset of output. Missing or unmarked calls are never subtracted
+to make the totals agree.
+
 The orchestrator validates contracts and infrastructure but does not replace
 A2 with fixed semantic assertions. Its final states are:
 

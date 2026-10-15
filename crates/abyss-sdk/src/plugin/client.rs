@@ -155,7 +155,7 @@ impl BrokerPlugin {
         self
     }
 
-    /// Connects, performs the version 1 handshake, and returns the Agent event stream.
+    /// Connects, requests protocol version 1, and returns the Agent event stream.
     ///
     /// # Errors
     ///
@@ -344,6 +344,7 @@ mod tests {
         let server_task = tokio::spawn(async move {
             let hello: PluginHello = read_json(&mut server).await;
             assert_eq!(hello.plugin_id, "sdk-test-plugin");
+            assert_eq!(hello.protocol_version.wire_value(), 1_u16);
             write_json(&mut server, &BrokerHello::v1())
                 .await
                 .expect("BrokerHello should write");

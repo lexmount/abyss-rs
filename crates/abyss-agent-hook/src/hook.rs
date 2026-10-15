@@ -1,4 +1,4 @@
-//! Single coordinator for Harness detection, protocol parsing, correlation, and delivery.
+//! Single coordinator for Harness detection, protocol parsing, and delivery.
 
 use std::sync::Arc;
 
@@ -8,10 +8,9 @@ use http::{HeaderMap, header::HOST};
 
 use crate::{
     config::{HarnessUsageHookConfig, HooksRuntimeConfig},
-    correlation::CorrelationRegistry,
     delivery::{AgentEventSink, EventDelivery},
     event::{NormalizableExchange, NormalizedUsageEvent, normalize_exchange},
-    harness::{HarnessDetection, HarnessRegistry},
+    harness::{AgentDeclaration, DeclarationSource, HarnessDetection, HarnessRegistry},
     protocol::{
         AnthropicProtocol, ClaudeWebProtocol, LlmProtocol, OpenAiProtocol, ProtocolDetector,
         anthropic::{
@@ -32,7 +31,6 @@ where
     config: Arc<HarnessUsageHookConfig>,
     runtime_config: HooksRuntimeConfig,
     delivery: EventDelivery<S>,
-    correlation: CorrelationRegistry,
     claude_web_context: ClaudeWebContext,
     openai_websocket: OpenAiWebSocketAccumulator,
 }
@@ -52,7 +50,6 @@ where
             config: Arc::new(config),
             runtime_config,
             delivery: EventDelivery::new(sink),
-            correlation: CorrelationRegistry::default(),
             claude_web_context: ClaudeWebContext::default(),
             openai_websocket: OpenAiWebSocketAccumulator::default(),
         }
@@ -78,28 +75,37 @@ where
 
         match protocol {
             LlmProtocol::OpenAi(OpenAiProtocol::Responses | OpenAiProtocol::ChatCompletions) => {
-                let Some(parsed) = parse_openai_exchange(exchange) else {
-                    return Vec::new();
-                };
-                self.normalize(&parsed, &content, &detection, &provider)
+                parse_openai_exchange(exchange).map(|parsed| {
+                    let declaration = http_declaration(
+                        &detection,
+                        exchange,
+                        parsed.client_metadata.as_ref(),
+                        &parsed.response_texts,
+                    );
+                    self.normalize(&parsed, &content, &detection, &provider, &declaration)
+                })
             }
             LlmProtocol::Anthropic(AnthropicProtocol::Messages) => {
-                let Some(parsed) = parse_anthropic_messages_exchange(exchange) else {
-                    return Vec::new();
-                };
-                self.normalize(&parsed, &content, &detection, &provider)
+                parse_anthropic_messages_exchange(exchange).map(|parsed| {
+                    let declaration =
+                        http_declaration(&detection, exchange, None, &parsed.response_texts);
+                    self.normalize(&parsed, &content, &detection, &provider, &declaration)
+                })
             }
             LlmProtocol::Anthropic(AnthropicProtocol::ClaudeWeb(
                 ClaudeWebProtocol::ConversationCompletion,
-            )) => {
-                let Some(mut parsed) = parse_claude_web_exchange(exchange) else {
-                    return Vec::new();
-                };
+            )) => parse_claude_web_exchange(exchange).map(|mut parsed| {
                 self.claude_web_context
                     .attach_referenced_images(&mut parsed);
-                self.normalize(&parsed, &content, &detection, &provider)
-            }
+                // The claude.ai completion protocol names its own turn.
+                let declaration = AgentDeclaration {
+                    turn_id: parsed.protocol_turn_id.clone(),
+                    ..http_declaration(&detection, exchange, None, &parsed.response_texts)
+                };
+                self.normalize(&parsed, &content, &detection, &provider, &declaration)
+            }),
         }
+        .unwrap_or_default()
     }
 
     fn normalize<E>(
@@ -108,20 +114,18 @@ where
         content: &crate::config::HarnessUsageContentConfig,
         detection: &HarnessDetection,
         provider: &LlmProvider,
+        declaration: &AgentDeclaration,
     ) -> Vec<NormalizedUsageEvent>
     where
         E: NormalizableExchange,
     {
-        let correlation =
-            self.correlation
-                .assign(detection, parsed.session_id(), parsed.protocol_turn_id());
         normalize_exchange(
             &self.config,
             parsed,
             content,
             detection,
             provider,
-            &correlation,
+            declaration,
         )
     }
 
@@ -137,16 +141,26 @@ where
         else {
             return Vec::new();
         };
-        let parsed = parse_openai_websocket_message(message);
-        let Some(parsed) = self.openai_websocket.push(&message.flow.flow_id, parsed) else {
-            return Vec::new();
-        };
-        let provider = ProviderResolver::resolve(&websocket_host(message), protocol);
         let content = policy
             .harness_usage
             .config
             .content_for_harness(detection.harness_id.as_str());
-        self.normalize(&parsed, &content, &detection, &provider)
+        let frame = parse_openai_websocket_message(message);
+        let Some(parsed) = self.openai_websocket.push(&message.flow.flow_id, frame) else {
+            return Vec::new();
+        };
+        let provider = ProviderResolver::resolve(&websocket_host(message), protocol);
+        // Frames after the upgrade carry no headers of their own.
+        let declaration = HarnessRegistry::declare(
+            &detection.harness_id,
+            &DeclarationSource {
+                headers: None,
+                body: None,
+                client_metadata: parsed.client_metadata.as_ref(),
+                response_texts: &parsed.response_texts,
+            },
+        );
+        self.normalize(&parsed, &content, &detection, &provider, &declaration)
     }
 }
 
@@ -181,6 +195,24 @@ where
                 .map_err(|error| HookError::failed(error.to_string()))
         })
     }
+}
+
+/// What the detected Agent declared about one HTTP request.
+fn http_declaration(
+    detection: &HarnessDetection,
+    exchange: &HttpExchange,
+    client_metadata: Option<&serde_json::Value>,
+    response_texts: &[String],
+) -> AgentDeclaration {
+    HarnessRegistry::declare(
+        &detection.harness_id,
+        &DeclarationSource {
+            headers: Some(exchange.request.headers()),
+            body: exchange.request.body().json(),
+            client_metadata,
+            response_texts,
+        },
+    )
 }
 
 fn http_host(exchange: &HttpExchange) -> String {
@@ -220,7 +252,9 @@ mod tests {
         CapturedBody, FlowContext, HttpExchange, MitmHook, OriginalDestination, SourceProcess,
         TransparentProtocol,
     };
-    use abyss_plugin_protocol::event::AgentEvent;
+    use abyss_plugin_protocol::event::{
+        AgentEvent, ContentCompleteness, EventPurpose, MessageRole,
+    };
     use http::{Request, Response};
 
     use crate::{
@@ -267,6 +301,220 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn projects_http_messages_and_skips_exchanges_without_response_content() {
+        let request = b" {\"model\":\"gpt-test\",\"input\":[{\"role\":\"developer\",\"content\":\"instructions\"},{\"role\":\"user\",\"content\":\"continue\"},{\"role\":\"user\",\"content\":\"continue\"}],\"tools\":[{\"name\":\"exec\",\"schema\":{\"unknown\":42}}],\"extra\": [1,1]} \n";
+        let response = b"event: response.output_text.delta\r\ndata: {\"type\":\"response.output_text.delta\",\"delta\":\"hi\"}\r\n\r\ndata: {\"type\":\"response.completed\",\"response\":{\"id\":\"r1\",\"unknown\":true}}\r\n\r\ndata: [DONE]\r\n\r\n";
+        for (response, expected_events) in [
+            (response.as_slice(), 2),
+            (
+                b"{\"error\":{\"code\":\"overloaded\",\"details\": [1,2]}}\n",
+                0,
+            ),
+            (b"\xff\0\x80", 0),
+        ] {
+            let sink = Arc::new(RecordingSink::default());
+            let hook = hook(Arc::clone(&sink));
+            let mut exchange = openai_exchange("acme-agent");
+            *exchange.request.body_mut() = CapturedBody::from_bytes(request.to_vec().into());
+            *exchange.response.body_mut() = CapturedBody::from_bytes(response.to_vec().into());
+            hook.on_http_exchange(&exchange).await.unwrap();
+            let events = sink.events.lock().unwrap();
+            assert_eq!(events.len(), expected_events);
+            if expected_events == 0 {
+                continue;
+            }
+            let request = events[0].conversation.as_ref().unwrap();
+            assert_eq!(
+                request
+                    .messages
+                    .iter()
+                    .map(|message| (message.role, message.text.as_str()))
+                    .collect::<Vec<_>>(),
+                vec![
+                    (MessageRole::Developer, "instructions"),
+                    (MessageRole::User, "continue"),
+                    (MessageRole::User, "continue"),
+                ]
+            );
+            let reply = events[1].conversation.as_ref().unwrap();
+            assert_eq!(reply.messages.len(), 1);
+            assert_eq!(reply.messages[0].role, MessageRole::Assistant);
+            assert_eq!(reply.messages[0].text, "hi");
+            assert_eq!(reply.completeness, ContentCompleteness::Complete);
+            assert_eq!(events[1].text.as_deref(), Some("hi"));
+            drop(events);
+        }
+    }
+
+    #[tokio::test]
+    async fn identical_observations_produce_identical_event_ids() {
+        let sink = Arc::new(RecordingSink::default());
+        let hook = hook(Arc::clone(&sink));
+        let exchange = openai_exchange("acme-agent");
+        hook.on_http_exchange(&exchange).await.unwrap();
+        hook.on_http_exchange(&exchange).await.unwrap();
+        let events = sink.events.lock().unwrap();
+        assert_eq!(events.len(), 4);
+        assert_ne!(events[0].event_id, events[1].event_id);
+        assert_eq!(events[0].event_id, events[2].event_id);
+        assert_eq!(events[1].event_id, events[3].event_id);
+        assert_eq!(
+            serde_json::to_value(&events[0].conversation).unwrap(),
+            serde_json::to_value(&events[2].conversation).unwrap()
+        );
+        drop(events);
+    }
+
+    #[tokio::test]
+    async fn websocket_assembles_turn_and_marks_failed_server_frames_partial() {
+        use abyss_mitm::{WebSocketDirection, WebSocketMessage};
+        let sink = Arc::new(RecordingSink::default());
+        let hook = hook(Arc::clone(&sink));
+        let exchange = openai_exchange("acme-agent");
+        let (parts, _) = exchange.request.into_parts();
+        let upgrade = Request::from_parts(parts, ());
+        let request = " {\"type\":\"response.create\",\"response\":{\"model\":\"test\",\"input\":[{\"role\":\"user\",\"content\":\"hello\"}]}}\n";
+        let created = "{\"type\":\"response.created\",\"response\":{\"id\":\"resp-1\"}}";
+        let delta = "{\"type\":\"response.output_text.delta\",\"output_index\":0,\"content_index\":0,\"delta\":\"hi\"}";
+        let terminal = "{\"type\":\"response.completed\",\"response\":{\"id\":\"resp-1\",\"output\":[{\"id\":\"msg-1\",\"role\":\"assistant\",\"content\":[{\"type\":\"output_text\",\"text\":\"hi there\"}]}],\"usage\":{\"input_tokens\":1,\"output_tokens\":2,\"total_tokens\":3}}}";
+        for (sequence, direction, body) in [
+            (1, WebSocketDirection::ClientToServer, request),
+            (2, WebSocketDirection::ServerToClient, created),
+            (3, WebSocketDirection::ServerToClient, "{broken"),
+            (4, WebSocketDirection::ServerToClient, delta),
+            (5, WebSocketDirection::ServerToClient, terminal),
+        ] {
+            hook.on_websocket_message(&WebSocketMessage::new(
+                exchange.flow.clone(),
+                upgrade.clone(),
+                direction,
+                sequence,
+                Some(body.to_owned()),
+                None,
+            ))
+            .await
+            .unwrap();
+        }
+        let events = sink.events.lock().unwrap();
+        assert_eq!(events.len(), 2);
+        let request_content = events[0].conversation.as_ref().unwrap();
+        assert_eq!(request_content.messages[0].role, MessageRole::User);
+        assert_eq!(request_content.messages[0].text, "hello");
+        assert_eq!(request_content.completeness, ContentCompleteness::Complete);
+        let response_content = events[1].conversation.as_ref().unwrap();
+        assert_eq!(response_content.messages.len(), 1);
+        assert_eq!(response_content.messages[0].id.as_deref(), Some("msg-1"));
+        assert_eq!(response_content.messages[0].text, "hi there");
+        assert_eq!(response_content.completeness, ContentCompleteness::Partial);
+        assert_eq!(events[1].text.as_deref(), Some("hi there"));
+        drop(events);
+    }
+
+    #[tokio::test]
+    async fn websocket_prewarm_requires_explicit_false_and_does_not_leak_to_next_call() {
+        use abyss_mitm::{WebSocketDirection, WebSocketMessage};
+        use serde_json::{Value, json};
+
+        for nested in [false, true] {
+            for generate in [
+                None,
+                Some(json!(false)),
+                Some(json!(true)),
+                Some(json!("false")),
+            ] {
+                let sink = Arc::new(RecordingSink::default());
+                let hook = hook(Arc::clone(&sink));
+                let exchange = openai_exchange("acme-agent");
+                let (parts, _) = exchange.request.into_parts();
+                let upgrade = Request::from_parts(parts, ());
+                let mut payload = json!({"model": "test", "instructions": "rules", "input": []});
+                if let Some(value) = &generate {
+                    payload["generate"] = value.clone();
+                }
+                let request = if nested {
+                    json!({"type": "response.create", "response": payload})
+                } else {
+                    payload["type"] = json!("response.create");
+                    payload
+                };
+                let terminal = json!({"type": "response.completed", "response": {
+                    "id": "warm", "generate": false, "output": [],
+                    "usage": {"input_tokens": 11_u64, "output_tokens": 0_u64, "total_tokens": 11_u64}
+                }});
+                let next_request = json!({"type": "response.create", "model": "test",
+                    "previous_response_id": "warm",
+                    "input": [{"role": "user", "content": "hello"}]});
+                let next_terminal = json!({"type": "response.completed", "response": {
+                    "id": "answer", "output": [{"id": "m1", "role": "assistant",
+                        "content": [{"type": "output_text", "text": "hi"}]}],
+                    "usage": {"input_tokens": 5_u64, "output_tokens": 2_u64, "total_tokens": 7_u64}
+                }});
+                for (sequence, direction, payload) in [
+                    (1, WebSocketDirection::ClientToServer, request),
+                    (2, WebSocketDirection::ServerToClient, terminal),
+                    (3, WebSocketDirection::ClientToServer, next_request),
+                    (4, WebSocketDirection::ServerToClient, next_terminal),
+                ] {
+                    hook.on_websocket_message(&WebSocketMessage::new(
+                        exchange.flow.clone(),
+                        upgrade.clone(),
+                        direction,
+                        sequence,
+                        Some(payload.to_string()),
+                        None,
+                    ))
+                    .await
+                    .unwrap();
+                }
+                let events = sink.events.lock().unwrap();
+                assert_eq!(events.len(), 3);
+                let expected = (generate.as_ref().and_then(Value::as_bool) == Some(false))
+                    .then_some(EventPurpose::Prewarm);
+                assert_eq!(events[0].purpose, expected);
+                assert_eq!(events[0].token_usage.input_tokens, 11);
+                assert_eq!(
+                    events[0].conversation.as_ref().unwrap().messages[0].text,
+                    "rules"
+                );
+                assert!(events[1..].iter().all(|event| event.purpose.is_none()));
+                assert_eq!(events[1].previous_response_id.as_deref(), Some("warm"));
+                assert_eq!(events[1].token_usage.input_tokens, 5);
+                assert_eq!(events[2].token_usage.output_tokens, 2);
+                drop(events);
+            }
+        }
+    }
+
+    #[tokio::test]
+    async fn truncated_but_parseable_response_reports_partial() {
+        let sink = Arc::new(RecordingSink::default());
+        let hook = hook(Arc::clone(&sink));
+        let mut exchange = anthropic_exchange("acme-agent");
+        *exchange.response.body_mut() = CapturedBody::from_truncated_bytes(
+            concat!(
+                "data: {\"type\":\"message_start\",\"message\":{\"id\":\"msg_1\",",
+                "\"usage\":{\"input_tokens\":3}}}\n\n",
+                "data: {\"type\":\"content_block_delta\",\"index\":0,\"delta\":",
+                "{\"type\":\"text_delta\",\"text\":\"hi\"}}\n\n",
+                "data: {\"type\":\"content_block_delta\",\"index\":0,\"delta\":"
+            )
+            .as_bytes()
+            .to_vec()
+            .into(),
+        );
+        hook.on_http_exchange(&exchange).await.unwrap();
+        let events = sink.events.lock().unwrap();
+        assert_eq!(events.len(), 2);
+        let request = events[0].conversation.as_ref().unwrap();
+        assert_eq!(request.completeness, ContentCompleteness::Complete);
+        let reply = events[1].conversation.as_ref().unwrap();
+        assert_eq!(reply.completeness, ContentCompleteness::Partial);
+        assert_eq!(reply.messages[0].text, "hi");
+        assert_eq!(events[1].text.as_deref(), Some("hi"));
+        drop(events);
+    }
+
+    #[tokio::test]
     async fn protocol_shape_without_harness_evidence_produces_no_event() {
         let sink = Arc::new(RecordingSink::default());
         let hook = hook(Arc::clone(&sink));
@@ -295,6 +543,116 @@ mod tests {
                 .iter()
                 .all(|event| event.llm.provider.wire_name() == "anthropic")
         );
+        drop(events);
+    }
+
+    #[tokio::test]
+    async fn claude_code_declarations_follow_its_request_headers() {
+        let sink = Arc::new(RecordingSink::default());
+        let hook = hook(Arc::clone(&sink));
+        let user = |text: &str| serde_json::json!([{"role": "user", "content": text}]);
+        let continue_from =
+            |id: &str| serde_json::json!({"type": "continue", "previous_message_id": id});
+        let requests = [
+            // Main loop: `create`, then `continue`.
+            (
+                vec![("main", None, Some("p1"))],
+                serde_json::json!({"messages": user("hello"), "thread": {"type": "create"}}),
+            ),
+            (
+                vec![("main", None, Some("p1"))],
+                serde_json::json!({"messages": user("next"), "thread": continue_from("msg_1")}),
+            ),
+            // Two subagents serving prompt p1.
+            (
+                vec![("subagent", Some("agent-a"), Some("p1"))],
+                serde_json::json!({"messages": user("explore"), "thread": {"type": "create"}}),
+            ),
+            (
+                vec![("subagent", Some("agent-b"), Some("p1"))],
+                serde_json::json!({"messages": user("search"), "thread": continue_from("msg_b")}),
+            ),
+            // Auxiliary request, compaction, and a request without headers
+            // whose billing header still names a prompt.
+            (
+                vec![("auxiliary", None, None)],
+                serde_json::json!({"messages": user("Recap in under 40 words.")}),
+            ),
+            (
+                vec![("compaction", None, None)],
+                serde_json::json!({"messages": user("Summarize the conversation.")}),
+            ),
+            (
+                Vec::new(),
+                serde_json::json!({
+                    "system": [{"type": "text", "text": "x-anthropic-billing-header: cc_prompt_id=p9; cc_turn_index=9;"}],
+                    "messages": user("quota")
+                }),
+            ),
+        ];
+        for (declared, request) in &requests {
+            let mut headers = vec![("x-claude-code-session-id", "session-1")];
+            for (class, agent, prompt) in declared {
+                headers.push(("x-claude-code-request-class", class));
+                headers.extend(agent.map(|agent| ("x-claude-code-agent-id", agent)));
+                headers.extend(prompt.map(|prompt| ("x-claude-code-prompt-id", prompt)));
+            }
+            hook.on_http_exchange(&anthropic_exchange_with_headers(
+                "claude", &headers, request,
+            ))
+            .await
+            .unwrap();
+        }
+
+        let events = sink.events.lock().unwrap();
+        assert_eq!(events.len(), requests.len() * 2);
+        let expected = [
+            (Some("p1"), Some("session-1"), None, None),
+            (Some("p1"), Some("session-1"), Some("msg_1"), None),
+            (Some("p1"), Some("agent-a"), None, None),
+            (Some("p1"), Some("agent-b"), Some("msg_b"), None),
+            (None, None, None, None),
+            (None, None, None, Some(EventPurpose::Compaction)),
+            (None, None, None, None),
+        ];
+        for (exchange_events, (turn, stream, previous, purpose)) in events.chunks(2).zip(expected) {
+            for event in exchange_events {
+                assert_eq!(event.agent.name, "claude-code");
+                assert_eq!(event.turn_id.as_deref(), turn);
+                assert_eq!(event.stream_id.as_deref(), stream);
+                assert_eq!(event.previous_response_id.as_deref(), previous);
+                assert_eq!(event.purpose, purpose);
+                assert_eq!(event.response_id.as_deref(), Some("msg_test"));
+                assert!(!event.naming_thread);
+            }
+        }
+        drop(events);
+    }
+
+    #[tokio::test]
+    async fn other_anthropic_clients_carry_no_turn_id() {
+        let sink = Arc::new(RecordingSink::default());
+        let hook = hook(Arc::clone(&sink));
+        let request = serde_json::json!({
+            "messages": [
+                {"role": "user", "content": "hello"},
+                {"role": "assistant", "content": "hi"},
+                {"role": "user", "content": [
+                    {"type": "tool_result", "tool_use_id": "toolu_1", "content": "ok"}
+                ]}
+            ]
+        });
+
+        hook.on_http_exchange(&anthropic_exchange("acme-agent"))
+            .await
+            .unwrap();
+        hook.on_http_exchange(&anthropic_exchange_with_request("acme-agent", &request))
+            .await
+            .unwrap();
+
+        let events = sink.events.lock().unwrap();
+        assert_eq!(events.len(), 4);
+        assert!(events.iter().all(|event| event.turn_id.is_none()));
         drop(events);
     }
 
@@ -356,6 +714,31 @@ mod tests {
     }
 
     fn anthropic_exchange(process_name: &str) -> HttpExchange {
+        anthropic_exchange_with_request(
+            process_name,
+            &serde_json::json!({
+                "model": "claude-test",
+                "messages": [{"role": "user", "content": "hello"}]
+            }),
+        )
+    }
+
+    fn anthropic_exchange_with_request(
+        process_name: &str,
+        request_body: &serde_json::Value,
+    ) -> HttpExchange {
+        anthropic_exchange_with_headers(
+            process_name,
+            &[("x-claude-code-session-id", "session-1")],
+            request_body,
+        )
+    }
+
+    fn anthropic_exchange_with_headers(
+        process_name: &str,
+        headers: &[(&str, &str)],
+        request_body: &serde_json::Value,
+    ) -> HttpExchange {
         let flow = FlowContext::from_optional_addrs(
             None,
             None,
@@ -367,18 +750,17 @@ mod tests {
                 None,
             )),
         );
-        let request = Request::builder()
+        let mut request = Request::builder()
             .method("POST")
             .uri("/v1/messages")
             .header("host", "api.anthropic.com")
-            .header("content-type", "application/json")
+            .header("content-type", "application/json");
+        for (name, value) in headers {
+            request = request.header(*name, *value);
+        }
+        let request = request
             .body(CapturedBody::from_bytes(
-                serde_json::to_vec(&serde_json::json!({
-                    "model": "claude-test",
-                    "messages": [{"role": "user", "content": "hello"}]
-                }))
-                .unwrap()
-                .into(),
+                serde_json::to_vec(request_body).unwrap().into(),
             ))
             .unwrap();
         let response = Response::builder()

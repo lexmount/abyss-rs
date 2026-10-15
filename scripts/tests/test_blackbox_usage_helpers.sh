@@ -26,7 +26,7 @@ jq -n \
         session_id: "session-test",
         turn_index: 3,
         text: $marker,
-        input_tokens: 11,
+        input_tokens: 8,
         output_tokens: 0,
         cache_read_tokens: 2,
         cache_write_tokens: 1,
@@ -66,7 +66,7 @@ blackbox_assert_codex_usage_matches_pair "${USAGE_JSON}" "${PAIR_JSON}"
 
 SUMMARY_JSON='{
   "rows": [
-    {"event_type":"request","requests":1,"responses":0,"input_tokens":11,"output_tokens":0,"cache_read_tokens":2,"cache_write_tokens":1,"reasoning_tokens":0,"total_tokens":11},
+    {"event_type":"request","requests":1,"responses":0,"input_tokens":8,"output_tokens":0,"cache_read_tokens":2,"cache_write_tokens":1,"reasoning_tokens":0,"total_tokens":11},
     {"event_type":"response","requests":0,"responses":1,"input_tokens":0,"output_tokens":7,"cache_read_tokens":0,"cache_write_tokens":0,"reasoning_tokens":3,"total_tokens":7}
   ]
 }'
@@ -75,11 +75,43 @@ blackbox_assert_summary_matches_pair "${SUMMARY_JSON}" "${PAIR_JSON}"
 TWO_PAIRS_JSON="$(jq -cn --argjson pair "${PAIR_JSON}" '[ $pair, $pair ]')"
 SUMMARY_TWO_JSON='{
   "rows": [
-    {"event_type":"request","requests":2,"responses":0,"input_tokens":22,"output_tokens":0,"cache_read_tokens":4,"cache_write_tokens":2,"reasoning_tokens":0,"total_tokens":22},
+    {"event_type":"request","requests":2,"responses":0,"input_tokens":16,"output_tokens":0,"cache_read_tokens":4,"cache_write_tokens":2,"reasoning_tokens":0,"total_tokens":22},
     {"event_type":"response","requests":0,"responses":2,"input_tokens":0,"output_tokens":14,"cache_read_tokens":0,"cache_write_tokens":0,"reasoning_tokens":6,"total_tokens":14}
   ]
 }'
 blackbox_assert_summary_matches_pairs "${SUMMARY_TWO_JSON}" "${TWO_PAIRS_JSON}"
+
+# A completed WebSocket prewarm can report input usage without a response
+# message. The session summary must include that request, while the native
+# turn.completed usage still matches only the marker request/response pair.
+PREWARM_EVENTS_JSON="$(jq -c '.events + [(.events[0] | .event_id = "prewarm-event"
+  | .text = "prewarm instructions" | .input_tokens = 6 | .cache_read_tokens = 0
+  | .cache_write_tokens = 0 | .total_tokens = 6
+  | .metadata.purpose = "prewarm")]' "${EVENTS_FILE}")"
+PREWARM_SUMMARY_JSON="$(jq -c '.rows[0].requests += 1
+  | .rows[0].input_tokens += 6 | .rows[0].total_tokens += 6' <<<"${SUMMARY_JSON}")"
+blackbox_assert_summary_matches_events "${PREWARM_SUMMARY_JSON}" "${PREWARM_EVENTS_JSON}"
+blackbox_assert_codex_usage_matches_pair "${USAGE_JSON}" "${PAIR_JSON}"
+COMPLETED_USAGE_JSON="$(jq -cn --argjson usage "${USAGE_JSON}" '[$usage]')"
+blackbox_assert_codex_session_usage "${COMPLETED_USAGE_JSON}" "${PREWARM_EVENTS_JSON}" >/dev/null
+UNMARKED_EVENTS_JSON="$(jq -c 'map(del(.metadata.purpose))' <<<"${PREWARM_EVENTS_JSON}")"
+if blackbox_assert_codex_session_usage "${COMPLETED_USAGE_JSON}" "${UNMARKED_EVENTS_JSON}" >/dev/null 2>&1; then
+  echo "Unmarked initial requests must remain in inference usage" >&2
+  exit 1
+fi
+if blackbox_assert_summary_matches_pair "${PREWARM_SUMMARY_JSON}" "${PAIR_JSON}" >/dev/null 2>&1; then
+  echo "Pair-only summary must detect the additional prewarm request" >&2
+  exit 1
+fi
+if blackbox_assert_summary_matches_events "${SUMMARY_JSON}" "${PREWARM_EVENTS_JSON}" >/dev/null 2>&1; then
+  echo "Summary must not omit prewarm request counts and tokens" >&2
+  exit 1
+fi
+BAD_PREWARM_SUMMARY="$(jq -c '.rows[0].input_tokens += 1' <<<"${PREWARM_SUMMARY_JSON}")"
+if blackbox_assert_summary_matches_events "${BAD_PREWARM_SUMMARY}" "${PREWARM_EVENTS_JSON}" >/dev/null 2>&1; then
+  echo "Summary must still reject a one-token mismatch" >&2
+  exit 1
+fi
 
 printf '%s\n' \
   '{"type":"turn.completed","usage":{"input_tokens":5,"output_tokens":4}}' \

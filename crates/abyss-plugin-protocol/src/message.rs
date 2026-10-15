@@ -1,4 +1,4 @@
-//! Handshake and broker control wire payloads for plugin protocol version 1.
+//! Version negotiation and broker control wire payloads.
 
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
@@ -8,7 +8,7 @@ use thiserror::Error;
 #[non_exhaustive]
 #[serde(try_from = "u16", into = "u16")]
 pub enum PluginProtocolVersion {
-    /// Initial handshake, live stream, and Agent event contract.
+    /// Handshake, live stream, and structured Agent event contract.
     V1,
 }
 
@@ -200,13 +200,13 @@ mod tests {
 
     #[test]
     fn unsupported_protocol_version_is_rejected() {
-        let error = serde_json::from_value::<PluginProtocolVersion>(json!(7_u16))
-            .expect_err("protocol version 7 must be rejected");
+        let error = serde_json::from_value::<PluginProtocolVersion>(json!(2_u16))
+            .expect_err("protocol version 2 must be rejected");
 
         assert!(
             error
                 .to_string()
-                .contains("unsupported broker plugin protocol version 7"),
+                .contains("unsupported broker plugin protocol version 2"),
             "error should identify the unsupported protocol version"
         );
     }

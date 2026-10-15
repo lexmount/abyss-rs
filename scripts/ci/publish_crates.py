@@ -71,11 +71,11 @@ def check_release(tag):
     packaged_fixture = ROOT / "crates/abyss-broker/src/plugin/fixtures/agent-event.json"
     if fixture.read_bytes() != packaged_fixture.read_bytes():
         raise ValueError("broker's packaged AgentEvent fixture must match the public specification")
-    contract = ROOT / "specs/broker-plugin-protocol/v1"
-    packaged_contract = ROOT / "crates/abyss-sdk/tests/fixtures/broker-plugin-protocol/v1"
-    for source in sorted(contract.rglob("*.json")):
-        relative = source.relative_to(contract)
-        if source.read_bytes() != (packaged_contract / relative).read_bytes():
+    contracts = ROOT / "specs/broker-plugin-protocol"
+    packaged_contracts = ROOT / "crates/abyss-sdk/tests/fixtures/broker-plugin-protocol"
+    for source in sorted(contracts.rglob("*.json")):
+        relative = source.relative_to(contracts)
+        if source.read_bytes() != (packaged_contracts / relative).read_bytes():
             raise ValueError(f"SDK's packaged {relative} must match the public specification")
     print(f"Validated crates.io release {version}: {', '.join(PACKAGES)}", flush=True)
     return version

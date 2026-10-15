@@ -9,19 +9,22 @@ use abyss_mitm::HttpExchange;
 use http::Method;
 use serde::Serialize;
 
-use crate::protocol::model::{
-    digest::sha256_hex,
-    image::{ParsedImageAttachment, extract_anthropic_request_images},
-    text::non_empty_trimmed,
-    tool::ParsedToolEvent,
-    usage::{TokenUsage, TokenUsageSource},
+use crate::protocol::{
+    anthropic::conversation::{AnthropicRequest, AnthropicResponse},
+    model::{
+        digest::sha256_hex,
+        image::{ParsedImageAttachment, extract_anthropic_request_images},
+        text::non_empty_trimmed,
+        tool::ParsedToolEvent,
+        usage::{TokenUsage, TokenUsageSource},
+    },
+    sse::ResponseDocuments,
 };
 
 use super::super::messages::{
-    best_usage, claude_web_file_uuids, estimated_visible_usage, event_types, extract_request_texts,
-    extract_request_tool_events, extract_response_texts, extract_response_tool_events,
-    first_message_id, first_model, first_stop_reason, flow_server_name, request_host,
-    response_values, string_field, transport_name, turn_message_uuids,
+    best_usage, claude_web_file_uuids, estimated_visible_usage, event_types,
+    extract_request_tool_events, extract_response_tool_events, first_model, first_stop_reason,
+    flow_server_name, request_host, string_field, transport_name, turn_message_uuids,
 };
 
 /// Source used to derive the Claude Web session id.
@@ -59,7 +62,11 @@ pub struct ParsedClaudeWebExchange {
     pub session_id_source: ClaudeWebSessionIdSource,
     /// Hash of method, host, path, and request body for event correlation.
     pub request_hash: String,
-    /// User-visible prompt fragments extracted from the request body.
+    /// Structured request messages decoded from the request body.
+    pub request_conversation: abyss_plugin_protocol::event::Conversation,
+    /// Structured response messages assembled from the response documents.
+    pub response_conversation: abyss_plugin_protocol::event::Conversation,
+    /// User-visible prompt fragments derived from the request messages.
     pub request_texts: Vec<String>,
     /// Validated image attachments embedded in user request content.
     pub request_images: Vec<ParsedImageAttachment>,
@@ -71,7 +78,7 @@ pub struct ParsedClaudeWebExchange {
     pub request_tool_events: Vec<ParsedToolEvent>,
     /// Tool calls and results streamed on the response side.
     pub response_tool_events: Vec<ParsedToolEvent>,
-    /// Assistant response fragments extracted from SSE response data.
+    /// Assistant response fragments derived from the response messages.
     pub response_texts: Vec<String>,
     /// Provider token counters or a visible-content estimate when absent.
     pub usage: TokenUsage,
@@ -103,7 +110,8 @@ pub fn parse_claude_web_exchange(exchange: &HttpExchange) -> Option<ParsedClaude
     let path = exchange.request.uri().path();
     let conversation_id = completion_conversation_id(path)?;
     let request_json = exchange.request.body().json()?;
-    let request_texts = extract_request_texts(request_json, false);
+    let request = AnthropicRequest::parse(request_json, exchange.request.body().truncated());
+    let request_texts = request.texts();
     let request_images = extract_anthropic_request_images(request_json);
     let request_file_uuids = claude_web_file_uuids(request_json);
     let request_tool_events = extract_request_tool_events(request_json);
@@ -115,8 +123,10 @@ pub fn parse_claude_web_exchange(exchange: &HttpExchange) -> Option<ParsedClaude
         return None;
     }
 
-    let response_values = response_values(exchange.response.headers(), exchange.response.body());
-    let response_texts = extract_response_texts(&response_values);
+    let response_documents = ResponseDocuments::decode(exchange.response.body());
+    let response_values = response_documents.values;
+    let response = AnthropicResponse::assemble(&response_values, response_documents.incomplete);
+    let response_texts = response.texts();
     let response_tool_events = extract_response_tool_events(&response_values);
     let (usage, usage_source) = best_usage(&response_values)
         .or_else(|| best_usage(std::slice::from_ref(request_json)))
@@ -158,6 +168,8 @@ pub fn parse_claude_web_exchange(exchange: &HttpExchange) -> Option<ParsedClaude
         session_id: conversation_id.to_owned(),
         session_id_source: ClaudeWebSessionIdSource::ConversationPath,
         request_hash,
+        request_conversation: request.conversation(),
+        response_conversation: response.conversation(),
         request_texts,
         request_images,
         request_file_uuids,
@@ -167,7 +179,9 @@ pub fn parse_claude_web_exchange(exchange: &HttpExchange) -> Option<ParsedClaude
         response_texts,
         usage,
         usage_source,
-        message_id: first_message_id(&response_values)
+        message_id: response
+            .id()
+            .map(str::to_owned)
             .or_else(|| turn_message_uuids.assistant.clone()),
         model: first_model(&response_values)
             .or_else(|| string_field(request_json, "model").map(str::to_owned)),

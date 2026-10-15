@@ -6,14 +6,49 @@ export interface AgentEvent {
   device: DeviceContext;
   agent: AgentContext;
   session_id: string;
-  turn_index: number;
+  /** User turn declared by the Agent; absent when no turn was declared. */
+  turn_id?: string;
+  naming_thread?: boolean;
+  stream_id?: string;
+  response_id?: string;
+  previous_response_id?: string;
+  purpose?: EventPurpose;
+  session_title?: string;
   llm: LlmContext;
   side: AgentEventSide;
   text?: string;
+  conversation?: Conversation;
   token_usage: TokenUsage;
   tool_calls?: ToolCall[];
   tool_results?: ToolResult[];
   attachments?: ImageAttachment[];
+}
+
+export type EventPurpose = "session_title" | "compaction" | "prewarm";
+
+export type MessageRole =
+  | "system"
+  | "developer"
+  | "user"
+  | "assistant"
+  | "reasoning"
+  | "tool"
+  | "unknown";
+
+export type ContentCompleteness = "complete" | "partial" | "unsupported";
+
+export interface ConversationMessage {
+  id: string | null;
+  role: MessageRole;
+  /** Message text only; tool arguments and results use the event's tool fields. */
+  text: string;
+}
+
+export interface Conversation {
+  messages: ConversationMessage[];
+  instructions_present: boolean;
+  completeness: ContentCompleteness;
+  policy_omitted: boolean;
 }
 
 export interface DeviceContext {
@@ -34,6 +69,11 @@ export interface LlmContext {
 
 export type AgentEventSide = "request" | "response";
 
+/**
+ * Normalized non-negative token counters. Input, cache read, cache write, and
+ * output counters are disjoint; `reasoning_tokens` is a breakdown of
+ * `output_tokens` and `total_tokens` is the sum of the four disjoint counters.
+ */
 export interface TokenUsage {
   input_tokens: number;
   output_tokens: number;
@@ -77,10 +117,17 @@ export function decodeAgentEvent(value: unknown): AgentEvent {
       "device",
       "agent",
       "session_id",
-      "turn_index",
+      "turn_id",
+      "naming_thread",
+      "stream_id",
+      "response_id",
+      "previous_response_id",
+      "purpose",
+      "session_title",
       "llm",
       "side",
       "text",
+      "conversation",
       "token_usage",
       "tool_calls",
       "tool_results",
@@ -96,17 +143,70 @@ export function decodeAgentEvent(value: unknown): AgentEvent {
   decodeDevice(event.device);
   decodeAgent(event.agent);
   stringField(event, "session_id");
-  positiveIntegerField(event, "turn_index");
+  for (const field of [
+    "turn_id",
+    "stream_id",
+    "response_id",
+    "previous_response_id",
+    "session_title",
+  ]) {
+    optionalStringField(event, field);
+  }
+  if (event.naming_thread !== undefined) {
+    booleanField(event, "naming_thread");
+  }
+  if (event.purpose !== undefined) {
+    choiceField(event, "purpose", ["session_title", "compaction", "prewarm"]);
+  }
   decodeLlm(event.llm);
   if (event.side !== "request" && event.side !== "response") {
     throw new TypeError("AgentEvent.side must be request or response");
   }
   optionalStringField(event, "text");
+  if (event.conversation !== undefined) {
+    decodeConversation(event.conversation);
+  }
   decodeTokenUsage(event.token_usage);
   optionalArray(event, "tool_calls").forEach(decodeToolCall);
   optionalArray(event, "tool_results").forEach(decodeToolResult);
   optionalArray(event, "attachments").forEach(decodeAttachment);
   return event as unknown as AgentEvent;
+}
+
+function decodeConversation(value: unknown): void {
+  const conversation = record(value, "AgentEvent.conversation");
+  rejectUnknown(
+    conversation,
+    ["messages", "instructions_present", "completeness", "policy_omitted"],
+    "conversation",
+  );
+  if (!Array.isArray(conversation.messages)) {
+    throw new TypeError("conversation.messages must be an array");
+  }
+  for (const value of conversation.messages) {
+    const message = record(value, "conversation.messages[]");
+    rejectUnknown(message, ["id", "role", "text"], "conversation message");
+    if (message.id !== null) {
+      stringField(message, "id");
+    }
+    choiceField(message, "role", [
+      "system",
+      "developer",
+      "user",
+      "assistant",
+      "reasoning",
+      "tool",
+      "unknown",
+    ]);
+    stringField(message, "text");
+  }
+  booleanField(conversation, "instructions_present");
+  choiceField(conversation, "completeness", [
+    "complete",
+    "partial",
+    "unsupported",
+  ]);
+  booleanField(conversation, "policy_omitted");
 }
 
 function decodeDevice(value: unknown): void {
@@ -232,15 +332,21 @@ function nonNegativeIntegerField(
   return fieldValue;
 }
 
-function positiveIntegerField(
+function booleanField(value: Record<string, unknown>, field: string): void {
+  if (typeof value[field] !== "boolean") {
+    throw new TypeError(`${field} must be a boolean`);
+  }
+}
+
+function choiceField(
   value: Record<string, unknown>,
   field: string,
-): number {
-  const fieldValue = nonNegativeIntegerField(value, field);
-  if (fieldValue === 0) {
-    throw new TypeError(`${field} must be greater than zero`);
+  choices: readonly string[],
+): void {
+  const fieldValue = stringField(value, field);
+  if (!choices.includes(fieldValue)) {
+    throw new TypeError(`${field} must be one of: ${choices.join(", ")}`);
   }
-  return fieldValue;
 }
 
 function optionalArray(

@@ -16,6 +16,7 @@ from .config import RuntimeConfig
 from .model import ScenarioPlan
 from .process import LoopbackHttpClient, OrchestrationError
 from .stack import TestStack
+from .usage import UsageAccounting
 
 
 MAX_EVIDENCE_STRING_BYTES = 12 * 1024
@@ -218,6 +219,10 @@ class EvidenceBuilder:
                     "codex_b": execution.result.as_dict(),
                     "backend_events": backend["scenario_events"].get(
                         execution.result.scenario_id, []
+                    ),
+                    "usage_accounting": UsageAccounting.compare(
+                        backend["scenario_events"].get(execution.result.scenario_id, []),
+                        execution.result.completed_usage,
                     ),
                 }
                 for execution in executions

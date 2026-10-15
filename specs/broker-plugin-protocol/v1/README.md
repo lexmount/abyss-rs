@@ -40,7 +40,7 @@ one frame:
 one JSON payload. Protocol version negotiation occurs in the first frame rather
 than in the binary frame header.
 
-The version 1 maximum JSON payload is 16 MiB. A future transport implementation
+The version 1 maximum JSON payload is 64 MiB. A future transport implementation
 must reject a larger frame before allocating its declared payload.
 
 ## Session Sequence
@@ -180,7 +180,10 @@ The complete frame payload schema is in
 
 ## Agent Event Contract
 
-Protocol version 1 defines one flat, normalized `AgentEvent` shape:
+Protocol version 1 carries one flat, normalized `AgentEvent` shape with
+structured, role-aware conversation content. Consumers read messages directly
+without decoding provider transport bodies. Raw transport bytes, decoded
+provider documents, and original content blocks are not part of the contract.
 
 ```json
 {
@@ -188,43 +191,250 @@ Protocol version 1 defines one flat, normalized `AgentEvent` shape:
   "occurred_at": "2026-08-19T10:00:00Z",
   "device": {
     "host_name": "developer-mac",
-    "platform": "macos"
+    "platform": "macos",
+    "os_version": "15.6"
   },
   "agent": {
-    "name": "codex"
+    "name": "codex",
+    "version": "1.2.3"
   },
   "session_id": "session-123",
-  "turn_index": 1,
+  "turn_id": "turn-123",
+  "naming_thread": true,
+  "stream_id": "thread-123",
+  "response_id": "resp-123",
+  "previous_response_id": "resp-122",
+  "purpose": "session_title",
+  "session_title": "Repository overview",
   "llm": {
     "provider": "openai",
     "model": "gpt-5"
   },
-  "side": "request",
+  "side": "response",
+  "text": "I will inspect the repository.",
   "token_usage": {
-    "input_tokens": 24,
-    "output_tokens": 0,
-    "cache_read_tokens": 8,
+    "input_tokens": 0,
+    "output_tokens": 12,
+    "cache_read_tokens": 0,
     "cache_write_tokens": 0,
-    "reasoning_tokens": 0,
-    "total_tokens": 24
+    "reasoning_tokens": 4,
+    "total_tokens": 12
+  },
+  "tool_calls": [
+    {
+      "call_id": "call-123",
+      "name": "exec",
+      "input": "pwd",
+      "input_sha256": "0000000000000000000000000000000000000000000000000000000000000000"
+    }
+  ],
+  "attachments": [
+    {
+      "position": 0,
+      "media_type": "image/png",
+      "byte_size": 8,
+      "sha256": "0000000000000000000000000000000000000000000000000000000000000000",
+      "content_base64": "iVBORw0KGgo="
+    }
+  ],
+  "conversation": {
+    "messages": [
+      {
+        "id": "rs-123",
+        "role": "reasoning",
+        "text": "The user wants an overview of the repository."
+      },
+      {
+        "id": "msg-123",
+        "role": "assistant",
+        "text": "I will inspect the repository."
+      },
+      {
+        "id": "fc-123",
+        "role": "tool",
+        "text": ""
+      }
+    ],
+    "instructions_present": false,
+    "completeness": "complete",
+    "policy_omitted": false
   }
 }
 ```
 
-There is no event kind discriminator or nested payload enum because version 1
-defines only this event shape. `side` identifies whether the normalized content
-and token usage belong to an Agent request or provider response.
+There is no event kind discriminator or nested payload enum. `side` identifies
+whether content and token usage belong to the Agent request or provider response.
+Tool arguments and results use `tool_calls` and `tool_results`, and images use
+`attachments`; the event has no arbitrary `metadata` object.
 
-Provider-specific response identifiers, raw HTTP details, parser evidence, and
-other internal correlation data are not part of the public event. The broker
-uses them while parsing and normalizing traffic, then exposes only declared,
-typed fields. Tool activity is represented by the structured `tool_calls` and
-`tool_results` arrays with broker-normalized call identifiers and tool names;
-the event does not contain an arbitrary `metadata` object.
+`token_usage` counters are disjoint regardless of how the provider reports
+them. `input_tokens` counts input neither read from nor written into a provider
+cache, `cache_read_tokens` and `cache_write_tokens` count the cached input, and
+`output_tokens` counts model output including reasoning. `reasoning_tokens` is
+the part of `output_tokens` spent on reasoning, and `total_tokens` is
+`input_tokens + cache_read_tokens + cache_write_tokens + output_tokens`. Request
+events carry the input-side counters and response events carry the output-side
+counters, so summing both sides of one exchange never double-counts a token.
 
-The event is intentionally independent of the current Abyss backend ingest
-request. An official or third-party delivery plugin translates it into its
-configured destination API.
+## Conversation
+
+`conversation.messages` lists provider messages and standalone items in provider
+order. Each message has exactly three fields:
+
+- `id`: the provider message or item identifier, or `null` when none was sent.
+- `role`: one of the roles below.
+- `text`: the message's text projection.
+
+| Role | Meaning |
+| --- | --- |
+| `system` | Provider system prompt, such as Anthropic `system`. |
+| `developer` | Developer instructions, including OpenAI `instructions`. |
+| `user` | End-user input. |
+| `assistant` | Model-visible assistant output. |
+| `reasoning` | Model reasoning, such as OpenAI reasoning summaries or Anthropic thinking. |
+| `tool` | A tool call or tool result item, kept in position. |
+| `unknown` | The provider did not declare a role. |
+
+`text` never contains tool arguments or results; those are carried only by
+`tool_calls` and `tool_results`. Images are carried only by `attachments`.
+
+A request event carries the history as the agent sent it. Repeated messages,
+such as the same user prompt sent twice, are retained as separate messages and
+are not deduplicated. A response event carries the provider's output after the
+collector assembles streamed fragments; a streamed reply appears as one message
+with its complete text, never as per-delta fragments.
+
+OpenAI reasoning items and Anthropic thinking blocks both become `reasoning`
+messages. An Anthropic response message that contains thinking and text blocks
+is split into `reasoning` and `assistant` messages that share the Anthropic
+message id and keep the provider's block order.
+
+`instructions_present` reports whether the request
+carried explicit instructions or a system prompt, including an explicitly empty
+one.
+
+`completeness` reports whether the captured content was decoded completely
+(`complete`), only partly because capture or decoding was incomplete
+(`partial`), or not at all because no supported structured document was found
+(`unsupported`). It is independent of whether the provider call succeeded.
+
+`policy_omitted` is `true` only when the conversation-text content policy
+omitted messages. Tool, image, and token policies govern `tool_calls`,
+`tool_results`, `attachments`, and `token_usage` independently; they never change
+`conversation` or set `policy_omitted`.
+
+## Turns
+
+There is no collector-counted `turn_index`. The collector keeps no turn state. `turn_id` names
+the user turn a request works for, as the Agent declares it in its own request
+headers. It is unique within the session and opaque to consumers, who number
+turns themselves:
+
+- Codex: `root_turn_id` from `x-codex-turn-metadata`. On the main thread it
+  equals the request's own `turn_id`; on a thread Codex opens for that turn,
+  such as a guardian review, it names the user turn that thread works for.
+- Claude Code: the `x-claude-code-prompt-id` header. Main-loop requests and the
+  subagents they start carry the same value.
+- Otherwise absent: the request works for no particular user turn. Examples are
+  Claude Code auxiliary requests (recaps, input suggestions, naming calls, quota
+  probes) and compaction, and other Anthropic clients. Consumers place such
+  requests by their own rules.
+
+A provider call identity is never substituted for a turn, so `turn_id` always
+names a turn and never a single call.
+
+## Naming threads
+
+`naming_thread` is `true` when the request comes from a thread the Agent opened
+only to name another session. Codex names a task from a separate session whose
+`x-codex-turn-metadata` declares `thread_source` `thread_title`; the collector
+reports those requests with `naming_thread` and does not forward the Agent's own
+value. The field is omitted when `false`.
+
+## Streams and continuation
+
+Three optional fields place one exchange among the conversations of a session.
+Both events of the exchange carry the same values, and each is omitted when
+the traffic declares none:
+
+- `stream_id`: the thread that sent the request, as the Agent declares it.
+  Requests with the same value continue one conversation.
+  - Codex: `thread_id` from `x-codex-turn-metadata`. The main thread's value
+    equals the session id; a thread Codex opens for a turn, such as a guardian
+    review, has its own value.
+  - Claude Code: by `x-claude-code-request-class`, the session id
+    (`x-claude-code-session-id`) for `main` requests and the subagent instance
+    (`x-claude-code-agent-id`) for `subagent` requests. Other Claude Code
+    requests carry none.
+- `response_id`: the provider identity of the response the exchange produced:
+  the OpenAI response id (`resp_…`) or the Anthropic message id (`msg_…`).
+  Later requests name it to continue after that response.
+- `previous_response_id`: the response the request continues after. The
+  request then carries only the messages added since that response.
+  - Anthropic: `previous_message_id` of a `thread` `continue` request.
+  - OpenAI: the request's `previous_response_id`.
+
+## Call purpose and session title
+
+`purpose` states what the Agent made a provider call for, when its traffic
+says so. Both events of the call carry it. Values:
+
+- `session_title`: the Agent asks the model to name the session the call
+  belongs to. Claude Code makes such a call with the naming instruction in its
+  system prompt (`You are naming a coding session…`) and the billing header
+  present.
+- `compaction`: the Agent asks the model to summarize the conversation so far,
+  to continue from the summary instead of the full history. Codex declares it
+  as `request_kind` `compaction` in `x-codex-turn-metadata`, Claude Code as
+  `x-claude-code-request-class` `compaction`.
+- `prewarm`: an OpenAI Responses WebSocket client explicitly sends
+  `response.create` with boolean `generate: false`. The connection is warmed
+  without generating output. Both flat and nested `response` payloads are
+  supported. Absent, true, or malformed flags do not declare prewarm.
+
+Token counters always retain the provider's observations, including prewarm.
+An all-traffic summary includes every event. Comparisons with Codex
+`turn.completed.usage` use completed inference only, excluding events explicitly
+marked `prewarm` and reporting their usage separately. Do not infer prewarm from
+event order, empty replies, missing turn ids, or token differences. For comparison
+with Codex, add Abyss's disjoint input/cache-read/cache-write counters to obtain
+inclusive input; reasoning is already included in output and is not added again.
+
+`session_title` is the title from the response side of a `session_title` call,
+read only when the reply is a single `{"title": "…"}` object. It names the
+event's own session. Like `text`, it is model output and is omitted when the
+content policy drops conversation text.
+
+For title generation, Codex uses a separate thread whose requests do not say
+which session they name. Those naming events carry `naming_thread` instead of
+`purpose: session_title` and `session_title`; Codex compaction calls can still
+carry `purpose: compaction`.
+
+The official delivery plugin stores both fields under the same names in the
+usage-event metadata. The broker forwards them unchanged.
+
+## Event identity and emission
+
+Event ids are deterministic. The collector derives an id from the device,
+agent, session, event side, provider response identity, and a content digest,
+so observing the same exchange again yields the same id and ingestion stays
+idempotent. Distinct provider calls produce distinct ids.
+
+The broker emits events only for exchanges its Agent protocol parser accepted.
+An exchange the parser rejects produces no event.
+
+## Delivery
+
+The official delivery plugin stores the conversation as `metadata.conversation`
+and the purpose and title as `metadata.purpose` and `metadata.session_title`.
+It sends `turn_id`, `naming_thread`, `stream_id`, `response_id`, and
+`previous_response_id` as top-level fields of the backend usage event.
+Backend titles and trajectories consume these fields without decoding provider
+bodies. Other plugins may translate the event for their own destinations.
+
+Rust, Python, and TypeScript SDKs all request protocol version 1 and consume this
+same event shape with the same 64 MiB JSON frame limit. The broker forwards the
+structured event without a legacy projection or a synthetic turn counter.
 
 The complete event schema is in
 [`agent-event.schema.json`](agent-event.schema.json).
@@ -232,11 +442,9 @@ The complete event schema is in
 ## Versioning
 
 `protocol_version` covers framing, handshake semantics, and the `AgentEvent`
-contract. Any incompatible change to one of those parts requires a new plugin
-protocol version. `AgentEvent` therefore does not carry or negotiate a separate
-schema version.
+contract. An event does not carry or negotiate a separate schema version.
 
-Files under this `v1` directory are immutable once the protocol is published.
-Compatible documentation corrections may be made without changing wire
-meaning. Incompatible changes require a new versioned directory and explicit
-negotiation support.
+During the current pre-release development phase, this single v1 contract is
+updated in place. Earlier development shapes are not supported; the broker and
+SDKs must be updated together. Once the protocol is published as stable,
+incompatible changes require a new version and explicit negotiation support.

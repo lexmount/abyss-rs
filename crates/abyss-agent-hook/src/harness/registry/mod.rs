@@ -9,7 +9,10 @@ use http::HeaderMap;
 
 use crate::config::HarnessUsageConfig;
 
-use super::{HarnessDetection, matcher::HarnessMatcher};
+use super::{
+    AgentDeclaration, BuiltInHarness, DeclarationSource, HarnessDetection, HarnessId,
+    matcher::HarnessMatcher,
+};
 
 /// Product-owned Harness recognition over generic flow and request metadata.
 pub(super) trait HarnessDetector {
@@ -95,6 +98,19 @@ impl HarnessRegistry {
             return None;
         }
         detections.pop()
+    }
+}
+
+impl HarnessRegistry {
+    /// Reads what the detected Agent declares about a request. Agents without
+    /// built-in declarations declare nothing.
+    #[must_use]
+    pub fn declare(harness_id: &HarnessId, source: &DeclarationSource<'_>) -> AgentDeclaration {
+        match harness_id.as_str() {
+            id if id == BuiltInHarness::Codex.id() => codex::declare(source),
+            id if id == BuiltInHarness::ClaudeCode.id() => claude_code::declare(source),
+            _ => AgentDeclaration::default(),
+        }
     }
 }
 

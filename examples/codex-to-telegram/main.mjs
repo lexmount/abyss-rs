@@ -27,7 +27,7 @@ async function main() {
         .join("\n\n");
       if (!context) return;
 
-      const text = `Codex ${event.side} · turn ${event.turn_index}\nSession: ${event.session_id}\n\n${context}`;
+      const text = `Codex ${event.side} · turn ${event.turn_id ?? "undeclared"}\nSession: ${event.session_id}\n\n${context}`;
       const characters = Array.from(text);
       // 2,000 Unicode code points fit Telegram's limit even with emoji.
       for (let offset = 0; offset < characters.length; offset += 2000) {

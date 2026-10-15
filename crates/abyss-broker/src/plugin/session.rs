@@ -65,7 +65,7 @@ where
         }
     }
 
-    /// Negotiates version 1 and writes events until this connection ends.
+    /// Negotiates the event contract and writes events until this connection ends.
     pub async fn run(mut self) -> Result<(), PluginSessionError> {
         let Some((plugin_id, mut events)) = self.handshake().await? else {
             return Ok(());
@@ -170,14 +170,14 @@ where
                 return Ok(None);
             }
         };
-        if PluginProtocolVersion::try_from(hello.protocol_version).is_err() {
+        let Ok(protocol_version) = PluginProtocolVersion::try_from(hello.protocol_version) else {
             self.reject(
                 BrokerErrorCode::UnsupportedProtocolVersion,
                 format!("unsupported protocol version {}", hello.protocol_version),
             )
             .await?;
             return Ok(None);
-        }
+        };
         if !Self::valid_plugin_id(&hello.plugin_id) {
             self.reject(
                 BrokerErrorCode::InvalidHandshake,
@@ -188,7 +188,7 @@ where
         }
 
         let events = self.events.subscribe();
-        write_json(&mut self.stream, &BrokerHello::v1()).await?;
+        write_json(&mut self.stream, &BrokerHello { protocol_version }).await?;
         Ok(Some((hello.plugin_id, events)))
     }
 
@@ -281,13 +281,21 @@ mod tests {
         let hello: BrokerHello = read_json(&mut client).await;
         assert_eq!(hello.protocol_version.wire_value(), 1_u16);
 
-        let event: AgentEvent = serde_json::from_str(include_str!("fixtures/agent-event.json"))
+        let fixture: serde_json::Value =
+            serde_json::from_str(include_str!("fixtures/agent-event.json"))
+                .expect("published fixture should be JSON");
+        let event: AgentEvent = serde_json::from_value(fixture.clone())
             .expect("published AgentEvent fixture should decode");
         events
             .send(Arc::new(event))
             .expect("accepted session should subscribe to events");
         let received: AgentEvent = read_json(&mut client).await;
-        assert_eq!(received.event_id, "evt-123");
+        let received = serde_json::to_value(received).expect("event should serialize");
+        assert_eq!(
+            received, fixture,
+            "v1 must forward every structured field unchanged"
+        );
+        assert!(received.get("turn_index").is_none());
 
         shutdown_tx
             .send(true)
@@ -310,7 +318,7 @@ mod tests {
         write_json(
             &mut client,
             &serde_json::json!({
-                "protocol_version": 77_u16,
+                "protocol_version": 2_u16,
                 "plugin_id": "future-plugin"
             }),
         )
@@ -319,7 +327,7 @@ mod tests {
         let error: BrokerError = read_json(&mut client).await;
 
         assert_eq!(error.code, 1_u32);
-        assert!(error.reason.contains("77"));
+        assert!(error.reason.contains("unsupported protocol version 2"));
         session
             .await
             .expect("session task should finish")

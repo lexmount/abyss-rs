@@ -18,12 +18,90 @@ FIXTURE = (
 
 
 class AgentEventContractTests(unittest.TestCase):
+    def test_explicit_prewarm_retains_observed_usage(self) -> None:
+        fixture = json.loads(FIXTURE.read_text(encoding="utf-8"))
+        fixture["purpose"] = "prewarm"
+        fixture.pop("session_title")
+        event = AgentEvent.from_dict(fixture)
+        self.assertEqual(event.purpose, "prewarm")
+        self.assertEqual(event.token_usage.input_tokens, fixture["token_usage"]["input_tokens"])
+
     def test_shared_fixture_decodes(self) -> None:
         event = AgentEvent.from_dict(json.loads(FIXTURE.read_text(encoding="utf-8")))
 
         self.assertEqual(event.event_id, "evt-123")
+        self.assertEqual(event.turn_id, "turn-123")
         self.assertEqual(event.llm.provider, "openai")
         self.assertEqual(event.tool_calls[0].name, "exec")
+        self.assertTrue(event.naming_thread)
+        self.assertEqual(event.stream_id, "thread-123")
+        self.assertEqual(event.response_id, "resp-123")
+        self.assertEqual(event.previous_response_id, "resp-122")
+        self.assertEqual(event.purpose, "session_title")
+        self.assertEqual(event.session_title, "Repository overview")
+        self.assertIsNotNone(event.conversation)
+        self.assertEqual(
+            [message.role for message in event.conversation.messages],
+            ["reasoning", "assistant", "tool"],
+        )
+        self.assertEqual(event.conversation.completeness, "complete")
+        self.assertFalse(hasattr(event, "turn_index"))
+
+    def test_optional_context_and_nullable_message_id(self) -> None:
+        fixture = json.loads(FIXTURE.read_text(encoding="utf-8"))
+        for field in (
+            "turn_id",
+            "naming_thread",
+            "stream_id",
+            "response_id",
+            "previous_response_id",
+            "purpose",
+            "session_title",
+            "conversation",
+        ):
+            fixture.pop(field)
+        event = AgentEvent.from_dict(fixture)
+        self.assertIsNone(event.turn_id)
+        self.assertIsNone(event.conversation)
+        self.assertFalse(event.naming_thread)
+        fixture["purpose"] = "compaction"
+        fixture["conversation"] = {
+            "messages": [{"id": None, "role": "unknown", "text": ""}],
+            "instructions_present": False,
+            "completeness": "partial",
+            "policy_omitted": True,
+        }
+        event = AgentEvent.from_dict(fixture)
+        self.assertEqual(event.purpose, "compaction")
+        self.assertIsNone(event.conversation.messages[0].id)
+        self.assertTrue(event.conversation.policy_omitted)
+
+    def test_rejects_obsolete_fields_and_malformed_content(self) -> None:
+        for path, value in (
+            (("turn_index",), 1),
+            (("naming_thread",), 1),
+            (("stream_id",), 1),
+            (("purpose",), "other"),
+            (("conversation", "messages", 0, "role"), "request"),
+            (("conversation", "messages", 0, "blocks"), []),
+            (("conversation", "messages", 0, "text"), 1),
+            (("conversation", "messages"), {}),
+            (("conversation", "completeness"), "failed"),
+            (("conversation", "instructions_present"), "true"),
+            (("conversation", "policy_omitted"), None),
+        ):
+            with self.subTest(path=path):
+                fixture = json.loads(FIXTURE.read_text(encoding="utf-8"))
+                parent = fixture
+                for key in path[:-1]:
+                    parent = parent[key]
+                parent[path[-1]] = value
+                with self.assertRaises((TypeError, ValueError)):
+                    AgentEvent.from_dict(fixture)
+        fixture = json.loads(FIXTURE.read_text(encoding="utf-8"))
+        del fixture["conversation"]["messages"][0]["id"]
+        with self.assertRaisesRegex(ValueError, "must include id"):
+            AgentEvent.from_dict(fixture)
 
     def test_decoder_rejects_unknown_fields(self) -> None:
         fixture = json.loads(FIXTURE.read_text(encoding="utf-8"))
