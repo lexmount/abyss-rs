@@ -718,4 +718,19 @@ mod tests {
         assert_eq!(metadata["purpose"], "session_title");
         assert_eq!(metadata["session_title"], "Repository overview");
     }
+
+    #[test]
+    fn retains_prewarm_purpose_and_observed_usage_for_backend_accounting() {
+        let mut event: AgentEvent = serde_json::from_str(include_str!(
+            "../../../specs/broker-plugin-protocol/v1/fixtures/agent-event.json"
+        ))
+        .expect("fixture should decode");
+        event.purpose = Some(abyss_sdk::plugin::EventPurpose::Prewarm);
+        event.session_title = None;
+        let expected_usage = serde_json::to_value(&event.token_usage).unwrap();
+        let request = IngestEventsRequest::try_from(event).expect("event should translate");
+        let serialized = serde_json::to_value(request).unwrap();
+        assert_eq!(serialized["events"][0]["metadata"]["purpose"], "prewarm");
+        assert_eq!(serialized["events"][0]["token_usage"], expected_usage);
+    }
 }

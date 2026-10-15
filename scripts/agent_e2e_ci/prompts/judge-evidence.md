@@ -30,10 +30,20 @@ Judging rules:
    Backend `turn_id` values (the Codex `root_turn_id`), turn indexes, provider
    response chains and call ids when available. Do not require fields the wire
    protocol did not expose.
-7. Compare B's `turn.completed.usage` with the sum of Backend events for the
-   same B run. Cached input is a subset of input and must not be added to input
-   again. Provider calls inside one agent turn may span several Backend event
-   pairs.
+7. Compare completed inference usage using each execution's `usage_accounting`.
+   It computes exact totals from the raw events and B's `turn.completed.usage`.
+   Only events explicitly marked `metadata.purpose == "prewarm"` are excluded
+   from the inference comparison: these are WebSocket `response.create` calls
+   with `generate: false`, which Codex completes before inference and omits from
+   `turn.completed.usage`. Their content and original counters remain in
+   `backend_events`, `backend_all_observed`, and `backend_prewarm` for auditing.
+   Never infer prewarm from event position, empty output, prompt text, missing
+   turn ids, or a token difference. Unmarked calls, compaction and retries stay
+   in the comparison. `backend_inference` and `codex_completed_inference` use
+   Codex's convention: input includes cached input; reasoning is part of output.
+   Do not add either subset again. Every counter in `difference` must be zero
+   and `matches` must be true for token_usage_consistent to pass. Provider calls
+   inside one agent turn may span several Backend event pairs.
 8. The Backend database is fresh and only B receives proxy variables. Confirm
    run isolation from markers, session ids and timestamps instead of assuming
    it from topology alone.

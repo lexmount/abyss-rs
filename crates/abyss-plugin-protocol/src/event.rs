@@ -83,6 +83,9 @@ pub struct AgentEvent {
 #[serde(rename_all = "snake_case")]
 #[non_exhaustive]
 pub enum EventPurpose {
+    /// The Agent explicitly disables generation while warming a provider connection.
+    /// Its observed usage is retained but is outside completed inference-turn usage.
+    Prewarm,
     /// The Agent asks the model to name the session the call belongs to.
     SessionTitle,
     /// The Agent asks the model to summarize the conversation so far, to

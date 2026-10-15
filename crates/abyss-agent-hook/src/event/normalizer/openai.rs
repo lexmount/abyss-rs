@@ -1,6 +1,6 @@
 //! OpenAI-family parsed exchange adaptation for the common event normalizer.
 
-use abyss_plugin_protocol::event::LlmProvider;
+use abyss_plugin_protocol::event::{EventPurpose, LlmProvider};
 use serde_json::json;
 
 use crate::{
@@ -15,6 +15,10 @@ use super::{
 };
 
 impl NormalizableExchange for ParsedOpenAiExchange {
+    fn purpose(&self) -> Option<EventPurpose> {
+        (self.generates_output == Some(false)).then_some(EventPurpose::Prewarm)
+    }
+
     fn session_id(&self) -> &str {
         &self.session_id
     }

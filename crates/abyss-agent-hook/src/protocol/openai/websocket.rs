@@ -192,6 +192,12 @@ impl PendingTurn {
             self.exchange = Some(next);
             return;
         };
+        if let Some(generates_output) = next.generates_output {
+            // Never classify a mixed exchange as prewarm if any client frame
+            // can generate output. Server frames cannot overwrite this choice.
+            current.generates_output =
+                Some(current.generates_output.unwrap_or(false) || generates_output);
+        }
         if current.request_texts.is_empty()
             && current.request_images.is_empty()
             && (!next.request_texts.is_empty() || !next.request_images.is_empty())
@@ -239,6 +245,8 @@ impl PendingTurn {
         });
         if self.request_decode_failed {
             ConversationProjection::mark_partial(&mut exchange.request_conversation);
+            // An undecodable client frame might have enabled generation.
+            exchange.generates_output = None;
         }
         Some(exchange)
     }
@@ -326,6 +334,28 @@ mod tests {
                 .iter()
                 .any(|event_type| event_type == "response.completed")
         );
+    }
+
+    #[test]
+    fn mixed_or_undecodable_client_frames_cannot_be_excluded_as_prewarm() {
+        for second in [Some(false), Some(true), None] {
+            let accumulator = OpenAiWebSocketAccumulator::default();
+            let flow = FlowId::generate();
+            let mut prewarm = exchange();
+            prewarm.generates_output = Some(false);
+            accumulator.push(&flow, OpenAiWebSocketFrame::Request(Box::new(prewarm)));
+            let frame = second.map_or(
+                OpenAiWebSocketFrame::Undecodable(WebSocketDirection::ClientToServer),
+                |generates_output| {
+                    let mut next = exchange();
+                    next.generates_output = Some(generates_output);
+                    OpenAiWebSocketFrame::Request(Box::new(next))
+                },
+            );
+            accumulator.push(&flow, frame);
+            let completed = accumulator.push(&flow, response(0, "", true)).unwrap();
+            assert_eq!(completed.generates_output, second);
+        }
     }
 
     #[test]
@@ -492,6 +522,7 @@ mod tests {
 
     fn exchange() -> ParsedOpenAiExchange {
         ParsedOpenAiExchange {
+            generates_output: None,
             host: "gateway.example".to_owned(),
             path: "/v1/responses".to_owned(),
             method: "GET".to_owned(),

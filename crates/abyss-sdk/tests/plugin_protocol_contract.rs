@@ -32,13 +32,21 @@ fn structured_conversation_and_handshakes_round_trip() {
     assert_eq!(schema["properties"]["naming_thread"]["type"], "boolean");
     assert_eq!(
         schema["properties"]["purpose"]["enum"],
-        serde_json::json!(["session_title", "compaction"])
+        serde_json::json!(["session_title", "compaction", "prewarm"])
     );
     assert_eq!(
         serde_json::to_value(abyss_sdk::event::EventPurpose::Compaction).unwrap(),
         "compaction"
     );
     assert_eq!(fixture["naming_thread"], true);
+    let mut prewarm = fixture.clone();
+    prewarm["purpose"] = "prewarm".into();
+    let decoded: AgentEvent = serde_json::from_value(prewarm.clone()).unwrap();
+    assert_eq!(
+        decoded.purpose,
+        Some(abyss_sdk::plugin::EventPurpose::Prewarm)
+    );
+    assert_eq!(serde_json::to_value(decoded).unwrap(), prewarm);
     for field in ["stream_id", "response_id", "previous_response_id"] {
         assert_eq!(schema["properties"][field]["type"], "string", "{field}");
         assert!(fixture[field].is_string(), "{field}");

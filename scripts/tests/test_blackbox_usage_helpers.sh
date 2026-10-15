@@ -86,11 +86,19 @@ blackbox_assert_summary_matches_pairs "${SUMMARY_TWO_JSON}" "${TWO_PAIRS_JSON}"
 # turn.completed usage still matches only the marker request/response pair.
 PREWARM_EVENTS_JSON="$(jq -c '.events + [(.events[0] | .event_id = "prewarm-event"
   | .text = "prewarm instructions" | .input_tokens = 6 | .cache_read_tokens = 0
-  | .cache_write_tokens = 0 | .total_tokens = 6)]' "${EVENTS_FILE}")"
+  | .cache_write_tokens = 0 | .total_tokens = 6
+  | .metadata.purpose = "prewarm")]' "${EVENTS_FILE}")"
 PREWARM_SUMMARY_JSON="$(jq -c '.rows[0].requests += 1
   | .rows[0].input_tokens += 6 | .rows[0].total_tokens += 6' <<<"${SUMMARY_JSON}")"
 blackbox_assert_summary_matches_events "${PREWARM_SUMMARY_JSON}" "${PREWARM_EVENTS_JSON}"
 blackbox_assert_codex_usage_matches_pair "${USAGE_JSON}" "${PAIR_JSON}"
+COMPLETED_USAGE_JSON="$(jq -cn --argjson usage "${USAGE_JSON}" '[$usage]')"
+blackbox_assert_codex_session_usage "${COMPLETED_USAGE_JSON}" "${PREWARM_EVENTS_JSON}" >/dev/null
+UNMARKED_EVENTS_JSON="$(jq -c 'map(del(.metadata.purpose))' <<<"${PREWARM_EVENTS_JSON}")"
+if blackbox_assert_codex_session_usage "${COMPLETED_USAGE_JSON}" "${UNMARKED_EVENTS_JSON}" >/dev/null 2>&1; then
+  echo "Unmarked initial requests must remain in inference usage" >&2
+  exit 1
+fi
 if blackbox_assert_summary_matches_pair "${PREWARM_SUMMARY_JSON}" "${PAIR_JSON}" >/dev/null 2>&1; then
   echo "Pair-only summary must detect the additional prewarm request" >&2
   exit 1

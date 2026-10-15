@@ -30,6 +30,9 @@ const CODEX_TURN_METADATA: &str = "x-codex-turn-metadata";
 #[derive(Debug, Clone)]
 #[non_exhaustive]
 pub struct ParsedOpenAiExchange {
+    /// WebSocket client generation mode. Only `response.create` with the boolean
+    /// `generate: false` disables it; server frames and HTTP exchanges carry none.
+    pub generates_output: Option<bool>,
     /// Normalized request host.
     pub host: String,
     /// Request path used to distinguish OpenAI/Codex API families.
@@ -134,6 +137,7 @@ pub fn parse_openai_exchange(exchange: &HttpExchange) -> Option<ParsedOpenAiExch
     ));
 
     Some(ParsedOpenAiExchange {
+        generates_output: None,
         host,
         path: path.to_owned(),
         method: exchange.request.method().to_string(),
@@ -215,6 +219,10 @@ pub fn parse_openai_websocket_message(message: &WebSocketMessage) -> OpenAiWebSo
         message.direction, host, path, message.sequence, payload_text
     ));
     let exchange = ParsedOpenAiExchange {
+        generates_output: is_client_message.then(|| {
+            string_field(&payload, "type") != Some("response.create")
+                || request_payload.get("generate").and_then(Value::as_bool) != Some(false)
+        }),
         host,
         path: path.to_owned(),
         method: message.upgrade_request.method().to_string(),

@@ -387,6 +387,18 @@ says so. Both events of the call carry it. Values:
   to continue from the summary instead of the full history. Codex declares it
   as `request_kind` `compaction` in `x-codex-turn-metadata`, Claude Code as
   `x-claude-code-request-class` `compaction`.
+- `prewarm`: an OpenAI Responses WebSocket client explicitly sends
+  `response.create` with boolean `generate: false`. The connection is warmed
+  without generating output. Both flat and nested `response` payloads are
+  supported. Absent, true, or malformed flags do not declare prewarm.
+
+Token counters always retain the provider's observations, including prewarm.
+An all-traffic summary includes every event. Comparisons with Codex
+`turn.completed.usage` use completed inference only, excluding events explicitly
+marked `prewarm` and reporting their usage separately. Do not infer prewarm from
+event order, empty replies, missing turn ids, or token differences. For comparison
+with Codex, add Abyss's disjoint input/cache-read/cache-write counters to obtain
+inclusive input; reasoning is already included in output and is not added again.
 
 `session_title` is the title from the response side of a `session_title` call,
 read only when the reply is a single `{"title": "…"}` object. It names the

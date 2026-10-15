@@ -18,6 +18,14 @@ FIXTURE = (
 
 
 class AgentEventContractTests(unittest.TestCase):
+    def test_explicit_prewarm_retains_observed_usage(self) -> None:
+        fixture = json.loads(FIXTURE.read_text(encoding="utf-8"))
+        fixture["purpose"] = "prewarm"
+        fixture.pop("session_title")
+        event = AgentEvent.from_dict(fixture)
+        self.assertEqual(event.purpose, "prewarm")
+        self.assertEqual(event.token_usage.input_tokens, fixture["token_usage"]["input_tokens"])
+
     def test_shared_fixture_decodes(self) -> None:
         event = AgentEvent.from_dict(json.loads(FIXTURE.read_text(encoding="utf-8")))
 

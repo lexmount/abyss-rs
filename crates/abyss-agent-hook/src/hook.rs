@@ -411,6 +411,81 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn websocket_prewarm_requires_explicit_false_and_does_not_leak_to_next_call() {
+        use abyss_mitm::{WebSocketDirection, WebSocketMessage};
+        use serde_json::{Value, json};
+
+        for nested in [false, true] {
+            for generate in [
+                None,
+                Some(json!(false)),
+                Some(json!(true)),
+                Some(json!("false")),
+            ] {
+                let sink = Arc::new(RecordingSink::default());
+                let hook = hook(Arc::clone(&sink));
+                let exchange = openai_exchange("acme-agent");
+                let (parts, _) = exchange.request.into_parts();
+                let upgrade = Request::from_parts(parts, ());
+                let mut payload = json!({"model": "test", "instructions": "rules", "input": []});
+                if let Some(value) = &generate {
+                    payload["generate"] = value.clone();
+                }
+                let request = if nested {
+                    json!({"type": "response.create", "response": payload})
+                } else {
+                    payload["type"] = json!("response.create");
+                    payload
+                };
+                let terminal = json!({"type": "response.completed", "response": {
+                    "id": "warm", "generate": false, "output": [],
+                    "usage": {"input_tokens": 11_u64, "output_tokens": 0_u64, "total_tokens": 11_u64}
+                }});
+                let next_request = json!({"type": "response.create", "model": "test",
+                    "previous_response_id": "warm",
+                    "input": [{"role": "user", "content": "hello"}]});
+                let next_terminal = json!({"type": "response.completed", "response": {
+                    "id": "answer", "output": [{"id": "m1", "role": "assistant",
+                        "content": [{"type": "output_text", "text": "hi"}]}],
+                    "usage": {"input_tokens": 5_u64, "output_tokens": 2_u64, "total_tokens": 7_u64}
+                }});
+                for (sequence, direction, payload) in [
+                    (1, WebSocketDirection::ClientToServer, request),
+                    (2, WebSocketDirection::ServerToClient, terminal),
+                    (3, WebSocketDirection::ClientToServer, next_request),
+                    (4, WebSocketDirection::ServerToClient, next_terminal),
+                ] {
+                    hook.on_websocket_message(&WebSocketMessage::new(
+                        exchange.flow.clone(),
+                        upgrade.clone(),
+                        direction,
+                        sequence,
+                        Some(payload.to_string()),
+                        None,
+                    ))
+                    .await
+                    .unwrap();
+                }
+                let events = sink.events.lock().unwrap();
+                assert_eq!(events.len(), 3);
+                let expected = (generate.as_ref().and_then(Value::as_bool) == Some(false))
+                    .then_some(EventPurpose::Prewarm);
+                assert_eq!(events[0].purpose, expected);
+                assert_eq!(events[0].token_usage.input_tokens, 11);
+                assert_eq!(
+                    events[0].conversation.as_ref().unwrap().messages[0].text,
+                    "rules"
+                );
+                assert!(events[1..].iter().all(|event| event.purpose.is_none()));
+                assert_eq!(events[1].previous_response_id.as_deref(), Some("warm"));
+                assert_eq!(events[1].token_usage.input_tokens, 5);
+                assert_eq!(events[2].token_usage.output_tokens, 2);
+                drop(events);
+            }
+        }
+    }
+
+    #[tokio::test]
     async fn truncated_but_parseable_response_reports_partial() {
         let sink = Arc::new(RecordingSink::default());
         let hook = hook(Arc::clone(&sink));

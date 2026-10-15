@@ -135,6 +135,17 @@ blackbox_assert_codex_usage_matches_pair() {
     ' <<<"{}" >/dev/null
 }
 
+blackbox_assert_codex_session_usage() {
+  local completed_usage_json="$1"
+  local events_json="$2"
+  local repo_root
+  repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
+
+  jq -cn --argjson events "${events_json}" --argjson usage "${completed_usage_json}" \
+    '{events: $events, completed_usage: $usage}' \
+    | (cd "${repo_root}" && python3 -m scripts.agent_e2e_ci.usage)
+}
+
 blackbox_assert_summary_matches_pair() {
   local summary_json="$1"
   local pair_json="$2"

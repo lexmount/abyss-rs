@@ -534,6 +534,7 @@ validate_codex_summary() {
   local session_id
   local summary_json
   local events_json
+  local completed_usage_json
 
   sessions_json="$(jq -cn \
     --argjson first "${first_pair}" \
@@ -557,6 +558,14 @@ validate_codex_summary() {
       || fail "backend usage summary request failed for Codex session"
     blackbox_assert_summary_matches_events "${summary_json}" "${events_json}" \
       || fail "backend usage summary did not match all Codex session events"
+    completed_usage_json="$(jq -cn \
+      --arg session_id "${session_id}" \
+      --argjson first "${first_pair}" --argjson second "${second_pair}" \
+      --argjson first_usage "${CODEX_USAGE_ONE}" --argjson second_usage "${CODEX_USAGE_TWO}" \
+      '[if $first.request.session_id == $session_id then $first_usage else empty end,
+        if $second.request.session_id == $session_id then $second_usage else empty end]')"
+    blackbox_assert_codex_session_usage "${completed_usage_json}" "${events_json}" \
+      || fail "Codex inference usage did not match non-prewarm session events"
   done < <(jq -r '.[]' <<<"${sessions_json}")
 }
 

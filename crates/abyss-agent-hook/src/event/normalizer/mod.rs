@@ -356,6 +356,11 @@ pub struct LlmPayload {
 pub trait NormalizableExchange {
     fn session_id(&self) -> &str;
 
+    /// Purpose explicitly declared by the provider protocol, if any.
+    fn purpose(&self) -> Option<EventPurpose> {
+        None
+    }
+
     /// Provider identities linking the exchange to the responses around it.
     fn continuation(&self) -> Continuation<'_>;
 
@@ -387,7 +392,7 @@ where
         turn_id: declaration.turn_id.as_deref(),
         naming_thread: declaration.naming_thread,
         stream_id: declaration.stream_id.as_deref(),
-        purpose: declaration.purpose,
+        purpose: parsed.purpose().or(declaration.purpose),
         session_title: declaration.session_title.as_deref(),
         response_id: continuation.response_id,
         previous_response_id: continuation.previous_response_id,
@@ -1175,6 +1180,7 @@ mod tests {
 
     fn openai_exchange() -> ParsedOpenAiExchange {
         ParsedOpenAiExchange {
+            generates_output: None,
             host: "gateway.example".to_owned(),
             path: "/v1/responses".to_owned(),
             method: "POST".to_owned(),

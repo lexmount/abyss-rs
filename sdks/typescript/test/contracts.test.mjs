@@ -56,6 +56,15 @@ test("undeclared context may be omitted and message IDs may be null", async () =
   );
 });
 
+test("explicit prewarm retains its observed usage in v1", async () => {
+  const fixture = JSON.parse(await readFile(fixtureUrl, "utf8"));
+  fixture.purpose = "prewarm";
+  delete fixture.session_title;
+  const event = decodeAgentEvent(fixture);
+  assert.equal(event.purpose, "prewarm");
+  assert.deepEqual(event.token_usage, fixture.token_usage);
+});
+
 test("structured events reject obsolete fields and malformed content", async () => {
   const original = JSON.parse(await readFile(fixtureUrl, "utf8"));
   for (const mutate of [

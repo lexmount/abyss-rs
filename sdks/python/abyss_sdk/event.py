@@ -7,7 +7,7 @@ from typing import Any, Literal, Optional, cast
 
 MessageRole = Literal["system", "developer", "user", "assistant", "reasoning", "tool", "unknown"]
 ContentCompleteness = Literal["complete", "partial", "unsupported"]
-EventPurpose = Literal["session_title", "compaction"]
+EventPurpose = Literal["session_title", "compaction", "prewarm"]
 
 
 @dataclass(frozen=True)
@@ -161,8 +161,8 @@ class AgentEvent:
         if side not in {"request", "response"}:
             raise ValueError("AgentEvent.side must be request or response")
         purpose = _optional_string(event, "purpose")
-        if purpose is not None and purpose not in {"session_title", "compaction"}:
-            raise ValueError("purpose must be session_title or compaction")
+        if purpose is not None and purpose not in {"session_title", "compaction", "prewarm"}:
+            raise ValueError("purpose must be session_title, compaction or prewarm")
         occurred_at = _datetime(_string(event, "occurred_at"))
         return cls(
             event_id=_string(event, "event_id"),

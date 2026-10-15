@@ -24,7 +24,7 @@ export interface AgentEvent {
   attachments?: ImageAttachment[];
 }
 
-export type EventPurpose = "session_title" | "compaction";
+export type EventPurpose = "session_title" | "compaction" | "prewarm";
 
 export type MessageRole =
   | "system"
@@ -156,7 +156,7 @@ export function decodeAgentEvent(value: unknown): AgentEvent {
     booleanField(event, "naming_thread");
   }
   if (event.purpose !== undefined) {
-    choiceField(event, "purpose", ["session_title", "compaction"]);
+    choiceField(event, "purpose", ["session_title", "compaction", "prewarm"]);
   }
   decodeLlm(event.llm);
   if (event.side !== "request" && event.side !== "response") {
