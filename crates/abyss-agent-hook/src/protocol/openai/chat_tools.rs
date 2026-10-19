@@ -1,6 +1,6 @@
 //! Chat Completions tool calls and results, independent of Harness identity.
-//! Streamed inputs are assembled per tool index within one choice; request
-//! results are limited to the trailing tool messages to avoid replaying history.
+//! Streamed inputs are assembled per tool index within one choice. Request
+//! results preserve every tool message, including repeated history, in wire order.
 
 use std::collections::BTreeMap;
 
@@ -45,17 +45,14 @@ impl ChatToolCalls {
         self.calls.values().filter_map(ChatToolCall::event)
     }
 
-    /// Historical assistant tool calls remain context, not new invocations.
+    /// Observes every tool result the request carries without inferring freshness.
     pub fn request_results(payload: &Value) -> Vec<ParsedToolEvent> {
         let Some(messages) = payload.get("messages").and_then(Value::as_array) else {
             return Vec::new();
         };
-        let start = messages
+        messages
             .iter()
-            .rposition(|message| message.get("role").and_then(Value::as_str) != Some("tool"))
-            .map_or(0, |index| index.saturating_add(1));
-        messages[start..]
-            .iter()
+            .filter(|message| message.get("role").and_then(Value::as_str) == Some("tool"))
             .filter_map(|message| {
                 let call_id = message.get("tool_call_id")?.as_str()?;
                 let content = message.get("content")?;

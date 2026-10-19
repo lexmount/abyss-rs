@@ -823,7 +823,7 @@ mod tests {
     }
 
     #[test]
-    fn chat_request_results_preserve_parallel_outputs_without_replaying_history() {
+    fn chat_request_results_preserve_history_in_every_observed_request() {
         let mut request = json!({"messages":[
             {"role":"assistant","tool_calls":[{"id":"old","type":"function","function":{"name":"read","arguments":"{}"}}]},
             {"role":"tool","tool_call_id":"old","content":"old output"},
@@ -840,6 +840,10 @@ mod tests {
         assert_eq!(
             parsed.request_tool_events,
             vec![
+                ParsedToolEvent::ToolResult {
+                    call_id: Some("old".into()),
+                    output: "old output".into()
+                },
                 ParsedToolEvent::ToolResult {
                     call_id: Some("new".into()),
                     output: "line 1\nline 2".into()
@@ -860,7 +864,55 @@ mod tests {
         let replay =
             parse_openai_exchange(&json_exchange("/chat/completions", &request, &response))
                 .unwrap();
-        assert!(replay.request_tool_events.is_empty());
+        assert_eq!(replay.request_tool_events, parsed.request_tool_events);
+    }
+
+    #[test]
+    fn chat_request_results_survive_a_following_image_message() {
+        let output =
+            "<type>image</type>\n<content>image/jpeg image, 1086x724 px, 94815 bytes</content>";
+        let parsed = parse_openai_exchange(&json_exchange(
+            "/chat/completions",
+            &json!({"messages":[
+                {"role":"assistant","tool_calls":[{"id":"image-call","type":"function","function":{"name":"read_image","arguments":"{}"}}]},
+                {"role":"tool","tool_call_id":"image-call","content":output},
+                {"role":"user","content":[
+                    {"type":"text","text":"Attached image(s) from tool result:"},
+                    {"type":"image_url","image_url":{"url":"data:image/jpeg;base64,/9j/dGVzdA=="}}
+                ]}
+            ]}),
+            &json!({"choices":[{"message":{"role":"assistant","content":"Image description"}}]}),
+        )).unwrap();
+
+        assert_eq!(
+            parsed.request_tool_events,
+            vec![ParsedToolEvent::ToolResult {
+                call_id: Some("image-call".into()),
+                output: output.into(),
+            }]
+        );
+        assert_eq!(parsed.request_images.len(), 1);
+    }
+
+    #[test]
+    fn chat_request_results_keep_repeated_occurrences_and_only_tool_roles() {
+        let parsed = parse_openai_exchange(&json_exchange(
+            "/chat/completions",
+            &json!({"messages":[
+                {"role":"tool","tool_call_id":"same-call","content":"  original output\n"},
+                {"role":"user","tool_call_id":"not-a-tool","content":"user text"},
+                {"role":"tool","tool_call_id":"same-call","content":"  original output\n"},
+                {"role":"assistant","content":"Answer"}
+            ]}),
+            &json!({"choices":[{"message":{"role":"assistant","content":"Next answer"}}]}),
+        ))
+        .unwrap();
+
+        let result = ParsedToolEvent::ToolResult {
+            call_id: Some("same-call".into()),
+            output: "  original output\n".into(),
+        };
+        assert_eq!(parsed.request_tool_events, vec![result.clone(), result]);
     }
 
     #[test]
