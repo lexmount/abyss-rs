@@ -471,17 +471,21 @@ impl StatusCommandRunner {
         println!("Proxy: {proxy}");
         println!("Dashboard: {}", dashboard_url.as_deref().unwrap_or("-"));
         println!("Harnesses:");
-        let harnesses = [BuiltInHarness::Codex.id(), BuiltInHarness::ClaudeCode.id()]
-            .into_iter()
-            .chain(
-                hooks
-                    .harness_usage
-                    .config
-                    .harnesses
-                    .keys()
-                    .map(HarnessId::as_str),
-            )
-            .collect::<std::collections::BTreeSet<_>>();
+        let harnesses = [
+            BuiltInHarness::Codex.id(),
+            BuiltInHarness::ClaudeCode.id(),
+            BuiltInHarness::DeepSeekHarness.id(),
+        ]
+        .into_iter()
+        .chain(
+            hooks
+                .harness_usage
+                .config
+                .harnesses
+                .keys()
+                .map(HarnessId::as_str),
+        )
+        .collect::<std::collections::BTreeSet<_>>();
         for harness in harnesses {
             println!("  {harness}: {}", enabled_label(&hooks, harness));
         }
@@ -611,6 +615,7 @@ fn parse_harness(value: &str, hooks: &HooksConfig) -> Result<HarnessId, CliError
     match name.as_str() {
         "codex" => Ok(BuiltInHarness::Codex.into()),
         "claude-code" | "claude-cli" => Ok(BuiltInHarness::ClaudeCode.into()),
+        "deepseek-harness" => Ok(BuiltInHarness::DeepSeekHarness.into()),
         name => hooks
             .harness_usage
             .config
@@ -646,10 +651,29 @@ mod tests {
     use super::{CliCommand, ConfigCommandRunner};
 
     #[test]
-    fn configured_harnesses_can_be_selected_without_a_builtin_detector() {
-        let hooks = crate::local_config::LocalRuntimePolicy::default().hooks;
+    fn deepseek_can_be_selected_without_a_policy_entry() {
+        let hooks = HooksConfig::default();
         let id = super::parse_harness("deepseek-harness", &hooks).unwrap();
         assert_eq!(id.as_str(), "deepseek-harness");
+        assert_eq!(super::enabled_label(&hooks, id.as_str()), "enabled");
+        let disabled = serde_json::from_value::<HooksConfig>(json!({
+            "harness_usage": {"config": {"harnesses": {"deepseek-harness": {"enabled": false}}}}
+        }))
+        .unwrap();
+        assert_eq!(super::enabled_label(&disabled, id.as_str()), "disabled");
+        assert_eq!(super::parse_harness(id.as_str(), &disabled).unwrap(), id);
+    }
+
+    #[test]
+    fn configured_harnesses_can_be_selected_without_a_builtin_detector() {
+        let hooks = serde_json::from_value::<HooksConfig>(json!({
+            "harness_usage": {"config": {"harnesses": {"acme-agent": {
+                "matchers": [{"process_names": ["acme-agent"]}]
+            }}}}
+        }))
+        .unwrap();
+        let id = super::parse_harness("acme-agent", &hooks).unwrap();
+        assert_eq!(id.as_str(), "acme-agent");
         assert_eq!(super::enabled_label(&hooks, id.as_str()), "enabled");
         assert_eq!(
             super::parse_harness("claude-cli", &hooks).unwrap().as_str(),

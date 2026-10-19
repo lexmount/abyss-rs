@@ -796,7 +796,7 @@ mod tests {
             ]}}]}),
         )).expect("tool-only Chat response");
 
-        assert!(parsed.response_texts.is_empty());
+        assert_eq!(parsed.response_texts, Vec::<String>::new());
         assert_eq!(
             parsed.response_tool_events,
             vec![
@@ -855,7 +855,7 @@ mod tests {
             ]
         );
         assert_eq!(parsed.request_texts, ["Read again"]);
-        assert!(parsed.response_tool_events.is_empty());
+        assert_eq!(parsed.response_tool_events, Vec::<ParsedToolEvent>::new());
 
         request["messages"]
             .as_array_mut()
@@ -925,8 +925,8 @@ mod tests {
             }),
             &json!({"choices":[{"message":{"role":"assistant","content":"Hello"}}]}),
         )).unwrap();
-        assert!(parsed.request_tool_events.is_empty());
-        assert!(parsed.response_tool_events.is_empty());
+        assert_eq!(parsed.request_tool_events, Vec::<ParsedToolEvent>::new());
+        assert_eq!(parsed.response_tool_events, Vec::<ParsedToolEvent>::new());
     }
 
     #[test]

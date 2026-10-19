@@ -550,6 +550,10 @@ mod tests {
                 .config
                 .enabled_for_harness(BuiltInHarness::ClaudeCode.id())
         );
+        let deepseek =
+            &policy.hooks.harness_usage.config.harnesses[BuiltInHarness::DeepSeekHarness.id()];
+        assert_eq!(deepseek.enabled, Some(true));
+        assert!(deepseek.matchers.is_empty());
     }
 
     #[test]

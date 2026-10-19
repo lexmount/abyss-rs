@@ -301,17 +301,11 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn user_agent_only_harness_reuses_responses_and_chat_without_process_metadata() {
+    async fn builtin_deepseek_reuses_all_protocols_without_process_metadata_or_matchers() {
         let sink = Arc::new(RecordingSink::default());
-        let config = serde_json::from_value::<HooksConfig>(serde_json::json!({
-            "harness_usage": {"config": {"harnesses": {"acme-agent": {
-                "matchers": [{"user_agent_prefixes": ["acme-agent/"]}]
-            }}}}
-        }))
-        .unwrap();
         let hook = HarnessUsageHook::with_runtime_config_and_event_sink(
             HarnessUsageHookConfig::new(DeviceIdentity::new()),
-            HooksRuntimeConfig::new(config),
+            HooksRuntimeConfig::default_enabled(),
             Arc::clone(&sink),
         );
         let mut responses = openai_exchange("unused");
@@ -319,7 +313,7 @@ mod tests {
         responses
             .request
             .headers_mut()
-            .insert("user-agent", "acme-agent/1.0".parse().unwrap());
+            .insert("user-agent", "deepseek-harness/0.2.0-rc.2".parse().unwrap());
         hook.on_http_exchange(&responses).await.unwrap();
 
         let mut chat = openai_exchange("unused");
@@ -327,7 +321,7 @@ mod tests {
         *chat.request.uri_mut() = "/chat/completions".parse().unwrap();
         chat.request
             .headers_mut()
-            .insert("user-agent", "acme-agent/1.0".parse().unwrap());
+            .insert("user-agent", "deepseek-harness/0.2.0-rc.2".parse().unwrap());
         *chat.request.body_mut() = CapturedBody::from_bytes(
             br#"{"model":"compatible-chat","messages":[{"role":"user","content":"hello"}],"stream":true}"#.to_vec().into(),
         );
@@ -346,9 +340,36 @@ mod tests {
         chat.request.headers_mut().remove("user-agent");
         hook.on_http_exchange(&chat).await.unwrap();
 
+        let mut anthropic = anthropic_exchange_with_headers(
+            "unused",
+            &[
+                ("user-agent", "deepseek-harness/0.2.0-rc.2"),
+                ("x-deepseek-harness-session-id", "dsh-session"),
+            ],
+            &serde_json::json!({
+                "model": "compatible-messages",
+                "messages": [{"role": "user", "content": "hello"}]
+            }),
+        );
+        anthropic.flow.source_process = None;
+        anthropic
+            .request
+            .headers_mut()
+            .insert("host", "gateway.example".parse().unwrap());
+        hook.on_http_exchange(&anthropic).await.unwrap();
+
         let events = sink.events.lock().unwrap();
-        assert_eq!(events.len(), 4);
-        assert!(events.iter().all(|event| event.agent.name == "acme-agent"));
+        assert_eq!(events.len(), 6);
+        assert!(
+            events
+                .iter()
+                .all(|event| event.agent.name == "deepseek-harness")
+        );
+        assert!(
+            events
+                .iter()
+                .all(|event| event.agent.version.as_deref() == Some("0.2.0-rc.2"))
+        );
         assert!(
             events
                 .iter()
@@ -360,6 +381,8 @@ mod tests {
         }
         assert_eq!(events[2].token_usage.input_tokens, 7);
         assert_eq!(events[3].token_usage.output_tokens, 2);
+        assert_eq!(events[4].session_id, "dsh-session");
+        assert_eq!(events[5].session_id, "dsh-session");
         drop(events);
     }
 

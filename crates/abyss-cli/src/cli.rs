@@ -183,7 +183,7 @@ pub enum HarnessCommand {
 /// Harness selector.
 #[derive(Debug, Args)]
 pub struct HarnessArgs {
-    /// Harness name: codex, claude-code, or a configured name such as deepseek-harness.
+    /// Harness name: codex, claude-code, deepseek-harness, or a configured custom name.
     pub harness: String,
 }
 

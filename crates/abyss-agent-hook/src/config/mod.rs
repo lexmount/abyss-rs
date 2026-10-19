@@ -352,27 +352,31 @@ mod tests {
             .expect("empty matcher DTO should deserialize");
         assert_eq!(matcher.process_names, Vec::<String>::new());
         assert_eq!(matcher.application_ids, Vec::<String>::new());
-        assert_eq!(matcher.user_agent_prefixes, Vec::<String>::new());
     }
 
     #[test]
-    fn custom_harness_accepts_user_agent_only_matchers_and_rejects_blank_prefixes() {
-        for (prefix, valid) in [("acme-agent/", true), ("", false), ("  ", false)] {
-            let input = serde_json::json!({
-                "harness_usage": {"config": {"harnesses": {"acme": {
-                    "matchers": [{"user_agent_prefixes": [prefix]}]
-                }}}}
-            });
-            let config = serde_json::from_value::<HooksConfig>(input);
-            assert_eq!(config.is_ok(), valid, "{prefix:?}");
-            if let Ok(config) = config {
-                let value = serde_json::to_value(config).unwrap();
-                assert_eq!(
-                    value["harness_usage"]["config"]["harnesses"]["acme"]["matchers"][0],
-                    serde_json::json!({"user_agent_prefixes": [prefix]})
-                );
-            }
-        }
+    fn deepseek_harness_accepts_builtin_content_and_enablement_overrides() {
+        let config = serde_json::from_value::<HooksConfig>(serde_json::json!({
+            "harness_usage": {"config": {"harnesses": {"deepseek-harness": {
+                "enabled": false,
+                "content": {"images": false}
+            }}}}
+        }))
+        .unwrap();
+        let harness_id = BuiltInHarness::DeepSeekHarness.id();
+        assert!(!config.harness_usage.config.enabled_for_harness(harness_id));
+        assert!(
+            !config
+                .harness_usage
+                .config
+                .content_for_harness(harness_id)
+                .images
+        );
+        assert!(
+            config.harness_usage.config.harnesses[harness_id]
+                .matchers
+                .is_empty()
+        );
     }
 
     #[test]
@@ -397,16 +401,16 @@ mod tests {
 
     #[test]
     fn built_in_harness_cannot_be_redefined_with_custom_matchers() {
-        let input = r#"{
-            "harness_usage": {
-                "config": {
-                    "harnesses": {
-                        "codex": {"matchers": [{"process_names": ["other"]}]}
-                    }
-                }
-            }
-        }"#;
-
-        assert!(serde_json::from_str::<HooksConfig>(input).is_err());
+        for harness in ["codex", "deepseek-harness"] {
+            let input = serde_json::json!({
+                "harness_usage": {"config": {"harnesses": {
+                    harness: {"matchers": [{"process_names": ["other"]}]}
+                }}}
+            });
+            assert!(
+                serde_json::from_value::<HooksConfig>(input).is_err(),
+                "{harness}"
+            );
+        }
     }
 }

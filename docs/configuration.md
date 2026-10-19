@@ -58,8 +58,10 @@ apply that environment. DSH flags are forwarded unchanged, for example:
 abyss run -- dsh web --no-open --host 127.0.0.1 --port 3080
 ```
 
-Existing runtime-policy files are preserved on upgrade. To enable DSH in an
-older policy, add the following tables (or update matching existing entries):
+Existing runtime-policy files are preserved on upgrade. DSH identification is
+built in and enabled by default, including with policies that have no DSH entry.
+To observe DeepSeek API traffic with an older policy, add the following TLS rule
+(or update its existing entry):
 
 ```toml
 [[mitm.tls_decryption.rules]]
@@ -69,20 +71,19 @@ action = "intercept"
 destination_hosts = ["api.deepseek.com"]
 ```
 
-Custom Harnesses reuse protocol parsers by declaring identity matchers in
-`runtime-policy.toml`. The packaged DSH matcher recognizes its request
-User-Agent without source process metadata:
+The built-in DSH detector recognizes the literal, case-sensitive
+`deepseek-harness/` prefix in the model request's User-Agent without source
+process metadata. Its optional policy entry controls enablement and content
+capture, following the same format as other built-in Harnesses:
 
 ```toml
 [hooks.harness_usage.config.harnesses."deepseek-harness"]
 enabled = true
-
-[[hooks.harness_usage.config.harnesses."deepseek-harness".matchers]]
-user_agent_prefixes = ["deepseek-harness/"]
 ```
 
-`user_agent_prefixes` uses literal, case-sensitive prefixes. `process_names` and
-`application_ids` use exact matches against platform-supplied source metadata.
+Custom Harnesses can declare `process_names` and `application_ids` matchers in
+`runtime-policy.toml`; these use exact matches against platform-supplied source
+metadata.
 Populated fields in one matcher must all match; values within a field and
 separate matchers are alternatives. Exactly one enabled Harness must match.
 Request headers provide attribution, not authenticated process identity.

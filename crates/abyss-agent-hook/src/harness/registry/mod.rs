@@ -3,6 +3,7 @@
 mod claude_code;
 mod claude_desktop;
 mod codex;
+mod deepseek_harness;
 
 use abyss_mitm::{FlowContext, HttpExchange, WebSocketMessage};
 use http::HeaderMap;
@@ -58,10 +59,11 @@ impl HarnessRegistry {
         path: &str,
         config: &HarnessUsageConfig,
     ) -> Option<HarnessDetection> {
-        let detectors: [&dyn HarnessDetector; 3] = [
+        let detectors: [&dyn HarnessDetector; 4] = [
             &codex::CodexDetector,
             &claude_desktop::ClaudeDesktopDetector,
             &claude_code::ClaudeCodeDetector,
+            &deepseek_harness::DeepSeekHarnessDetector,
         ];
         let mut detections = detectors
             .into_iter()
@@ -76,7 +78,7 @@ impl HarnessRegistry {
             if let Some(evidence) = harness
                 .matchers
                 .iter()
-                .find_map(|matcher| HarnessMatcher::new(matcher).matches(flow, headers))
+                .find_map(|matcher| HarnessMatcher::new(matcher).matches(flow))
             {
                 detections.push(HarnessDetection {
                     harness_id: harness_id.clone(),
@@ -145,6 +147,49 @@ mod tests {
     use crate::config::HarnessUsageConfig;
 
     use super::HarnessRegistry;
+
+    #[test]
+    fn deepseek_is_builtin_and_requires_its_user_agent_prefix() {
+        let flow = FlowContext::from_optional_addrs(
+            None,
+            None,
+            OriginalDestination::from(SocketAddr::from(([127, 0, 0, 1], 443))),
+            TransparentProtocol::PlainHttp,
+            None,
+        );
+        let config = HarnessUsageConfig::default();
+        for (user_agent, expected) in [
+            (Some("deepseek-harness/0.2.0-rc.2"), true),
+            (Some("deepseek-harness/0.2.0-rc.2 (node)"), true),
+            (Some("unrelated deepseek-harness/0.2.0-rc.2"), false),
+            (Some("deepseek-harness-other/0.2.0-rc.2"), false),
+            (Some("DEEPSEEK-HARNESS/0.2.0-rc.2"), false),
+            (None, false),
+        ] {
+            let mut headers = HeaderMap::new();
+            if let Some(value) = user_agent {
+                headers.insert("user-agent", value.parse().unwrap());
+            }
+            let detected = HarnessRegistry::detect(&flow, &headers, "/responses", &config);
+            assert_eq!(detected.is_some(), expected, "{user_agent:?}");
+            if let Some(detected) = detected {
+                assert_eq!(detected.harness_id.as_str(), "deepseek-harness");
+                assert_eq!(detected.version.as_deref(), Some("0.2.0-rc.2"));
+            }
+        }
+
+        let mut headers = HeaderMap::new();
+        headers.insert("user-agent", "deepseek-harness/0.2.0-rc.2".parse().unwrap());
+        let disabled = serde_json::from_value::<HarnessUsageConfig>(serde_json::json!({
+            "harnesses": {"deepseek-harness": {"enabled": false}}
+        }))
+        .unwrap();
+        assert!(HarnessRegistry::detect(&flow, &headers, "/responses", &disabled).is_none());
+
+        // Preserve the registry's rejection of conflicting Harness identities.
+        headers.insert("x-codex-turn-metadata", "{}".parse().unwrap());
+        assert!(HarnessRegistry::detect(&flow, &headers, "/responses", &config).is_none());
+    }
 
     #[test]
     fn claude_web_route_alone_does_not_identify_claude_desktop() {

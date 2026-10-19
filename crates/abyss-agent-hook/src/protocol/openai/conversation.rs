@@ -575,7 +575,7 @@ mod tests {
                 input: r#"{"path":"correct"}"#.into(),
             }]
         );
-        assert!(response.texts().is_empty());
+        assert_eq!(response.texts(), Vec::<String>::new());
     }
 
     #[test]

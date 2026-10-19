@@ -1,4 +1,4 @@
-//! Harness-specific enablement, content overrides, and custom source/request matchers.
+//! Harness-specific enablement, content overrides, and custom source matchers.
 
 use std::collections::BTreeMap;
 
@@ -54,10 +54,6 @@ pub struct HarnessMatcherConfig {
     /// Accepted platform-neutral application identities.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub application_ids: Vec<String>,
-    /// Case-sensitive prefixes of the request's User-Agent header. Works
-    /// without source process metadata, including explicit proxy traffic.
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub user_agent_prefixes: Vec<String>,
 }
 
 impl HarnessUsageConfig {
@@ -102,10 +98,7 @@ impl<'de> Deserialize<'de> for HarnessUsageConfig {
                 )));
             }
             for matcher in &harness.matchers {
-                if matcher.process_names.is_empty()
-                    && matcher.application_ids.is_empty()
-                    && matcher.user_agent_prefixes.is_empty()
-                {
+                if matcher.process_names.is_empty() && matcher.application_ids.is_empty() {
                     return Err(D::Error::custom(format!(
                         "custom Harness `{harness_id}` contains an empty matcher"
                     )));
@@ -114,7 +107,6 @@ impl<'de> Deserialize<'de> for HarnessUsageConfig {
                     .process_names
                     .iter()
                     .chain(&matcher.application_ids)
-                    .chain(&matcher.user_agent_prefixes)
                     .any(|value| value.trim().is_empty())
                 {
                     return Err(D::Error::custom(format!(
