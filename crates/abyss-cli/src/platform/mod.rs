@@ -30,6 +30,9 @@ pub trait PlatformAdapter: Send + Sync {
     /// Resolves the CLI-owned state root.
     fn state_root(&self) -> Result<PathBuf, CliError>;
 
+    /// Resolves the current user's home directory.
+    fn user_home(&self) -> Result<PathBuf, CliError>;
+
     /// Configures creation of a CLI-owned file.
     ///
     /// Linux and macOS apply the requested POSIX mode.

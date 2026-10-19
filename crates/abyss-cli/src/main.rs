@@ -7,6 +7,7 @@
 
 mod auth;
 mod broker;
+mod claude_code;
 mod cli;
 mod cli_logging;
 mod command;

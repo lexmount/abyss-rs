@@ -34,6 +34,12 @@ impl PlatformAdapter for LinuxPlatformAdapter {
             })
     }
 
+    fn user_home(&self) -> Result<PathBuf, CliError> {
+        std::env::var_os("HOME").map(PathBuf::from).ok_or_else(|| {
+            CliError::InvalidConfiguration("HOME is required to configure Claude Code".to_owned())
+        })
+    }
+
     fn configure_file_creation(&self, options: &mut fs::OpenOptions, mode: u32) {
         options.mode(mode);
     }

@@ -15,6 +15,7 @@ use serde_json::Value;
 use crate::{
     auth::AuthCommandRunner,
     broker::{BrokerClient, BrokerConnection, ProxyLifecycle},
+    claude_code::ClaudeCodeConfigurator,
     cli::{
         Command as ParsedCommand, ConfigCommand, ContextCommand, HarnessCommand, InternalCommand,
         LogCommand, ProxyCommand, RunArgs,
@@ -281,6 +282,13 @@ impl ConfigCommandRunner {
                     HarnessCommand::Enable(args) => (parse_harness(&args.harness, &hooks)?, true),
                     HarnessCommand::Disable(args) => (parse_harness(&args.harness, &hooks)?, false),
                 };
+                let claude_code_configuration =
+                    if enabled && harness.as_str() == BuiltInHarness::ClaudeCode.id() {
+                        let paths = CliPaths::from_env()?;
+                        Some(ClaudeCodeConfigurator::from_paths(&paths)?.configure()?)
+                    } else {
+                        None
+                    };
                 hooks
                     .harness_usage
                     .config
@@ -294,6 +302,13 @@ impl ConfigCommandRunner {
                     harness,
                     if enabled { "enabled" } else { "disabled" }
                 );
+                if let Some(configuration) = claude_code_configuration {
+                    println!(
+                        "Claude Code environment configured in {} (CA bundle: {}).",
+                        configuration.settings_path().display(),
+                        configuration.bundle_path().display()
+                    );
+                }
             }
         }
         Ok(())

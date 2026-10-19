@@ -38,8 +38,8 @@ abyss config harness disable deepseek-harness
 abyss config harness enable deepseek-harness
 ```
 
-For Node-based clients, configure `NODE_EXTRA_CA_CERTS` yourself before launching
-the client. Point it at the `abyss-root-ca.pem` in your configured CA directory,
+For Node-based clients such as DSH, configure `NODE_EXTRA_CA_CERTS` yourself before
+launching the client. Point it at the `abyss-root-ca.pem` in your configured CA directory,
 or a PEM bundle containing that certificate and any other extra CAs you need:
 
 ```bash
@@ -49,8 +49,16 @@ abyss run -- dsh web
 
 You can place the export in your shell profile for future sessions. `abyss run`
 inherits this variable unchanged, and `abyss proxy env` prints only proxy
-variables. Enabling a Harness does not rewrite the client's certificate settings.
-API credentials and model selection remain the client's configuration.
+variables. API credentials and model selection remain the client's configuration.
+
+Claude Code also supports persistent certificate setup through
+`abyss config harness enable claude-code`. This command backs up
+`~/.claude/settings.json`, merges the Abyss root certificate with any existing
+CA bundle referenced by its `env.NODE_EXTRA_CA_CERTS`, and writes
+`~/.claude/abyss-ca-bundle.pem`. It updates that settings entry to point to the
+managed bundle while preserving other settings. Disabling capture leaves this
+certificate configuration in place. This setup is scoped to Claude Code;
+it does not change the shell environment.
 
 For the Web UI, start the local Abyss environment with `abyss deploy-local start`
 if no deployment is configured, then run `abyss run -- dsh web` from the intended
