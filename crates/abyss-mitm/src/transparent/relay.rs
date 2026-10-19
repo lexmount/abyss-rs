@@ -36,9 +36,8 @@ use super::{
     TransparentProtocol,
     hook::HookDispatcher,
     utils::{
-        content_length, has_expect_continue, http_request_head_without_relay_headers, is_chunked,
-        is_websocket_upgrade_request, should_strip_accept_encoding, status_has_no_body,
-        websocket_request_head_bytes,
+        content_length, has_expect_continue, http_request_head_without_expect, is_chunked,
+        is_websocket_upgrade_request, status_has_no_body, websocket_request_head_bytes,
     },
     websocket::{WebSocketRelayOutcome, relay_websocket_messages},
 };
@@ -638,7 +637,7 @@ where
     })?;
     let handle_expect_continue =
         has_expect_continue(request) && !matches!(body_framing, BodyFraming::Empty);
-    let request_head = request_head_for_relay(request, head_buffer, flow, handle_expect_continue)?;
+    let request_head = request_head_for_relay(request, head_buffer, handle_expect_continue)?;
 
     upstream
         .write_all(&request_head)
@@ -680,18 +679,11 @@ where
 fn request_head_for_relay<'a>(
     request: &'a Request<()>,
     head_buffer: &'a Http1HeadBuffer,
-    flow: &FlowContext,
     strip_expect_continue: bool,
 ) -> Result<Cow<'a, [u8]>, TransparentFlowError> {
-    let strip_accept_encoding = should_strip_accept_encoding(flow, request);
-    if strip_accept_encoding || strip_expect_continue {
+    if strip_expect_continue {
         return Ok(Cow::Owned(
-            http_request_head_without_relay_headers(
-                request,
-                strip_accept_encoding,
-                strip_expect_continue,
-            )
-            .map_err(|source| {
+            http_request_head_without_expect(request).map_err(|source| {
                 TransparentFlowError::http1(FlowOperation::WriteProviderRequestHead, source)
             })?,
         ));
@@ -1514,7 +1506,7 @@ mod tests {
     async fn expect_continue_request_gets_local_continue_and_stripped_upstream_head() {
         let request_head = concat!(
             "POST /v1/messages?beta=true HTTP/1.1\r\n",
-            "Host: www.dmxapi.cn\r\n",
+            "Host: gateway.example\r\n",
             "Accept-Encoding: gzip\r\n",
             "Expect: 100-continue\r\n",
             "Content-Length: 4\r\n",
@@ -1601,8 +1593,8 @@ mod tests {
             "locally-handled Expect must not be forwarded upstream"
         );
         assert!(
-            !lower.contains("accept-encoding:"),
-            "Claude-compatible gateway responses should remain parseable for hooks"
+            lower.contains("accept-encoding: gzip"),
+            "handling Expect must preserve response compression negotiation"
         );
         assert!(
             upstream_text.ends_with("ping"),
@@ -1619,7 +1611,7 @@ mod tests {
     async fn content_length_request_is_flushed_after_body() {
         let request_bytes = concat!(
             "POST /v1/messages HTTP/1.1\r\n",
-            "Host: api.anthropic.com\r\n",
+            "Host: gateway.example\r\n",
             "Content-Length: 4\r\n",
             "\r\n",
             "ping"
@@ -1698,9 +1690,9 @@ mod tests {
         FlowContext::new(
             SocketAddr::from(([127, 0, 0, 1], 50000)),
             SocketAddr::from(([127, 0, 0, 1], 18080)),
-            OriginalDestination::from(SocketAddr::from(([110, 42, 10, 198], 443))),
+            OriginalDestination::from(SocketAddr::from(([127, 0, 0, 1], 443))),
             TransparentProtocol::TlsHttp {
-                server_name: "www.dmxapi.cn".to_owned(),
+                server_name: "gateway.example".to_owned(),
             },
         )
     }

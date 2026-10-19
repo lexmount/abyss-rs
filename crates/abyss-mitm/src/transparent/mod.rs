@@ -327,6 +327,91 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn relay_preserves_compression_headers_and_encoded_bodies() {
+        // gzip-encoded {"ok":true}; content decoding belongs outside forwarding.
+        const BODY: &[u8] = &[
+            31, 139, 8, 0, 0, 0, 0, 0, 2, 255, 171, 86, 202, 207, 86, 178, 42, 41, 42, 77, 173, 5,
+            0, 144, 95, 212, 167, 11, 0, 0, 0,
+        ];
+        // Cover previously special-cased hosts and paths alongside a neutral endpoint.
+        for (host, path) in [
+            ("api.deepseek.com", "/chat/completions"),
+            ("api.openai.com", "/v1/responses"),
+            ("api.anthropic.com", "/v1/messages"),
+            (
+                "claude.ai",
+                "/api/organizations/o/chat_conversations/c/completion",
+            ),
+            ("www.dmxapi.cn", "/other"),
+            ("gateway.example", "/gateway/responses"),
+            ("gateway.example", "/upload"),
+        ] {
+            let mut request = format!(
+                "POST {path} HTTP/1.1\r\nHost: {host}\r\naCcEpT-EnCoDiNg: br, gzip\r\nAccept-Encoding: zstd\r\nContent-Encoding: gzip\r\nContent-Length: {}\r\n\r\n",
+                BODY.len()
+            ).into_bytes();
+            request.extend_from_slice(BODY);
+            let mut response = format!(
+                "HTTP/1.1 200 OK\r\nContent-Encoding: gzip\r\nContent-Length: {}\r\n\r\n",
+                BODY.len()
+            )
+            .into_bytes();
+            response.extend_from_slice(BODY);
+            let upstream_listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+            let upstream_addr = upstream_listener.local_addr().unwrap();
+            let expected_request = request.clone();
+            let upstream_response = response.clone();
+            let upstream = tokio::spawn(async move {
+                let (mut stream, _) = upstream_listener.accept().await.unwrap();
+                let mut received = vec![0; expected_request.len()];
+                timeout(Duration::from_secs(2), stream.read_exact(&mut received))
+                    .await
+                    .expect("upstream must receive the whole request")
+                    .unwrap();
+                assert_eq!(
+                    received, expected_request,
+                    "request wire bytes changed for {host}{path}"
+                );
+                stream.write_all(&upstream_response).await.unwrap();
+            });
+            let (mut client, server) = connected_pair().await;
+            let flow = AcceptedTcpFlow::new(
+                server,
+                SocketAddr::from((Ipv4Addr::LOCALHOST, 50000)),
+                SocketAddr::from((Ipv4Addr::LOCALHOST, 18090)),
+                OriginalDestination::from(upstream_addr),
+            );
+            let mitm = MitmEngine::from_ca(&test_ca()).unwrap();
+            let worker = tokio::spawn(async move { Box::pin(mitm.handle_flow(flow)).await });
+            client.write_all(&request).await.unwrap();
+            let mut received = vec![0; response.len()];
+            timeout(Duration::from_secs(2), client.read_exact(&mut received))
+                .await
+                .expect("client must receive the whole response")
+                .unwrap();
+            let outcome = expect_intercepted_outcome(worker.await.unwrap().unwrap());
+            upstream.await.unwrap();
+
+            assert_eq!(
+                received, response,
+                "response wire bytes changed for {host}{path}"
+            );
+            assert_eq!(outcome.first_request.headers()["content-encoding"], "gzip");
+            assert_eq!(outcome.first_response.headers()["content-encoding"], "gzip");
+            assert_eq!(outcome.first_request.body().bytes(), BODY);
+            assert_eq!(outcome.first_response.body().bytes(), BODY);
+            assert_eq!(
+                outcome.client_to_upstream_bytes,
+                u64::try_from(request.len()).unwrap()
+            );
+            assert_eq!(
+                outcome.upstream_to_client_bytes,
+                u64::try_from(response.len()).unwrap()
+            );
+        }
+    }
+
+    #[tokio::test]
     async fn oversized_content_length_body_is_relayed_with_truncated_capture() {
         // The body is larger than the MITM capture budget below. The upstream
         // assertion verifies the budget does not truncate a Content-Length
