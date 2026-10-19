@@ -6,48 +6,56 @@ use serde::{Deserialize, Serialize};
 #[derive(Debug, Clone, Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct Conversation {
-    /// Ordered messages, with streamed fragments assembled by the collector.
-    pub messages: Vec<ConversationMessage>,
-    /// Whether the request carried explicit instructions or a system prompt,
-    /// including an explicitly empty one.
-    pub instructions_present: bool,
-    /// Whether the captured input could be completely decoded.
+    /// One entry per protocol block or item, in provider order, never merged
+    /// or split.
+    pub entries: Vec<ConversationEntry>,
+    /// Whether the captured body could be completely decoded.
     pub completeness: ContentCompleteness,
-    /// Whether content policy omitted messages from this projection.
-    pub policy_omitted: bool,
 }
 
-/// A provider message or standalone item, preserving its role and order.
-#[derive(Debug, Clone, Deserialize, Serialize)]
+/// One protocol block or item.
+#[derive(Debug, Clone, Deserialize, Serialize, PartialEq, Eq)]
 #[serde(deny_unknown_fields)]
-pub struct ConversationMessage {
-    /// Provider item/message identity, when supplied.
-    pub id: Option<String>,
-    /// Message role; reasoning and tool items use their own role.
-    pub role: MessageRole,
-    /// Text projection excluding tool arguments and results.
+pub struct ConversationEntry {
+    /// What the block is, by the protocol block-to-role table.
+    pub role: EntryRole,
+    /// Visible text; a tool call's arguments or input as sent, a tool result's
+    /// output.
     pub text: String,
+    /// Identifier pairing a tool call with its result; tool entries only.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub call_id: Option<String>,
+    /// Tool name; tool calls only.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub name: Option<String>,
+    /// Identity of the item the entry belongs to, as the traffic carries it.
+    /// A model output keeps the identity its provider assigned when a later
+    /// request sends it back as history, so the request entry and the
+    /// response entry that produced it carry the same value.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub item_id: Option<String>,
 }
 
-/// Role of one conversation message.
-/// TODO Context.
+/// Role of one conversation entry.
 #[derive(Debug, Clone, Copy, Deserialize, Serialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
 #[non_exhaustive]
-pub enum MessageRole {
-    /// Provider system prompt.
+pub enum EntryRole {
+    /// System prompt block.
     System,
-    /// Developer instructions, including OpenAI `instructions`.
+    /// Developer message part.
     Developer,
-    /// End-user input.
+    /// End-user text.
     User,
-    /// Model-visible assistant output.
+    /// Model-visible assistant text.
     Assistant,
     /// Model reasoning, such as thinking blocks or reasoning summaries.
     Reasoning,
-    /// Tool call or tool result item; its content is carried by tool fields.
-    Tool,
-    /// The provider did not declare a role.
+    /// A tool call; `text` is its arguments or input.
+    ToolCall,
+    /// A tool result; `text` is its output.
+    ToolResult,
+    /// Any other block or item that carries text.
     Unknown,
 }
 
@@ -66,84 +74,89 @@ pub enum ContentCompleteness {
 
 #[cfg(test)]
 mod tests {
-    use super::{ContentCompleteness, Conversation, ConversationMessage, MessageRole};
+    use super::{ContentCompleteness, Conversation, ConversationEntry, EntryRole};
     use serde_json::json;
 
     #[test]
     fn roles_use_the_published_snake_case_names() {
         let roles = [
-            (MessageRole::System, "system"),
-            (MessageRole::Developer, "developer"),
-            (MessageRole::User, "user"),
-            (MessageRole::Assistant, "assistant"),
-            (MessageRole::Reasoning, "reasoning"),
-            (MessageRole::Tool, "tool"),
-            (MessageRole::Unknown, "unknown"),
+            (EntryRole::System, "system"),
+            (EntryRole::Developer, "developer"),
+            (EntryRole::User, "user"),
+            (EntryRole::Assistant, "assistant"),
+            (EntryRole::Reasoning, "reasoning"),
+            (EntryRole::ToolCall, "tool_call"),
+            (EntryRole::ToolResult, "tool_result"),
+            (EntryRole::Unknown, "unknown"),
         ];
         for (role, wire) in roles {
             assert_eq!(serde_json::to_value(role).unwrap(), wire);
             assert_eq!(
-                serde_json::from_value::<MessageRole>(json!(wire)).unwrap(),
+                serde_json::from_value::<EntryRole>(json!(wire)).unwrap(),
                 role
             );
         }
-        assert!(
-            serde_json::from_value::<MessageRole>(json!("request")).is_err(),
-            "the former placeholder role is replaced by `unknown`"
-        );
+        assert!(serde_json::from_value::<EntryRole>(json!("tool")).is_err());
     }
 
     #[test]
-    fn anthropic_thinking_is_a_reasoning_message_sharing_the_message_id() {
+    fn identities_are_omitted_when_absent() {
         let conversation = Conversation {
-            messages: vec![
-                ConversationMessage {
-                    id: Some("msg_1".to_owned()),
-                    role: MessageRole::Reasoning,
-                    text: "plan".to_owned(),
+            entries: vec![
+                ConversationEntry {
+                    role: EntryRole::User,
+                    text: "run pwd".to_owned(),
+                    call_id: None,
+                    name: None,
+                    item_id: None,
                 },
-                ConversationMessage {
-                    id: Some("msg_1".to_owned()),
-                    role: MessageRole::Assistant,
-                    text: "hi".to_owned(),
+                ConversationEntry {
+                    role: EntryRole::ToolCall,
+                    text: "{\"cmd\":\"pwd\"}".to_owned(),
+                    call_id: Some("call_1".to_owned()),
+                    name: Some("exec".to_owned()),
+                    item_id: Some("fc_1".to_owned()),
                 },
             ],
-            instructions_present: false,
             completeness: ContentCompleteness::Complete,
-            policy_omitted: false,
         };
 
         assert_eq!(
             serde_json::to_value(&conversation).unwrap(),
             json!({
-                "messages": [
-                    {"id": "msg_1", "role": "reasoning", "text": "plan"},
-                    {"id": "msg_1", "role": "assistant", "text": "hi"}
+                "entries": [
+                    {"role": "user", "text": "run pwd"},
+                    {"role": "tool_call", "text": "{\"cmd\":\"pwd\"}", "call_id": "call_1", "name": "exec", "item_id": "fc_1"}
                 ],
-                "instructions_present": false,
-                "completeness": "complete",
-                "policy_omitted": false
+                "completeness": "complete"
             })
         );
     }
 
     #[test]
-    fn raw_content_carriers_are_rejected() {
+    fn retired_and_raw_fields_are_rejected() {
         let conversation = json!({
-            "messages": [{"id": null, "role": "user", "text": "hello"}],
-            "instructions_present": true,
-            "completeness": "partial",
-            "policy_omitted": false
+            "entries": [{"role": "user", "text": "hello"}],
+            "completeness": "partial"
         });
         serde_json::from_value::<Conversation>(conversation.clone())
             .expect("the structured conversation should decode");
 
-        let mut with_payloads = conversation.clone();
-        with_payloads["payloads"] = json!([{"output": []}]);
-        assert!(serde_json::from_value::<Conversation>(with_payloads).is_err());
-
-        let mut with_blocks = conversation;
-        with_blocks["messages"][0]["blocks"] = json!([{"type": "text", "text": "hello"}]);
-        assert!(serde_json::from_value::<Conversation>(with_blocks).is_err());
+        for (path, value) in [
+            ("messages", json!([])),
+            ("instructions_present", json!(true)),
+            ("policy_omitted", json!(false)),
+            ("payloads", json!([{"output": []}])),
+        ] {
+            let mut retired = conversation.clone();
+            retired[path] = value;
+            assert!(
+                serde_json::from_value::<Conversation>(retired).is_err(),
+                "{path}"
+            );
+        }
+        let mut with_id = conversation;
+        with_id["entries"][0]["id"] = json!("m1");
+        assert!(serde_json::from_value::<Conversation>(with_id).is_err());
     }
 }

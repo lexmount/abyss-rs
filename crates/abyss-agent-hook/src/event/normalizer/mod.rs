@@ -4,9 +4,9 @@ mod anthropic;
 mod openai;
 
 use abyss_plugin_protocol::event::{
-    AgentContext as PluginAgentContext, AgentEvent, AgentEventSide, Conversation, DeviceContext,
-    EventPurpose, ImageAttachment, ImageMediaType, LlmContext, LlmProvider,
-    TokenUsage as PluginTokenUsage, ToolCall, ToolResult,
+    AgentContext as PluginAgentContext, AgentEvent, AgentEventSide, ContentCategory, Conversation,
+    DeviceContext, EntryRole, EventPurpose, ImageAttachment, ImageMediaType, LlmContext,
+    LlmProvider, TokenUsage as PluginTokenUsage, ToolCall, ToolResult,
 };
 use base64::{Engine as _, engine::general_purpose::STANDARD};
 use chrono::{DateTime, SecondsFormat, TimeDelta, Utc};
@@ -108,6 +108,9 @@ pub struct NormalizedUsageEvent {
     pub event_type: &'static str,
     /// Plaintext request or response content extracted by the hook.
     pub text: Option<String>,
+    /// Content categories the effective policy omitted from this event.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub omitted: Vec<ContentCategory>,
     /// Structured provider content retained independently of the text projection.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub conversation: Option<Conversation>,
@@ -140,6 +143,7 @@ impl TryFrom<NormalizedUsageEvent> for AgentEvent {
             llm,
             event_type,
             text,
+            omitted,
             conversation,
             token_usage,
             metadata,
@@ -184,6 +188,7 @@ impl TryFrom<NormalizedUsageEvent> for AgentEvent {
             },
             side,
             text,
+            omitted,
             conversation,
             token_usage: token_usage.try_into()?,
             tool_calls,
@@ -610,18 +615,38 @@ fn retained_token_usage(usage: TokenUsage, content: &HarnessUsageContentConfig) 
 
 /// Applies content policy to one side's conversation.
 ///
-/// Message text never contains tool arguments, tool results, or image bytes,
-/// so only the conversation-text category gates it.
+/// Entries keep their role, order, and `item_id`. An omitted category only
+/// empties the text: conversation text for non-tool entries, tool content for
+/// tool calls and results, which keep their `call_id` and `name`.
 fn retained_conversation(
     conversation: &Conversation,
     content: &HarnessUsageContentConfig,
 ) -> Conversation {
     let mut conversation = conversation.clone();
-    if !content.conversation_text {
-        conversation.messages.clear();
-        conversation.policy_omitted = true;
+    for entry in &mut conversation.entries {
+        let kept = if matches!(entry.role, EntryRole::ToolCall | EntryRole::ToolResult) {
+            content.tool_calls
+        } else {
+            content.conversation_text
+        };
+        if !kept {
+            entry.text.clear();
+        }
     }
     conversation
+}
+
+/// Content categories the policy leaves out, in a fixed order.
+fn omitted_categories(content: &HarnessUsageContentConfig) -> Vec<ContentCategory> {
+    [
+        (content.token_usage, ContentCategory::TokenUsage),
+        (content.conversation_text, ContentCategory::ConversationText),
+        (content.tool_calls, ContentCategory::ToolContent),
+        (content.images, ContentCategory::Images),
+    ]
+    .into_iter()
+    .filter_map(|(kept, category)| (!kept).then_some(category))
+    .collect()
 }
 
 fn content_segments_metadata(
@@ -755,6 +780,7 @@ fn usage_event(
         },
         event_type: side.event_type,
         text: side.content.conversation_text.then(|| side.text.to_owned()),
+        omitted: omitted_categories(side.content),
         conversation: Some(retained_conversation(side.conversation, side.content)),
         token_usage: side.token_usage,
         metadata: side.metadata,
@@ -809,7 +835,7 @@ fn merge_metadata(mut base: Value, extra: &Value) -> Value {
 #[cfg(test)]
 mod tests {
     use abyss_plugin_protocol::event::{
-        AgentEvent, ConversationMessage, EventPurpose, LlmProvider, MessageRole,
+        AgentEvent, ContentCategory, EntryRole, EventPurpose, LlmProvider,
     };
 
     use crate::{
@@ -830,33 +856,65 @@ mod tests {
         },
     };
 
-    use super::{normalize_exchange, retained_conversation};
+    use super::{normalize_exchange, omitted_categories, retained_conversation};
 
     #[test]
-    fn only_conversation_text_policy_omits_messages() {
+    fn policy_empties_only_the_omitted_text_and_keeps_identities() {
         let mut source = ConversationProjection::empty();
-        source.messages.push(ConversationMessage {
-            id: None,
-            role: MessageRole::User,
-            text: "visible".to_owned(),
-        });
+        source.entries = vec![
+            ConversationProjection::text(EntryRole::System, "rules"),
+            ConversationProjection::text(EntryRole::User, "visible"),
+            ConversationProjection::text(EntryRole::Reasoning, "plan"),
+            ConversationProjection::text(EntryRole::Assistant, "answer"),
+            ConversationProjection::tool_call(
+                Some("call_1".to_owned()),
+                Some("Bash".to_owned()),
+                "{\"command\":\"ls\"}".to_owned(),
+            ),
+            ConversationProjection::tool_result(Some("call_1".to_owned()), "out".to_owned()),
+        ];
+        ConversationProjection::identify(&mut source.entries[2..3], Some("thinking:ab12"));
+        ConversationProjection::identify(&mut source.entries[3..4], Some("msg_1"));
+        ConversationProjection::identify(&mut source.entries[4..5], Some("fc_1"));
         for conversation_text in [false, true] {
             for tool_calls in [false, true] {
-                for images in [false, true] {
-                    for token_usage in [false, true] {
-                        let content = HarnessUsageContentConfig {
-                            token_usage,
-                            conversation_text,
-                            tool_calls,
-                            images,
+                let content = HarnessUsageContentConfig {
+                    token_usage: true,
+                    conversation_text,
+                    tool_calls,
+                    images: true,
+                };
+                let result = retained_conversation(&source, &content);
+                assert_eq!(result.entries.len(), source.entries.len());
+                for (kept, original) in result.entries.iter().zip(&source.entries) {
+                    assert_eq!(kept.role, original.role);
+                    assert_eq!(kept.call_id, original.call_id);
+                    assert_eq!(kept.name, original.name);
+                    assert_eq!(kept.item_id, original.item_id);
+                    let retained =
+                        if matches!(original.role, EntryRole::ToolCall | EntryRole::ToolResult) {
+                            tool_calls
+                        } else {
+                            conversation_text
                         };
-                        let result = retained_conversation(&source, &content);
-                        assert_eq!(result.messages.is_empty(), !conversation_text);
-                        assert_eq!(result.policy_omitted, !conversation_text);
-                    }
+                    assert_eq!(kept.text.is_empty(), !retained);
                 }
             }
         }
+        assert_eq!(
+            omitted_categories(&HarnessUsageContentConfig {
+                token_usage: false,
+                conversation_text: true,
+                tool_calls: false,
+                images: false,
+            }),
+            [
+                ContentCategory::TokenUsage,
+                ContentCategory::ToolContent,
+                ContentCategory::Images,
+            ]
+        );
+        assert!(omitted_categories(&HarnessUsageContentConfig::default()).is_empty());
     }
 
     #[test]

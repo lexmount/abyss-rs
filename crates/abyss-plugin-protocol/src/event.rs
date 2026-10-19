@@ -9,7 +9,7 @@
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Deserializer, Serialize, Serializer};
 mod conversation;
-pub use conversation::{ContentCompleteness, Conversation, ConversationMessage, MessageRole};
+pub use conversation::{ContentCompleteness, Conversation, ConversationEntry, EntryRole};
 
 /// One event decoded with the contract defined by the active plugin protocol.
 #[derive(Debug, Deserialize, Serialize)]
@@ -62,7 +62,11 @@ pub struct AgentEvent {
     /// Policy-retained request or response text.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub text: Option<String>,
-    /// Role-aware request or response messages.
+    /// Content categories the effective content policy omitted from this
+    /// event; empty when everything was retained.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub omitted: Vec<ContentCategory>,
+    /// Role-aware request or response entries, one per protocol block or item.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub conversation: Option<Conversation>,
     /// Token counters attributed to this event side.
@@ -76,6 +80,24 @@ pub struct AgentEvent {
     /// Policy-retained image attachments.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub attachments: Vec<ImageAttachment>,
+}
+
+/// A category of captured content the content policy can omit.
+#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "snake_case")]
+#[non_exhaustive]
+pub enum ContentCategory {
+    /// Token counters; when omitted every counter is zero.
+    TokenUsage,
+    /// Text of non-tool conversation entries and the event `text`; when
+    /// omitted those entries keep their role and `item_id` with empty text.
+    ConversationText,
+    /// Tool arguments and results; when omitted tool entries keep their
+    /// `call_id`, `name`, and `item_id` with empty text, and no tool calls or
+    /// tool results are carried.
+    ToolContent,
+    /// Image attachments; when omitted no attachment is carried.
+    Images,
 }
 
 /// Agent-declared reason for a provider call.
@@ -299,8 +321,8 @@ impl ImageMediaType {
 #[cfg(test)]
 mod tests {
     use super::{
-        AgentContext, AgentEvent, AgentEventSide, DeviceContext, LlmContext, LlmProvider,
-        TokenUsage, ToolCall, ToolResult,
+        AgentContext, AgentEvent, AgentEventSide, ContentCategory, DeviceContext, LlmContext,
+        LlmProvider, TokenUsage, ToolCall, ToolResult,
     };
     use chrono::{TimeZone as _, Utc};
 
@@ -337,6 +359,7 @@ mod tests {
             "previous_response_id",
             "purpose",
             "session_title",
+            "omitted",
             "conversation",
         ] {
             assert!(
@@ -367,6 +390,23 @@ mod tests {
         assert_eq!(serialized["tool_calls"][0]["input"], "pwd");
         assert_eq!(serialized["tool_results"][0]["call_id"], "call-1");
         assert_eq!(serialized["tool_results"][0]["output"], "/workspace");
+    }
+
+    #[test]
+    fn omitted_categories_use_snake_case_names() {
+        let mut event = sample_event(LlmProvider::OpenAi);
+        event.omitted = vec![
+            ContentCategory::TokenUsage,
+            ContentCategory::ConversationText,
+            ContentCategory::ToolContent,
+            ContentCategory::Images,
+        ];
+        let serialized = serde_json::to_value(event).expect("Agent event should serialize");
+
+        assert_eq!(
+            serialized["omitted"],
+            serde_json::json!(["token_usage", "conversation_text", "tool_content", "images"])
+        );
     }
 
     #[test]
@@ -430,6 +470,7 @@ mod tests {
             },
             side: AgentEventSide::Request,
             text: None,
+            omitted: Vec::new(),
             conversation: None,
             token_usage: TokenUsage {
                 input_tokens: 10,

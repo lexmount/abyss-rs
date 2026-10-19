@@ -17,6 +17,8 @@ export interface AgentEvent {
   llm: LlmContext;
   side: AgentEventSide;
   text?: string;
+  /** Content categories the content policy omitted; absent when none were. */
+  omitted?: ContentCategory[];
   conversation?: Conversation;
   token_usage: TokenUsage;
   tool_calls?: ToolCall[];
@@ -26,29 +28,37 @@ export interface AgentEvent {
 
 export type EventPurpose = "session_title" | "compaction" | "prewarm";
 
-export type MessageRole =
+export type EntryRole =
   | "system"
   | "developer"
   | "user"
   | "assistant"
   | "reasoning"
-  | "tool"
+  | "tool_call"
+  | "tool_result"
   | "unknown";
 
 export type ContentCompleteness = "complete" | "partial" | "unsupported";
 
-export interface ConversationMessage {
-  id: string | null;
-  role: MessageRole;
-  /** Message text only; tool arguments and results use the event's tool fields. */
+export type ContentCategory =
+  "token_usage" | "conversation_text" | "tool_content" | "images";
+
+/** One protocol block or item, in provider order. */
+export interface ConversationEntry {
+  role: EntryRole;
+  /** Visible text; a tool call's arguments or input, a tool result's output. */
   text: string;
+  /** Pairs a tool call with its result; tool entries only. */
+  call_id?: string;
+  /** Tool name; tool calls only. */
+  name?: string;
+  /** Identity of the item the entry belongs to, as the traffic carries it. */
+  item_id?: string;
 }
 
 export interface Conversation {
-  messages: ConversationMessage[];
-  instructions_present: boolean;
+  entries: ConversationEntry[];
   completeness: ContentCompleteness;
-  policy_omitted: boolean;
 }
 
 export interface DeviceContext {
@@ -127,6 +137,7 @@ export function decodeAgentEvent(value: unknown): AgentEvent {
       "llm",
       "side",
       "text",
+      "omitted",
       "conversation",
       "token_usage",
       "tool_calls",
@@ -163,6 +174,16 @@ export function decodeAgentEvent(value: unknown): AgentEvent {
     throw new TypeError("AgentEvent.side must be request or response");
   }
   optionalStringField(event, "text");
+  optionalArray(event, "omitted").forEach((category, index) => {
+    if (
+      typeof category !== "string" ||
+      !["token_usage", "conversation_text", "tool_content", "images"].includes(
+        category,
+      )
+    ) {
+      throw new TypeError(`omitted[${index}] is not a content category`);
+    }
+  });
   if (event.conversation !== undefined) {
     decodeConversation(event.conversation);
   }
@@ -175,38 +196,37 @@ export function decodeAgentEvent(value: unknown): AgentEvent {
 
 function decodeConversation(value: unknown): void {
   const conversation = record(value, "AgentEvent.conversation");
-  rejectUnknown(
-    conversation,
-    ["messages", "instructions_present", "completeness", "policy_omitted"],
-    "conversation",
-  );
-  if (!Array.isArray(conversation.messages)) {
-    throw new TypeError("conversation.messages must be an array");
+  rejectUnknown(conversation, ["entries", "completeness"], "conversation");
+  if (!Array.isArray(conversation.entries)) {
+    throw new TypeError("conversation.entries must be an array");
   }
-  for (const value of conversation.messages) {
-    const message = record(value, "conversation.messages[]");
-    rejectUnknown(message, ["id", "role", "text"], "conversation message");
-    if (message.id !== null) {
-      stringField(message, "id");
-    }
-    choiceField(message, "role", [
+  for (const value of conversation.entries) {
+    const entry = record(value, "conversation.entries[]");
+    rejectUnknown(
+      entry,
+      ["role", "text", "call_id", "name", "item_id"],
+      "conversation entry",
+    );
+    choiceField(entry, "role", [
       "system",
       "developer",
       "user",
       "assistant",
       "reasoning",
-      "tool",
+      "tool_call",
+      "tool_result",
       "unknown",
     ]);
-    stringField(message, "text");
+    stringField(entry, "text");
+    for (const field of ["call_id", "name", "item_id"]) {
+      optionalStringField(entry, field);
+    }
   }
-  booleanField(conversation, "instructions_present");
   choiceField(conversation, "completeness", [
     "complete",
     "partial",
     "unsupported",
   ]);
-  booleanField(conversation, "policy_omitted");
 }
 
 function decodeDevice(value: unknown): void {

@@ -89,6 +89,17 @@
         "$ref": "#/$defs/imageAttachment"
       }
     },
+    "omitted": {
+      "type": "array",
+      "items": {
+        "enum": [
+          "token_usage",
+          "conversation_text",
+          "tool_content",
+          "images"
+        ]
+      }
+    },
     "conversation": {
       "$ref": "#/$defs/conversation"
     }
@@ -266,20 +277,15 @@
       "type": "object",
       "additionalProperties": false,
       "required": [
-        "messages",
-        "instructions_present",
-        "completeness",
-        "policy_omitted"
+        "entries",
+        "completeness"
       ],
       "properties": {
-        "messages": {
+        "entries": {
           "type": "array",
           "items": {
-            "$ref": "#/$defs/conversationMessage"
+            "$ref": "#/$defs/conversationEntry"
           }
-        },
-        "instructions_present": {
-          "type": "boolean"
         },
         "completeness": {
           "enum": [
@@ -287,27 +293,17 @@
             "partial",
             "unsupported"
           ]
-        },
-        "policy_omitted": {
-          "type": "boolean"
         }
       }
     },
-    "conversationMessage": {
+    "conversationEntry": {
       "type": "object",
       "additionalProperties": false,
       "required": [
-        "id",
         "role",
         "text"
       ],
       "properties": {
-        "id": {
-          "type": [
-            "string",
-            "null"
-          ]
-        },
         "role": {
           "enum": [
             "system",
@@ -315,11 +311,21 @@
             "user",
             "assistant",
             "reasoning",
-            "tool",
+            "tool_call",
+            "tool_result",
             "unknown"
           ]
         },
         "text": {
+          "type": "string"
+        },
+        "call_id": {
+          "type": "string"
+        },
+        "name": {
+          "type": "string"
+        },
+        "item_id": {
           "type": "string"
         }
       }

@@ -240,7 +240,7 @@ fn collect_request_tool_events(value: &Value, depth: usize, events: &mut Vec<Par
     }
 }
 
-fn tool_result_output(content: &Value) -> String {
+pub(super) fn tool_result_output(content: &Value) -> String {
     match content {
         Value::String(text) => text.clone(),
         Value::Array(items) => items
@@ -1034,10 +1034,7 @@ mod tests {
         ))
         .expect("SSE exchange");
         assert_eq!(streamed.message_id.as_deref(), Some("m1"));
-        assert_eq!(
-            streamed.response_conversation.messages[0].id.as_deref(),
-            Some("m1")
-        );
+        assert_eq!(streamed.response_conversation.entries[0].text, "hi");
 
         // A whole message names itself in its top-level `id`; an id in the
         // request is never the response's.
@@ -1048,10 +1045,7 @@ mod tests {
         ))
         .expect("JSON exchange");
         assert_eq!(whole.message_id.as_deref(), Some("m2"));
-        assert_eq!(
-            whole.response_conversation.messages[0].id.as_deref(),
-            Some("m2")
-        );
+        assert_eq!(whole.response_conversation.entries[0].text, "hi");
     }
 
     #[test]

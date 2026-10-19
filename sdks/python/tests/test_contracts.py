@@ -41,13 +41,17 @@ class AgentEventContractTests(unittest.TestCase):
         self.assertEqual(event.session_title, "Repository overview")
         self.assertIsNotNone(event.conversation)
         self.assertEqual(
-            [message.role for message in event.conversation.messages],
-            ["reasoning", "assistant", "tool"],
+            [entry.role for entry in event.conversation.entries],
+            ["reasoning", "assistant", "tool_call"],
         )
+        self.assertEqual(event.conversation.entries[2].call_id, "call-123")
+        self.assertEqual(event.conversation.entries[2].name, "exec")
+        self.assertEqual(event.conversation.entries[0].item_id, "rs-123")
+        self.assertEqual(event.omitted, ())
         self.assertEqual(event.conversation.completeness, "complete")
         self.assertFalse(hasattr(event, "turn_index"))
 
-    def test_optional_context_and_nullable_message_id(self) -> None:
+    def test_optional_context_and_entry_identities(self) -> None:
         fixture = json.loads(FIXTURE.read_text(encoding="utf-8"))
         for field in (
             "turn_id",
@@ -65,16 +69,16 @@ class AgentEventContractTests(unittest.TestCase):
         self.assertIsNone(event.conversation)
         self.assertFalse(event.naming_thread)
         fixture["purpose"] = "compaction"
+        fixture["omitted"] = ["conversation_text"]
         fixture["conversation"] = {
-            "messages": [{"id": None, "role": "unknown", "text": ""}],
-            "instructions_present": False,
+            "entries": [{"role": "unknown", "text": ""}],
             "completeness": "partial",
-            "policy_omitted": True,
         }
         event = AgentEvent.from_dict(fixture)
         self.assertEqual(event.purpose, "compaction")
-        self.assertIsNone(event.conversation.messages[0].id)
-        self.assertTrue(event.conversation.policy_omitted)
+        self.assertIsNone(event.conversation.entries[0].item_id)
+        self.assertIsNone(event.conversation.entries[0].call_id)
+        self.assertEqual(event.omitted, ("conversation_text",))
 
     def test_rejects_obsolete_fields_and_malformed_content(self) -> None:
         for path, value in (
@@ -82,13 +86,16 @@ class AgentEventContractTests(unittest.TestCase):
             (("naming_thread",), 1),
             (("stream_id",), 1),
             (("purpose",), "other"),
-            (("conversation", "messages", 0, "role"), "request"),
-            (("conversation", "messages", 0, "blocks"), []),
-            (("conversation", "messages", 0, "text"), 1),
-            (("conversation", "messages"), {}),
+            (("omitted",), ["text"]),
+            (("conversation", "entries", 0, "role"), "tool"),
+            (("conversation", "entries", 0, "blocks"), []),
+            (("conversation", "entries", 0, "text"), 1),
+            (("conversation", "entries", 0, "item_id"), 1),
+            (("conversation", "entries"), {}),
             (("conversation", "completeness"), "failed"),
-            (("conversation", "instructions_present"), "true"),
-            (("conversation", "policy_omitted"), None),
+            (("conversation", "messages"), []),
+            (("conversation", "instructions_present"), True),
+            (("conversation", "policy_omitted"), False),
         ):
             with self.subTest(path=path):
                 fixture = json.loads(FIXTURE.read_text(encoding="utf-8"))
@@ -98,10 +105,6 @@ class AgentEventContractTests(unittest.TestCase):
                 parent[path[-1]] = value
                 with self.assertRaises((TypeError, ValueError)):
                     AgentEvent.from_dict(fixture)
-        fixture = json.loads(FIXTURE.read_text(encoding="utf-8"))
-        del fixture["conversation"]["messages"][0]["id"]
-        with self.assertRaisesRegex(ValueError, "must include id"):
-            AgentEvent.from_dict(fixture)
 
     def test_decoder_rejects_unknown_fields(self) -> None:
         fixture = json.loads(FIXTURE.read_text(encoding="utf-8"))

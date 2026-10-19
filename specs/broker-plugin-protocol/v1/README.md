@@ -238,34 +238,35 @@ provider documents, and original content blocks are not part of the contract.
     }
   ],
   "conversation": {
-    "messages": [
+    "entries": [
       {
-        "id": "rs-123",
         "role": "reasoning",
-        "text": "The user wants an overview of the repository."
+        "text": "The user wants an overview of the repository.",
+        "item_id": "rs-123"
       },
       {
-        "id": "msg-123",
         "role": "assistant",
-        "text": "I will inspect the repository."
+        "text": "I will inspect the repository.",
+        "item_id": "msg-123"
       },
       {
-        "id": "fc-123",
-        "role": "tool",
-        "text": ""
+        "role": "tool_call",
+        "text": "pwd",
+        "call_id": "call-123",
+        "name": "exec",
+        "item_id": "fc-123"
       }
     ],
-    "instructions_present": false,
-    "completeness": "complete",
-    "policy_omitted": false
+    "completeness": "complete"
   }
 }
 ```
 
 There is no event kind discriminator or nested payload enum. `side` identifies
 whether content and token usage belong to the Agent request or provider response.
-Tool arguments and results use `tool_calls` and `tool_results`, and images use
-`attachments`; the event has no arbitrary `metadata` object.
+Tool calls and results appear in position as `conversation` entries and are
+also summarized by `tool_calls` and `tool_results`; images use `attachments`.
+The event has no arbitrary `metadata` object.
 
 `token_usage` counters are disjoint regardless of how the provider reports
 them. `input_tokens` counts input neither read from nor written into a provider
@@ -278,50 +279,83 @@ counters, so summing both sides of one exchange never double-counts a token.
 
 ## Conversation
 
-`conversation.messages` lists provider messages and standalone items in provider
-order. Each message has exactly three fields:
+`conversation` has two fields:
 
-- `id`: the provider message or item identifier, or `null` when none was sent.
+- `entries`: one entry per protocol block or item, in provider order. Blocks
+  are never merged or split.
+- `completeness`: whether the captured body was decoded completely
+  (`complete`), only partly because capture or decoding was incomplete
+  (`partial`), or not at all because no supported structured document was
+  found (`unsupported`). It is independent of whether the provider call
+  succeeded.
+
+Each entry has:
+
 - `role`: one of the roles below.
-- `text`: the message's text projection.
+- `text`: the visible text. A `tool_call` carries its arguments or input as
+  sent; a `tool_result` carries its output.
+- `call_id`: on `tool_call` and `tool_result` entries, the identifier that
+  pairs a call with its result, when the protocol supplies one.
+- `name`: on `tool_call` entries, the tool name, when the protocol supplies
+  one.
+- `item_id`: the identity of the item the entry belongs to, when the protocol
+  supplies one. A model output keeps the identity its provider assigned when a
+  later request sends it back as history, so the request entry carries the
+  same value as the response entry that produced it.
+  - OpenAI Responses: the `id` of the input or output item, verbatim (`msg_…`,
+    `rs_…`, `fc_…`, `ctc_…`, and so on). All entries of an item that yields
+    several, such as a message with several content parts, carry the same
+    value.
+  - Anthropic: on a `thinking` block, `thinking:` followed by the lowercase
+    hex SHA-256 of the block's `signature` (for a streamed block, its
+    `signature_delta` fragments joined in order); on a `redacted_thinking`
+    block, the same over its `data`. A block without a signature has none, and
+    no other block carries one; tool blocks pair by `call_id`.
+  - Chat Completions: none.
 
-| Role | Meaning |
-| --- | --- |
-| `system` | Provider system prompt, such as Anthropic `system`. |
-| `developer` | Developer instructions, including OpenAI `instructions`. |
-| `user` | End-user input. |
-| `assistant` | Model-visible assistant output. |
-| `reasoning` | Model reasoning, such as OpenAI reasoning summaries or Anthropic thinking. |
-| `tool` | A tool call or tool result item, kept in position. |
-| `unknown` | The provider did not declare a role. |
+The role of an entry follows from the protocol structure alone:
 
-`text` never contains tool arguments or results; those are carried only by
-`tool_calls` and `tool_results`. Images are carried only by `attachments`.
+| Role | Anthropic | OpenAI Responses | Chat Completions |
+| --- | --- | --- | --- |
+| `system` | each block of the top-level `system`; text blocks of a `role: "system"` message | `instructions`; `role: "system"` messages | `system` |
+| `developer` | — | each content part of a `role: "developer"` message | `developer` |
+| `user` | `text` blocks of user messages | `input_text` of user messages | `user` |
+| `assistant` | `text` blocks of assistant messages | `output_text`, `refusal` | assistant `content` |
+| `reasoning` | `thinking`, `redacted_thinking` | `reasoning` (its summary, else its content) | — |
+| `tool_call` | `tool_use`, `server_tool_use`, `mcp_tool_use` | every `*_call` item | each assistant `tool_calls[]` |
+| `tool_result` | `tool_result`, every `*_tool_result` | every `*_output` item | `tool` |
+| `unknown` | any other block that carries text | any other item that carries text | — |
 
-A request event carries the history as the agent sent it. Repeated messages,
-such as the same user prompt sent twice, are retained as separate messages and
-are not deduplicated. A response event carries the provider's output after the
-collector assembles streamed fragments; a streamed reply appears as one message
-with its complete text, never as per-delta fragments.
+A `thinking` or `redacted_thinking` block or a `reasoning` item produces its
+entry even when it carries no readable text, such as a reasoning item with only
+`encrypted_content`; the entry's `text` is then empty. A block or item that
+carries no text and has no role above, such as an image or a tool definition,
+produces no entry; images are carried by `attachments`.
+Responses use the same table: Anthropic response content blocks and OpenAI
+output items become entries the same way, after the collector assembles
+streamed fragments, so a streamed block appears as one entry with its complete
+text. A request event carries the history as the agent sent it; repeated
+blocks are not deduplicated.
 
-OpenAI reasoning items and Anthropic thinking blocks both become `reasoning`
-messages. An Anthropic response message that contains thinking and text blocks
-is split into `reasoning` and `assistant` messages that share the Anthropic
-message id and keep the provider's block order.
+The leading `system` and `developer` entries of a request are its system
+prompt; no separate flag marks them. A tool result pairs with its call by
+`call_id`, and model output replayed as history matches the response that
+produced it by `item_id`.
 
-`instructions_present` reports whether the request
-carried explicit instructions or a system prompt, including an explicitly empty
-one.
+## Omitted content
 
-`completeness` reports whether the captured content was decoded completely
-(`complete`), only partly because capture or decoding was incomplete
-(`partial`), or not at all because no supported structured document was found
-(`unsupported`). It is independent of whether the provider call succeeded.
+`omitted` lists the content categories the active content policy left out of
+the event, in the order `token_usage`, `conversation_text`, `tool_content`,
+`images`; it is omitted when everything was kept. An omitted category keeps
+the structure and empties the content, so consumers can tell "not present"
+from "not retained":
 
-`policy_omitted` is `true` only when the conversation-text content policy
-omitted messages. Tool, image, and token policies govern `tool_calls`,
-`tool_results`, `attachments`, and `token_usage` independently; they never change
-`conversation` or set `policy_omitted`.
+- `conversation_text`: entries other than `tool_call` and `tool_result` keep
+  their role and `item_id` with empty `text`.
+- `tool_content`: `tool_call` and `tool_result` entries keep their role,
+  `call_id`, `name`, and `item_id` with empty `text`.
+- `images`: no attachment is carried.
+- `token_usage`: every counter is zero.
 
 ## Turns
 

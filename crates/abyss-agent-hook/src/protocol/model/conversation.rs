@@ -1,28 +1,38 @@
 //! Protocol-neutral conversation assembly.
 //!
-//! Provider modules own wire shapes and turn them into [`MessageDraft`]s. A
-//! draft keeps the text fragments of one message apart, so the public
-//! conversation and the event `text` projection are both derived from a single
-//! extraction pass over the decoded documents.
+//! Provider modules own wire shapes. While walking a body they emit one
+//! [`ConversationEntry`] per protocol block or item, using the helpers here;
+//! parsers read request and response content only from the result.
 
 use abyss_plugin_protocol::event::{
-    ContentCompleteness, Conversation, ConversationMessage, MessageRole,
+    ContentCompleteness, Conversation, ConversationEntry, EntryRole,
 };
+use serde_json::Value;
 
-use crate::protocol::model::text::non_empty_trimmed;
+use crate::protocol::model::text::{MAX_PARSE_DEPTH, json_to_text};
 
 /// Constructors for public conversation values.
 pub struct ConversationProjection;
 
 impl ConversationProjection {
-    /// Returns a completely decoded conversation without messages.
+    /// Returns a completely decoded conversation without entries.
     #[must_use]
     pub const fn empty() -> Conversation {
         Conversation {
-            messages: Vec::new(),
-            instructions_present: false,
+            entries: Vec::new(),
             completeness: ContentCompleteness::Complete,
-            policy_omitted: false,
+        }
+    }
+
+    /// Builds a conversation from its entries.
+    #[must_use]
+    pub const fn from_entries(
+        entries: Vec<ConversationEntry>,
+        completeness: ContentCompleteness,
+    ) -> Conversation {
+        Conversation {
+            entries,
+            completeness,
         }
     }
 
@@ -45,107 +55,121 @@ impl ConversationProjection {
         }
     }
 
-    /// Builds a conversation from ordered drafts without request metadata.
+    /// Maps a provider message role onto the entry role of its text.
+    ///
+    /// `tool` and `function` map to [`EntryRole::ToolResult`]; callers that
+    /// build entries handle tool messages before using this mapping.
     #[must_use]
-    pub fn from_drafts<'a, I>(drafts: I, completeness: ContentCompleteness) -> Conversation
-    where
-        I: IntoIterator<Item = &'a MessageDraft>,
-    {
-        let mut conversation = Self::empty();
-        conversation.messages = drafts.into_iter().map(MessageDraft::message).collect();
-        conversation.completeness = completeness;
-        conversation
-    }
-
-    /// Maps a provider-declared role onto the public role set.
-    #[must_use]
-    pub fn role(value: &str) -> MessageRole {
+    pub fn role(value: &str) -> EntryRole {
         match value.trim().to_ascii_lowercase().as_str() {
-            "system" => MessageRole::System,
-            "developer" => MessageRole::Developer,
-            "user" | "human" => MessageRole::User,
-            "assistant" => MessageRole::Assistant,
-            "tool" | "function" => MessageRole::Tool,
-            _ => MessageRole::Unknown,
+            "system" => EntryRole::System,
+            "developer" => EntryRole::Developer,
+            "user" | "human" => EntryRole::User,
+            "assistant" => EntryRole::Assistant,
+            "tool" | "function" => EntryRole::ToolResult,
+            _ => EntryRole::Unknown,
         }
     }
-}
 
-/// One conversation message under assembly.
-///
-/// `parts` are trimmed, non-empty text fragments in provider order, such as
-/// request content blocks or streamed response slots. The public message joins
-/// them with a newline; the event `text` projection may keep them apart.
-pub struct MessageDraft {
-    /// Provider item or message identity, when supplied.
-    pub id: Option<String>,
-    /// Public role of this message.
-    pub role: MessageRole,
-    /// Visible text fragments, excluding tool arguments and results.
-    pub parts: Vec<String>,
-}
-
-impl MessageDraft {
-    /// Starts an empty message.
+    /// A text-bearing entry.
     #[must_use]
-    pub const fn new(role: MessageRole, id: Option<String>) -> Self {
-        Self {
-            id,
+    pub fn text(role: EntryRole, text: &str) -> ConversationEntry {
+        ConversationEntry {
             role,
-            parts: Vec::new(),
+            text: text.to_owned(),
+            call_id: None,
+            name: None,
+            item_id: None,
         }
     }
 
-    /// Appends one fragment when it carries visible text.
-    pub fn push_part(&mut self, text: &str) {
-        if let Some(text) = non_empty_trimmed(text) {
-            self.parts.push(text.to_owned());
-        }
-    }
-
-    /// Returns the public message text.
+    /// A tool-call entry; `input` is the arguments or input as sent.
     #[must_use]
-    pub fn text(&self) -> String {
-        self.parts.join("\n")
+    pub const fn tool_call(
+        call_id: Option<String>,
+        name: Option<String>,
+        input: String,
+    ) -> ConversationEntry {
+        ConversationEntry {
+            role: EntryRole::ToolCall,
+            text: input,
+            call_id,
+            name,
+            item_id: None,
+        }
     }
 
-    fn message(&self) -> ConversationMessage {
-        ConversationMessage {
-            id: self.id.clone(),
-            role: self.role,
-            text: self.text(),
+    /// A tool-result entry.
+    #[must_use]
+    pub const fn tool_result(call_id: Option<String>, output: String) -> ConversationEntry {
+        ConversationEntry {
+            role: EntryRole::ToolResult,
+            text: output,
+            call_id,
+            name: None,
+            item_id: None,
         }
+    }
+
+    /// Gives every entry projected from one item that item's identity.
+    pub fn identify(entries: &mut [ConversationEntry], item_id: Option<&str>) {
+        for entry in entries {
+            entry.item_id = item_id.map(str::to_owned);
+        }
+    }
+
+    /// The entry of an unrecognized block or item: its visible text, or none
+    /// when it carries no text.
+    #[must_use]
+    pub fn unknown(value: &Value) -> Option<ConversationEntry> {
+        json_to_text(value, MAX_PARSE_DEPTH).map(|text| Self::text(EntryRole::Unknown, &text))
+    }
+
+    /// A string as sent, or the compact JSON of any other value.
+    #[must_use]
+    pub fn verbatim(value: &Value) -> String {
+        match value {
+            Value::String(text) => text.clone(),
+            Value::Null => String::new(),
+            value => serde_json::to_string(value).unwrap_or_default(),
+        }
+    }
+
+    /// A string field of one object, as sent.
+    #[must_use]
+    pub fn field(value: &Value, key: &str) -> Option<String> {
+        value.get(key).and_then(Value::as_str).map(str::to_owned)
     }
 }
 
 #[cfg(test)]
 mod tests {
+    use serde_json::json;
+
     use super::*;
-
-    fn conversation() -> Conversation {
-        let mut draft = MessageDraft::new(MessageRole::User, Some("m1".to_owned()));
-        draft.push_part("  visible ");
-        draft.push_part(" ");
-        draft.push_part("second");
-        ConversationProjection::from_drafts([&draft], ContentCompleteness::Complete)
-    }
-
-    #[test]
-    fn drafts_join_trimmed_parts_and_keep_identity() {
-        let conversation = conversation();
-        assert_eq!(conversation.messages.len(), 1);
-        assert_eq!(conversation.messages[0].text, "visible\nsecond");
-        assert_eq!(conversation.messages[0].id.as_deref(), Some("m1"));
-        assert_eq!(conversation.messages[0].role, MessageRole::User);
-    }
 
     #[test]
     fn roles_map_to_the_public_role_set() {
-        assert_eq!(ConversationProjection::role("Human"), MessageRole::User);
+        assert_eq!(ConversationProjection::role("Human"), EntryRole::User);
         assert_eq!(
             ConversationProjection::role("developer"),
-            MessageRole::Developer
+            EntryRole::Developer
         );
-        assert_eq!(ConversationProjection::role("other"), MessageRole::Unknown);
+        assert_eq!(ConversationProjection::role("other"), EntryRole::Unknown);
+    }
+
+    #[test]
+    fn verbatim_keeps_strings_and_object_key_order() {
+        assert_eq!(
+            ConversationProjection::verbatim(&json!(" {\"b\": 1} ")),
+            " {\"b\": 1} "
+        );
+        let object: serde_json::Value =
+            serde_json::from_str(r#"{"command":"ls","b":1,"a":[2]}"#).unwrap();
+        assert_eq!(
+            ConversationProjection::verbatim(&object),
+            r#"{"command":"ls","b":1,"a":[2]}"#
+        );
+        assert!(ConversationProjection::unknown(&json!({"type": "tool_addition"})).is_none());
     }
 }
