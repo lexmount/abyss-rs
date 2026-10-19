@@ -183,7 +183,7 @@ pub enum HarnessCommand {
 /// Harness selector.
 #[derive(Debug, Args)]
 pub struct HarnessArgs {
-    /// Harness name: codex or claude-code.
+    /// Harness name: codex, claude-code, or a configured name such as deepseek-harness.
     pub harness: String,
 }
 
@@ -223,6 +223,9 @@ pub struct DiagnosticsArgs {
 
 /// Child process execution options.
 #[derive(Debug, Args)]
+#[command(
+    after_help = "Examples:\n  abyss run -- codex\n  abyss run -- dsh web\n  abyss run -- dsh-headless <arguments>\n  abyss run -- dsh-tui"
+)]
 pub struct RunArgs {
     /// Command and arguments to execute with the proxy environment.
     #[arg(required = true, trailing_var_arg = true)]

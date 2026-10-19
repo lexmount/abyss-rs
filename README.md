@@ -35,6 +35,11 @@ abyss deploy-local start
 abyss run -- codex
 ```
 
+The default policy also supports DeepSeek Harness. Launch its installed Web UI
+with `abyss run -- dsh web`, then open the full URL printed by DSH. Headless
+launchers and [dsh-tui](https://github.com/ccch1mneyyy/dsh-TUI) are supported with
+`abyss run -- dsh-headless <arguments>` and `abyss run -- dsh-tui`.
+
 Open the dashboard to review captured activity, or inspect the runtime from your terminal:
 
 ```bash

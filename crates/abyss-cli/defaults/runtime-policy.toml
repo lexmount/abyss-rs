@@ -22,6 +22,12 @@ enabled = true
 action = "intercept"
 destination_hosts = ["anthropic.com", "*.anthropic.com", "claude.ai", "*.claude.ai"]
 
+[[mitm.tls_decryption.rules]]
+id = "decrypt-deepseek-api"
+enabled = true
+action = "intercept"
+destination_hosts = ["api.deepseek.com"]
+
 [hooks.harness_usage]
 enabled = true
 
@@ -57,3 +63,10 @@ token_usage = true
 conversation_text = true
 tool_calls = true
 images = true
+
+# DSH's headless, TUI, and Web clients share the same model-request identity.
+[hooks.harness_usage.config.harnesses."deepseek-harness"]
+enabled = true
+
+[[hooks.harness_usage.config.harnesses."deepseek-harness".matchers]]
+user_agent_prefixes = ["deepseek-harness/"]

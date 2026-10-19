@@ -19,6 +19,7 @@ mod error;
 mod filesystem;
 mod local_config;
 mod network_diagnostics;
+mod node_ca;
 mod paths;
 mod platform;
 mod product_config;

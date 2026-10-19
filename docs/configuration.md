@@ -23,9 +23,55 @@ usage and preserve Harness enablement and matching rules. The broker persists
 the policy and applies it to subsequent event processing; previously captured
 events, including pending delivery retries, are not rewritten or deleted.
 
-Custom Harnesses can reuse the existing protocol parsers by declaring identity
-matchers in `runtime-policy.toml`. For example, an explicit proxy can recognize
-DeepSeek Harness from its request User-Agent without source process metadata:
+The CLI's packaged policy enables DeepSeek Harness and intercepts
+`api.deepseek.com`. DSH Web (`dsh web`), headless launchers (including
+`dsh-headless`), and
+[dsh-tui](https://github.com/ccch1mneyyy/dsh-TUI) using the DSH backend share
+the same request identity and use the existing protocol parsers. Run an
+installed client through the proxy with:
+
+```bash
+abyss run -- dsh web
+abyss run -- dsh-headless <arguments>
+abyss run -- dsh-tui
+abyss config harness disable deepseek-harness
+abyss config harness enable deepseek-harness
+```
+
+`abyss run` and `abyss proxy env` for the managed proxy supply
+`NODE_EXTRA_CA_CERTS` so Node clients trust the Abyss CA. An inherited extra
+CA file is preserved in a combined bundle, without changing the original.
+API credentials and model selection remain the client's configuration.
+
+For the Web UI, start the local Abyss environment with `abyss deploy-local start`
+if no deployment is configured, then run `abyss run -- dsh web` from the intended
+workspace directory. DSH opens its browser interface or prints a full login URL
+to open manually. Keep the terminal running while using the Web UI, and open
+`abyss dashboard` from another terminal to review captured activity.
+
+The proxy and CA environment belongs to the DSH server process that sends model
+requests; the browser connects directly to the local Web UI and needs no proxy
+configuration. Restart an already-running Web server through `abyss run` to
+apply that environment. DSH flags are forwarded unchanged, for example:
+
+```bash
+abyss run -- dsh web --no-open --host 127.0.0.1 --port 3080
+```
+
+Existing runtime-policy files are preserved on upgrade. To enable DSH in an
+older policy, add the following tables (or update matching existing entries):
+
+```toml
+[[mitm.tls_decryption.rules]]
+id = "decrypt-deepseek-api"
+enabled = true
+action = "intercept"
+destination_hosts = ["api.deepseek.com"]
+```
+
+Custom Harnesses reuse protocol parsers by declaring identity matchers in
+`runtime-policy.toml`. The packaged DSH matcher recognizes its request
+User-Agent without source process metadata:
 
 ```toml
 [hooks.harness_usage.config.harnesses."deepseek-harness"]

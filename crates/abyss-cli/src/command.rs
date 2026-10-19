@@ -22,6 +22,7 @@ use crate::{
     },
     error::CliError,
     local_config::LocalRuntimePolicy,
+    node_ca::NodeCaBundle,
     paths::CliPaths,
     platform::platform_adapter,
     product_config::CliProductConfig,
@@ -255,7 +256,13 @@ impl ProxyCommandRunner {
                         require_bootstrapped_runtime(running)?.proxy_addr()
                     )
                 };
-                let environment = platform_adapter().proxy_environment(&proxy_url);
+                let mut environment = platform_adapter().proxy_environment(&proxy_url);
+                if running.is_some() {
+                    let bundle = NodeCaBundle::from_paths(&paths)?;
+                    environment.push_str("export NODE_EXTRA_CA_CERTS='");
+                    environment.push_str(&bundle.path().to_string_lossy().replace('\'', "'\\''"));
+                    environment.push_str("'\n");
+                }
                 std::io::stdout().write_all(environment.as_bytes())?;
             }
         }
@@ -280,11 +287,11 @@ impl ConfigCommandRunner {
             }
             ConfigCommand::Harness { command } => {
                 let (harness, enabled) = match command {
-                    HarnessCommand::Enable(args) => (parse_harness(&args.harness)?, true),
-                    HarnessCommand::Disable(args) => (parse_harness(&args.harness)?, false),
+                    HarnessCommand::Enable(args) => (parse_harness(&args.harness, &hooks)?, true),
+                    HarnessCommand::Disable(args) => (parse_harness(&args.harness, &hooks)?, false),
                 };
                 let claude_code_configuration =
-                    if enabled && matches!(harness, BuiltInHarness::ClaudeCode) {
+                    if enabled && harness.as_str() == BuiltInHarness::ClaudeCode.id() {
                         Some(ClaudeCodeConfigurator::from_paths(&paths)?.configure()?)
                     } else {
                         None
@@ -293,13 +300,13 @@ impl ConfigCommandRunner {
                     .harness_usage
                     .config
                     .harnesses
-                    .entry(HarnessId::from(harness))
+                    .entry(harness.clone())
                     .or_insert_with(HarnessConfig::default)
                     .enabled = Some(enabled);
                 broker.set_hooks_config(&hooks)?;
                 println!(
                     "{} capture {}.",
-                    harness_label(harness),
+                    harness,
                     if enabled { "enabled" } else { "disabled" }
                 );
                 if let Some(configuration) = claude_code_configuration {
@@ -464,11 +471,20 @@ impl StatusCommandRunner {
         println!("Proxy: {proxy}");
         println!("Dashboard: {}", dashboard_url.as_deref().unwrap_or("-"));
         println!("Harnesses:");
-        println!("  codex: {}", enabled_label(&hooks, BuiltInHarness::Codex));
-        println!(
-            "  claude-code: {}",
-            enabled_label(&hooks, BuiltInHarness::ClaudeCode)
-        );
+        let harnesses = [BuiltInHarness::Codex.id(), BuiltInHarness::ClaudeCode.id()]
+            .into_iter()
+            .chain(
+                hooks
+                    .harness_usage
+                    .config
+                    .harnesses
+                    .keys()
+                    .map(HarnessId::as_str),
+            )
+            .collect::<std::collections::BTreeSet<_>>();
+        for harness in harnesses {
+            println!("  {harness}: {}", enabled_label(&hooks, harness));
+        }
         println!(
             "Context capture: {}",
             if hooks.harness_usage.config.content.conversation_text {
@@ -537,8 +553,10 @@ fn run_agent(args: &RunArgs, running: Option<&RunningBroker>) -> Result<(), CliE
     let proxy_addr = running.proxy_addr();
     let mut command = ProcessCommand::new(&args.command[0]);
     let proxy_url = format!("http://{proxy_addr}");
+    let bundle = NodeCaBundle::from_paths(&CliPaths::from_env()?)?;
     command
         .args(&args.command[1..])
+        .env("NODE_EXTRA_CA_CERTS", bundle.path())
         .envs(platform_adapter().proxy_environment_variables(&proxy_url));
     let status = command
         .status()
@@ -588,22 +606,22 @@ fn run_internal(command: InternalCommand) -> Result<(), CliError> {
     }
 }
 
-fn parse_harness(value: &str) -> Result<BuiltInHarness, CliError> {
-    match value.trim().to_ascii_lowercase().as_str() {
-        "codex" => Ok(BuiltInHarness::Codex),
-        "claude-code" | "claude-cli" => Ok(BuiltInHarness::ClaudeCode),
-        _ => Err(CliError::InvalidConfiguration(
-            "Harness must be codex or claude-code".to_owned(),
-        )),
-    }
-}
-
-const fn harness_label(harness: BuiltInHarness) -> &'static str {
-    match harness {
-        BuiltInHarness::Codex => "codex",
-        BuiltInHarness::ClaudeCode => "claude-code",
-        BuiltInHarness::ClaudeDesktop => "claude-desktop",
-        _ => "unknown",
+fn parse_harness(value: &str, hooks: &HooksConfig) -> Result<HarnessId, CliError> {
+    let name = value.trim().to_ascii_lowercase();
+    match name.as_str() {
+        "codex" => Ok(BuiltInHarness::Codex.into()),
+        "claude-code" | "claude-cli" => Ok(BuiltInHarness::ClaudeCode.into()),
+        name => hooks
+            .harness_usage
+            .config
+            .harnesses
+            .get_key_value(name)
+            .map(|(id, _)| id.clone())
+            .ok_or_else(|| {
+                CliError::InvalidConfiguration(format!(
+                    "unknown Harness `{name}`; configure its matchers in runtime-policy.toml first"
+                ))
+            }),
     }
 }
 
@@ -611,8 +629,8 @@ const fn context_label(enabled: bool) -> &'static str {
     if enabled { "enabled" } else { "disabled" }
 }
 
-fn enabled_label(hooks: &abyss_agent_hook::HooksConfig, agent: BuiltInHarness) -> &'static str {
-    if !hooks.harness_usage.enabled || !hooks.harness_usage.config.enabled_for_harness(agent.id()) {
+fn enabled_label(hooks: &HooksConfig, harness: &str) -> &'static str {
+    if !hooks.harness_usage.enabled || !hooks.harness_usage.config.enabled_for_harness(harness) {
         "disabled"
     } else {
         "enabled"
@@ -627,6 +645,28 @@ mod tests {
 
     use super::{CliCommand, ConfigCommandRunner};
 
+    #[test]
+    fn configured_harnesses_can_be_selected_without_a_builtin_detector() {
+        let hooks = crate::local_config::LocalRuntimePolicy::default().hooks;
+        let id = super::parse_harness("deepseek-harness", &hooks).unwrap();
+        assert_eq!(id.as_str(), "deepseek-harness");
+        assert_eq!(super::enabled_label(&hooks, id.as_str()), "enabled");
+        assert_eq!(
+            super::parse_harness("claude-cli", &hooks).unwrap().as_str(),
+            "claude-code"
+        );
+        assert!(super::parse_harness("unconfigured-agent", &hooks).is_err());
+        let mut disabled = hooks;
+        disabled
+            .harness_usage
+            .config
+            .harnesses
+            .get_mut(id.as_str())
+            .unwrap()
+            .enabled = Some(false);
+        assert_eq!(super::enabled_label(&disabled, id.as_str()), "disabled");
+        assert_eq!(super::parse_harness(id.as_str(), &disabled).unwrap(), id);
+    }
     #[test]
     fn context_toggle_controls_all_content_without_changing_harness_selection() {
         let mut hooks: HooksConfig = serde_json::from_value(json!({
