@@ -12,7 +12,7 @@ use serde_json::Value;
 
 use crate::protocol::{
     model::{conversation::ConversationProjection, tool::ParsedToolEvent},
-    openai::{ParsedOpenAiExchange, conversation::OpenAiResponse},
+    openai::{ParsedOpenAiExchange, responses::response::ResponsesResponse},
 };
 
 const PENDING_TURN_TTL: Duration = Duration::from_mins(1);
@@ -231,7 +231,7 @@ impl PendingTurn {
     /// Assembles the turn's conversations from the merged and buffered frames.
     fn complete(self) -> Option<ParsedOpenAiExchange> {
         let mut exchange = self.exchange?;
-        let response = OpenAiResponse::assemble(
+        let response = ResponsesResponse::assemble(
             &self.response_documents,
             self.response_overflowed || self.response_decode_failed,
         );
@@ -291,7 +291,7 @@ mod tests {
 
     use crate::protocol::{
         model::{conversation::ConversationProjection, usage::TokenUsage},
-        openai::{ParsedOpenAiExchange, conversation::OpenAiRequest},
+        openai::{ParsedOpenAiExchange, responses::request::ResponsesRequest},
     };
 
     use super::{
@@ -486,7 +486,7 @@ mod tests {
     }
 
     fn request_frame(payload: &Value) -> OpenAiWebSocketFrame {
-        let request = OpenAiRequest::parse(Some(payload), false);
+        let request = ResponsesRequest::parse(Some(payload), false);
         let mut parsed = exchange();
         parsed.request_texts = request.texts();
         parsed.request_conversation = request.conversation();

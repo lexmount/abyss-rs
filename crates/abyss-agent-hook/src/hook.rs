@@ -74,8 +74,8 @@ where
             .content_for_harness(detection.harness_id.as_str());
 
         match protocol {
-            LlmProtocol::OpenAi(OpenAiProtocol::Responses | OpenAiProtocol::ChatCompletions) => {
-                parse_openai_exchange(exchange).map(|parsed| {
+            LlmProtocol::OpenAi(protocol) => {
+                parse_openai_exchange(exchange, protocol).map(|parsed| {
                     let declaration = http_declaration(
                         &detection,
                         exchange,

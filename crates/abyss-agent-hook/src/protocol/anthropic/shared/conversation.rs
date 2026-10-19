@@ -12,9 +12,9 @@ use std::collections::BTreeMap;
 use abyss_plugin_protocol::event::{ContentCompleteness, Conversation, MessageRole};
 use serde_json::Value;
 
-use crate::protocol::model::{
-    conversation::{ConversationProjection, MessageDraft},
-    text::{MAX_PARSE_DEPTH, dedupe_texts, non_empty_trimmed, visible_text},
+use crate::protocol::model::conversation::{ConversationProjection, MessageDraft};
+use crate::protocol::shared::text::{
+    MAX_PARSE_DEPTH, dedupe_texts, non_empty_trimmed, visible_text,
 };
 
 /// Anthropic-specific text and tool-block rules.

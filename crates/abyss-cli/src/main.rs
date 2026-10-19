@@ -7,7 +7,6 @@
 
 mod auth;
 mod broker;
-mod claude_code;
 mod cli;
 mod cli_logging;
 mod command;
@@ -19,7 +18,6 @@ mod error;
 mod filesystem;
 mod local_config;
 mod network_diagnostics;
-mod node_ca;
 mod paths;
 mod platform;
 mod product_config;

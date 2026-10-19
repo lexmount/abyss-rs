@@ -15,14 +15,12 @@ use serde_json::Value;
 use crate::{
     auth::AuthCommandRunner,
     broker::{BrokerClient, BrokerConnection, ProxyLifecycle},
-    claude_code::ClaudeCodeConfigurator,
     cli::{
         Command as ParsedCommand, ConfigCommand, ContextCommand, HarnessCommand, InternalCommand,
         LogCommand, ProxyCommand, RunArgs,
     },
     error::CliError,
     local_config::LocalRuntimePolicy,
-    node_ca::NodeCaBundle,
     paths::CliPaths,
     platform::platform_adapter,
     product_config::CliProductConfig,
@@ -256,13 +254,7 @@ impl ProxyCommandRunner {
                         require_bootstrapped_runtime(running)?.proxy_addr()
                     )
                 };
-                let mut environment = platform_adapter().proxy_environment(&proxy_url);
-                if running.is_some() {
-                    let bundle = NodeCaBundle::from_paths(&paths)?;
-                    environment.push_str("export NODE_EXTRA_CA_CERTS='");
-                    environment.push_str(&bundle.path().to_string_lossy().replace('\'', "'\\''"));
-                    environment.push_str("'\n");
-                }
+                let environment = platform_adapter().proxy_environment(&proxy_url);
                 std::io::stdout().write_all(environment.as_bytes())?;
             }
         }
@@ -274,7 +266,6 @@ struct ConfigCommandRunner;
 
 impl ConfigCommandRunner {
     fn run(command: ConfigCommand, running: Option<&RunningBroker>) -> Result<(), CliError> {
-        let paths = CliPaths::from_env()?;
         let running = require_bootstrapped_runtime(running)?;
         let broker = running.endpoint().authenticated_client()?;
         let mut hooks = broker.hooks_config()?;
@@ -290,12 +281,6 @@ impl ConfigCommandRunner {
                     HarnessCommand::Enable(args) => (parse_harness(&args.harness, &hooks)?, true),
                     HarnessCommand::Disable(args) => (parse_harness(&args.harness, &hooks)?, false),
                 };
-                let claude_code_configuration =
-                    if enabled && harness.as_str() == BuiltInHarness::ClaudeCode.id() {
-                        Some(ClaudeCodeConfigurator::from_paths(&paths)?.configure()?)
-                    } else {
-                        None
-                    };
                 hooks
                     .harness_usage
                     .config
@@ -309,13 +294,6 @@ impl ConfigCommandRunner {
                     harness,
                     if enabled { "enabled" } else { "disabled" }
                 );
-                if let Some(configuration) = claude_code_configuration {
-                    println!(
-                        "Claude Code environment configured in {} (CA bundle: {}).",
-                        configuration.settings_path().display(),
-                        configuration.bundle_path().display()
-                    );
-                }
             }
         }
         Ok(())
@@ -557,10 +535,8 @@ fn run_agent(args: &RunArgs, running: Option<&RunningBroker>) -> Result<(), CliE
     let proxy_addr = running.proxy_addr();
     let mut command = ProcessCommand::new(&args.command[0]);
     let proxy_url = format!("http://{proxy_addr}");
-    let bundle = NodeCaBundle::from_paths(&CliPaths::from_env()?)?;
     command
         .args(&args.command[1..])
-        .env("NODE_EXTRA_CA_CERTS", bundle.path())
         .envs(platform_adapter().proxy_environment_variables(&proxy_url));
     let status = command
         .status()

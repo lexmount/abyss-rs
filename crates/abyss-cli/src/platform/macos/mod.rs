@@ -33,10 +33,6 @@ impl PlatformAdapter for MacOsPlatformAdapter {
         )
     }
 
-    fn user_home(&self) -> Result<PathBuf, CliError> {
-        resolve_user_home(std::env::var_os("HOME").map(PathBuf::from))
-    }
-
     fn configure_file_creation(&self, options: &mut fs::OpenOptions, mode: u32) {
         options.mode(mode);
     }
@@ -149,12 +145,6 @@ fn resolve_state_root(
         .ok_or_else(|| CliError::InvalidConfiguration("HOME or ABYSS_HOME must be set".to_owned()))
 }
 
-fn resolve_user_home(home: Option<PathBuf>) -> Result<PathBuf, CliError> {
-    home.ok_or_else(|| {
-        CliError::InvalidConfiguration("HOME is required to configure Claude Code".to_owned())
-    })
-}
-
 #[cfg(test)]
 mod tests {
     use std::{
@@ -164,7 +154,7 @@ mod tests {
         time::{SystemTime, UNIX_EPOCH},
     };
 
-    use super::{MacOsPlatformAdapter, normalized_output, resolve_state_root, resolve_user_home};
+    use super::{MacOsPlatformAdapter, normalized_output, resolve_state_root};
     use crate::platform::PlatformAdapter as _;
 
     #[test]
@@ -230,7 +220,6 @@ mod tests {
     #[test]
     fn missing_home_is_rejected() {
         assert!(resolve_state_root(None, None).is_err());
-        assert!(resolve_user_home(None).is_err());
     }
 
     #[test]

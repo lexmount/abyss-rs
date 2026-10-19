@@ -38,9 +38,18 @@ abyss config harness disable deepseek-harness
 abyss config harness enable deepseek-harness
 ```
 
-`abyss run` and `abyss proxy env` for the managed proxy supply
-`NODE_EXTRA_CA_CERTS` so Node clients trust the Abyss CA. An inherited extra
-CA file is preserved in a combined bundle, without changing the original.
+For Node-based clients, configure `NODE_EXTRA_CA_CERTS` yourself before launching
+the client. Point it at the `abyss-root-ca.pem` in your configured CA directory,
+or a PEM bundle containing that certificate and any other extra CAs you need:
+
+```bash
+export NODE_EXTRA_CA_CERTS='/absolute/path/to/abyss-root-ca.pem'
+abyss run -- dsh web
+```
+
+You can place the export in your shell profile for future sessions. `abyss run`
+inherits this variable unchanged, and `abyss proxy env` prints only proxy
+variables. Enabling a Harness does not rewrite the client's certificate settings.
 API credentials and model selection remain the client's configuration.
 
 For the Web UI, start the local Abyss environment with `abyss deploy-local start`
