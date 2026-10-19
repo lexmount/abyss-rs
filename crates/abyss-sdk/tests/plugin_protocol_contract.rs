@@ -4,7 +4,7 @@ use std::{fs, path::PathBuf};
 
 use abyss_sdk::{
     event::AgentEvent,
-    plugin::{BrokerClose, BrokerError, BrokerHello, MessageRole, PluginHello},
+    plugin::{BrokerClose, BrokerError, BrokerHello, EntryRole, PluginHello},
 };
 use serde::{Serialize, de::DeserializeOwned};
 use serde_json::Value;
@@ -23,7 +23,7 @@ fn structured_conversation_and_handshakes_round_trip() {
     contract.assert_fixture_round_trip::<PluginHello>("plugin-hello.json");
     contract.assert_fixture_round_trip::<BrokerHello>("broker-hello.json");
     let fixture = contract.json("fixtures/agent-event.json");
-    assert!(fixture["conversation"]["messages"][0]["text"].is_string());
+    assert!(fixture["conversation"]["entries"][0]["text"].is_string());
     let schema = contract.json("agent-event.schema.json");
     assert!(schema["properties"].get("conversation").is_some());
     assert!(schema["properties"].get("raw_body").is_none());
@@ -72,61 +72,60 @@ fn structured_conversation_and_handshakes_round_trip() {
 }
 
 #[test]
-fn conversation_carries_only_role_aware_messages() {
+fn conversation_carries_one_entry_per_block() {
     let contract = PublishedContract::load();
     let schema = contract.json("agent-event.schema.json");
     let conversation = &schema["$defs"]["conversation"];
-    let message = &schema["$defs"]["conversationMessage"];
+    let entry = &schema["$defs"]["conversationEntry"];
     assert_eq!(
         conversation["required"],
-        serde_json::json!([
-            "messages",
-            "instructions_present",
-            "completeness",
-            "policy_omitted"
-        ]),
+        serde_json::json!(["entries", "completeness"]),
         "conversation fields should match the public Rust contract"
     );
     assert!(
         conversation["properties"].get("payloads").is_none()
-            && message["properties"].get("blocks").is_none(),
+            && entry["properties"].get("blocks").is_none(),
         "v1 must not carry raw provider documents or original content blocks"
     );
+    assert_eq!(entry["required"], serde_json::json!(["role", "text"]));
     assert_eq!(
-        message["required"],
-        serde_json::json!(["id", "role", "text"])
-    );
-    assert_eq!(
-        message["properties"]["role"]["enum"],
+        entry["properties"]["role"]["enum"],
         serde_json::json!([
             "system",
             "developer",
             "user",
             "assistant",
             "reasoning",
-            "tool",
+            "tool_call",
+            "tool_result",
             "unknown"
         ]),
-        "message roles should be a closed published set"
+        "entry roles should be a closed published set"
     );
 
     let fixture = contract.json("fixtures/agent-event.json");
     let event: AgentEvent =
         serde_json::from_value(fixture.clone()).expect("the v1 fixture should decode");
-    let roles = event
+    let entries = event
         .conversation
         .expect("the v1 fixture should carry a conversation")
-        .messages
-        .into_iter()
-        .map(|message| message.role)
-        .collect::<Vec<_>>();
+        .entries;
     assert_eq!(
-        roles,
+        entries.iter().map(|entry| entry.role).collect::<Vec<_>>(),
         [
-            MessageRole::Reasoning,
-            MessageRole::Assistant,
-            MessageRole::Tool
+            EntryRole::Reasoning,
+            EntryRole::Assistant,
+            EntryRole::ToolCall
         ]
+    );
+    assert_eq!(entries[2].call_id.as_deref(), Some("call-123"));
+    assert_eq!(entries[2].name.as_deref(), Some("exec"));
+    assert_eq!(
+        entries
+            .iter()
+            .map(|entry| entry.item_id.as_deref())
+            .collect::<Vec<_>>(),
+        [Some("rs-123"), Some("msg-123"), Some("fc-123")]
     );
 
     let mut payloads = fixture.clone();
@@ -136,16 +135,36 @@ fn conversation_carries_only_role_aware_messages() {
         "decoded provider documents are not part of the v1 contract"
     );
     let mut blocks = fixture.clone();
-    blocks["conversation"]["messages"][0]["blocks"] = serde_json::json!([]);
+    blocks["conversation"]["entries"][0]["blocks"] = serde_json::json!([]);
     assert!(
         serde_json::from_value::<AgentEvent>(blocks).is_err(),
         "original content blocks are not part of the v1 contract"
     );
-    let mut placeholder = fixture;
-    placeholder["conversation"]["messages"][0]["role"] = "request".into();
+    let mut retired = fixture.clone();
+    retired["conversation"]["entries"][0]["role"] = "tool".into();
     assert!(
-        serde_json::from_value::<AgentEvent>(placeholder).is_err(),
-        "an undeclared role should use `unknown`, not a placeholder"
+        serde_json::from_value::<AgentEvent>(retired).is_err(),
+        "the merged `tool` role is replaced by `tool_call` and `tool_result`"
+    );
+    let mut messages = fixture.clone();
+    messages["conversation"]["messages"] = serde_json::json!([]);
+    assert!(
+        serde_json::from_value::<AgentEvent>(messages).is_err(),
+        "`messages` is replaced by `entries`"
+    );
+    let mut flagged = fixture.clone();
+    flagged["conversation"]["policy_omitted"] = false.into();
+    assert!(
+        serde_json::from_value::<AgentEvent>(flagged).is_err(),
+        "`policy_omitted` is replaced by the event-level `omitted`"
+    );
+    let mut omitted = fixture;
+    omitted["omitted"] = serde_json::json!(["conversation_text"]);
+    let decoded: AgentEvent = serde_json::from_value(omitted.clone()).unwrap();
+    assert_eq!(serde_json::to_value(decoded).unwrap(), omitted);
+    assert_eq!(
+        schema["properties"]["omitted"]["items"]["enum"],
+        serde_json::json!(["token_usage", "conversation_text", "tool_content", "images"])
     );
 }
 

@@ -1,19 +1,28 @@
 //! Anthropic content projection shared by the Messages API and Claude Web.
 //!
-//! A content array is split into consecutive role groups: `thinking` and
-//! `redacted_thinking` blocks become `reasoning` messages and every other block
-//! stays with the enclosing message role, in provider order and with the
-//! message id on each group. Request history and response assembly use the
-//! same split, so identical content always projects to identical messages.
-//! Tool blocks contribute no text; tool fields carry their content.
+//! Every content block is classified once, by the block-to-role table in
+//! [`ContentBlock::from_value`], and yields one conversation entry. Request
+//! history and response assembly use the same table, so identical content
+//! always projects to identical entries. A thinking block's entry carries an
+//! identity digested from the signature the provider issued, which the
+//! client sends back unchanged, so replayed history matches the response
+//! that produced it.
+//!
+//! The same pass also yields the event `text` projection: the labeled system
+//! prompt, prompt, input, and user messages of a request, and the assistant
+//! text of a response.
 
 use std::collections::BTreeMap;
 
-use abyss_plugin_protocol::event::{ContentCompleteness, Conversation, MessageRole};
+use abyss_plugin_protocol::event::{
+    ContentCompleteness, Conversation, ConversationEntry, EntryRole,
+};
 use serde_json::Value;
 
+use super::messages::tool_result_output;
 use crate::protocol::model::{
-    conversation::{ConversationProjection, MessageDraft},
+    conversation::ConversationProjection,
+    digest::sha256_hex,
     text::{MAX_PARSE_DEPTH, dedupe_texts, non_empty_trimmed, visible_text},
 };
 
@@ -43,70 +52,190 @@ impl AnthropicContent {
         }
     }
 
-    /// Splits ordered blocks into consecutive role groups.
-    fn groups<I>(blocks: I, role: MessageRole, id: Option<&str>) -> Vec<MessageDraft>
-    where
-        I: IntoIterator<Item = ContentBlock>,
-    {
-        let mut drafts: Vec<MessageDraft> = Vec::new();
-        for block in blocks {
-            let role = if block.reasoning {
-                MessageRole::Reasoning
-            } else {
-                role
-            };
-            if drafts.last().is_none_or(|draft| draft.role != role) {
-                drafts.push(MessageDraft::new(role, id.map(str::to_owned)));
-            }
-            if let Some(draft) = drafts.last_mut() {
-                draft.push_part(&block.text);
-            }
-        }
-        drafts
+    /// Visible text of blocks for the event `text` projection: tool and
+    /// reasoning blocks excluded, each trimmed and non-empty.
+    fn visible_parts(blocks: &[ContentBlock]) -> impl Iterator<Item = &str> {
+        blocks.iter().filter_map(ContentBlock::visible_text)
+    }
+
+    /// One entry per block, in order; text blocks take the message role.
+    fn entries(
+        blocks: &[ContentBlock],
+        role: EntryRole,
+    ) -> impl Iterator<Item = ConversationEntry> {
+        blocks.iter().filter_map(move |block| block.entry(role))
     }
 }
 
-/// One content block reduced to its conversation contribution.
-struct ContentBlock {
-    /// Whether the block is model reasoning.
-    reasoning: bool,
-    /// Visible text, possibly accumulated from streamed deltas.
-    text: String,
+/// One content block, classified by the block-to-role table.
+enum ContentBlock {
+    /// `text`: the enclosing message's role.
+    Text(String),
+    /// `thinking` or `redacted_thinking`.
+    Reasoning {
+        text: String,
+        /// What the block's identity is digested from: a `thinking` block's
+        /// `signature`, accumulated from streamed `signature_delta`
+        /// fragments, or a `redacted_thinking` block's `data`.
+        signature: String,
+    },
+    /// `tool_use`, `server_tool_use`, or `mcp_tool_use`.
+    ToolCall {
+        call_id: Option<String>,
+        name: Option<String>,
+        /// The block's `input` as sent.
+        input: String,
+        /// Input accumulated from streamed `input_json_delta` fragments.
+        streamed_input: String,
+    },
+    /// `tool_result` or any `*_tool_result`.
+    ToolResult {
+        call_id: Option<String>,
+        output: String,
+    },
+    /// Any other block, with its visible text when it has some.
+    Other(Option<String>),
 }
 
 impl ContentBlock {
     fn from_value(block: &Value) -> Self {
-        match block.get("type").and_then(Value::as_str) {
-            Some("thinking") => Self {
-                reasoning: true,
-                text: block["thinking"].as_str().unwrap_or_default().to_owned(),
-            },
-            Some("redacted_thinking") => Self {
-                reasoning: true,
-                text: String::new(),
-            },
-            Some(kind) if AnthropicContent::is_tool_block(kind) => Self {
-                reasoning: false,
-                text: String::new(),
-            },
-            _ => Self {
-                reasoning: false,
-                text: AnthropicContent::text(block, MAX_PARSE_DEPTH).unwrap_or_default(),
-            },
+        if let Value::String(text) = block {
+            return Self::Text(text.clone());
         }
+        let field = |key| ConversationProjection::field(block, key);
+        match block.get("type").and_then(Value::as_str) {
+            Some("text") => Self::Text(field("text").unwrap_or_default()),
+            Some("thinking") => Self::Reasoning {
+                text: field("thinking").unwrap_or_default(),
+                signature: field("signature").unwrap_or_default(),
+            },
+            Some("redacted_thinking") => Self::Reasoning {
+                text: String::new(),
+                signature: field("data").unwrap_or_default(),
+            },
+            Some("tool_use" | "server_tool_use" | "mcp_tool_use") => Self::ToolCall {
+                call_id: field("id"),
+                name: field("name"),
+                input: block
+                    .get("input")
+                    .map(ConversationProjection::verbatim)
+                    .unwrap_or_default(),
+                streamed_input: String::new(),
+            },
+            Some(kind) if kind == "tool_result" || kind.ends_with("_tool_result") => {
+                Self::ToolResult {
+                    call_id: field("tool_use_id"),
+                    output: block
+                        .get("content")
+                        .map(tool_result_output)
+                        .unwrap_or_default(),
+                }
+            }
+            _ => Self::Other(AnthropicContent::text(block, MAX_PARSE_DEPTH)),
+        }
+    }
+
+    /// Applies one streamed `content_block_delta`.
+    fn push_delta(blocks: &mut BTreeMap<u64, Self>, index: u64, delta: &Value) {
+        let fragment = |key| delta.get(key).and_then(Value::as_str);
+        match (delta["type"].as_str(), blocks.get_mut(&index)) {
+            (Some("text_delta"), Some(Self::Text(text))) => {
+                text.push_str(fragment("text").unwrap_or_default());
+            }
+            (Some("thinking_delta"), Some(Self::Reasoning { text, .. })) => {
+                text.push_str(fragment("thinking").unwrap_or_default());
+            }
+            (Some("signature_delta"), Some(Self::Reasoning { signature, .. })) => {
+                signature.push_str(fragment("signature").unwrap_or_default());
+            }
+            (Some("input_json_delta"), Some(Self::ToolCall { streamed_input, .. })) => {
+                streamed_input.push_str(fragment("partial_json").unwrap_or_default());
+            }
+            // A delta whose block start was not captured starts the block.
+            (Some("text_delta"), None) => {
+                blocks.insert(
+                    index,
+                    Self::Text(fragment("text").unwrap_or_default().to_owned()),
+                );
+            }
+            (Some("thinking_delta"), None) => {
+                blocks.insert(
+                    index,
+                    Self::Reasoning {
+                        text: fragment("thinking").unwrap_or_default().to_owned(),
+                        signature: String::new(),
+                    },
+                );
+            }
+            (Some("signature_delta"), None) => {
+                blocks.insert(
+                    index,
+                    Self::Reasoning {
+                        text: String::new(),
+                        signature: fragment("signature").unwrap_or_default().to_owned(),
+                    },
+                );
+            }
+            (Some("input_json_delta"), None) => {
+                blocks.insert(
+                    index,
+                    Self::ToolCall {
+                        call_id: None,
+                        name: None,
+                        input: String::new(),
+                        streamed_input: fragment("partial_json").unwrap_or_default().to_owned(),
+                    },
+                );
+            }
+            _ => {}
+        }
+    }
+
+    /// Visible non-reasoning, non-tool text of the block, trimmed.
+    fn visible_text(&self) -> Option<&str> {
+        match self {
+            Self::Text(text) => non_empty_trimmed(text),
+            Self::Other(text) => text.as_deref().and_then(non_empty_trimmed),
+            Self::Reasoning { .. } | Self::ToolCall { .. } | Self::ToolResult { .. } => None,
+        }
+    }
+
+    /// The block's entry; an unrecognized block without text has none.
+    fn entry(&self, role: EntryRole) -> Option<ConversationEntry> {
+        Some(match self {
+            Self::Text(text) => ConversationProjection::text(role, text),
+            Self::Reasoning { text, signature } => ConversationEntry {
+                item_id: thinking_identity(signature),
+                ..ConversationProjection::text(EntryRole::Reasoning, text)
+            },
+            Self::ToolCall {
+                call_id,
+                name,
+                input,
+                streamed_input,
+            } => ConversationProjection::tool_call(
+                call_id.clone(),
+                name.clone(),
+                if streamed_input.is_empty() {
+                    input.clone()
+                } else {
+                    streamed_input.clone()
+                },
+            ),
+            Self::ToolResult { call_id, output } => {
+                ConversationProjection::tool_result(call_id.clone(), output.clone())
+            }
+            Self::Other(text) => ConversationProjection::text(EntryRole::Unknown, text.as_deref()?),
+        })
     }
 }
 
-/// Request-side messages, grouped by the request field that carried them.
+/// Request-side entries.
 pub struct AnthropicRequest {
-    /// `system` prompt, including an explicitly empty one.
-    system: Option<MessageDraft>,
-    /// Legacy completion or Claude Web `prompt` string.
-    prompt: Option<MessageDraft>,
-    /// Non-standard `input` content.
-    input: Option<MessageDraft>,
-    /// Role groups of the `messages` history, in order.
-    messages: Vec<MessageDraft>,
+    /// One entry per block: `system`, `prompt`, `input`, then `messages`.
+    entries: Vec<ConversationEntry>,
+    /// Event text projection, in provider order.
+    texts: Vec<String>,
     /// Decoding state of the request body.
     completeness: ContentCompleteness,
 }
@@ -115,54 +244,61 @@ impl AnthropicRequest {
     /// Projects one decoded request body.
     #[must_use]
     pub fn parse(payload: &Value, truncated: bool) -> Self {
-        let system = payload.get("system").map(|system| {
-            let mut draft = MessageDraft::new(MessageRole::System, None);
-            for block in AnthropicContent::blocks(system) {
-                draft.push_part(&block.text);
+        let mut entries = Vec::new();
+        let mut texts = Vec::new();
+        if let Some(system) = payload.get("system") {
+            let blocks = AnthropicContent::blocks(system);
+            let text = AnthropicContent::visible_parts(&blocks)
+                .collect::<Vec<_>>()
+                .join("\n");
+            if !text.is_empty() {
+                texts.push(format!("system: {text}"));
             }
-            draft
-        });
-        let prompt = payload
+            entries.extend(AnthropicContent::entries(&blocks, EntryRole::System));
+        }
+        if let Some(prompt) = payload
             .get("prompt")
             .and_then(Value::as_str)
-            .and_then(non_empty_trimmed)
-            .map(|prompt| {
-                let mut draft = MessageDraft::new(MessageRole::User, None);
-                draft.push_part(prompt);
-                draft
-            });
-        let input = payload.get("input").map(|input| {
+            .filter(|prompt| non_empty_trimmed(prompt).is_some())
+        {
+            texts.extend(non_empty_trimmed(prompt).map(str::to_owned));
+            entries.push(ConversationProjection::text(EntryRole::User, prompt));
+        }
+        if let Some(input) = payload.get("input") {
             let role = if input.is_string() {
-                MessageRole::User
+                EntryRole::User
             } else {
-                MessageRole::Unknown
+                EntryRole::Unknown
             };
-            let mut draft = MessageDraft::new(role, None);
-            draft.push_part(&AnthropicContent::text(input, MAX_PARSE_DEPTH).unwrap_or_default());
-            draft
-        });
-        let messages = payload
+            texts.extend(AnthropicContent::text(input, MAX_PARSE_DEPTH));
+            entries.extend(AnthropicContent::entries(
+                &AnthropicContent::blocks(input),
+                role,
+            ));
+        }
+        for message in payload
             .get("messages")
             .and_then(Value::as_array)
             .into_iter()
             .flatten()
-            .flat_map(|message| {
-                let role = message
-                    .get("role")
-                    .and_then(Value::as_str)
-                    .map_or(MessageRole::Unknown, ConversationProjection::role);
-                AnthropicContent::groups(
-                    AnthropicContent::blocks(message.get("content").unwrap_or(&Value::Null)),
-                    role,
-                    message.get("id").and_then(Value::as_str),
-                )
-            })
-            .collect();
+        {
+            let role = message
+                .get("role")
+                .and_then(Value::as_str)
+                .map_or(EntryRole::Unknown, ConversationProjection::role);
+            let blocks = AnthropicContent::blocks(message.get("content").unwrap_or(&Value::Null));
+            if role == EntryRole::User {
+                texts.push(
+                    AnthropicContent::visible_parts(&blocks)
+                        .collect::<Vec<_>>()
+                        .join("\n"),
+                );
+            }
+            entries.extend(AnthropicContent::entries(&blocks, role));
+        }
         Self {
-            system,
-            prompt,
-            input,
-            messages,
+            entries,
+            texts: dedupe_texts(texts),
             completeness: ConversationProjection::completeness(true, truncated),
         }
     }
@@ -170,51 +306,25 @@ impl AnthropicRequest {
     /// Event text: the labeled system prompt, prompt, input, and user messages.
     #[must_use]
     pub fn texts(&self) -> Vec<String> {
-        let mut texts = Vec::new();
-        if let Some(system) = &self.system {
-            let text = system.text();
-            if !text.is_empty() {
-                texts.push(format!("system: {text}"));
-            }
-        }
-        texts.extend(
-            self.prompt
-                .iter()
-                .chain(&self.input)
-                .map(MessageDraft::text),
-        );
-        texts.extend(
-            self.messages
-                .iter()
-                .filter(|draft| draft.role == MessageRole::User)
-                .map(MessageDraft::text),
-        );
-        dedupe_texts(texts)
+        self.texts.clone()
     }
 
     /// Public request conversation.
     #[must_use]
     pub fn conversation(&self) -> Conversation {
-        let mut conversation = ConversationProjection::from_drafts(
-            self.system
-                .iter()
-                .chain(&self.prompt)
-                .chain(&self.input)
-                .chain(&self.messages),
-            self.completeness,
-        );
-        conversation.instructions_present = self.system.is_some();
-        conversation
+        ConversationProjection::from_entries(self.entries.clone(), self.completeness)
     }
 }
 
-/// Response-side messages assembled from JSON or streamed documents.
+/// Response-side entries assembled from JSON or streamed documents.
 pub struct AnthropicResponse {
     /// Message id: `message_start.message.id` of a stream, or the top-level
     /// `id` of a whole message.
     id: Option<String>,
-    /// Role groups of the assistant message.
-    messages: Vec<MessageDraft>,
+    /// One entry per content block of the assistant message.
+    entries: Vec<ConversationEntry>,
+    /// Event text projection: assistant text blocks, excluding reasoning.
+    texts: Vec<String>,
     /// Decoding state of the response body.
     completeness: ContentCompleteness,
 }
@@ -222,8 +332,8 @@ pub struct AnthropicResponse {
 impl AnthropicResponse {
     /// Assembles one response from its decoded documents.
     ///
-    /// Streamed text and thinking deltas accumulate per block index; a
-    /// non-streaming `content` array is authoritative when present.
+    /// Streamed text, thinking, and tool-input deltas accumulate per block
+    /// index; a non-streaming `content` array is authoritative when present.
     #[must_use]
     pub fn assemble(values: &[Value], incomplete: bool) -> Self {
         let mut blocks = BTreeMap::<u64, ContentBlock>::new();
@@ -255,47 +365,35 @@ impl AnthropicResponse {
                     }
                 }
                 Some("content_block_delta") => {
-                    let delta = &value["delta"];
-                    let (reasoning, fragment) = match delta["type"].as_str() {
-                        Some("text_delta") => (false, delta["text"].as_str()),
-                        Some("thinking_delta") => (true, delta["thinking"].as_str()),
-                        _ => continue,
-                    };
-                    if let Some(fragment) = fragment {
-                        blocks
-                            .entry(index)
-                            .or_insert_with(|| ContentBlock {
-                                reasoning,
-                                text: String::new(),
-                            })
-                            .text
-                            .push_str(fragment);
-                    }
+                    ContentBlock::push_delta(&mut blocks, index, &value["delta"]);
                 }
                 _ => {
                     // Legacy completion streams carry one text block.
                     if let Some(completion) = value.get("completion").and_then(Value::as_str) {
-                        blocks
+                        let block = blocks
                             .entry(0)
-                            .or_insert_with(|| ContentBlock {
-                                reasoning: false,
-                                text: String::new(),
-                            })
-                            .text
-                            .push_str(completion);
+                            .or_insert_with(|| ContentBlock::Text(String::new()));
+                        if let ContentBlock::Text(text) = block {
+                            text.push_str(completion);
+                        }
                     }
                 }
             }
         }
         let blocks = snapshot.unwrap_or_else(|| blocks.into_values().collect());
         Self {
-            messages: AnthropicContent::groups(blocks, MessageRole::Assistant, id.as_deref()),
+            texts: dedupe_texts(
+                AnthropicContent::visible_parts(&blocks)
+                    .map(str::to_owned)
+                    .collect(),
+            ),
+            entries: AnthropicContent::entries(&blocks, EntryRole::Assistant).collect(),
             id,
             completeness: ConversationProjection::completeness(!values.is_empty(), incomplete),
         }
     }
 
-    /// The message id, shared by every message of the response.
+    /// The message id of the response.
     #[must_use]
     pub fn id(&self) -> Option<&str> {
         self.id.as_deref()
@@ -304,20 +402,20 @@ impl AnthropicResponse {
     /// Event text: assistant text blocks, excluding reasoning.
     #[must_use]
     pub fn texts(&self) -> Vec<String> {
-        dedupe_texts(
-            self.messages
-                .iter()
-                .filter(|draft| draft.role == MessageRole::Assistant)
-                .flat_map(|draft| draft.parts.iter().cloned())
-                .collect(),
-        )
+        self.texts.clone()
     }
 
     /// Public response conversation.
     #[must_use]
     pub fn conversation(&self) -> Conversation {
-        ConversationProjection::from_drafts(&self.messages, self.completeness)
+        ConversationProjection::from_entries(self.entries.clone(), self.completeness)
     }
+}
+
+/// The identity of a thinking block: `thinking:` and the hex SHA-256 of its
+/// signature, or none when the block carries no signature.
+fn thinking_identity(signature: &str) -> Option<String> {
+    (!signature.is_empty()).then(|| format!("thinking:{}", sha256_hex(signature)))
 }
 
 fn block_index(position: usize) -> u64 {
@@ -330,37 +428,55 @@ mod tests {
 
     use super::*;
 
+    fn summary(conversation: &Conversation) -> Vec<(EntryRole, &str, Option<&str>, Option<&str>)> {
+        conversation
+            .entries
+            .iter()
+            .map(|entry| {
+                (
+                    entry.role,
+                    entry.text.as_str(),
+                    entry.call_id.as_deref(),
+                    entry.name.as_deref(),
+                )
+            })
+            .collect()
+    }
+
     #[test]
-    fn response_splits_thinking_into_reasoning_messages_in_provider_order() {
+    fn streamed_response_yields_one_entry_per_block_in_order() {
         let values = vec![
             json!({"type":"message_start","message":{"id":"m1","content":[]}}),
             json!({"type":"content_block_start","index":0_i32,"content_block":{"type":"thinking","thinking":"think"}}),
             json!({"type":"content_block_delta","index":0_i32,"delta":{"type":"thinking_delta","thinking":"ing"}}),
             json!({"type":"content_block_delta","index":0_i32,"delta":{"type":"signature_delta","signature":"sig"}}),
             json!({"type":"content_block_start","index":1_i32,"content_block":{"type":"tool_use","id":"call1","name":"exec","input":{}}}),
-            json!({"type":"content_block_delta","index":1_i32,"delta":{"type":"input_json_delta","partial_json":"{\"cmd\":\"pwd\"}"}}),
+            json!({"type":"content_block_delta","index":1_i32,"delta":{"type":"input_json_delta","partial_json":"{\"cmd\": "}}),
+            json!({"type":"content_block_delta","index":1_i32,"delta":{"type":"input_json_delta","partial_json":"\"pwd\"}"}}),
             json!({"type":"content_block_start","index":2_i32,"content_block":{"type":"text","text":"hel"}}),
             json!({"type":"content_block_delta","index":2_i32,"delta":{"type":"text_delta","text":"lo"}}),
         ];
         let response = AnthropicResponse::assemble(&values, false);
-        let conversation = response.conversation();
 
-        assert_eq!(conversation.messages.len(), 2);
-        assert_eq!(conversation.messages[0].role, MessageRole::Reasoning);
-        assert_eq!(conversation.messages[0].text, "thinking");
-        assert_eq!(conversation.messages[1].role, MessageRole::Assistant);
-        assert_eq!(conversation.messages[1].text, "hello");
-        assert!(
-            conversation
-                .messages
-                .iter()
-                .all(|message| message.id.as_deref() == Some("m1"))
+        assert_eq!(
+            summary(&response.conversation()),
+            [
+                (EntryRole::Reasoning, "thinking", None, None),
+                (
+                    EntryRole::ToolCall,
+                    "{\"cmd\": \"pwd\"}",
+                    Some("call1"),
+                    Some("exec")
+                ),
+                (EntryRole::Assistant, "hello", None, None),
+            ]
         );
+        assert_eq!(response.id(), Some("m1"));
         assert_eq!(response.texts(), vec!["hello"]);
     }
 
     #[test]
-    fn request_history_and_response_project_identical_messages() {
+    fn request_history_and_response_project_identical_entries() {
         let content = json!([
             {"type":"thinking","thinking":"plan","signature":"sig"},
             {"type":"text","text":"answer"},
@@ -378,27 +494,159 @@ mod tests {
         let response =
             AnthropicResponse::assemble(&[json!({"id":"msg_1","content":content})], false);
 
-        let history = request.conversation().messages;
-        let reply = response.conversation().messages;
-        assert_eq!(history.len(), 5);
-        assert_eq!(history[0].role, MessageRole::User);
-        assert_eq!(history.len().saturating_sub(1), reply.len());
-        for (requested, responded) in history[1..].iter().zip(&reply) {
-            assert_eq!(requested.role, responded.role);
-            assert_eq!(requested.text, responded.text);
-            assert_eq!(responded.id.as_deref(), Some("msg_1"));
-        }
+        let history = request.conversation().entries;
+        let reply = response.conversation().entries;
         assert_eq!(
-            reply.iter().map(|message| message.role).collect::<Vec<_>>(),
-            vec![
-                MessageRole::Reasoning,
-                MessageRole::Assistant,
-                MessageRole::Reasoning,
-                MessageRole::Assistant,
+            history[0],
+            ConversationProjection::text(EntryRole::User, "hi")
+        );
+        assert_eq!(history[1..], reply[..]);
+        assert_eq!(
+            reply.iter().map(|entry| entry.role).collect::<Vec<_>>(),
+            [
+                EntryRole::Reasoning,
+                EntryRole::Assistant,
+                EntryRole::ToolCall,
+                EntryRole::Reasoning,
+                EntryRole::Assistant,
             ]
         );
-        assert_eq!(reply[1].text, "answer");
+        assert_eq!(reply[2].text, "{\"cmd\":\"pwd\"}");
         assert_eq!(response.texts(), vec!["answer", "more"]);
+        assert_eq!(reply[3].text, "");
+        assert_eq!(
+            reply
+                .iter()
+                .map(|entry| entry.item_id.clone())
+                .collect::<Vec<_>>(),
+            [
+                Some(format!("thinking:{}", sha256_hex("sig"))),
+                None,
+                None,
+                Some(format!("thinking:{}", sha256_hex("opaque"))),
+                None,
+            ]
+        );
+    }
+
+    #[test]
+    fn streamed_thinking_identity_digests_the_complete_signature() {
+        let signature = "EqQBCkYIBxgCKkDsignature/fragments==";
+        let values = vec![
+            json!({"type":"message_start","message":{"id":"msg_1","content":[]}}),
+            json!({"type":"content_block_start","index":0_i32,"content_block":{"type":"thinking","thinking":"","signature":""}}),
+            json!({"type":"content_block_delta","index":0_i32,"delta":{"type":"signature_delta","signature":&signature[..12]}}),
+            json!({"type":"content_block_delta","index":0_i32,"delta":{"type":"signature_delta","signature":&signature[12..]}}),
+            json!({"type":"content_block_start","index":1_i32,"content_block":{"type":"text","text":""}}),
+            json!({"type":"content_block_delta","index":1_i32,"delta":{"type":"text_delta","text":"done"}}),
+            json!({"type":"content_block_start","index":2_i32,"content_block":{"type":"redacted_thinking","data":"opaque"}}),
+            // A thinking block whose signature was not captured has no identity.
+            json!({"type":"content_block_start","index":3_i32,"content_block":{"type":"thinking","thinking":"","signature":""}}),
+            json!({"type":"content_block_delta","index":3_i32,"delta":{"type":"thinking_delta","thinking":"cut"}}),
+        ];
+        let reply = AnthropicResponse::assemble(&values, true)
+            .conversation()
+            .entries;
+        // The blocks as the next request sends them back.
+        let history = AnthropicRequest::parse(
+            &json!({"messages":[
+                {"role":"user","content":"question"},
+                {"role":"assistant","content":[
+                    {"type":"thinking","thinking":"","signature":signature},
+                    {"type":"text","text":"done"},
+                    {"type":"redacted_thinking","data":"opaque"}
+                ]},
+                {"role":"user","content":"next"}
+            ]}),
+            false,
+        )
+        .conversation()
+        .entries;
+
+        // Thinking blocks yield entries even without readable text.
+        assert_eq!(
+            summary(&ConversationProjection::from_entries(
+                reply.clone(),
+                ContentCompleteness::Partial
+            )),
+            [
+                (EntryRole::Reasoning, "", None, None),
+                (EntryRole::Assistant, "done", None, None),
+                (EntryRole::Reasoning, "", None, None),
+                (EntryRole::Reasoning, "cut", None, None),
+            ]
+        );
+        assert_eq!(
+            reply[0].item_id,
+            Some(format!("thinking:{}", sha256_hex(signature)))
+        );
+        assert_eq!(reply[3].item_id, None);
+        assert_eq!(history[1..4], reply[..3]);
+    }
+
+    #[test]
+    fn request_follows_the_block_table() {
+        let request = AnthropicRequest::parse(
+            &json!({
+                "system":[
+                    {"type":"text","text":"x-anthropic-billing-header: cc_version=1;"},
+                    {"type":"text","text":"rules"}
+                ],
+                "messages":[
+                    {"role":"user","content":[
+                        {"type":"text","text":" a "},
+                        {"type":"image","source":{"type":"base64","media_type":"image/png","data":"AA=="}},
+                        {"type":"text","text":"b"}
+                    ]},
+                    {"role":"assistant","content":[
+                        {"type":"server_tool_use","id":"srv_1","name":"web_search","input":{"query":"q"}},
+                        {"type":"web_search_tool_result","tool_use_id":"srv_1","content":[{"type":"web_search_result","url":"u"}]},
+                        {"type":"tool_addition","tool":{"name":"x"}},
+                        {"type":"future_block","text":"future text"}
+                    ]},
+                    {"role":"user","content":[
+                        {"type":"tool_result","tool_use_id":"srv_1","content":[{"type":"text","text":"out"}]}
+                    ]},
+                    {"role":"system","content":[{"type":"text","text":"<total_tokens>1</total_tokens>"}]}
+                ]
+            }),
+            false,
+        );
+
+        assert_eq!(
+            summary(&request.conversation()),
+            [
+                (
+                    EntryRole::System,
+                    "x-anthropic-billing-header: cc_version=1;",
+                    None,
+                    None
+                ),
+                (EntryRole::System, "rules", None, None),
+                (EntryRole::User, " a ", None, None),
+                (EntryRole::User, "b", None, None),
+                (
+                    EntryRole::ToolCall,
+                    "{\"query\":\"q\"}",
+                    Some("srv_1"),
+                    Some("web_search")
+                ),
+                (
+                    EntryRole::ToolResult,
+                    "{\"type\":\"web_search_result\",\"url\":\"u\"}",
+                    Some("srv_1"),
+                    None
+                ),
+                (EntryRole::Unknown, "future text", None, None),
+                (EntryRole::ToolResult, "out", Some("srv_1"), None),
+                (
+                    EntryRole::System,
+                    "<total_tokens>1</total_tokens>",
+                    None,
+                    None
+                ),
+            ]
+        );
     }
 
     #[test]
@@ -414,11 +662,7 @@ mod tests {
             }),
             false,
         );
-        let conversation = request.conversation();
 
         assert_eq!(request.texts(), vec!["system: rules", "a\nb"]);
-        assert!(conversation.instructions_present);
-        assert_eq!(conversation.messages[0].role, MessageRole::System);
-        assert_eq!(conversation.messages[3].text, "");
     }
 }

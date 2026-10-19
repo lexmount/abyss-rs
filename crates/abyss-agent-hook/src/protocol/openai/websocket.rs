@@ -153,16 +153,15 @@ impl PendingTurn {
     ///
     /// A turn normally has one `response.create`. When a client sends several
     /// content frames before the terminal response, the first frame supplies
-    /// the turn's request conversation and later frames append their messages
-    /// in arrival order. Instructions count as present when any frame carried them,
-    /// and an incompletely decoded frame downgrades the whole request side.
+    /// the turn's request conversation and later frames append their entries
+    /// in arrival order. An incompletely decoded frame downgrades the whole
+    /// request side.
     fn merge_request_conversation(&mut self, next: Conversation) {
         let Some(current) = self.request_conversation.as_mut() else {
             self.request_conversation = Some(next);
             return;
         };
-        current.messages.extend(next.messages);
-        current.instructions_present |= next.instructions_present;
+        current.entries.extend(next.entries);
         if next.completeness != ContentCompleteness::Complete {
             ConversationProjection::mark_partial(current);
         }
@@ -286,7 +285,7 @@ fn append_unique_tools(target: &mut Vec<ParsedToolEvent>, source: Vec<ParsedTool
 #[cfg(test)]
 mod tests {
     use abyss_mitm::{FlowId, WebSocketDirection};
-    use abyss_plugin_protocol::event::{ContentCompleteness, MessageRole};
+    use abyss_plugin_protocol::event::{ContentCompleteness, EntryRole};
     use serde_json::{Value, json};
 
     use crate::protocol::{
@@ -321,8 +320,8 @@ mod tests {
 
         assert_eq!(completed.request_texts, vec!["hello"]);
         assert_eq!(completed.response_texts, vec!["part one", "part two"]);
-        assert_eq!(completed.request_conversation.messages[0].text, "hello");
-        assert_eq!(completed.response_conversation.messages.len(), 2);
+        assert_eq!(completed.request_conversation.entries[0].text, "hello");
+        assert_eq!(completed.response_conversation.entries.len(), 2);
         assert_eq!(
             completed.response_conversation.completeness,
             ContentCompleteness::Complete
@@ -465,17 +464,16 @@ mod tests {
         let conversation = &completed.request_conversation;
 
         assert_eq!(completed.previous_response_id.as_deref(), Some("resp_1"));
-        assert!(conversation.instructions_present);
         assert_eq!(
             conversation
-                .messages
+                .entries
                 .iter()
-                .map(|message| (message.role, message.text.as_str()))
+                .map(|entry| (entry.role, entry.text.as_str()))
                 .collect::<Vec<_>>(),
             vec![
-                (MessageRole::User, "first"),
-                (MessageRole::Developer, "rules"),
-                (MessageRole::User, "second"),
+                (EntryRole::User, "first"),
+                (EntryRole::System, "rules"),
+                (EntryRole::User, "second"),
             ]
         );
         assert_eq!(completed.request_texts, vec!["first", "second"]);

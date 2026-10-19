@@ -383,6 +383,10 @@ impl TryFrom<AgentEvent> for IngestUsageEvent {
         if let Some(title) = event.session_title {
             metadata["session_title"] = Value::String(title);
         }
+        if !event.omitted.is_empty() {
+            metadata["omitted"] = serde_json::to_value(&event.omitted)
+                .map_err(|error| DeliveryPluginError::Translate(error.to_string()))?;
+        }
         if let Some(conversation) = event.conversation {
             metadata["conversation"] = serde_json::to_value(conversation)
                 .map_err(|error| DeliveryPluginError::Translate(error.to_string()))?;
@@ -580,13 +584,33 @@ mod tests {
         let serialized = serde_json::to_value(request).expect("request should serialize");
         let metadata = &serialized["events"][0]["metadata"];
 
-        let roles = metadata["conversation"]["messages"]
+        let roles = metadata["conversation"]["entries"]
             .as_array()
-            .expect("messages should be an array")
+            .expect("entries should be an array")
             .iter()
-            .map(|message| message["role"].as_str().expect("role should be a string"))
+            .map(|entry| entry["role"].as_str().expect("role should be a string"))
             .collect::<Vec<_>>();
-        assert_eq!(roles, ["reasoning", "assistant", "tool"]);
+        assert_eq!(roles, ["reasoning", "assistant", "tool_call"]);
+        assert!(metadata.get("omitted").is_none());
+    }
+
+    #[test]
+    fn stores_the_omitted_categories_as_backend_metadata() {
+        let mut event: AgentEvent = serde_json::from_str(include_str!(
+            "../../../specs/broker-plugin-protocol/v1/fixtures/agent-event.json"
+        ))
+        .expect("fixture should decode");
+        event.omitted = vec![
+            abyss_sdk::plugin::ContentCategory::ConversationText,
+            abyss_sdk::plugin::ContentCategory::Images,
+        ];
+        let request = IngestEventsRequest::try_from(event).expect("event should translate");
+        let serialized = serde_json::to_value(request).expect("request should serialize");
+
+        assert_eq!(
+            serialized["events"][0]["metadata"]["omitted"],
+            serde_json::json!(["conversation_text", "images"])
+        );
     }
 
     #[test]
@@ -648,6 +672,7 @@ mod tests {
             },
             side: AgentEventSide::Request,
             text: None,
+            omitted: Vec::new(),
             conversation: None,
             token_usage: TokenUsage {
                 input_tokens: 1,

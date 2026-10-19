@@ -5,28 +5,38 @@ from dataclasses import dataclass
 from datetime import datetime
 from typing import Any, Literal, Optional, cast
 
-MessageRole = Literal["system", "developer", "user", "assistant", "reasoning", "tool", "unknown"]
+EntryRole = Literal[
+    "system",
+    "developer",
+    "user",
+    "assistant",
+    "reasoning",
+    "tool_call",
+    "tool_result",
+    "unknown",
+]
 ContentCompleteness = Literal["complete", "partial", "unsupported"]
+ContentCategory = Literal["token_usage", "conversation_text", "tool_content", "images"]
 EventPurpose = Literal["session_title", "compaction", "prewarm"]
 
 
 @dataclass(frozen=True)
-class ConversationMessage:
-    """One ordered message; tool arguments and results use the event's tool fields."""
+class ConversationEntry:
+    """One protocol block or item; tool entries carry their arguments or output."""
 
-    id: Optional[str]
-    role: MessageRole
+    role: EntryRole
     text: str
+    call_id: Optional[str]
+    name: Optional[str]
+    item_id: Optional[str]
 
 
 @dataclass(frozen=True)
 class Conversation:
-    """Role-aware content and its capture and content-policy status."""
+    """Role-aware entries, one per protocol block or item, and the capture status."""
 
-    messages: tuple[ConversationMessage, ...]
-    instructions_present: bool
+    entries: tuple[ConversationEntry, ...]
     completeness: ContentCompleteness
-    policy_omitted: bool
 
 
 @dataclass(frozen=True)
@@ -120,6 +130,7 @@ class AgentEvent:
     llm: LlmContext
     side: str
     text: Optional[str]
+    omitted: tuple[ContentCategory, ...]
     conversation: Optional[Conversation]
     token_usage: TokenUsage
     tool_calls: tuple[ToolCall, ...]
@@ -149,6 +160,7 @@ class AgentEvent:
                 "llm",
                 "side",
                 "text",
+                "omitted",
                 "conversation",
                 "token_usage",
                 "tool_calls",
@@ -180,6 +192,10 @@ class AgentEvent:
             llm=_llm(_mapping(event.get("llm"), "AgentEvent.llm")),
             side=side,
             text=_optional_string(event, "text"),
+            omitted=tuple(
+                _content_category(item)
+                for item in _list(event.get("omitted", []), "AgentEvent.omitted")
+            ),
             conversation=(
                 _conversation(event["conversation"])
                 if event.get("conversation") is not None
@@ -201,35 +217,48 @@ class AgentEvent:
         )
 
 
+def _content_category(value: Any) -> ContentCategory:
+    if value not in {"token_usage", "conversation_text", "tool_content", "images"}:
+        raise ValueError(f"unsupported omitted content category {value}")
+    return cast(ContentCategory, value)
+
+
 def _conversation(value: Any) -> Conversation:
     item = _mapping(value, "AgentEvent.conversation")
-    _reject_unknown(
-        item, {"messages", "instructions_present", "completeness", "policy_omitted"}, "conversation"
-    )
+    _reject_unknown(item, {"entries", "completeness"}, "conversation")
     completeness = _string(item, "completeness")
     if completeness not in {"complete", "partial", "unsupported"}:
         raise ValueError("completeness must be complete, partial, or unsupported")
     return Conversation(
-        messages=tuple(
-            _conversation_message(message)
-            for message in _list(item.get("messages"), "conversation.messages")
+        entries=tuple(
+            _conversation_entry(entry)
+            for entry in _list(item.get("entries"), "conversation.entries")
         ),
-        instructions_present=_boolean(item, "instructions_present"),
         completeness=cast(ContentCompleteness, completeness),
-        policy_omitted=_boolean(item, "policy_omitted"),
     )
 
 
-def _conversation_message(value: Any) -> ConversationMessage:
-    item = _mapping(value, "conversation.messages[]")
-    _reject_unknown(item, {"id", "role", "text"}, "conversation message")
-    if "id" not in item:
-        raise ValueError("conversation message must include id (string or null)")
+def _conversation_entry(value: Any) -> ConversationEntry:
+    item = _mapping(value, "conversation.entries[]")
+    _reject_unknown(item, {"role", "text", "call_id", "name", "item_id"}, "conversation entry")
     role = _string(item, "role")
-    if role not in {"system", "developer", "user", "assistant", "reasoning", "tool", "unknown"}:
+    if role not in {
+        "system",
+        "developer",
+        "user",
+        "assistant",
+        "reasoning",
+        "tool_call",
+        "tool_result",
+        "unknown",
+    }:
         raise ValueError(f"unsupported conversation role {role}")
-    return ConversationMessage(
-        id=_optional_string(item, "id"), role=cast(MessageRole, role), text=_string(item, "text")
+    return ConversationEntry(
+        role=cast(EntryRole, role),
+        text=_string(item, "text"),
+        call_id=_optional_string(item, "call_id"),
+        name=_optional_string(item, "name"),
+        item_id=_optional_string(item, "item_id"),
     )
 
 

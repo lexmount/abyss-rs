@@ -50,25 +50,25 @@
     }
   ],
   "conversation": {
-    "messages": [
+    "entries": [
       {
-        "id": "rs-123",
         "role": "reasoning",
-        "text": "The user wants an overview of the repository."
+        "text": "The user wants an overview of the repository.",
+        "item_id": "rs-123"
       },
       {
-        "id": "msg-123",
         "role": "assistant",
-        "text": "I will inspect the repository."
+        "text": "I will inspect the repository.",
+        "item_id": "msg-123"
       },
       {
-        "id": "fc-123",
-        "role": "tool",
-        "text": ""
+        "role": "tool_call",
+        "text": "pwd",
+        "call_id": "call-123",
+        "name": "exec",
+        "item_id": "fc-123"
       }
     ],
-    "instructions_present": false,
-    "completeness": "complete",
-    "policy_omitted": false
+    "completeness": "complete"
   }
 }

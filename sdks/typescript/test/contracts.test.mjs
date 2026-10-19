@@ -28,7 +28,7 @@ test("shared AgentEvent fixture decodes through the TypeScript SDK", async () =>
   assert.equal("turn_index" in event, false);
 });
 
-test("undeclared context may be omitted and message IDs may be null", async () => {
+test("undeclared context and entry identities may be omitted", async () => {
   const fixture = JSON.parse(await readFile(fixtureUrl, "utf8"));
   for (const field of [
     "turn_id",
@@ -44,16 +44,14 @@ test("undeclared context may be omitted and message IDs may be null", async () =
   }
   assert.equal(decodeAgentEvent(fixture).turn_id, undefined);
   fixture.purpose = "compaction";
+  fixture.omitted = ["conversation_text"];
   fixture.conversation = {
-    messages: [{ id: null, role: "unknown", text: "" }],
-    instructions_present: false,
+    entries: [{ role: "unknown", text: "" }],
     completeness: "partial",
-    policy_omitted: true,
   };
-  assert.deepEqual(
-    decodeAgentEvent(fixture).conversation,
-    fixture.conversation,
-  );
+  const event = decodeAgentEvent(fixture);
+  assert.deepEqual(event.conversation, fixture.conversation);
+  assert.deepEqual(event.omitted, ["conversation_text"]);
 });
 
 test("explicit prewarm retains its observed usage in v1", async () => {
@@ -81,28 +79,34 @@ test("structured events reject obsolete fields and malformed content", async () 
       e.purpose = "other";
     },
     (e) => {
-      e.conversation.messages[0].role = "request";
+      e.omitted = ["text"];
     },
     (e) => {
-      delete e.conversation.messages[0].id;
+      e.conversation.entries[0].role = "tool";
     },
     (e) => {
-      e.conversation.messages[0].blocks = [];
+      e.conversation.entries[0].blocks = [];
     },
     (e) => {
-      e.conversation.messages[0].text = 1;
+      e.conversation.entries[0].text = 1;
     },
     (e) => {
-      e.conversation.messages = {};
+      e.conversation.entries[0].item_id = 1;
+    },
+    (e) => {
+      e.conversation.entries = {};
     },
     (e) => {
       e.conversation.completeness = "failed";
     },
     (e) => {
-      e.conversation.instructions_present = "true";
+      e.conversation.messages = [];
     },
     (e) => {
-      delete e.conversation.policy_omitted;
+      e.conversation.instructions_present = true;
+    },
+    (e) => {
+      e.conversation.policy_omitted = false;
     },
   ]) {
     const fixture = structuredClone(original);

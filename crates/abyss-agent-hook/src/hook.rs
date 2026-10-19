@@ -252,9 +252,7 @@ mod tests {
         CapturedBody, FlowContext, HttpExchange, MitmHook, OriginalDestination, SourceProcess,
         TransparentProtocol,
     };
-    use abyss_plugin_protocol::event::{
-        AgentEvent, ContentCompleteness, EventPurpose, MessageRole,
-    };
+    use abyss_plugin_protocol::event::{AgentEvent, ContentCompleteness, EntryRole, EventPurpose};
     use http::{Request, Response};
 
     use crate::{
@@ -326,20 +324,20 @@ mod tests {
             let request = events[0].conversation.as_ref().unwrap();
             assert_eq!(
                 request
-                    .messages
+                    .entries
                     .iter()
-                    .map(|message| (message.role, message.text.as_str()))
+                    .map(|entry| (entry.role, entry.text.as_str()))
                     .collect::<Vec<_>>(),
                 vec![
-                    (MessageRole::Developer, "instructions"),
-                    (MessageRole::User, "continue"),
-                    (MessageRole::User, "continue"),
+                    (EntryRole::Developer, "instructions"),
+                    (EntryRole::User, "continue"),
+                    (EntryRole::User, "continue"),
                 ]
             );
             let reply = events[1].conversation.as_ref().unwrap();
-            assert_eq!(reply.messages.len(), 1);
-            assert_eq!(reply.messages[0].role, MessageRole::Assistant);
-            assert_eq!(reply.messages[0].text, "hi");
+            assert_eq!(reply.entries.len(), 1);
+            assert_eq!(reply.entries[0].role, EntryRole::Assistant);
+            assert_eq!(reply.entries[0].text, "hi");
             assert_eq!(reply.completeness, ContentCompleteness::Complete);
             assert_eq!(events[1].text.as_deref(), Some("hi"));
             drop(events);
@@ -398,13 +396,16 @@ mod tests {
         let events = sink.events.lock().unwrap();
         assert_eq!(events.len(), 2);
         let request_content = events[0].conversation.as_ref().unwrap();
-        assert_eq!(request_content.messages[0].role, MessageRole::User);
-        assert_eq!(request_content.messages[0].text, "hello");
+        assert_eq!(request_content.entries[0].role, EntryRole::User);
+        assert_eq!(request_content.entries[0].text, "hello");
         assert_eq!(request_content.completeness, ContentCompleteness::Complete);
         let response_content = events[1].conversation.as_ref().unwrap();
-        assert_eq!(response_content.messages.len(), 1);
-        assert_eq!(response_content.messages[0].id.as_deref(), Some("msg-1"));
-        assert_eq!(response_content.messages[0].text, "hi there");
+        assert_eq!(response_content.entries.len(), 1);
+        assert_eq!(
+            response_content.entries[0].item_id.as_deref(),
+            Some("msg-1")
+        );
+        assert_eq!(response_content.entries[0].text, "hi there");
         assert_eq!(response_content.completeness, ContentCompleteness::Partial);
         assert_eq!(events[1].text.as_deref(), Some("hi there"));
         drop(events);
@@ -473,7 +474,7 @@ mod tests {
                 assert_eq!(events[0].purpose, expected);
                 assert_eq!(events[0].token_usage.input_tokens, 11);
                 assert_eq!(
-                    events[0].conversation.as_ref().unwrap().messages[0].text,
+                    events[0].conversation.as_ref().unwrap().entries[0].text,
                     "rules"
                 );
                 assert!(events[1..].iter().all(|event| event.purpose.is_none()));
@@ -509,7 +510,7 @@ mod tests {
         assert_eq!(request.completeness, ContentCompleteness::Complete);
         let reply = events[1].conversation.as_ref().unwrap();
         assert_eq!(reply.completeness, ContentCompleteness::Partial);
-        assert_eq!(reply.messages[0].text, "hi");
+        assert_eq!(reply.entries[0].text, "hi");
         assert_eq!(events[1].text.as_deref(), Some("hi"));
         drop(events);
     }

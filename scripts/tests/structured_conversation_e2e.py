@@ -14,7 +14,17 @@ import urllib.error
 import urllib.request
 from pathlib import Path
 
-ROLES = {"system", "developer", "user", "assistant", "reasoning", "tool", "unknown"}
+ROLES = {
+    "system",
+    "developer",
+    "user",
+    "assistant",
+    "reasoning",
+    "tool_call",
+    "tool_result",
+    "unknown",
+}
+ENTRY_FIELDS = {"role", "text", "call_id", "name", "item_id"}
 
 
 def replay(binary, fixtures):
@@ -28,8 +38,12 @@ def replay(binary, fixtures):
     return [json.loads(line) for line in completed.stdout.splitlines()]
 
 
-def messages(event):
-    return [(m["role"], m["text"]) for m in event["conversation"]["messages"]]
+def entries(event):
+    return [(e["role"], e["text"]) for e in event["conversation"]["entries"]]
+
+
+def item_ids(event):
+    return [e.get("item_id") for e in event["conversation"]["entries"]]
 
 
 def assert_structured(events):
@@ -39,11 +53,12 @@ def assert_structured(events):
         assert "raw_body" not in event, event
         conversation = event["conversation"]
         assert "payloads" not in conversation, event
-        for message in conversation["messages"]:
-            assert set(message) == {"id", "role", "text"}, message
-            assert message["role"] in ROLES, message
+        assert set(conversation) == {"entries", "completeness"}, event
+        for entry in conversation["entries"]:
+            assert {"role", "text"} <= set(entry) <= ENTRY_FIELDS, entry
+            assert entry["role"] in ROLES, entry
         assert conversation["completeness"] == "complete", event
-        assert conversation["policy_omitted"] is False, event
+        assert "omitted" not in event, event
     first_request, first_reply, second_request, second_reply = events[:4]
     # Codex declares the user turn each request works for as `root_turn_id`.
     for turn, (request, reply) in enumerate(
@@ -55,22 +70,24 @@ def assert_structured(events):
         assert request["stream_id"] == reply["stream_id"] == "codex-thread", request
         assert request["response_id"] == reply["response_id"] == f"resp_{turn}", request
         assert "previous_response_id" not in request, request
-    assert first_request["conversation"]["instructions_present"] is True
-    assert messages(first_request) == [
-        ("developer", "system rules"),
+    # Responses `instructions` is the leading system entry.
+    assert entries(first_request) == [
+        ("system", "system rules"),
         ("user", "continue"),
     ]
-    # Repeated user prompts stay separate messages in request history.
-    assert messages(second_request) == [
-        ("developer", "system rules"),
+    # Repeated user prompts stay separate entries in request history, and a
+    # replayed output item keeps the id its response gave it.
+    assert entries(second_request) == [
+        ("system", "system rules"),
         ("user", "continue"),
         ("assistant", "working"),
         ("user", "continue"),
     ]
-    # Streamed deltas are assembled into one complete assistant message.
+    assert item_ids(second_request) == [None, None, "m0", None], second_request
+    # Streamed deltas are assembled into one complete assistant entry.
     for turn, reply in enumerate([first_reply, second_reply]):
-        assert messages(reply) == [("assistant", "working")], reply
-        assert reply["conversation"]["messages"][0]["id"] == f"m{turn}", reply
+        assert entries(reply) == [("assistant", "working")], reply
+        assert item_ids(reply) == [f"m{turn}"], reply
     anthropic_request, anthropic_reply = events[4:]
     # A plain Anthropic client declares no thread; the message id is the
     # response identity.
@@ -80,15 +97,17 @@ def assert_structured(events):
         == anthropic_reply["response_id"]
         == "msg_anthropic"
     ), anthropic_request
-    assert messages(anthropic_request) == [
+    assert entries(anthropic_request) == [
         ("system", "system rules"),
         ("user", "hello"),
     ]
-    # Anthropic thinking is a separate reasoning message sharing the message id.
-    assert messages(anthropic_reply) == [("reasoning", "plan"), ("assistant", "hi")]
-    assert {m["id"] for m in anthropic_reply["conversation"]["messages"]} == {
-        "msg_anthropic"
-    }
+    # Each Anthropic block is one entry; a thinking block is identified by
+    # the digest of its signature.
+    assert entries(anthropic_reply) == [("reasoning", "plan"), ("assistant", "hi")]
+    assert item_ids(anthropic_reply) == [
+        "thinking:" + hashlib.sha256(b"sig").hexdigest(),
+        None,
+    ], anthropic_reply
 
 
 def main():

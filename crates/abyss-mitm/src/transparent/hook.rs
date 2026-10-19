@@ -500,13 +500,13 @@ impl HookDispatcher {
     /// events without retaining the full body payload in logs.
     #[tracing::instrument(level = "trace", skip_all)]
     pub(super) fn submit(&self, exchange: HttpExchange) -> HookDispatchStatus {
-        self.submit_event(HookEvent::HttpExchange(exchange))
+        self.submit_event(HookEvent::HttpExchange(Box::new(exchange)))
     }
 
     /// Submits one WebSocket message without waiting for hook execution.
     #[tracing::instrument(level = "trace", skip_all)]
     pub(super) fn submit_websocket_message(&self, message: WebSocketMessage) -> HookDispatchStatus {
-        self.submit_event(HookEvent::WebSocketMessage(message))
+        self.submit_event(HookEvent::WebSocketMessage(Box::new(message)))
     }
 
     #[tracing::instrument(level = "trace", skip_all)]
@@ -572,8 +572,8 @@ async fn run_hook_worker(chain: HookChain, mut receiver: mpsc::Receiver<HookEven
 
 #[derive(Debug)]
 enum HookEvent {
-    HttpExchange(HttpExchange),
-    WebSocketMessage(WebSocketMessage),
+    HttpExchange(Box<HttpExchange>),
+    WebSocketMessage(Box<WebSocketMessage>),
 }
 
 impl HookEvent {

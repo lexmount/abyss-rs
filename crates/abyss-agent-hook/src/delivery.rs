@@ -184,6 +184,7 @@ pub mod tests {
             },
             event_type: "request",
             text: Some("hello".to_owned()),
+            omitted: Vec::new(),
             conversation: None,
             token_usage: TokenUsage {
                 input_tokens: 1_i64,
