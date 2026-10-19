@@ -36,8 +36,9 @@ use super::{
     TransparentProtocol,
     hook::HookDispatcher,
     utils::{
-        content_length, has_expect_continue, http_request_head_without_expect, is_chunked,
-        is_websocket_upgrade_request, status_has_no_body, websocket_request_head_bytes,
+        content_length, has_expect_continue, http_request_head_without_relay_headers, is_chunked,
+        is_websocket_upgrade_request, should_strip_accept_encoding, status_has_no_body,
+        websocket_request_head_bytes,
     },
     websocket::{WebSocketRelayOutcome, relay_websocket_messages},
 };
@@ -637,7 +638,7 @@ where
     })?;
     let handle_expect_continue =
         has_expect_continue(request) && !matches!(body_framing, BodyFraming::Empty);
-    let request_head = request_head_for_relay(request, head_buffer, handle_expect_continue)?;
+    let request_head = request_head_for_relay(request, head_buffer, flow, handle_expect_continue)?;
 
     upstream
         .write_all(&request_head)
@@ -679,11 +680,18 @@ where
 fn request_head_for_relay<'a>(
     request: &'a Request<()>,
     head_buffer: &'a Http1HeadBuffer,
+    flow: &FlowContext,
     strip_expect_continue: bool,
 ) -> Result<Cow<'a, [u8]>, TransparentFlowError> {
-    if strip_expect_continue {
+    let strip_accept_encoding = should_strip_accept_encoding(flow, request);
+    if strip_accept_encoding || strip_expect_continue {
         return Ok(Cow::Owned(
-            http_request_head_without_expect(request).map_err(|source| {
+            http_request_head_without_relay_headers(
+                request,
+                strip_accept_encoding,
+                strip_expect_continue,
+            )
+            .map_err(|source| {
                 TransparentFlowError::http1(FlowOperation::WriteProviderRequestHead, source)
             })?,
         ));
@@ -1593,8 +1601,8 @@ mod tests {
             "locally-handled Expect must not be forwarded upstream"
         );
         assert!(
-            lower.contains("accept-encoding: gzip"),
-            "handling Expect must preserve response compression negotiation"
+            !lower.contains("accept-encoding:"),
+            "model API routes should strip response compression negotiation"
         );
         assert!(
             upstream_text.ends_with("ping"),
