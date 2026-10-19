@@ -169,11 +169,8 @@ impl Default for LocalConfig {
 
 impl Default for LocalRuntimePolicy {
     fn default() -> Self {
-        Self {
-            schema_version: CONFIG_SCHEMA_VERSION,
-            mitm: LocalMitmConfig::default(),
-            hooks: HooksConfig::default(),
-        }
+        toml::from_str(PACKAGED_RUNTIME_POLICY)
+            .expect("the packaged CLI runtime policy must be valid")
     }
 }
 
@@ -288,6 +285,12 @@ fn packaged_default_tls_decryption_policy() -> TlsDecryptionPolicy {
                     "claude.ai",
                     "*.claude.ai",
                 ],
+            ),
+            tls_rule(
+                "decrypt-deepseek-api",
+                TlsDecryptionAction::Intercept,
+                true,
+                &["api.deepseek.com"],
             ),
         ],
     }
@@ -547,6 +550,10 @@ mod tests {
                 .config
                 .enabled_for_harness(BuiltInHarness::ClaudeCode.id())
         );
+        let deepseek =
+            &policy.hooks.harness_usage.config.harnesses[BuiltInHarness::DeepSeekHarness.id()];
+        assert_eq!(deepseek.enabled, Some(true));
+        assert!(deepseek.matchers.is_empty());
     }
 
     #[test]

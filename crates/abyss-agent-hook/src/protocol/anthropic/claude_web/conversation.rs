@@ -9,22 +9,27 @@ use abyss_mitm::HttpExchange;
 use http::Method;
 use serde::Serialize;
 
+use super::metadata::{claude_web_file_uuids, turn_message_uuids};
 use crate::protocol::{
-    anthropic::conversation::{AnthropicRequest, AnthropicResponse},
+    anthropic::shared::{
+        conversation::{AnthropicRequest, AnthropicResponse},
+        images::extract_anthropic_request_images,
+        metadata::{first_model, first_stop_reason},
+        tools::{extract_request_tool_events, extract_response_tool_events},
+        usage::{best_usage, estimated_visible_usage},
+    },
     model::{
-        digest::sha256_hex,
-        image::{ParsedImageAttachment, extract_anthropic_request_images},
-        text::non_empty_trimmed,
+        image::ParsedImageAttachment,
         tool::ParsedToolEvent,
         usage::{TokenUsage, TokenUsageSource},
     },
-    sse::ResponseDocuments,
-};
-
-use super::super::messages::{
-    best_usage, claude_web_file_uuids, estimated_visible_usage, event_types,
-    extract_request_tool_events, extract_response_tool_events, first_model, first_stop_reason,
-    flow_server_name, request_host, string_field, transport_name, turn_message_uuids,
+    shared::{
+        digest::sha256_hex,
+        http::{flow_server_name, request_host, transport_name},
+        json::{event_types, string_field},
+        sse::ResponseDocuments,
+        text::non_empty_trimmed,
+    },
 };
 
 /// Source used to derive the Claude Web session id.

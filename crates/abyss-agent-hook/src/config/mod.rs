@@ -355,6 +355,31 @@ mod tests {
     }
 
     #[test]
+    fn deepseek_harness_accepts_builtin_content_and_enablement_overrides() {
+        let config = serde_json::from_value::<HooksConfig>(serde_json::json!({
+            "harness_usage": {"config": {"harnesses": {"deepseek-harness": {
+                "enabled": false,
+                "content": {"images": false}
+            }}}}
+        }))
+        .unwrap();
+        let harness_id = BuiltInHarness::DeepSeekHarness.id();
+        assert!(!config.harness_usage.config.enabled_for_harness(harness_id));
+        assert!(
+            !config
+                .harness_usage
+                .config
+                .content_for_harness(harness_id)
+                .images
+        );
+        assert!(
+            config.harness_usage.config.harnesses[harness_id]
+                .matchers
+                .is_empty()
+        );
+    }
+
+    #[test]
     fn custom_harness_requires_a_non_empty_matcher() {
         for input in [
             r#"{"harness_usage":{"config":{"harnesses":{"acme":{}}}}}"#,
@@ -376,16 +401,16 @@ mod tests {
 
     #[test]
     fn built_in_harness_cannot_be_redefined_with_custom_matchers() {
-        let input = r#"{
-            "harness_usage": {
-                "config": {
-                    "harnesses": {
-                        "codex": {"matchers": [{"process_names": ["other"]}]}
-                    }
-                }
-            }
-        }"#;
-
-        assert!(serde_json::from_str::<HooksConfig>(input).is_err());
+        for harness in ["codex", "deepseek-harness"] {
+            let input = serde_json::json!({
+                "harness_usage": {"config": {"harnesses": {
+                    harness: {"matchers": [{"process_names": ["other"]}]}
+                }}}
+            });
+            assert!(
+                serde_json::from_value::<HooksConfig>(input).is_err(),
+                "{harness}"
+            );
+        }
     }
 }

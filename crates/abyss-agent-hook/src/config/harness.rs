@@ -28,7 +28,7 @@ struct HarnessUsageConfigWire {
     harnesses: BTreeMap<HarnessId, HarnessConfig>,
 }
 
-/// Optional policy override and source matchers for one Harness.
+/// Optional policy override and identity matchers for one Harness.
 #[derive(Debug, Clone, Default, Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct HarnessConfig {
@@ -38,12 +38,13 @@ pub struct HarnessConfig {
     /// Content policy override for this Harness.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub content: Option<HarnessUsageContentConfig>,
-    /// Source matchers used by a custom Harness.
+    /// Alternative identity matchers used by a custom Harness.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub matchers: Vec<HarnessMatcherConfig>,
 }
 
-/// One custom Harness source matcher.
+/// One custom Harness matcher. Populated fields use AND semantics; values
+/// within a field use OR semantics.
 #[derive(Debug, Clone, Default, Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct HarnessMatcherConfig {

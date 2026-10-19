@@ -335,6 +335,9 @@ components:
     HarnessMatcherConfig:
       type: object
       additionalProperties: false
+      description: >-
+        Populated fields must all match; values within a field are alternatives.
+        Each custom Harness requires at least one nonempty matcher.
       properties:
         process_names:
           type: array

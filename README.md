@@ -35,6 +35,13 @@ abyss deploy-local start
 abyss run -- codex
 ```
 
+Built-in Harness support includes:
+
+- OpenAI Codex
+- Claude Code
+- Claude Desktop
+- DeepSeek Harness: Headless, [dsh-tui](https://github.com/ccch1mneyyy/dsh-TUI), and Web UI
+
 Open the dashboard to review captured activity, or inspect the runtime from your terminal:
 
 ```bash

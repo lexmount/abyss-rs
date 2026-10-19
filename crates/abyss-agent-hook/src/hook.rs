@@ -74,8 +74,8 @@ where
             .content_for_harness(detection.harness_id.as_str());
 
         match protocol {
-            LlmProtocol::OpenAi(OpenAiProtocol::Responses | OpenAiProtocol::ChatCompletions) => {
-                parse_openai_exchange(exchange).map(|parsed| {
+            LlmProtocol::OpenAi(protocol) => {
+                parse_openai_exchange(exchange, protocol).map(|parsed| {
                     let declaration = http_declaration(
                         &detection,
                         exchange,
@@ -297,6 +297,92 @@ mod tests {
                 .iter()
                 .all(|event| { event.llm.provider.wire_name() == "gateway.example" })
         );
+        drop(events);
+    }
+
+    #[tokio::test]
+    async fn builtin_deepseek_reuses_all_protocols_without_process_metadata_or_matchers() {
+        let sink = Arc::new(RecordingSink::default());
+        let hook = HarnessUsageHook::with_runtime_config_and_event_sink(
+            HarnessUsageHookConfig::new(DeviceIdentity::new()),
+            HooksRuntimeConfig::default_enabled(),
+            Arc::clone(&sink),
+        );
+        let mut responses = openai_exchange("unused");
+        responses.flow.source_process = None;
+        responses
+            .request
+            .headers_mut()
+            .insert("user-agent", "deepseek-harness/0.2.0-rc.2".parse().unwrap());
+        hook.on_http_exchange(&responses).await.unwrap();
+
+        let mut chat = openai_exchange("unused");
+        chat.flow.source_process = None;
+        *chat.request.uri_mut() = "/chat/completions".parse().unwrap();
+        chat.request
+            .headers_mut()
+            .insert("user-agent", "deepseek-harness/0.2.0-rc.2".parse().unwrap());
+        *chat.request.body_mut() = CapturedBody::from_bytes(
+            br#"{"model":"compatible-chat","messages":[{"role":"user","content":"hello"}],"stream":true}"#.to_vec().into(),
+        );
+        chat.response
+            .headers_mut()
+            .insert("content-type", "text/event-stream".parse().unwrap());
+        *chat.response.body_mut() = CapturedBody::from_bytes(
+            concat!(
+                "data: {\"id\":\"chat-1\",\"choices\":[{\"index\":0,\"delta\":{\"content\":\"hi\"}}]}\n\n",
+                "data: {\"id\":\"chat-1\",\"choices\":[],\"usage\":{\"prompt_tokens\":7,\"completion_tokens\":2,\"total_tokens\":9}}\n\n",
+                "data: [DONE]\n\n"
+            ).as_bytes().to_vec().into(),
+        );
+        hook.on_http_exchange(&chat).await.unwrap();
+        // An unrelated caller on the same protocol remains unmatched.
+        chat.request.headers_mut().remove("user-agent");
+        hook.on_http_exchange(&chat).await.unwrap();
+
+        let mut anthropic = anthropic_exchange_with_headers(
+            "unused",
+            &[
+                ("user-agent", "deepseek-harness/0.2.0-rc.2"),
+                ("x-deepseek-harness-session-id", "dsh-session"),
+            ],
+            &serde_json::json!({
+                "model": "compatible-messages",
+                "messages": [{"role": "user", "content": "hello"}]
+            }),
+        );
+        anthropic.flow.source_process = None;
+        anthropic
+            .request
+            .headers_mut()
+            .insert("host", "gateway.example".parse().unwrap());
+        hook.on_http_exchange(&anthropic).await.unwrap();
+
+        let events = sink.events.lock().unwrap();
+        assert_eq!(events.len(), 6);
+        assert!(
+            events
+                .iter()
+                .all(|event| event.agent.name == "deepseek-harness")
+        );
+        assert!(
+            events
+                .iter()
+                .all(|event| event.agent.version.as_deref() == Some("0.2.0-rc.2"))
+        );
+        assert!(
+            events
+                .iter()
+                .all(|event| event.llm.provider.wire_name() == "gateway.example")
+        );
+        for pair in events.chunks(2) {
+            assert_eq!(pair[0].text.as_deref(), Some("hello"));
+            assert_eq!(pair[1].text.as_deref(), Some("hi"));
+        }
+        assert_eq!(events[2].token_usage.input_tokens, 7);
+        assert_eq!(events[3].token_usage.output_tokens, 2);
+        assert_eq!(events[4].session_id, "dsh-session");
+        assert_eq!(events[5].session_id, "dsh-session");
         drop(events);
     }
 

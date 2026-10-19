@@ -39,8 +39,9 @@ fn version_commands_report_the_workspace_version() {
 }
 
 #[test]
-fn proxy_env_preserves_the_posix_explicit_proxy_output() {
+fn proxy_env_only_exports_proxy_variables_with_user_managed_node_ca() {
     let output = Command::new(env!("CARGO_BIN_EXE_abyss"))
+        .env("NODE_EXTRA_CA_CERTS", "/user-managed/certs/extra.pem")
         .args(["proxy", "env", "--proxy-url", "http://127.0.0.1:28999"])
         .output()
         .expect("Abyss CLI should run");

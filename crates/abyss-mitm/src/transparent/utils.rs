@@ -43,12 +43,22 @@ pub(super) fn is_websocket_upgrade_request(request: &Request<()>) -> bool {
 /// Returns whether the relay should strip `Accept-Encoding` for this request.
 ///
 /// Default relay behavior should preserve the client request head byte-for-byte.
-/// Claude/Anthropic endpoints are the narrow exception because hooks need
-/// parseable plaintext JSON/SSE bodies rather than compressed response payloads.
+/// Model API routes and legacy Claude/Anthropic targets are exceptions because
+/// hooks need plaintext JSON/SSE bodies. The relay decodes transfer framing,
+/// but does not decompress response content encodings such as Brotli.
 pub(super) fn should_strip_accept_encoding(flow: &FlowContext, request: &Request<()>) -> bool {
-    flow_target_host(flow)
-        .or_else(|| request_host(request))
-        .is_some_and(is_claude_plaintext_response_host)
+    if !request.headers().contains_key(ACCEPT_ENCODING) {
+        return false;
+    }
+    let path = request.uri().path();
+    let model_api = request.method() == http::Method::POST
+        && ["/responses", "/chat/completions", "/messages"]
+            .iter()
+            .any(|suffix| path.ends_with(suffix));
+    model_api
+        || flow_target_host(flow)
+            .or_else(|| request_host(request))
+            .is_some_and(is_claude_plaintext_response_host)
 }
 
 /// Serializes an HTTP/1 request head after applying relay-owned header rewrites.
@@ -324,10 +334,10 @@ mod tests {
     }
 
     #[test]
-    fn accept_encoding_strip_policy_keeps_non_claude_tls_targets() {
+    fn accept_encoding_strip_policy_keeps_unrelated_tls_routes() {
         let request = http::Request::builder()
             .method("POST")
-            .uri("/v1/responses")
+            .uri("/v1/files")
             .header("host", "api.openai.com")
             .header("accept-encoding", "br, gzip, zstd")
             .body(())
@@ -338,8 +348,47 @@ mod tests {
 
         assert!(
             !should_strip_accept_encoding(&flow, &request),
-            "non-Claude targets should preserve the original request head"
+            "unrelated routes should preserve the original request head"
         );
+    }
+
+    #[test]
+    fn accept_encoding_strip_policy_supports_model_routes_on_any_host() {
+        for protocol in [
+            TransparentProtocol::PlainHttp,
+            TransparentProtocol::TlsHttp {
+                server_name: "gateway.example".to_owned(),
+            },
+        ] {
+            let flow = test_flow(protocol);
+            for (method, path, expected) in [
+                ("POST", "/chat/completions", true),
+                ("POST", "/v1/chat/completions?beta=true", true),
+                ("POST", "/gateway/responses", true),
+                ("POST", "/v1/messages", true),
+                ("POST", "/v1/files", false),
+                ("POST", "/v1/responses-other", false),
+                ("GET", "/v1/responses", false),
+            ] {
+                let mut request = http::Request::builder()
+                    .method(method)
+                    .uri(path)
+                    .header("host", "gateway.example")
+                    .header("accept-encoding", "br, gzip, zstd")
+                    .body(())
+                    .unwrap();
+                assert_eq!(
+                    should_strip_accept_encoding(&flow, &request),
+                    expected,
+                    "{method} {path}"
+                );
+                request.headers_mut().remove("accept-encoding");
+                assert!(
+                    !should_strip_accept_encoding(&flow, &request),
+                    "requests without compression negotiation should retain their original head"
+                );
+            }
+        }
     }
 
     #[test]

@@ -1,4 +1,4 @@
-//! Exact source-process matching for configured third-party Harnesses.
+//! Configured Harness identity matching over source process and application metadata.
 
 use abyss_mitm::FlowContext;
 
@@ -16,14 +16,10 @@ impl<'a> HarnessMatcher<'a> {
     }
 
     pub fn matches(&self, flow: &FlowContext) -> Option<Vec<HarnessEvidence>> {
-        if self.config.process_names.is_empty() && self.config.application_ids.is_empty() {
-            return None;
-        }
-        let source = flow.source_process.as_ref()?;
         let mut evidence = Vec::new();
 
         if !self.config.process_names.is_empty() {
-            let process_name = source.name.as_deref()?;
+            let process_name = flow.source_process.as_ref()?.name.as_deref()?;
             let matched = self
                 .config
                 .process_names
@@ -36,7 +32,7 @@ impl<'a> HarnessMatcher<'a> {
         }
 
         if !self.config.application_ids.is_empty() {
-            let application_id = source.application_id.as_deref()?;
+            let application_id = flow.source_process.as_ref()?.application_id.as_deref()?;
             let matched = self
                 .config
                 .application_ids
@@ -48,7 +44,7 @@ impl<'a> HarnessMatcher<'a> {
             evidence.push(HarnessEvidence::ApplicationId(application_id.to_owned()));
         }
 
-        Some(evidence)
+        (!evidence.is_empty()).then_some(evidence)
     }
 }
 

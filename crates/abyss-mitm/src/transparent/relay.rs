@@ -1514,7 +1514,7 @@ mod tests {
     async fn expect_continue_request_gets_local_continue_and_stripped_upstream_head() {
         let request_head = concat!(
             "POST /v1/messages?beta=true HTTP/1.1\r\n",
-            "Host: www.dmxapi.cn\r\n",
+            "Host: gateway.example\r\n",
             "Accept-Encoding: gzip\r\n",
             "Expect: 100-continue\r\n",
             "Content-Length: 4\r\n",
@@ -1602,7 +1602,7 @@ mod tests {
         );
         assert!(
             !lower.contains("accept-encoding:"),
-            "Claude-compatible gateway responses should remain parseable for hooks"
+            "model API routes should strip response compression negotiation"
         );
         assert!(
             upstream_text.ends_with("ping"),
@@ -1619,7 +1619,7 @@ mod tests {
     async fn content_length_request_is_flushed_after_body() {
         let request_bytes = concat!(
             "POST /v1/messages HTTP/1.1\r\n",
-            "Host: api.anthropic.com\r\n",
+            "Host: gateway.example\r\n",
             "Content-Length: 4\r\n",
             "\r\n",
             "ping"
@@ -1698,9 +1698,9 @@ mod tests {
         FlowContext::new(
             SocketAddr::from(([127, 0, 0, 1], 50000)),
             SocketAddr::from(([127, 0, 0, 1], 18080)),
-            OriginalDestination::from(SocketAddr::from(([110, 42, 10, 198], 443))),
+            OriginalDestination::from(SocketAddr::from(([127, 0, 0, 1], 443))),
             TransparentProtocol::TlsHttp {
-                server_name: "www.dmxapi.cn".to_owned(),
+                server_name: "gateway.example".to_owned(),
             },
         )
     }

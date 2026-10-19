@@ -9,7 +9,7 @@ use abyss_plugin_protocol::event::{
     ContentCompleteness, Conversation, ConversationMessage, MessageRole,
 };
 
-use crate::protocol::model::text::non_empty_trimmed;
+use crate::protocol::shared::text::non_empty_trimmed;
 
 /// Constructors for public conversation values.
 pub struct ConversationProjection;

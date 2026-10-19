@@ -23,6 +23,97 @@ usage and preserve Harness enablement and matching rules. The broker persists
 the policy and applies it to subsequent event processing; previously captured
 events, including pending delivery retries, are not rewritten or deleted.
 
+The CLI's packaged policy enables DeepSeek Harness and intercepts
+`api.deepseek.com`. DSH Web (`dsh web`), headless launchers (including
+`dsh-headless`), and
+[dsh-tui](https://github.com/ccch1mneyyy/dsh-TUI) using the DSH backend share
+the same request identity and use the existing protocol parsers. Run an
+installed client through the proxy with:
+
+```bash
+abyss run -- dsh web
+abyss run -- dsh-headless <arguments>
+abyss run -- dsh-tui
+abyss config harness disable deepseek-harness
+abyss config harness enable deepseek-harness
+```
+
+For Node-based clients such as DSH, configure `NODE_EXTRA_CA_CERTS` yourself before
+launching the client. Point it at the `abyss-root-ca.pem` in your configured CA directory,
+or a PEM bundle containing that certificate and any other extra CAs you need:
+
+```bash
+export NODE_EXTRA_CA_CERTS='/absolute/path/to/abyss-root-ca.pem'
+abyss run -- dsh web
+```
+
+You can place the export in your shell profile for future sessions. `abyss run`
+inherits this variable unchanged, and `abyss proxy env` prints only proxy
+variables. API credentials and model selection remain the client's configuration.
+
+Claude Code also supports persistent certificate setup through
+`abyss config harness enable claude-code`. This command backs up
+`~/.claude/settings.json`, merges the Abyss root certificate with any existing
+CA bundle referenced by its `env.NODE_EXTRA_CA_CERTS`, and writes
+`~/.claude/abyss-ca-bundle.pem`. It updates that settings entry to point to the
+managed bundle while preserving other settings. Disabling capture leaves this
+certificate configuration in place. This setup is scoped to Claude Code;
+it does not change the shell environment.
+
+For the Web UI, start the local Abyss environment with `abyss deploy-local start`
+if no deployment is configured, then run `abyss run -- dsh web` from the intended
+workspace directory. DSH opens its browser interface or prints a full login URL
+to open manually. Keep the terminal running while using the Web UI, and open
+`abyss dashboard` from another terminal to review captured activity.
+
+The proxy and CA environment belongs to the DSH server process that sends model
+requests; the browser connects directly to the local Web UI and needs no proxy
+configuration. Restart an already-running Web server through `abyss run` to
+apply that environment. DSH flags are forwarded unchanged, for example:
+
+```bash
+abyss run -- dsh web --no-open --host 127.0.0.1 --port 3080
+```
+
+Existing runtime-policy files are preserved on upgrade. DSH identification is
+built in and enabled by default, including with policies that have no DSH entry.
+To observe DeepSeek API traffic with an older policy, add the following TLS rule
+(or update its existing entry):
+
+```toml
+[[mitm.tls_decryption.rules]]
+id = "decrypt-deepseek-api"
+enabled = true
+action = "intercept"
+destination_hosts = ["api.deepseek.com"]
+```
+
+The built-in DSH detector recognizes the literal, case-sensitive
+`deepseek-harness/` prefix in the model request's User-Agent without source
+process metadata. Its optional policy entry controls enablement and content
+capture, following the same format as other built-in Harnesses:
+
+```toml
+[hooks.harness_usage.config.harnesses."deepseek-harness"]
+enabled = true
+```
+
+Custom Harnesses can declare `process_names` and `application_ids` matchers in
+`runtime-policy.toml`; these use exact matches against platform-supplied source
+metadata.
+Populated fields in one matcher must all match; values within a field and
+separate matchers are alternatives. Exactly one enabled Harness must match.
+Request headers provide attribution, not authenticated process identity.
+TLS traffic must also be selected for interception by the MITM policy.
+For intercepted POST requests ending in `/responses`, `/chat/completions`, or
+`/messages`, the HTTP relay removes `Accept-Encoding` so compatible providers
+return plaintext JSON/SSE for capture, regardless of their hostname.
+
+Harness matching does not select or customize a protocol parser. Recognized
+traffic is parsed using its existing wire protocol, such as OpenAI Responses
+or Chat Completions. Configuring a new Harness does not add support for extra
+provider fields or supply session/turn identifiers absent from its requests.
+
 `product-config.json` has no embedded default in this repository. A deployment
 or package must supply it. The CLI validates `schema_version = 1`, requires
 `product.kind = "cli"`, rejects platform-adapter configuration, and passes the

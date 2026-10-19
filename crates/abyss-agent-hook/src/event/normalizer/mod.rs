@@ -18,10 +18,10 @@ use crate::{
     config::{DeviceIdentity, HarnessUsageContentConfig, HarnessUsageHookConfig},
     event::identifier::stable_event_id,
     harness::{AgentDeclaration, BuiltInHarness, HarnessDetection},
-    protocol::model::digest::sha256_hex,
     protocol::model::image::ParsedImageAttachment,
     protocol::model::tool::ParsedToolEvent,
     protocol::model::usage::{TokenUsage, TokenUsageSource},
+    protocol::shared::digest::sha256_hex,
 };
 
 const UNKNOWN_HOST_NAME: &str = "unknown";
