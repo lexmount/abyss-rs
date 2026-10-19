@@ -17,6 +17,7 @@ use crate::{
     protocol::model::tool::ParsedToolEvent,
     protocol::model::usage::TokenUsage,
     protocol::openai::{
+        chat_tools::ChatToolCalls,
         conversation::{OpenAiRequest, OpenAiResponse},
         websocket::{OpenAiWebSocketFrame, OpenAiWebSocketResponse, is_terminal_event},
     },
@@ -316,6 +317,9 @@ fn websocket_session_id(message: &WebSocketMessage, payload: &Value) -> String {
 }
 
 fn extract_request_tool_events(payload: &Value) -> Vec<ParsedToolEvent> {
+    if payload.get("messages").is_some() {
+        return ChatToolCalls::request_results(payload);
+    }
     let mut events = Vec::new();
     collect_request_tool_events(payload, MAX_PARSE_DEPTH, &mut events);
     events
@@ -717,6 +721,160 @@ mod tests {
         assert_eq!(parsed.usage.output_tokens, 50);
         assert_eq!(parsed.usage.reasoning_tokens, 20);
         assert_eq!(parsed.usage.total_tokens, 1050);
+    }
+
+    #[test]
+    fn chat_stream_assembles_parallel_tools_by_choice_and_tool_index() {
+        let documents = [
+            json!({"id":"chat-1","choices":[
+                {"index":1_i32,"delta":{"tool_calls":[{"index":0_i32,"id":"c3","type":"function","function":{"name":"clock","arguments":"{}"}}]}},
+                {"index":0_i32,"delta":{"content":"Reading files.","tool_calls":[
+                    {"index":1_i32,"id":"c2","type":"function","function":{"name":"read","arguments":""}},
+                    {"index":0_i32,"id":"c1","type":"function","function":{"name":"read","arguments":"{\"path\":"}}
+                ]}}
+            ]}),
+            json!({"id":"chat-1","choices":[{"index":0_i32,"delta":{"tool_calls":[
+                {"index":1_i32,"function":{"arguments":"{\"path\":\"b\"}"}},
+                {"index":0_i32,"function":{"arguments":"\"a\"}"}}
+            ]}}]}),
+            json!({"id":"chat-1","choices":[{"index":0_i32,"delta":{},"finish_reason":"tool_calls"}]}),
+            json!({"id":"chat-1","choices":[],"usage":{"prompt_tokens":5_i32,"completion_tokens":7_i32,"total_tokens":12_i32}}),
+        ];
+        let mut body = String::new();
+        for document in documents {
+            body.push_str("data: ");
+            body.push_str(&document.to_string());
+            body.push_str("\n\n");
+        }
+        body.push_str("data: [DONE]\n\n");
+        let mut exchange = exchange(
+            "/v1/chat/completions",
+            &json!({"messages":[{"role":"user","content":"Read both files"}],"stream":true}),
+            "text/event-stream",
+            body.into_bytes(),
+        );
+        exchange.request.headers_mut().remove("session-id");
+        let parsed = parse_openai_exchange(&exchange).unwrap();
+
+        assert_eq!(parsed.response_id.as_deref(), Some("chat-1"));
+        assert_eq!(parsed.response_texts, ["Reading files."]);
+        assert_eq!(parsed.usage.total_tokens, 12);
+        assert_eq!(
+            parsed.response_tool_events,
+            vec![
+                ParsedToolEvent::ToolCall {
+                    item_id: None,
+                    call_id: Some("c1".into()),
+                    name: Some("read".into()),
+                    input: r#"{"path":"a"}"#.into()
+                },
+                ParsedToolEvent::ToolCall {
+                    item_id: None,
+                    call_id: Some("c2".into()),
+                    name: Some("read".into()),
+                    input: r#"{"path":"b"}"#.into()
+                },
+                ParsedToolEvent::ToolCall {
+                    item_id: None,
+                    call_id: Some("c3".into()),
+                    name: Some("clock".into()),
+                    input: "{}".into()
+                },
+            ]
+        );
+    }
+
+    #[test]
+    fn chat_nonstream_tool_only_exchange_retains_calls_without_text_or_usage() {
+        let parsed = parse_openai_exchange(&json_exchange(
+            "/v1/chat/completions",
+            &json!({"messages":[]}),
+            &json!({"id":"chat-2","choices":[{"index":0_i32,"message":{"role":"assistant","content":null,"tool_calls":[
+                {"id":"c1","type":"function","function":{"name":"clock","arguments":"{}"}},
+                {"id":"c2","type":"custom","custom":{"name":"patch","input":"  keep whitespace\n"}},
+                {"id":"c3","type":"custom","custom":{"name":"empty","input":""}}
+            ]}}]}),
+        )).expect("tool-only Chat response");
+
+        assert!(parsed.response_texts.is_empty());
+        assert_eq!(
+            parsed.response_tool_events,
+            vec![
+                ParsedToolEvent::ToolCall {
+                    item_id: None,
+                    call_id: Some("c1".into()),
+                    name: Some("clock".into()),
+                    input: "{}".into()
+                },
+                ParsedToolEvent::ToolCall {
+                    item_id: None,
+                    call_id: Some("c2".into()),
+                    name: Some("patch".into()),
+                    input: "  keep whitespace\n".into()
+                },
+                ParsedToolEvent::ToolCall {
+                    item_id: None,
+                    call_id: Some("c3".into()),
+                    name: Some("empty".into()),
+                    input: String::new()
+                },
+            ]
+        );
+    }
+
+    #[test]
+    fn chat_request_results_preserve_parallel_outputs_without_replaying_history() {
+        let mut request = json!({"messages":[
+            {"role":"assistant","tool_calls":[{"id":"old","type":"function","function":{"name":"read","arguments":"{}"}}]},
+            {"role":"tool","tool_call_id":"old","content":"old output"},
+            {"role":"assistant","content":"Previous answer"},
+            {"role":"user","content":"Read again"},
+            {"role":"assistant","tool_calls":[{"id":"new","type":"function","function":{"name":"read","arguments":"{}"}}]},
+            {"role":"tool","tool_call_id":"new","content":[{"type":"text","text":"line 1"},{"type":"text","text":"line 2"}]},
+            {"role":"tool","tool_call_id":"empty","content":""}
+        ]});
+        let response = json!({"choices":[{"message":{"role":"assistant","content":"Done"}}]});
+        let parsed =
+            parse_openai_exchange(&json_exchange("/chat/completions", &request, &response))
+                .unwrap();
+        assert_eq!(
+            parsed.request_tool_events,
+            vec![
+                ParsedToolEvent::ToolResult {
+                    call_id: Some("new".into()),
+                    output: "line 1\nline 2".into()
+                },
+                ParsedToolEvent::ToolResult {
+                    call_id: Some("empty".into()),
+                    output: String::new()
+                },
+            ]
+        );
+        assert_eq!(parsed.request_texts, ["Read again"]);
+        assert!(parsed.response_tool_events.is_empty());
+
+        request["messages"]
+            .as_array_mut()
+            .unwrap()
+            .push(json!({"role":"user","content":"Next turn"}));
+        let replay =
+            parse_openai_exchange(&json_exchange("/chat/completions", &request, &response))
+                .unwrap();
+        assert!(replay.request_tool_events.is_empty());
+    }
+
+    #[test]
+    fn chat_tool_declarations_and_nested_user_content_do_not_create_tool_events() {
+        let parsed = parse_openai_exchange(&json_exchange(
+            "/chat/completions",
+            &json!({
+                "tools":[{"type":"function","function":{"name":"read","parameters":{"type":"object"}}}],
+                "messages":[{"role":"user","content":[{"type":"text","text":"Hello","extra":{"type":"function_call_output","call_id":"fake","output":"not a tool result"}}]}]
+            }),
+            &json!({"choices":[{"message":{"role":"assistant","content":"Hello"}}]}),
+        )).unwrap();
+        assert!(parsed.request_tool_events.is_empty());
+        assert!(parsed.response_tool_events.is_empty());
     }
 
     #[test]

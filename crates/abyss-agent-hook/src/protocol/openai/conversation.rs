@@ -11,6 +11,8 @@ use std::collections::BTreeMap;
 use abyss_plugin_protocol::event::{ContentCompleteness, Conversation, MessageRole};
 use serde_json::Value;
 
+use super::chat_tools::ChatToolCalls;
+
 use crate::protocol::model::{
     conversation::{ConversationProjection, MessageDraft},
     text::{MAX_PARSE_DEPTH, dedupe_texts, json_to_text, non_empty_trimmed, visible_text},
@@ -204,15 +206,18 @@ struct OutputSlot {
     parts: BTreeMap<u64, String>,
     /// Tool call the item requests, from its latest snapshot with input.
     tool_call: Option<ParsedToolEvent>,
+    /// Chat Completions allows multiple tool calls within one assistant choice.
+    chat_tool_calls: ChatToolCalls,
 }
 
 impl OutputSlot {
-    const fn new(role: MessageRole) -> Self {
+    fn new(role: MessageRole) -> Self {
         Self {
             id: None,
             role,
             parts: BTreeMap::new(),
             tool_call: None,
+            chat_tool_calls: ChatToolCalls::default(),
         }
     }
 
@@ -242,6 +247,7 @@ impl OutputSlot {
         if let Some(call) = tool_call(item) {
             self.tool_call = Some(call);
         }
+        self.chat_tool_calls.reconcile(item);
         if self.role == MessageRole::Tool {
             return;
         }
@@ -277,7 +283,7 @@ impl OutputSlot {
 pub struct OpenAiResponse {
     /// One message per output item or chat choice, in index order.
     messages: Vec<MessageDraft>,
-    /// One tool call per tool-call output item, in index order.
+    /// Tool calls ordered by output item, or by Chat choice and tool index.
     tool_calls: Vec<ParsedToolEvent>,
     /// Decoding state of the response documents.
     completeness: ContentCompleteness,
@@ -293,7 +299,12 @@ impl OpenAiResponse {
         }
         let tool_calls = slots
             .values()
-            .filter_map(|slot| slot.tool_call.clone())
+            .flat_map(|slot| {
+                slot.tool_call
+                    .clone()
+                    .into_iter()
+                    .chain(slot.chat_tool_calls.events())
+            })
             .collect();
         Self {
             messages: slots.into_values().map(OutputSlot::into_draft).collect(),
@@ -372,6 +383,13 @@ impl OpenAiResponse {
                 if let Some(message) = choice.get("message") {
                     Self::reconcile_item(slots, index, message);
                 }
+                if let Some(delta) = choice.get("delta") {
+                    slots
+                        .entry(index)
+                        .or_insert_with(|| OutputSlot::new(MessageRole::Assistant))
+                        .chat_tool_calls
+                        .apply_delta(delta);
+                }
                 let fragment = choice
                     .pointer("/delta/content")
                     .or_else(|| choice.get("text"))
@@ -421,7 +439,7 @@ impl OpenAiResponse {
         ConversationProjection::from_drafts(&self.messages, self.completeness)
     }
 
-    /// Tool calls the response requests, one per output item.
+    /// Tool calls requested by Responses output items or Chat choices.
     #[must_use]
     pub fn tool_calls(&self) -> Vec<ParsedToolEvent> {
         self.tool_calls.clone()
@@ -539,6 +557,48 @@ mod tests {
 
         assert_eq!(conversation.messages[0].text, "corrected");
         assert_eq!(conversation.messages[1].text, "other");
+    }
+
+    #[test]
+    fn chat_tool_snapshot_replaces_streamed_arguments_without_duplicate_calls() {
+        let values = vec![
+            json!({"choices":[{"index":0_i32,"delta":{"tool_calls":[{"index":0_i32,"id":"c1","type":"function","function":{"name":"read","arguments":"{\"path\":\"wrong\"}"}}]}}]}),
+            json!({"choices":[{"index":0_i32,"message":{"role":"assistant","tool_calls":[{"id":"c1","type":"function","function":{"name":"read","arguments":"{\"path\":\"correct\"}"}}]}}]}),
+        ];
+        let response = OpenAiResponse::assemble(&values, false);
+        assert_eq!(
+            response.tool_calls(),
+            vec![ParsedToolEvent::ToolCall {
+                item_id: None,
+                call_id: Some("c1".into()),
+                name: Some("read".into()),
+                input: r#"{"path":"correct"}"#.into(),
+            }]
+        );
+        assert!(response.texts().is_empty());
+    }
+
+    #[test]
+    fn chat_truncated_arguments_stay_partial_without_inventing_json() {
+        let response = OpenAiResponse::assemble(
+            &[
+                json!({"choices":[{"index":0_i32,"delta":{"tool_calls":[{"index":0_i32,"id":"c1","type":"function","function":{"name":"read","arguments":"{\"path\":"}}]}}]}),
+            ],
+            true,
+        );
+        assert_eq!(
+            response.conversation().completeness,
+            ContentCompleteness::Partial
+        );
+        assert_eq!(
+            response.tool_calls(),
+            vec![ParsedToolEvent::ToolCall {
+                item_id: None,
+                call_id: Some("c1".into()),
+                name: Some("read".into()),
+                input: r#"{"path":"#.into(),
+            }]
+        );
     }
 
     #[test]
