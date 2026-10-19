@@ -90,6 +90,12 @@
     },
     "conversation": {
       "$ref": "#/$defs/conversation"
+    },
+    "headers": {
+      "type": "array",
+      "items": {
+        "$ref": "#/$defs/httpHeader"
+      }
     }
   },
   "$defs": {
@@ -317,6 +323,37 @@
           "type": "string"
         }
       }
+    },
+    "httpHeader": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "name"
+      ],
+      "properties": {
+        "name": {
+          "type": "string"
+        },
+        "value": {
+          "type": "string"
+        },
+        "value_base64": {
+          "type": "string",
+          "contentEncoding": "base64"
+        }
+      },
+      "oneOf": [
+        {
+          "required": [
+            "value"
+          ]
+        },
+        {
+          "required": [
+            "value_base64"
+          ]
+        }
+      ]
     }
   }
 }

@@ -9,7 +9,7 @@ use http::{HeaderMap, header::HOST};
 use crate::{
     config::{HarnessUsageHookConfig, HooksRuntimeConfig},
     delivery::{AgentEventSink, EventDelivery},
-    event::{NormalizableExchange, NormalizedUsageEvent, normalize_exchange},
+    event::{ExchangeHeaders, NormalizableExchange, NormalizedUsageEvent, normalize_exchange},
     harness::{AgentDeclaration, DeclarationSource, HarnessDetection, HarnessRegistry},
     protocol::{
         AnthropicProtocol, ClaudeWebProtocol, LlmProtocol, OpenAiProtocol, ProtocolDetector,
@@ -72,19 +72,35 @@ where
             .harness_usage
             .config
             .content_for_harness(detection.harness_id.as_str());
+        let headers =
+            || ExchangeHeaders::new(exchange.request.headers(), exchange.response.headers());
 
         match protocol {
             LlmProtocol::OpenAi(OpenAiProtocol::Responses | OpenAiProtocol::ChatCompletions) => {
                 parse_openai_exchange(exchange).map(|parsed| {
                     let declaration =
                         http_declaration(&detection, exchange, parsed.client_metadata.as_ref());
-                    self.normalize(&parsed, &content, &detection, &provider, &declaration)
+                    self.normalize(
+                        &parsed,
+                        &content,
+                        &detection,
+                        &provider,
+                        &declaration,
+                        &headers(),
+                    )
                 })
             }
             LlmProtocol::Anthropic(AnthropicProtocol::Messages) => {
                 parse_anthropic_messages_exchange(exchange).map(|parsed| {
                     let declaration = http_declaration(&detection, exchange, None);
-                    self.normalize(&parsed, &content, &detection, &provider, &declaration)
+                    self.normalize(
+                        &parsed,
+                        &content,
+                        &detection,
+                        &provider,
+                        &declaration,
+                        &headers(),
+                    )
                 })
             }
             LlmProtocol::Anthropic(AnthropicProtocol::ClaudeWeb(
@@ -93,7 +109,14 @@ where
                 self.claude_web_context
                     .attach_referenced_images(&mut parsed);
                 let declaration = http_declaration(&detection, exchange, None);
-                self.normalize(&parsed, &content, &detection, &provider, &declaration)
+                self.normalize(
+                    &parsed,
+                    &content,
+                    &detection,
+                    &provider,
+                    &declaration,
+                    &headers(),
+                )
             }),
         }
         .unwrap_or_default()
@@ -106,6 +129,7 @@ where
         detection: &HarnessDetection,
         provider: &LlmProvider,
         declaration: &AgentDeclaration,
+        headers: &ExchangeHeaders,
     ) -> Vec<NormalizedUsageEvent>
     where
         E: NormalizableExchange,
@@ -117,6 +141,7 @@ where
             detection,
             provider,
             declaration,
+            headers,
         )
     }
 
@@ -141,7 +166,9 @@ where
             return Vec::new();
         };
         let provider = ProviderResolver::resolve(&websocket_host(message), protocol);
-        // Frames after the upgrade carry no headers of their own.
+        // Frames after the upgrade carry no headers of their own; every turn
+        // of the connection carries those of its upgrade request and `101`
+        // response.
         let declaration = HarnessRegistry::declare(
             &detection.harness_id,
             &DeclarationSource {
@@ -150,7 +177,18 @@ where
                 client_metadata: parsed.client_metadata.as_ref(),
             },
         );
-        self.normalize(&parsed, &content, &detection, &provider, &declaration)
+        let headers = ExchangeHeaders::new(
+            message.upgrade_request.headers(),
+            message.upgrade_response.headers(),
+        );
+        self.normalize(
+            &parsed,
+            &content,
+            &detection,
+            &provider,
+            &declaration,
+            &headers,
+        )
     }
 }
 
@@ -358,7 +396,15 @@ mod tests {
         let hook = hook(Arc::clone(&sink));
         let exchange = openai_exchange("acme-agent");
         let (parts, _) = exchange.request.into_parts();
-        let upgrade = Request::from_parts(parts, ());
+        let mut upgrade = Request::from_parts(parts, ());
+        upgrade
+            .headers_mut()
+            .insert("authorization", "Bearer secret".parse().unwrap());
+        let upgrade_response = Response::builder()
+            .status(101)
+            .header("x-request-id", "req-ws")
+            .body(())
+            .unwrap();
         let request = " {\"type\":\"response.create\",\"response\":{\"model\":\"test\",\"input\":[{\"role\":\"user\",\"content\":\"hello\"}]}}\n";
         let created = "{\"type\":\"response.created\",\"response\":{\"id\":\"resp-1\"}}";
         let delta = "{\"type\":\"response.output_text.delta\",\"output_index\":0,\"content_index\":0,\"delta\":\"hi\"}";
@@ -373,6 +419,7 @@ mod tests {
             hook.on_websocket_message(&WebSocketMessage::new(
                 exchange.flow.clone(),
                 upgrade.clone(),
+                upgrade_response.clone(),
                 direction,
                 sequence,
                 Some(body.to_owned()),
@@ -396,6 +443,20 @@ mod tests {
         assert_eq!(response_content.entries[0].text, "hi there");
         assert_eq!(response_content.completeness, ContentCompleteness::Partial);
         assert_eq!(events[1].text.as_deref(), Some("hi there"));
+        // Every turn of the connection carries the upgrade request's headers
+        // and the `101` response's headers.
+        assert_eq!(
+            serde_json::to_value(&events[0].headers).unwrap(),
+            serde_json::json!([
+                {"name": "host", "value": "gateway.example"},
+                {"name": "content-type", "value": "application/json"},
+                {"name": "authorization", "value": "<redacted>"}
+            ])
+        );
+        assert_eq!(
+            serde_json::to_value(&events[1].headers).unwrap(),
+            serde_json::json!([{"name": "x-request-id", "value": "req-ws"}])
+        );
         drop(events);
     }
 
@@ -447,6 +508,7 @@ mod tests {
                     hook.on_websocket_message(&WebSocketMessage::new(
                         exchange.flow.clone(),
                         upgrade.clone(),
+                        Response::builder().status(101).body(()).unwrap(),
                         direction,
                         sequence,
                         Some(payload.to_string()),
@@ -612,6 +674,27 @@ mod tests {
                 assert_eq!(event.response_id.as_deref(), Some("msg_test"));
             }
         }
+        // The request event carries the request headers in capture order, the
+        // response event the response headers.
+        let names = events[0]
+            .headers
+            .iter()
+            .map(|header| header.name.as_str())
+            .collect::<Vec<_>>();
+        assert_eq!(
+            names,
+            [
+                "host",
+                "content-type",
+                "x-claude-code-session-id",
+                "x-claude-code-request-class",
+                "x-claude-code-prompt-id",
+            ]
+        );
+        assert_eq!(
+            serde_json::to_value(&events[1].headers).unwrap(),
+            serde_json::json!([{"name": "content-type", "value": "application/json"}])
+        );
         drop(events);
     }
 

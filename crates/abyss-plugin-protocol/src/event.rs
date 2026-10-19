@@ -51,6 +51,11 @@ pub struct AgentEvent {
     /// Role-aware request or response entries, one per protocol block or item.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub conversation: Option<Conversation>,
+    /// Captured headers of this event's side: request headers on a request
+    /// event, response headers on a response event. In capture order,
+    /// duplicates kept, verbatim except that credential values are redacted.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub headers: Vec<HttpHeader>,
     /// Token counters attributed to this event side.
     pub token_usage: TokenUsage,
     /// Normalized tool calls associated with this event side.
@@ -80,6 +85,68 @@ pub enum ContentCategory {
     ToolContent,
     /// Image attachments; when omitted no attachment is carried.
     Images,
+}
+
+/// One captured request or response header.
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(try_from = "HttpHeaderWire", into = "HttpHeaderWire")]
+pub struct HttpHeader {
+    /// Header name as captured.
+    pub name: String,
+    /// Header value as captured.
+    pub value: HttpHeaderValue,
+}
+
+/// Captured header value bytes.
+#[derive(Clone, Debug, Eq, PartialEq)]
+#[non_exhaustive]
+pub enum HttpHeaderValue {
+    /// The value bytes are valid UTF-8; carried as `value`.
+    Text(String),
+    /// The value bytes are not valid UTF-8; carried base64-encoded as
+    /// `value_base64`.
+    Base64(String),
+}
+
+/// Wire shape of [`HttpHeader`]: exactly one of `value` and `value_base64`.
+#[derive(Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
+struct HttpHeaderWire {
+    name: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    value: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    value_base64: Option<String>,
+}
+
+impl TryFrom<HttpHeaderWire> for HttpHeader {
+    type Error = &'static str;
+
+    fn try_from(wire: HttpHeaderWire) -> Result<Self, Self::Error> {
+        let value = match (wire.value, wire.value_base64) {
+            (Some(value), None) => HttpHeaderValue::Text(value),
+            (None, Some(value)) => HttpHeaderValue::Base64(value),
+            _ => return Err("a header carries exactly one of `value` and `value_base64`"),
+        };
+        Ok(Self {
+            name: wire.name,
+            value,
+        })
+    }
+}
+
+impl From<HttpHeader> for HttpHeaderWire {
+    fn from(header: HttpHeader) -> Self {
+        let (value, value_base64) = match header.value {
+            HttpHeaderValue::Text(value) => (Some(value), None),
+            HttpHeaderValue::Base64(value) => (None, Some(value)),
+        };
+        Self {
+            name: header.name,
+            value,
+            value_base64,
+        }
+    }
 }
 
 /// Agent-declared reason for a provider call.
@@ -303,8 +370,8 @@ impl ImageMediaType {
 #[cfg(test)]
 mod tests {
     use super::{
-        AgentContext, AgentEvent, AgentEventSide, ContentCategory, DeviceContext, LlmContext,
-        LlmProvider, TokenUsage, ToolCall, ToolResult,
+        AgentContext, AgentEvent, AgentEventSide, ContentCategory, DeviceContext, HttpHeader,
+        HttpHeaderValue, LlmContext, LlmProvider, TokenUsage, ToolCall, ToolResult,
     };
     use chrono::{TimeZone as _, Utc};
 
@@ -339,6 +406,7 @@ mod tests {
             "purpose",
             "omitted",
             "conversation",
+            "headers",
         ] {
             assert!(
                 serialized.get(field).is_none(),
@@ -368,6 +436,42 @@ mod tests {
         assert_eq!(serialized["tool_calls"][0]["input"], "pwd");
         assert_eq!(serialized["tool_results"][0]["call_id"], "call-1");
         assert_eq!(serialized["tool_results"][0]["output"], "/workspace");
+    }
+
+    #[test]
+    fn request_headers_carry_exactly_one_value_form() {
+        let mut event = sample_event(LlmProvider::OpenAi);
+        event.headers = vec![
+            HttpHeader {
+                name: "session-id".to_owned(),
+                value: HttpHeaderValue::Text("s-1".to_owned()),
+            },
+            HttpHeader {
+                name: "x-binary".to_owned(),
+                value: HttpHeaderValue::Base64("//4=".to_owned()),
+            },
+        ];
+        let serialized = serde_json::to_value(event).expect("Agent event should serialize");
+
+        assert_eq!(
+            serialized["headers"],
+            serde_json::json!([
+                {"name": "session-id", "value": "s-1"},
+                {"name": "x-binary", "value_base64": "//4="}
+            ])
+        );
+        let decoded: AgentEvent =
+            serde_json::from_value(serialized.clone()).expect("headers should round-trip");
+        assert_eq!(decoded.headers.len(), 2);
+        for invalid in [
+            serde_json::json!({"name": "a"}),
+            serde_json::json!({"name": "a", "value": "v", "value_base64": "dg=="}),
+            serde_json::json!({"name": "a", "value": "v", "raw": true}),
+        ] {
+            let mut event = serialized.clone();
+            event["headers"] = serde_json::json!([invalid]);
+            assert!(serde_json::from_value::<AgentEvent>(event).is_err());
+        }
     }
 
     #[test]
@@ -446,6 +550,7 @@ mod tests {
             text: None,
             omitted: Vec::new(),
             conversation: None,
+            headers: Vec::new(),
             token_usage: TokenUsage {
                 input_tokens: 10,
                 output_tokens: 0,

@@ -737,6 +737,7 @@ mod tests {
                 .header("session-id", "session-1")
                 .body(())
                 .unwrap(),
+            Response::builder().status(101).body(()).unwrap(),
             WebSocketDirection::ClientToServer,
             1,
             Some(
@@ -789,6 +790,7 @@ mod tests {
                 .header("session-id", "session-1")
                 .body(())
                 .unwrap(),
+            Response::builder().status(101).body(()).unwrap(),
             WebSocketDirection::ClientToServer,
             1,
             Some(
@@ -821,6 +823,7 @@ mod tests {
                     .header("host", "gateway.example")
                     .body(())
                     .unwrap(),
+                Response::builder().status(101).body(()).unwrap(),
                 direction,
                 1,
                 Some(body.to_owned()),

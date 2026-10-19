@@ -254,7 +254,21 @@ provider documents, and original content blocks are not part of the contract.
       }
     ],
     "completeness": "complete"
-  }
+  },
+  "headers": [
+    {
+      "name": "content-type",
+      "value": "text/event-stream"
+    },
+    {
+      "name": "x-request-id",
+      "value": "req-123"
+    },
+    {
+      "name": "set-cookie",
+      "value": "<redacted>"
+    }
+  ]
 }
 ```
 
@@ -367,6 +381,28 @@ declares none:
   - Anthropic: `previous_message_id` of a `thread` `continue` request.
   - OpenAI: the request's `previous_response_id`.
 
+## Headers
+
+`headers` lists the captured headers of the event's side: the request headers
+on a request event and the response headers on a response event. A WebSocket
+connection has headers only on its handshake, so every request event of the
+connection carries the upgrade request's headers, and every response event
+carries the `101 Switching Protocols` response's headers.
+
+Each entry is `{"name", "value"}`, or `{"name", "value_base64"}` with the
+standard base64 encoding of the bytes when the value is not valid UTF-8;
+exactly one of the two is present. Entries follow the order of the captured
+header map, which groups repeated names together in first-seen order, and
+keep every duplicate. Names are lowercase, as the captured header map stores
+them.
+
+The values are verbatim except for credential redaction, applied once by the
+collector: the values of `authorization`, `proxy-authorization`, `cookie`,
+`set-cookie`, `api-key`, `x-api-key`, `x-goog-api-key`, `anthropic-api-key`,
+`chatgpt-account-id`, and of any header whose name contains `token`, become
+`<redacted>` and the names are kept. The content policy does not govern
+headers. The list is omitted when empty.
+
 ## Call purpose
 
 `purpose` states what the Agent made a provider call for, when its traffic
@@ -401,15 +437,16 @@ metadata. The broker forwards it unchanged.
 Event ids are deterministic. The collector derives an id from the device,
 agent, session, event side, provider response identity, and a content digest,
 so observing the same exchange again yields the same id and ingestion stays
-idempotent. Distinct provider calls produce distinct ids.
+idempotent. Distinct provider calls produce distinct ids. The headers do not
+enter the id.
 
 The broker emits events only for exchanges its Agent protocol parser accepted.
 An exchange the parser rejects produces no event.
 
 ## Delivery
 
-The official delivery plugin stores the conversation as `metadata.conversation`
-and the purpose as `metadata.purpose`. It sends `response_id` and
+The official delivery plugin stores the conversation as `metadata.conversation`,
+the purpose as `metadata.purpose`, and the headers as `metadata.headers`. It sends `response_id` and
 `previous_response_id` as top-level fields of the backend usage event. Backend
 trajectories consume these fields without decoding provider bodies. Other plugins may translate the event for their own destinations.
 

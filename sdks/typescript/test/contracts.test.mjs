@@ -21,6 +21,7 @@ test("shared AgentEvent fixture decodes through the TypeScript SDK", async () =>
   assert.equal(event.previous_response_id, "resp-122");
   assert.equal(event.purpose, "session_title");
   assert.deepEqual(event.conversation, fixture.conversation);
+  assert.deepEqual(event.headers, fixture.headers);
   assert.equal("turn_index" in event, false);
 });
 
@@ -31,10 +32,12 @@ test("undeclared context and entry identities may be omitted", async () => {
     "previous_response_id",
     "purpose",
     "conversation",
+    "headers",
   ]) {
     delete fixture[field];
   }
   assert.equal(decodeAgentEvent(fixture).response_id, undefined);
+  assert.equal(decodeAgentEvent(fixture).headers, undefined);
   fixture.purpose = "compaction";
   fixture.omitted = ["conversation_text"];
   fixture.conversation = {
@@ -104,6 +107,18 @@ test("structured events reject obsolete fields and malformed content", async () 
     },
     (e) => {
       e.conversation.policy_omitted = false;
+    },
+    (e) => {
+      e.headers[0].value = 1;
+    },
+    (e) => {
+      e.headers[0].value_base64 = "dg==";
+    },
+    (e) => {
+      delete e.headers[0].value;
+    },
+    (e) => {
+      e.headers[0].raw = true;
     },
   ]) {
     const fixture = structuredClone(original);

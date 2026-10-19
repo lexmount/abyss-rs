@@ -10,6 +10,10 @@ use http::{HeaderMap, HeaderValue, Request, Response, header::HeaderName};
 
 use super::{CapturedBody, FlowContext, HttpExchange};
 
+/// Value that replaces a credential-bearing header value wherever captured
+/// headers leave the MITM boundary.
+pub const REDACTED_HEADER_VALUE: &str = "<redacted>";
+
 /// Display adapter for a decoded request head.
 pub struct HttpRequestHeadDisplay<'a> {
     request: &'a Request<CapturedBody>,
@@ -84,7 +88,7 @@ impl fmt::Display for HttpHeadersDisplay<'_> {
         for (name, value) in self.headers {
             write!(formatter, "{separator}{}: ", name.as_str())?;
             if is_sensitive_header(name) {
-                formatter.write_str("<redacted>")?;
+                formatter.write_str(REDACTED_HEADER_VALUE)?;
             } else {
                 HeaderValueDisplay::new(value).fmt(formatter)?;
             }
@@ -94,7 +98,9 @@ impl fmt::Display for HttpHeadersDisplay<'_> {
     }
 }
 
-fn is_sensitive_header(name: &HeaderName) -> bool {
+/// Returns whether a header carries credentials whose value must be redacted.
+#[must_use]
+pub fn is_sensitive_header(name: &HeaderName) -> bool {
     let name = name.as_str();
     matches!(
         name,
@@ -105,6 +111,8 @@ fn is_sensitive_header(name: &HeaderName) -> bool {
             | "api-key"
             | "x-api-key"
             | "x-goog-api-key"
+            | "anthropic-api-key"
+            | "chatgpt-account-id"
     ) || name.contains("token")
 }
 
@@ -207,11 +215,11 @@ mod tests {
     use std::net::SocketAddr;
 
     use bytes::Bytes;
-    use http::{HeaderMap, HeaderValue, Request, Response, header};
+    use http::{HeaderMap, HeaderValue, Request, Response, header, header::HeaderName};
 
     use super::{
         CapturedBodyPlaintextDisplay, HttpHeadersDisplay, HttpRequestHeadDisplay,
-        HttpResponseHeadDisplay,
+        HttpResponseHeadDisplay, is_sensitive_header,
     };
     use crate::transparent::{CapturedBody, FlowContext, OriginalDestination, TransparentProtocol};
 
@@ -280,6 +288,22 @@ mod tests {
         assert!(rendered.contains("authorization: <redacted>"));
         assert!(rendered.contains("cookie: <redacted>"));
         assert!(!rendered.contains("query-secret"));
+    }
+
+    #[test]
+    fn provider_credential_headers_are_sensitive() {
+        for name in [
+            "anthropic-api-key",
+            "chatgpt-account-id",
+            "x-api-key",
+            "x-amz-security-token",
+        ] {
+            assert!(
+                is_sensitive_header(&HeaderName::from_static(name)),
+                "{name}"
+            );
+        }
+        assert!(!is_sensitive_header(&HeaderName::from_static("session-id")));
     }
 
     #[test]

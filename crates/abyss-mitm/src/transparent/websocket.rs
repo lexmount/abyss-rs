@@ -8,7 +8,7 @@
 use std::io::ErrorKind;
 
 use futures_util::{SinkExt as _, StreamExt as _};
-use http::Request;
+use http::{Request, Response};
 use tokio::io::{AsyncRead, AsyncWrite};
 use tokio_tungstenite::{
     WebSocketStream,
@@ -32,6 +32,14 @@ pub(super) struct WebSocketRelayOutcome {
     pub(super) upstream_to_client_bytes: u64,
 }
 
+/// HTTP handshake that opened one WebSocket tunnel, attached to every message.
+pub(super) struct WebSocketUpgrade {
+    /// Agent request that asked for the upgrade.
+    pub(super) request: Request<()>,
+    /// Upstream `101 Switching Protocols` response that accepted it.
+    pub(super) response: Response<()>,
+}
+
 struct DecodedWebSocketStream<S> {
     stream: WebSocketStream<S>,
     direction: WebSocketDirection,
@@ -48,13 +56,13 @@ impl ForwardedWebSocketMessage {
     fn submit_hook_message(
         &self,
         flow: &FlowContext,
-        upgrade_request: &Request<()>,
+        upgrade: &WebSocketUpgrade,
         sequence: &mut u64,
         hooks: &HookDispatcher,
     ) -> Result<(), TransparentFlowError> {
         let Some(hook_message) = hook_message_from_websocket(
             flow,
-            upgrade_request,
+            upgrade,
             self.direction,
             next_sequence(sequence)?,
             &self.message,
@@ -164,7 +172,7 @@ pub(super) async fn relay_websocket_messages<C, U>(
     upstream: U,
     upstream_prefetch: Vec<u8>,
     flow: FlowContext,
-    upgrade_request: Request<()>,
+    upgrade: WebSocketUpgrade,
     hooks: &HookDispatcher,
 ) -> Result<WebSocketRelayOutcome, TransparentFlowError>
 where
@@ -185,18 +193,12 @@ where
         WebSocketDirection::ServerToClient,
     )
     .await;
-    let outcome = run_websocket_select_loop(
-        &mut client_ws,
-        &mut upstream_ws,
-        &flow,
-        &upgrade_request,
-        hooks,
-    )
-    .await?;
+    let outcome =
+        run_websocket_select_loop(&mut client_ws, &mut upstream_ws, &flow, &upgrade, hooks).await?;
     tracing::info!(
         original_destination = %flow.original_destination,
-        method = %upgrade_request.method(),
-        target_path = %upgrade_request.uri().path(),
+        method = %upgrade.request.method(),
+        target_path = %upgrade.request.uri().path(),
         client_to_upstream_bytes = outcome.client_to_upstream_bytes,
         upstream_to_client_bytes = outcome.upstream_to_client_bytes,
         "MITM transparent WebSocket message relay closed"
@@ -213,7 +215,7 @@ async fn run_websocket_select_loop<C, U>(
     client_ws: &mut DecodedWebSocketStream<C>,
     upstream_ws: &mut DecodedWebSocketStream<U>,
     flow: &FlowContext,
-    upgrade_request: &Request<()>,
+    upgrade: &WebSocketUpgrade,
     hooks: &HookDispatcher,
 ) -> Result<WebSocketRelayOutcome, TransparentFlowError>
 where
@@ -229,7 +231,7 @@ where
                 let Some(forwarded) = client_message? else {
                     break;
                 };
-                forwarded.submit_hook_message(flow, upgrade_request, &mut sequence, hooks)?;
+                forwarded.submit_hook_message(flow, upgrade, &mut sequence, hooks)?;
                 upstream_ws
                     .send(forwarded.message, FlowOperation::WriteProviderWebSocket)
                     .await?;
@@ -245,7 +247,7 @@ where
                 let Some(forwarded) = upstream_message? else {
                     break;
                 };
-                forwarded.submit_hook_message(flow, upgrade_request, &mut sequence, hooks)?;
+                forwarded.submit_hook_message(flow, upgrade, &mut sequence, hooks)?;
                 client_ws
                     .send(forwarded.message, FlowOperation::WriteAgentWebSocket)
                     .await?;
@@ -265,7 +267,7 @@ where
 
 fn hook_message_from_websocket(
     flow: &FlowContext,
-    upgrade_request: &Request<()>,
+    upgrade: &WebSocketUpgrade,
     direction: WebSocketDirection,
     sequence: u64,
     message: &Message,
@@ -273,7 +275,8 @@ fn hook_message_from_websocket(
     match message {
         Message::Text(text) => Some(WebSocketMessage {
             flow: flow.clone(),
-            upgrade_request: upgrade_request.clone(),
+            upgrade_request: upgrade.request.clone(),
+            upgrade_response: upgrade.response.clone(),
             direction,
             sequence,
             text: Some(text.to_string()),
@@ -281,7 +284,8 @@ fn hook_message_from_websocket(
         }),
         Message::Binary(bytes) => Some(WebSocketMessage {
             flow: flow.clone(),
-            upgrade_request: upgrade_request.clone(),
+            upgrade_request: upgrade.request.clone(),
+            upgrade_response: upgrade.response.clone(),
             direction,
             sequence,
             text: None,
@@ -313,14 +317,16 @@ mod tests {
 
     use tokio_tungstenite::tungstenite::{Error as WebSocketError, Message};
 
-    use super::{WebSocketDirection, hook_message_from_websocket, is_agent_stream_end};
+    use super::{
+        WebSocketDirection, WebSocketUpgrade, hook_message_from_websocket, is_agent_stream_end,
+    };
     use crate::transparent::{FlowContext, OriginalDestination, TransparentProtocol};
 
     #[test]
     fn text_message_becomes_hook_message() {
         let message = hook_message_from_websocket(
             &test_flow(),
-            &test_upgrade_request(),
+            &test_upgrade(),
             WebSocketDirection::ClientToServer,
             1,
             &Message::text("{\"ok\":true}"),
@@ -329,6 +335,11 @@ mod tests {
 
         assert_eq!(message.sequence, 1);
         assert_eq!(message.text.as_deref(), Some("{\"ok\":true}"));
+        assert_eq!(message.upgrade_response.status(), 101);
+        assert_eq!(
+            message.upgrade_response.headers()["x-request-id"],
+            "req-upgrade"
+        );
         assert!(
             message.binary.is_none(),
             "text messages should not expose binary bytes"
@@ -340,7 +351,7 @@ mod tests {
         assert!(
             hook_message_from_websocket(
                 &test_flow(),
-                &test_upgrade_request(),
+                &test_upgrade(),
                 WebSocketDirection::ServerToClient,
                 1,
                 &Message::Ping(Vec::new().into()),
@@ -399,11 +410,18 @@ mod tests {
         )
     }
 
-    fn test_upgrade_request() -> http::Request<()> {
-        http::Request::builder()
-            .method("GET")
-            .uri("/backend-api/codex/responses")
-            .body(())
-            .expect("test upgrade request should build")
+    fn test_upgrade() -> WebSocketUpgrade {
+        WebSocketUpgrade {
+            request: http::Request::builder()
+                .method("GET")
+                .uri("/backend-api/codex/responses")
+                .body(())
+                .expect("test upgrade request should build"),
+            response: http::Response::builder()
+                .status(101)
+                .header("x-request-id", "req-upgrade")
+                .body(())
+                .expect("test upgrade response should build"),
+        }
     }
 }

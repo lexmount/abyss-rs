@@ -5,8 +5,8 @@ mod openai;
 
 use abyss_plugin_protocol::event::{
     AgentContext as PluginAgentContext, AgentEvent, AgentEventSide, ContentCategory, Conversation,
-    DeviceContext, EntryRole, EventPurpose, ImageAttachment, ImageMediaType, LlmContext,
-    LlmProvider, TokenUsage as PluginTokenUsage, ToolCall, ToolResult,
+    DeviceContext, EntryRole, EventPurpose, HttpHeader, ImageAttachment, ImageMediaType,
+    LlmContext, LlmProvider, TokenUsage as PluginTokenUsage, ToolCall, ToolResult,
 };
 use base64::{Engine as _, engine::general_purpose::STANDARD};
 use chrono::{DateTime, SecondsFormat, TimeDelta, Utc};
@@ -16,7 +16,7 @@ use thiserror::Error;
 
 use crate::{
     config::{DeviceIdentity, HarnessUsageContentConfig, HarnessUsageHookConfig},
-    event::identifier::stable_event_id,
+    event::{headers::ExchangeHeaders, identifier::stable_event_id},
     harness::{AgentDeclaration, BuiltInHarness, HarnessDetection},
     protocol::model::digest::sha256_hex,
     protocol::model::image::ParsedImageAttachment,
@@ -102,6 +102,9 @@ pub struct NormalizedUsageEvent {
     /// Structured provider content retained independently of the text projection.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub conversation: Option<Conversation>,
+    /// Captured headers of this event's side, credential values redacted.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub headers: Vec<HttpHeader>,
     /// Token counters attributed to this event side.
     pub token_usage: TokenUsage,
     /// Hook-private provider context used while building typed plugin fields.
@@ -129,6 +132,7 @@ impl TryFrom<NormalizedUsageEvent> for AgentEvent {
             text,
             omitted,
             conversation,
+            headers,
             token_usage,
             metadata,
             attachments,
@@ -170,6 +174,7 @@ impl TryFrom<NormalizedUsageEvent> for AgentEvent {
             text,
             omitted,
             conversation,
+            headers,
             token_usage: token_usage.try_into()?,
             tool_calls,
             tool_results,
@@ -357,8 +362,9 @@ pub trait NormalizableExchange {
     ) -> ParsedEventParts<'_>;
 }
 
-/// Normalizes one parsed interaction with independently detected context and
-/// what the detected Agent declared about it.
+/// Normalizes one parsed interaction with independently detected context,
+/// what the detected Agent declared about it, and the exchange's captured
+/// headers.
 pub fn normalize_exchange<E>(
     config: &HarnessUsageHookConfig,
     parsed: &E,
@@ -366,6 +372,7 @@ pub fn normalize_exchange<E>(
     detection: &HarnessDetection,
     provider: &LlmProvider,
     declaration: &AgentDeclaration,
+    headers: &ExchangeHeaders,
 ) -> Vec<NormalizedUsageEvent>
 where
     E: NormalizableExchange,
@@ -378,7 +385,7 @@ where
         response_id: continuation.response_id,
         previous_response_id: continuation.previous_response_id,
     };
-    events_for_parsed_exchange(config, &parts, content, declared)
+    events_for_parsed_exchange(config, &parts, content, declared, headers)
 }
 
 fn harness_client(detection: &HarnessDetection) -> &'static str {
@@ -438,6 +445,7 @@ struct EventSide<'a> {
     token_usage: TokenUsage,
     metadata: Value,
     attachments: &'a [ParsedImageAttachment],
+    headers: &'a [HttpHeader],
     content: &'a HarnessUsageContentConfig,
     declared: Declared<'a>,
 }
@@ -482,6 +490,7 @@ fn events_for_parsed_exchange(
     parts: &ParsedEventParts<'_>,
     content: &HarnessUsageContentConfig,
     declared: Declared<'_>,
+    headers: &ExchangeHeaders,
 ) -> Vec<NormalizedUsageEvent> {
     // Most provider hooks wait until a response body or usage appears before
     // emitting events. Claude Desktop private SSE responses do not include
@@ -540,6 +549,7 @@ fn events_for_parsed_exchange(
                 token_usage: retained_token_usage(request_usage, content),
                 metadata: request_metadata,
                 attachments: &parts.request_images,
+                headers: &headers.request,
                 content,
                 declared,
             },
@@ -563,6 +573,7 @@ fn events_for_parsed_exchange(
                 token_usage: retained_token_usage(response_usage, content),
                 metadata: response_metadata,
                 attachments: &[],
+                headers: &headers.response,
                 content,
                 declared,
             },
@@ -742,6 +753,7 @@ fn usage_event(
         text: side.content.conversation_text.then(|| side.text.to_owned()),
         omitted: omitted_categories(side.content),
         conversation: Some(retained_conversation(side.conversation, side.content)),
+        headers: side.headers.to_vec(),
         token_usage: side.token_usage,
         metadata: side.metadata,
         attachments: normalized_image_attachments(side.attachments, side.content),
@@ -800,6 +812,7 @@ mod tests {
 
     use crate::{
         config::{DeviceIdentity, HarnessUsageContentConfig, HarnessUsageHookConfig},
+        event::ExchangeHeaders,
         harness::{AgentDeclaration, BuiltInHarness, HarnessDetection, HarnessEvidence, HarnessId},
         protocol::{
             anthropic::{
@@ -889,6 +902,7 @@ mod tests {
             &detection,
             &LlmProvider::Other("gateway.example".to_owned()),
             &AgentDeclaration::default(),
+            &ExchangeHeaders::default(),
         );
 
         assert_eq!(events.len(), 2);
@@ -923,6 +937,7 @@ mod tests {
             &detection,
             &LlmProvider::OpenAi,
             &declaration,
+            &ExchangeHeaders::default(),
         );
 
         assert_eq!(events.len(), 2);
@@ -950,6 +965,7 @@ mod tests {
             &detection(BuiltInHarness::Codex, "x-openai-originator"),
             &LlmProvider::OpenAi,
             &AgentDeclaration::default(),
+            &ExchangeHeaders::default(),
         );
 
         assert_eq!(events.len(), 2);
@@ -995,6 +1011,7 @@ mod tests {
                 &detection(BuiltInHarness::Codex, "x-openai-originator"),
                 &LlmProvider::OpenAi,
                 &AgentDeclaration::default(),
+                &ExchangeHeaders::default(),
             )
             .into_iter()
             .map(|event| {
@@ -1069,6 +1086,7 @@ mod tests {
             &detection,
             &LlmProvider::Anthropic,
             &AgentDeclaration::default(),
+            &ExchangeHeaders::default(),
         );
 
         assert_eq!(events.len(), 2);
@@ -1116,6 +1134,7 @@ mod tests {
             &detection(BuiltInHarness::ClaudeDesktop, "claude-web-path"),
             &LlmProvider::Anthropic,
             &AgentDeclaration::default(),
+            &ExchangeHeaders::default(),
         );
 
         assert_eq!(events.len(), 1);
@@ -1141,6 +1160,7 @@ mod tests {
             &detection(BuiltInHarness::Codex, "x-openai-originator"),
             &LlmProvider::OpenAi,
             &AgentDeclaration::default(),
+            &ExchangeHeaders::default(),
         )
         .pop()
         .expect("response event");

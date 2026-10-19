@@ -382,6 +382,11 @@ impl TryFrom<AgentEvent> for IngestUsageEvent {
             metadata["conversation"] = serde_json::to_value(conversation)
                 .map_err(|error| DeliveryPluginError::Translate(error.to_string()))?;
         }
+        // Headers are stored untouched; the backend reads nothing from them.
+        if !event.headers.is_empty() {
+            metadata["headers"] = serde_json::to_value(event.headers)
+                .map_err(|error| DeliveryPluginError::Translate(error.to_string()))?;
+        }
         Ok(Self {
             event_id: event.event_id,
             observed_at: event.occurred_at.to_rfc3339(),
@@ -539,8 +544,8 @@ fn tool_activity_metadata(tool_calls: Vec<ToolCall>, tool_results: Vec<ToolResul
 #[cfg(test)]
 mod tests {
     use abyss_sdk::plugin::{
-        AgentContext, AgentEvent, AgentEventSide, DeviceContext, LlmContext, LlmProvider,
-        TokenUsage, ToolCall,
+        AgentContext, AgentEvent, AgentEventSide, DeviceContext, HttpHeader, HttpHeaderValue,
+        LlmContext, LlmProvider, TokenUsage, ToolCall,
     };
     use serde_json::Value;
 
@@ -658,6 +663,10 @@ mod tests {
             text: None,
             omitted: Vec::new(),
             conversation: None,
+            headers: vec![HttpHeader {
+                name: "request-id".to_owned(),
+                value: HttpHeaderValue::Text("req_1".to_owned()),
+            }],
             token_usage: TokenUsage {
                 input_tokens: 1,
                 output_tokens: 0,
@@ -691,6 +700,10 @@ mod tests {
         );
         assert!(serialized["events"][0]["metadata"].get("turn_id").is_none());
         assert!(serialized["events"][0].get("turn_index").is_none());
+        assert_eq!(
+            serialized["events"][0]["metadata"]["headers"],
+            serde_json::json!([{"name": "request-id", "value": "req_1"}])
+        );
     }
 
     #[test]
