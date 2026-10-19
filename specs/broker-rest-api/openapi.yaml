@@ -335,6 +335,9 @@ components:
     HarnessMatcherConfig:
       type: object
       additionalProperties: false
+      description: >-
+        Populated fields must all match; values within a field are alternatives.
+        Each custom Harness requires at least one nonempty matcher.
       properties:
         process_names:
           type: array
@@ -344,6 +347,14 @@ components:
           type: array
           items:
             type: string
+        user_agent_prefixes:
+          type: array
+          description: >-
+            Case-sensitive prefixes of the request User-Agent header. Does not
+            require source process metadata; supports explicit proxy traffic.
+          items:
+            type: string
+            minLength: 1
     HarnessUsageContentConfig:
       type: object
       additionalProperties: false

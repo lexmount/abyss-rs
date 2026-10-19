@@ -712,6 +712,7 @@ fn anthropic_session_id(
 fn provider_session_id(headers: &HeaderMap, payload: &Value) -> Option<String> {
     header(headers, "x-claude-code-session-id")
         .or_else(|| header(headers, "x-claude-session-id"))
+        .or_else(|| header(headers, "x-deepseek-harness-session-id"))
         .map(str::to_owned)
         .or_else(|| metadata_session_id(payload))
         .or_else(|| collect_string_field(payload, "session_id"))
@@ -924,6 +925,61 @@ mod tests {
 
         assert_eq!(parsed.request_tool_events.len(), 1);
         assert_eq!(parsed.request_texts, Vec::<String>::new());
+    }
+
+    #[test]
+    fn correlates_messages_with_native_deepseek_session_header() {
+        for (session_id, text) in [
+            ("session-web-1", "read observation-demo.txt"),
+            ("session-web-1", "summarize the previous tool result"),
+            ("session-web-2", "read observation-demo.txt"),
+        ] {
+            let mut exchange = json_exchange(
+                "/anthropic/v1/messages",
+                &json!({
+                    "model": "deepseek-flash",
+                    "messages": [{"role": "user", "content": text}]
+                }),
+                &json!({"content": [{"type": "text", "text": "done"}]}),
+            );
+            exchange.request.headers_mut().remove("session-id");
+            exchange.request.headers_mut().insert(
+                "x-deepseek-harness-session-id",
+                format!(" {session_id} ").parse().unwrap(),
+            );
+
+            let parsed = parse_anthropic_messages_exchange(&exchange).expect("Messages exchange");
+
+            assert_eq!(parsed.session_id, session_id);
+            assert!(matches!(
+                parsed.session_id_source,
+                AnthropicSessionIdSource::Provider
+            ));
+            assert_eq!(parsed.request_texts, vec![text]);
+        }
+    }
+
+    #[test]
+    fn ignores_blank_deepseek_session_header() {
+        let mut exchange = json_exchange(
+            "/anthropic/v1/messages",
+            &json!({"messages": [{"role": "user", "content": "hello"}]}),
+            &json!({"content": [{"type": "text", "text": "hi"}]}),
+        );
+        exchange
+            .request
+            .headers_mut()
+            .insert("x-deepseek-harness-session-id", "  ".parse().unwrap());
+
+        let parsed = parse_anthropic_messages_exchange(&exchange).expect("fallback header");
+        assert_eq!(parsed.session_id, "session-1");
+
+        exchange.request.headers_mut().remove("session-id");
+        let parsed = parse_anthropic_messages_exchange(&exchange).expect("unattributed exchange");
+        assert!(matches!(
+            parsed.session_id_source,
+            AnthropicSessionIdSource::Unattributed
+        ));
     }
 
     #[test]

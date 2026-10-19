@@ -41,8 +41,8 @@ pub struct ParsedOpenAiExchange {
     pub method: String,
     /// Transport observed by `abyss-mitm`: `http`, `https`, or `unknown`.
     pub transport: &'static str,
-    /// Session/thread id used to group turns. A flow-derived fallback is used
-    /// when Codex/OpenAI headers do not expose one.
+    /// Session/thread id used to group turns. A request-derived fallback is used
+    /// for HTTP when client headers do not expose one.
     pub session_id: String,
     /// Hash of method, host, path, and request body for fallback correlation.
     pub request_hash: String,
@@ -304,6 +304,7 @@ fn flow_server_name(flow: &FlowContext) -> Option<String> {
 
 fn websocket_session_id(message: &WebSocketMessage, payload: &Value) -> String {
     header(message.upgrade_request.headers(), "session-id")
+        .or_else(|| header(message.upgrade_request.headers(), "session_id"))
         .or_else(|| header(message.upgrade_request.headers(), "thread-id"))
         .map(str::to_owned)
         .or_else(|| collect_string_field(payload, "session_id"))
@@ -532,6 +533,7 @@ fn collect_event_types(value: &Value, depth: usize, event_types: &mut Vec<String
 
 fn session_id(headers: &HeaderMap) -> Option<String> {
     header(headers, "session-id")
+        .or_else(|| header(headers, "session_id"))
         .or_else(|| header(headers, "thread-id"))
         .map(str::to_owned)
         .or_else(|| metadata_header_value(headers, "session_id"))
@@ -641,6 +643,49 @@ mod tests {
         assert_eq!(parsed.response_texts, vec!["hello user"]);
         assert_eq!(parsed.usage.input_tokens, 2);
         assert_eq!(parsed.usage.output_tokens, 3);
+    }
+
+    #[test]
+    fn correlates_http_requests_with_underscore_session_header() {
+        for (path, messages_field) in [
+            ("/v1/responses", "input"),
+            ("/v1/chat/completions", "messages"),
+        ] {
+            let mut hashes = Vec::new();
+            for text in ["first request", "second request"] {
+                let mut request = json!({"model": "compatible-model"});
+                request[messages_field] = json!([{"role": "user", "content": text}]);
+                let mut exchange = json_exchange(path, &request, &json!({}));
+                let headers = exchange.request.headers_mut();
+                headers.remove("session-id");
+                headers.insert("session_id", " shared-session ".parse().unwrap());
+
+                let parsed = parse_openai_exchange(&exchange).expect("OpenAI exchange");
+
+                assert_eq!(parsed.session_id, "shared-session");
+                hashes.push(parsed.request_hash);
+            }
+            assert_ne!(hashes[0], hashes[1]);
+        }
+    }
+
+    #[test]
+    fn session_header_alias_preserves_precedence_and_ignores_blank_values() {
+        for (session, alias, thread, expected) in [
+            ("canonical", "alias", "thread", "canonical"),
+            (" ", "alias", "thread", "alias"),
+            (" ", " ", "thread", "thread"),
+        ] {
+            let mut exchange = json_exchange("/v1/responses", &json!({"input": "hi"}), &json!({}));
+            let headers = exchange.request.headers_mut();
+            headers.insert("session-id", session.parse().unwrap());
+            headers.insert("session_id", alias.parse().unwrap());
+            headers.insert("thread-id", thread.parse().unwrap());
+
+            let parsed = parse_openai_exchange(&exchange).expect("OpenAI exchange");
+
+            assert_eq!(parsed.session_id, expected);
+        }
     }
 
     #[test]
@@ -758,6 +803,34 @@ mod tests {
 
         assert_eq!(parsed.session_id, "session-1");
         assert_eq!(parsed.request_texts, vec!["hello websocket"]);
+    }
+
+    #[test]
+    fn correlates_websocket_frames_with_underscore_session_header() {
+        for (sequence, text) in [(1, "first request"), (2, "second request")] {
+            let message = WebSocketMessage::new(
+                flow(),
+                Request::builder()
+                    .method("GET")
+                    .uri("/v1/responses")
+                    .header("host", "gateway.example")
+                    .header("session_id", "shared-session")
+                    .body(())
+                    .unwrap(),
+                WebSocketDirection::ClientToServer,
+                sequence,
+                Some(json!({"type": "response.create", "input": text}).to_string()),
+                None,
+            );
+
+            let OpenAiWebSocketFrame::Request(parsed) = parse_openai_websocket_message(&message)
+            else {
+                panic!("WebSocket request message");
+            };
+
+            assert_eq!(parsed.session_id, "shared-session");
+            assert_eq!(parsed.request_texts, vec![text]);
+        }
     }
 
     #[test]

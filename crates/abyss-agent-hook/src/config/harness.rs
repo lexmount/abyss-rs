@@ -1,4 +1,4 @@
-//! Harness-specific enablement, content overrides, and custom source matchers.
+//! Harness-specific enablement, content overrides, and custom source/request matchers.
 
 use std::collections::BTreeMap;
 
@@ -28,7 +28,7 @@ struct HarnessUsageConfigWire {
     harnesses: BTreeMap<HarnessId, HarnessConfig>,
 }
 
-/// Optional policy override and source matchers for one Harness.
+/// Optional policy override and identity matchers for one Harness.
 #[derive(Debug, Clone, Default, Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct HarnessConfig {
@@ -38,12 +38,13 @@ pub struct HarnessConfig {
     /// Content policy override for this Harness.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub content: Option<HarnessUsageContentConfig>,
-    /// Source matchers used by a custom Harness.
+    /// Alternative identity matchers used by a custom Harness.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub matchers: Vec<HarnessMatcherConfig>,
 }
 
-/// One custom Harness source matcher.
+/// One custom Harness matcher. Populated fields use AND semantics; values
+/// within a field use OR semantics.
 #[derive(Debug, Clone, Default, Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct HarnessMatcherConfig {
@@ -53,6 +54,10 @@ pub struct HarnessMatcherConfig {
     /// Accepted platform-neutral application identities.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub application_ids: Vec<String>,
+    /// Case-sensitive prefixes of the request's User-Agent header. Works
+    /// without source process metadata, including explicit proxy traffic.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub user_agent_prefixes: Vec<String>,
 }
 
 impl HarnessUsageConfig {
@@ -97,7 +102,10 @@ impl<'de> Deserialize<'de> for HarnessUsageConfig {
                 )));
             }
             for matcher in &harness.matchers {
-                if matcher.process_names.is_empty() && matcher.application_ids.is_empty() {
+                if matcher.process_names.is_empty()
+                    && matcher.application_ids.is_empty()
+                    && matcher.user_agent_prefixes.is_empty()
+                {
                     return Err(D::Error::custom(format!(
                         "custom Harness `{harness_id}` contains an empty matcher"
                     )));
@@ -106,6 +114,7 @@ impl<'de> Deserialize<'de> for HarnessUsageConfig {
                     .process_names
                     .iter()
                     .chain(&matcher.application_ids)
+                    .chain(&matcher.user_agent_prefixes)
                     .any(|value| value.trim().is_empty())
                 {
                     return Err(D::Error::custom(format!(

@@ -301,6 +301,69 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn user_agent_only_harness_reuses_responses_and_chat_without_process_metadata() {
+        let sink = Arc::new(RecordingSink::default());
+        let config = serde_json::from_value::<HooksConfig>(serde_json::json!({
+            "harness_usage": {"config": {"harnesses": {"acme-agent": {
+                "matchers": [{"user_agent_prefixes": ["acme-agent/"]}]
+            }}}}
+        }))
+        .unwrap();
+        let hook = HarnessUsageHook::with_runtime_config_and_event_sink(
+            HarnessUsageHookConfig::new(DeviceIdentity::new()),
+            HooksRuntimeConfig::new(config),
+            Arc::clone(&sink),
+        );
+        let mut responses = openai_exchange("unused");
+        responses.flow.source_process = None;
+        responses
+            .request
+            .headers_mut()
+            .insert("user-agent", "acme-agent/1.0".parse().unwrap());
+        hook.on_http_exchange(&responses).await.unwrap();
+
+        let mut chat = openai_exchange("unused");
+        chat.flow.source_process = None;
+        *chat.request.uri_mut() = "/chat/completions".parse().unwrap();
+        chat.request
+            .headers_mut()
+            .insert("user-agent", "acme-agent/1.0".parse().unwrap());
+        *chat.request.body_mut() = CapturedBody::from_bytes(
+            br#"{"model":"compatible-chat","messages":[{"role":"user","content":"hello"}],"stream":true}"#.to_vec().into(),
+        );
+        chat.response
+            .headers_mut()
+            .insert("content-type", "text/event-stream".parse().unwrap());
+        *chat.response.body_mut() = CapturedBody::from_bytes(
+            concat!(
+                "data: {\"id\":\"chat-1\",\"choices\":[{\"index\":0,\"delta\":{\"content\":\"hi\"}}]}\n\n",
+                "data: {\"id\":\"chat-1\",\"choices\":[],\"usage\":{\"prompt_tokens\":7,\"completion_tokens\":2,\"total_tokens\":9}}\n\n",
+                "data: [DONE]\n\n"
+            ).as_bytes().to_vec().into(),
+        );
+        hook.on_http_exchange(&chat).await.unwrap();
+        // An unrelated caller on the same protocol remains unmatched.
+        chat.request.headers_mut().remove("user-agent");
+        hook.on_http_exchange(&chat).await.unwrap();
+
+        let events = sink.events.lock().unwrap();
+        assert_eq!(events.len(), 4);
+        assert!(events.iter().all(|event| event.agent.name == "acme-agent"));
+        assert!(
+            events
+                .iter()
+                .all(|event| event.llm.provider.wire_name() == "gateway.example")
+        );
+        for pair in events.chunks(2) {
+            assert_eq!(pair[0].text.as_deref(), Some("hello"));
+            assert_eq!(pair[1].text.as_deref(), Some("hi"));
+        }
+        assert_eq!(events[2].token_usage.input_tokens, 7);
+        assert_eq!(events[3].token_usage.output_tokens, 2);
+        drop(events);
+    }
+
+    #[tokio::test]
     async fn projects_http_messages_and_skips_exchanges_without_response_content() {
         let request = b" {\"model\":\"gpt-test\",\"input\":[{\"role\":\"developer\",\"content\":\"instructions\"},{\"role\":\"user\",\"content\":\"continue\"},{\"role\":\"user\",\"content\":\"continue\"}],\"tools\":[{\"name\":\"exec\",\"schema\":{\"unknown\":42}}],\"extra\": [1,1]} \n";
         let response = b"event: response.output_text.delta\r\ndata: {\"type\":\"response.output_text.delta\",\"delta\":\"hi\"}\r\n\r\ndata: {\"type\":\"response.completed\",\"response\":{\"id\":\"r1\",\"unknown\":true}}\r\n\r\ndata: [DONE]\r\n\r\n";

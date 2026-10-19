@@ -352,6 +352,27 @@ mod tests {
             .expect("empty matcher DTO should deserialize");
         assert_eq!(matcher.process_names, Vec::<String>::new());
         assert_eq!(matcher.application_ids, Vec::<String>::new());
+        assert_eq!(matcher.user_agent_prefixes, Vec::<String>::new());
+    }
+
+    #[test]
+    fn custom_harness_accepts_user_agent_only_matchers_and_rejects_blank_prefixes() {
+        for (prefix, valid) in [("acme-agent/", true), ("", false), ("  ", false)] {
+            let input = serde_json::json!({
+                "harness_usage": {"config": {"harnesses": {"acme": {
+                    "matchers": [{"user_agent_prefixes": [prefix]}]
+                }}}}
+            });
+            let config = serde_json::from_value::<HooksConfig>(input);
+            assert_eq!(config.is_ok(), valid, "{prefix:?}");
+            if let Ok(config) = config {
+                let value = serde_json::to_value(config).unwrap();
+                assert_eq!(
+                    value["harness_usage"]["config"]["harnesses"]["acme"]["matchers"][0],
+                    serde_json::json!({"user_agent_prefixes": [prefix]})
+                );
+            }
+        }
     }
 
     #[test]

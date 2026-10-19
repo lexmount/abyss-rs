@@ -76,7 +76,7 @@ impl HarnessRegistry {
             if let Some(evidence) = harness
                 .matchers
                 .iter()
-                .find_map(|matcher| HarnessMatcher::new(matcher).matches(flow))
+                .find_map(|matcher| HarnessMatcher::new(matcher).matches(flow, headers))
             {
                 detections.push(HarnessDetection {
                     harness_id: harness_id.clone(),

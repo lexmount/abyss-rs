@@ -23,6 +23,33 @@ usage and preserve Harness enablement and matching rules. The broker persists
 the policy and applies it to subsequent event processing; previously captured
 events, including pending delivery retries, are not rewritten or deleted.
 
+Custom Harnesses can reuse the existing protocol parsers by declaring identity
+matchers in `runtime-policy.toml`. For example, an explicit proxy can recognize
+DeepSeek Harness from its request User-Agent without source process metadata:
+
+```toml
+[hooks.harness_usage.config.harnesses."deepseek-harness"]
+enabled = true
+
+[[hooks.harness_usage.config.harnesses."deepseek-harness".matchers]]
+user_agent_prefixes = ["deepseek-harness/"]
+```
+
+`user_agent_prefixes` uses literal, case-sensitive prefixes. `process_names` and
+`application_ids` use exact matches against platform-supplied source metadata.
+Populated fields in one matcher must all match; values within a field and
+separate matchers are alternatives. Exactly one enabled Harness must match.
+Request headers provide attribution, not authenticated process identity.
+TLS traffic must also be selected for interception by the MITM policy.
+For intercepted POST requests ending in `/responses`, `/chat/completions`, or
+`/messages`, the HTTP relay removes `Accept-Encoding` so compatible providers
+return plaintext JSON/SSE for capture, regardless of their hostname.
+
+Harness matching does not select or customize a protocol parser. Recognized
+traffic is parsed using its existing wire protocol, such as OpenAI Responses
+or Chat Completions. Configuring a new Harness does not add support for extra
+provider fields or supply session/turn identifiers absent from its requests.
+
 `product-config.json` has no embedded default in this repository. A deployment
 or package must supply it. The CLI validates `schema_version = 1`, requires
 `product.kind = "cli"`, rejects platform-adapter configuration, and passes the
