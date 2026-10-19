@@ -25,20 +25,6 @@ pub struct AgentEvent {
     pub agent: AgentContext,
     /// Provider or collector session identifier.
     pub session_id: String,
-    /// The user turn this request works for, as the Agent declares it in its
-    /// request headers; unique within the session. Absent when the request
-    /// works for no particular turn.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub turn_id: Option<String>,
-    /// Whether the request comes from a thread the Agent opened only to name
-    /// another session.
-    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
-    pub naming_thread: bool,
-    /// The thread that sent this exchange's request, as the Agent declares it.
-    /// Requests with the same value continue one conversation. Absent when
-    /// the Agent declares none.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub stream_id: Option<String>,
     /// Provider identity of the response this exchange produced. Both events
     /// of the exchange carry it, and later requests continue after it by this
     /// value.
@@ -51,10 +37,6 @@ pub struct AgentEvent {
     /// What the Agent made this provider call for, when its traffic says so.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub purpose: Option<EventPurpose>,
-    /// Title the Agent generated for the session this event belongs to;
-    /// response side of a [`EventPurpose::SessionTitle`] call only.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub session_title: Option<String>,
     /// Provider and model context.
     pub llm: LlmContext,
     /// Request or response side represented by this event.
@@ -352,13 +334,9 @@ mod tests {
             "absent optional content should be omitted"
         );
         for field in [
-            "turn_id",
-            "naming_thread",
-            "stream_id",
             "response_id",
             "previous_response_id",
             "purpose",
-            "session_title",
             "omitted",
             "conversation",
         ] {
@@ -457,13 +435,9 @@ mod tests {
                 version: None,
             },
             session_id: "session-1".to_owned(),
-            turn_id: None,
-            naming_thread: false,
-            stream_id: None,
             response_id: None,
             previous_response_id: None,
             purpose: None,
-            session_title: None,
             llm: LlmContext {
                 provider,
                 model: "gpt-test".to_owned(),

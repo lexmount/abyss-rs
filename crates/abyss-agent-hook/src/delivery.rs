@@ -171,13 +171,9 @@ pub mod tests {
                 version: None,
             },
             session_id: "session-1".to_owned(),
-            turn_id: None,
-            naming_thread: false,
-            stream_id: None,
             response_id: None,
             previous_response_id: None,
             purpose: None,
-            session_title: None,
             llm: LlmPayload {
                 provider: "openai".to_owned(),
                 model: "gpt-test".to_owned(),

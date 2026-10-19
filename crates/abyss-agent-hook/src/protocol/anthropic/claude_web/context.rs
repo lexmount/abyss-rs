@@ -435,7 +435,6 @@ mod tests {
             request_texts: vec!["describe the image".to_owned()],
             request_images: Vec::new(),
             request_file_uuids: file_uuids.iter().map(|value| (*value).to_owned()).collect(),
-            protocol_turn_id: Some("assistant-turn-1".to_owned()),
             request_tool_events: Vec::new(),
             response_tool_events: Vec::new(),
             response_texts: vec!["done".to_owned()],

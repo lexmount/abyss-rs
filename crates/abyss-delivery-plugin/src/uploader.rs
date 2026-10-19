@@ -353,12 +353,6 @@ struct IngestUsageEvent {
     agent: AgentPayload,
     session_id: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    turn_id: Option<String>,
-    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
-    naming_thread: bool,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    stream_id: Option<String>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
     response_id: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     previous_response_id: Option<String>,
@@ -379,9 +373,6 @@ impl TryFrom<AgentEvent> for IngestUsageEvent {
         if let Some(purpose) = event.purpose {
             metadata["purpose"] = serde_json::to_value(purpose)
                 .map_err(|error| DeliveryPluginError::Translate(error.to_string()))?;
-        }
-        if let Some(title) = event.session_title {
-            metadata["session_title"] = Value::String(title);
         }
         if !event.omitted.is_empty() {
             metadata["omitted"] = serde_json::to_value(&event.omitted)
@@ -404,9 +395,6 @@ impl TryFrom<AgentEvent> for IngestUsageEvent {
                 version: event.agent.version,
             },
             session_id: event.session_id,
-            turn_id: event.turn_id,
-            naming_thread: event.naming_thread,
-            stream_id: event.stream_id,
             response_id: event.response_id,
             previous_response_id: event.previous_response_id,
             llm: LlmPayload {
@@ -659,13 +647,9 @@ mod tests {
                 version: None,
             },
             session_id: "session".to_owned(),
-            turn_id: Some("turn-1".to_owned()),
-            naming_thread: true,
-            stream_id: Some("thread-1".to_owned()),
             response_id: Some("resp-1".to_owned()),
             previous_response_id: None,
             purpose: None,
-            session_title: None,
             llm: LlmContext {
                 provider: LlmProvider::OpenAi,
                 model: "gpt".to_owned(),
@@ -699,9 +683,6 @@ mod tests {
             serialized["events"][0]["metadata"]["content_segments"][0]["name"],
             "exec"
         );
-        assert_eq!(serialized["events"][0]["turn_id"], "turn-1");
-        assert_eq!(serialized["events"][0]["naming_thread"], true);
-        assert_eq!(serialized["events"][0]["stream_id"], "thread-1");
         assert_eq!(serialized["events"][0]["response_id"], "resp-1");
         assert!(
             serialized["events"][0]
@@ -713,14 +694,12 @@ mod tests {
     }
 
     #[test]
-    fn carries_exchange_placement_and_omits_an_absent_turn_identity() {
+    fn carries_exchange_placement() {
         let mut event: AgentEvent = serde_json::from_str(include_str!(
             "../../../specs/broker-plugin-protocol/v1/fixtures/agent-event.json"
         ))
         .expect("fixture should decode");
         event.agent.name = "claude-code".to_owned();
-        event.turn_id = None;
-        event.naming_thread = false;
 
         let request = IngestEventsRequest::try_from(event).expect("event should translate");
         let serialized: Value = serde_json::to_value(request).expect("request should serialize");
@@ -728,8 +707,7 @@ mod tests {
         let metadata = &ingest_event["metadata"];
 
         assert!(ingest_event.get("turn_id").is_none());
-        assert!(ingest_event.get("naming_thread").is_none());
-        assert_eq!(ingest_event["stream_id"], "thread-123");
+        assert!(ingest_event.get("stream_id").is_none());
         assert_eq!(ingest_event["response_id"], "resp-123");
         assert_eq!(ingest_event["previous_response_id"], "resp-122");
         assert!(metadata.get("claude_turn_id").is_none());
@@ -741,7 +719,7 @@ mod tests {
                 .is_none()
         );
         assert_eq!(metadata["purpose"], "session_title");
-        assert_eq!(metadata["session_title"], "Repository overview");
+        assert!(metadata.get("session_title").is_none());
     }
 
     #[test]
@@ -751,7 +729,6 @@ mod tests {
         ))
         .expect("fixture should decode");
         event.purpose = Some(abyss_sdk::plugin::EventPurpose::Prewarm);
-        event.session_title = None;
         let expected_usage = serde_json::to_value(&event.token_usage).unwrap();
         let request = IngestEventsRequest::try_from(event).expect("event should translate");
         let serialized = serde_json::to_value(request).unwrap();

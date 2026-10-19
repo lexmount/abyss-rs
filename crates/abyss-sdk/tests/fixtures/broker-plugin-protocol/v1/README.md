@@ -199,13 +199,9 @@ provider documents, and original content blocks are not part of the contract.
     "version": "1.2.3"
   },
   "session_id": "session-123",
-  "turn_id": "turn-123",
-  "naming_thread": true,
-  "stream_id": "thread-123",
   "response_id": "resp-123",
   "previous_response_id": "resp-122",
   "purpose": "session_title",
-  "session_title": "Repository overview",
   "llm": {
     "provider": "openai",
     "model": "gpt-5"
@@ -357,49 +353,12 @@ from "not retained":
 - `images`: no attachment is carried.
 - `token_usage`: every counter is zero.
 
-## Turns
+## Continuation
 
-There is no collector-counted `turn_index`. The collector keeps no turn state. `turn_id` names
-the user turn a request works for, as the Agent declares it in its own request
-headers. It is unique within the session and opaque to consumers, who number
-turns themselves:
+Two optional fields link one exchange to the responses around it. Both events
+of the exchange carry the same values, and each is omitted when the traffic
+declares none:
 
-- Codex: `root_turn_id` from `x-codex-turn-metadata`. On the main thread it
-  equals the request's own `turn_id`; on a thread Codex opens for that turn,
-  such as a guardian review, it names the user turn that thread works for.
-- Claude Code: the `x-claude-code-prompt-id` header. Main-loop requests and the
-  subagents they start carry the same value.
-- Otherwise absent: the request works for no particular user turn. Examples are
-  Claude Code auxiliary requests (recaps, input suggestions, naming calls, quota
-  probes) and compaction, and other Anthropic clients. Consumers place such
-  requests by their own rules.
-
-A provider call identity is never substituted for a turn, so `turn_id` always
-names a turn and never a single call.
-
-## Naming threads
-
-`naming_thread` is `true` when the request comes from a thread the Agent opened
-only to name another session. Codex names a task from a separate session whose
-`x-codex-turn-metadata` declares `thread_source` `thread_title`; the collector
-reports those requests with `naming_thread` and does not forward the Agent's own
-value. The field is omitted when `false`.
-
-## Streams and continuation
-
-Three optional fields place one exchange among the conversations of a session.
-Both events of the exchange carry the same values, and each is omitted when
-the traffic declares none:
-
-- `stream_id`: the thread that sent the request, as the Agent declares it.
-  Requests with the same value continue one conversation.
-  - Codex: `thread_id` from `x-codex-turn-metadata`. The main thread's value
-    equals the session id; a thread Codex opens for a turn, such as a guardian
-    review, has its own value.
-  - Claude Code: by `x-claude-code-request-class`, the session id
-    (`x-claude-code-session-id`) for `main` requests and the subagent instance
-    (`x-claude-code-agent-id`) for `subagent` requests. Other Claude Code
-    requests carry none.
 - `response_id`: the provider identity of the response the exchange produced:
   the OpenAI response id (`resp_…`) or the Anthropic message id (`msg_…`).
   Later requests name it to continue after that response.
@@ -408,7 +367,7 @@ the traffic declares none:
   - Anthropic: `previous_message_id` of a `thread` `continue` request.
   - OpenAI: the request's `previous_response_id`.
 
-## Call purpose and session title
+## Call purpose
 
 `purpose` states what the Agent made a provider call for, when its traffic
 says so. Both events of the call carry it. Values:
@@ -434,18 +393,8 @@ event order, empty replies, missing turn ids, or token differences. For comparis
 with Codex, add Abyss's disjoint input/cache-read/cache-write counters to obtain
 inclusive input; reasoning is already included in output and is not added again.
 
-`session_title` is the title from the response side of a `session_title` call,
-read only when the reply is a single `{"title": "…"}` object. It names the
-event's own session. Like `text`, it is model output and is omitted when the
-content policy drops conversation text.
-
-For title generation, Codex uses a separate thread whose requests do not say
-which session they name. Those naming events carry `naming_thread` instead of
-`purpose: session_title` and `session_title`; Codex compaction calls can still
-carry `purpose: compaction`.
-
-The official delivery plugin stores both fields under the same names in the
-usage-event metadata. The broker forwards them unchanged.
+The official delivery plugin stores it as `metadata.purpose` in the usage-event
+metadata. The broker forwards it unchanged.
 
 ## Event identity and emission
 
@@ -460,11 +409,9 @@ An exchange the parser rejects produces no event.
 ## Delivery
 
 The official delivery plugin stores the conversation as `metadata.conversation`
-and the purpose and title as `metadata.purpose` and `metadata.session_title`.
-It sends `turn_id`, `naming_thread`, `stream_id`, `response_id`, and
-`previous_response_id` as top-level fields of the backend usage event.
-Backend titles and trajectories consume these fields without decoding provider
-bodies. Other plugins may translate the event for their own destinations.
+and the purpose as `metadata.purpose`. It sends `response_id` and
+`previous_response_id` as top-level fields of the backend usage event. Backend
+trajectories consume these fields without decoding provider bodies. Other plugins may translate the event for their own destinations.
 
 Rust, Python, and TypeScript SDKs all request protocol version 1 and consume this
 same event shape with the same 64 MiB JSON frame limit. The broker forwards the

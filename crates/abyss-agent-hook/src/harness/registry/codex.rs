@@ -1,5 +1,5 @@
 //! Codex detection from product-owned process and request markers, and the
-//! turn context Codex declares in its `x-codex-turn-metadata`.
+//! request kind Codex declares in its `x-codex-turn-metadata`.
 
 use abyss_mitm::FlowContext;
 use abyss_plugin_protocol::event::EventPurpose;
@@ -15,8 +15,6 @@ use super::{HarnessDetector, client_version, header};
 
 /// Header and `client_metadata` key carrying Codex turn context as JSON.
 const TURN_METADATA: &str = "x-codex-turn-metadata";
-/// `thread_source` of a thread that names another session.
-const NAMING_THREAD_SOURCE: &str = "thread_title";
 /// `request_kind` of a request that summarizes the conversation.
 const COMPACTION_REQUEST_KIND: &str = "compaction";
 
@@ -36,16 +34,9 @@ pub(super) fn declare(source: &DeclarationSource<'_>) -> AgentDeclaration {
     else {
         return AgentDeclaration::default();
     };
-    let field = |key| string_field(&metadata, key).map(str::to_owned);
     AgentDeclaration {
-        // A guardian thread shares `root_turn_id` with the turn it reviews.
-        turn_id: field("root_turn_id"),
-        // The main thread and a guardian differ in `thread_id`.
-        stream_id: field("thread_id"),
-        naming_thread: string_field(&metadata, "thread_source") == Some(NAMING_THREAD_SOURCE),
         purpose: (string_field(&metadata, "request_kind") == Some(COMPACTION_REQUEST_KIND))
             .then_some(EventPurpose::Compaction),
-        session_title: None,
     }
 }
 
@@ -127,7 +118,6 @@ mod tests {
             headers,
             body: None,
             client_metadata,
-            response_texts: &[],
         })
     }
 
@@ -138,27 +128,12 @@ mod tests {
     }
 
     #[test]
-    fn turn_metadata_names_the_user_turn_thread_naming_threads_and_compaction() {
-        for (metadata, turn_id, stream_id, naming_thread, purpose) in [
+    fn request_kind_names_compaction() {
+        for (metadata, purpose) in [
             (
                 json!({"session_id": "session-1", "thread_id": "session-1",
                     "turn_id": "turn-a", "root_turn_id": "turn-a",
                     "thread_source": "user", "request_kind": "turn"}),
-                Some("turn-a"),
-                Some("session-1"),
-                false,
-                None,
-            ),
-            // A guardian thread reviews the user turn it was opened for.
-            (
-                json!({"session_id": "session-1", "thread_id": "thread-g",
-                    "parent_thread_id": "session-1", "turn_id": "turn-g",
-                    "parent_turn_id": "turn-a", "root_turn_id": "turn-a",
-                    "subagent_kind": "guardian", "thread_source": "guardian_review",
-                    "request_kind": "turn"}),
-                Some("turn-a"),
-                Some("thread-g"),
-                false,
                 None,
             ),
             (
@@ -166,34 +141,11 @@ mod tests {
                     "turn_id": "turn-b", "root_turn_id": "turn-b",
                     "thread_source": "user", "request_kind": "compaction",
                     "compaction": {"trigger": "auto", "phase": "mid_turn"}}),
-                Some("turn-b"),
-                Some("session-1"),
-                false,
                 Some(EventPurpose::Compaction),
-            ),
-            (
-                json!({"session_id": "naming-1", "thread_id": "naming-1",
-                    "turn_id": "turn-t", "root_turn_id": "turn-t",
-                    "thread_source": "thread_title", "request_kind": "turn"}),
-                Some("turn-t"),
-                Some("naming-1"),
-                true,
-                None,
-            ),
-            // Only the root turn names the user turn.
-            (
-                json!({"turn_id": "turn-c", "thread_source": "user"}),
-                None,
-                None,
-                false,
-                None,
             ),
         ] {
             let declaration = declared(Some(&client_metadata(&metadata)), None);
 
-            assert_eq!(declaration.turn_id.as_deref(), turn_id, "{metadata}");
-            assert_eq!(declaration.stream_id.as_deref(), stream_id, "{metadata}");
-            assert_eq!(declaration.naming_thread, naming_thread, "{metadata}");
             assert_eq!(declaration.purpose, purpose, "{metadata}");
         }
     }
@@ -203,18 +155,15 @@ mod tests {
         let mut headers = HeaderMap::new();
         headers.insert(
             "x-codex-turn-metadata",
-            json!({"thread_id": "naming-1", "turn_id": "turn-g",
-                "root_turn_id": "turn-a", "thread_source": "thread_title"})
-            .to_string()
-            .parse()
-            .unwrap(),
+            json!({"thread_id": "session-1", "request_kind": "compaction"})
+                .to_string()
+                .parse()
+                .unwrap(),
         );
 
         let declaration = declared(None, Some(&headers));
 
-        assert_eq!(declaration.turn_id.as_deref(), Some("turn-a"));
-        assert_eq!(declaration.stream_id.as_deref(), Some("naming-1"));
-        assert!(declaration.naming_thread);
+        assert_eq!(declaration.purpose, Some(EventPurpose::Compaction));
     }
 
     #[test]

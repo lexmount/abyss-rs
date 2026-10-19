@@ -29,7 +29,6 @@ fn structured_conversation_and_handshakes_round_trip() {
     assert!(schema["properties"].get("raw_body").is_none());
     assert!(schema["properties"].get("claude_code_billing").is_none());
     assert!(schema["properties"].get("claude_thread").is_none());
-    assert_eq!(schema["properties"]["naming_thread"]["type"], "boolean");
     assert_eq!(
         schema["properties"]["purpose"]["enum"],
         serde_json::json!(["session_title", "compaction", "prewarm"])
@@ -38,7 +37,16 @@ fn structured_conversation_and_handshakes_round_trip() {
         serde_json::to_value(abyss_sdk::event::EventPurpose::Compaction).unwrap(),
         "compaction"
     );
-    assert_eq!(fixture["naming_thread"], true);
+    // The collector infers no turn, thread, naming thread, or session title.
+    for field in ["turn_id", "naming_thread", "stream_id", "session_title"] {
+        assert!(schema["properties"].get(field).is_none(), "{field}");
+        let mut inferred = fixture.clone();
+        inferred[field] = "x".into();
+        assert!(
+            serde_json::from_value::<AgentEvent>(inferred).is_err(),
+            "{field}"
+        );
+    }
     let mut prewarm = fixture.clone();
     prewarm["purpose"] = "prewarm".into();
     let decoded: AgentEvent = serde_json::from_value(prewarm.clone()).unwrap();
@@ -47,7 +55,7 @@ fn structured_conversation_and_handshakes_round_trip() {
         Some(abyss_sdk::plugin::EventPurpose::Prewarm)
     );
     assert_eq!(serde_json::to_value(decoded).unwrap(), prewarm);
-    for field in ["stream_id", "response_id", "previous_response_id"] {
+    for field in ["response_id", "previous_response_id"] {
         assert_eq!(schema["properties"][field]["type"], "string", "{field}");
         assert!(fixture[field].is_string(), "{field}");
     }
@@ -263,7 +271,7 @@ fn published_agent_event_fixture_matches_the_public_sdk() {
         "tool activity should use the public structured contract"
     );
     assert!(event.get("turn_index").is_none());
-    assert_eq!(event["turn_id"], "turn-123");
+    assert!(event.get("turn_id").is_none());
     contract.assert_fixture_round_trip::<AgentEvent>("agent-event.json");
 }
 
