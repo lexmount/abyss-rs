@@ -15,6 +15,8 @@ export interface AgentEvent {
   /** Content categories the content policy omitted; absent when none were. */
   omitted?: ContentCategory[];
   conversation?: Conversation;
+  /** Captured headers of the event's side, credential values redacted. */
+  headers?: HttpHeader[];
   token_usage: TokenUsage;
   tool_calls?: ToolCall[];
   tool_results?: ToolResult[];
@@ -55,6 +57,10 @@ export interface Conversation {
   entries: ConversationEntry[];
   completeness: ContentCompleteness;
 }
+
+/** One captured header; `value_base64` carries a value that is not UTF-8. */
+export type HttpHeader =
+  { name: string; value: string } | { name: string; value_base64: string };
 
 export interface DeviceContext {
   host_name: string;
@@ -130,6 +136,7 @@ export function decodeAgentEvent(value: unknown): AgentEvent {
       "text",
       "omitted",
       "conversation",
+      "headers",
       "token_usage",
       "tool_calls",
       "tool_results",
@@ -169,6 +176,7 @@ export function decodeAgentEvent(value: unknown): AgentEvent {
   if (event.conversation !== undefined) {
     decodeConversation(event.conversation);
   }
+  optionalArray(event, "headers").forEach(decodeHeader);
   decodeTokenUsage(event.token_usage);
   optionalArray(event, "tool_calls").forEach(decodeToolCall);
   optionalArray(event, "tool_results").forEach(decodeToolResult);
@@ -209,6 +217,19 @@ function decodeConversation(value: unknown): void {
     "partial",
     "unsupported",
   ]);
+}
+
+function decodeHeader(value: unknown): void {
+  const header = record(value, "AgentEvent.headers[]");
+  rejectUnknown(header, ["name", "value", "value_base64"], "header");
+  stringField(header, "name");
+  optionalStringField(header, "value");
+  optionalStringField(header, "value_base64");
+  if ((header.value === undefined) === (header.value_base64 === undefined)) {
+    throw new TypeError(
+      "a header carries exactly one of value and value_base64",
+    );
+  }
 }
 
 function decodeDevice(value: unknown): void {

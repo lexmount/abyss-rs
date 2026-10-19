@@ -40,6 +40,15 @@ class Conversation:
 
 
 @dataclass(frozen=True)
+class HttpHeader:
+    """One captured header; ``value_base64`` carries a value that is not UTF-8."""
+
+    name: str
+    value: Optional[str]
+    value_base64: Optional[str]
+
+
+@dataclass(frozen=True)
 class DeviceContext:
     """Device context attached to an Agent event."""
 
@@ -128,6 +137,7 @@ class AgentEvent:
     text: Optional[str]
     omitted: tuple[ContentCategory, ...]
     conversation: Optional[Conversation]
+    headers: tuple[HttpHeader, ...]
     token_usage: TokenUsage
     tool_calls: tuple[ToolCall, ...]
     tool_results: tuple[ToolResult, ...]
@@ -154,6 +164,7 @@ class AgentEvent:
                 "text",
                 "omitted",
                 "conversation",
+                "headers",
                 "token_usage",
                 "tool_calls",
                 "tool_results",
@@ -188,6 +199,9 @@ class AgentEvent:
                 _conversation(event["conversation"])
                 if event.get("conversation") is not None
                 else None
+            ),
+            headers=tuple(
+                _header(item) for item in _list(event.get("headers", []), "AgentEvent.headers")
             ),
             token_usage=_token_usage(_mapping(event.get("token_usage"), "AgentEvent.token_usage")),
             tool_calls=tuple(
@@ -248,6 +262,19 @@ def _conversation_entry(value: Any) -> ConversationEntry:
         name=_optional_string(item, "name"),
         item_id=_optional_string(item, "item_id"),
     )
+
+
+def _header(value: Any) -> HttpHeader:
+    item = _mapping(value, "AgentEvent.headers[]")
+    _reject_unknown(item, {"name", "value", "value_base64"}, "header")
+    header = HttpHeader(
+        name=_string(item, "name"),
+        value=_optional_string(item, "value"),
+        value_base64=_optional_string(item, "value_base64"),
+    )
+    if (header.value is None) == (header.value_base64 is None):
+        raise ValueError("a header carries exactly one of value and value_base64")
+    return header
 
 
 def _device(value: Mapping[str, Any]) -> DeviceContext:

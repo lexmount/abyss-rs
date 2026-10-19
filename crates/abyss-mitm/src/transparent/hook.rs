@@ -387,6 +387,8 @@ pub struct WebSocketMessage {
     /// The upgraded request supplies host/path/method context for hooks, while
     /// filtering still happens at the flow level through [`MitmHook::matches`].
     pub upgrade_request: Request<()>,
+    /// HTTP `101 Switching Protocols` response that accepted the upgrade.
+    pub upgrade_response: Response<()>,
     /// Message direction inside the upgraded WebSocket tunnel.
     pub direction: WebSocketDirection,
     /// Per-flow monotonically increasing message sequence number.
@@ -403,6 +405,7 @@ impl WebSocketMessage {
     pub const fn new(
         flow: FlowContext,
         upgrade_request: Request<()>,
+        upgrade_response: Response<()>,
         direction: WebSocketDirection,
         sequence: u64,
         text: Option<String>,
@@ -411,6 +414,7 @@ impl WebSocketMessage {
         Self {
             flow,
             upgrade_request,
+            upgrade_response,
             direction,
             sequence,
             text,
@@ -1277,6 +1281,10 @@ mod tests {
                 .uri("/backend-api/codex/responses")
                 .body(())
                 .expect("test websocket upgrade request should build"),
+            upgrade_response: Response::builder()
+                .status(101)
+                .body(())
+                .expect("test websocket upgrade response should build"),
             direction: WebSocketDirection::ClientToServer,
             sequence: 1,
             text: Some(text.to_owned()),

@@ -66,5 +66,19 @@
       }
     ],
     "completeness": "complete"
-  }
+  },
+  "headers": [
+    {
+      "name": "content-type",
+      "value": "text/event-stream"
+    },
+    {
+      "name": "x-request-id",
+      "value": "req-123"
+    },
+    {
+      "name": "set-cookie",
+      "value": "<redacted>"
+    }
+  ]
 }

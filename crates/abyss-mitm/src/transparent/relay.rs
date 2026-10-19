@@ -40,7 +40,7 @@ use super::{
         is_websocket_upgrade_request, should_strip_accept_encoding, status_has_no_body,
         websocket_request_head_bytes,
     },
-    websocket::{WebSocketRelayOutcome, relay_websocket_messages},
+    websocket::{WebSocketRelayOutcome, WebSocketUpgrade, relay_websocket_messages},
 };
 
 /// Bounded scratch buffer used while streaming HTTP bodies.
@@ -310,6 +310,7 @@ where
             upstream_prefetch,
             context,
             request_head,
+            response_head,
             outcome: upgrade_outcome,
         } = upgrade;
 
@@ -321,7 +322,10 @@ where
             upstream_stream,
             upstream_prefetch,
             context,
-            request_head,
+            WebSocketUpgrade {
+                request: request_head,
+                response: response_head,
+            },
             hooks,
         )
         .await?;
@@ -357,6 +361,7 @@ where
             })?;
 
         let upgrade_request = self.first_request.clone();
+        let upgrade_response = response_head.clone();
         let response_head_bytes = usize_to_u64(response_head_buffer.head_bytes().len())?;
         let upgrade_outcome = submit_captured_exchange(
             self.context.clone(),
@@ -375,6 +380,7 @@ where
             upstream_prefetch: response_head_buffer.buffered_body().to_vec(),
             context: self.context,
             request_head: upgrade_request,
+            response_head: upgrade_response,
             outcome: upgrade_outcome,
         })
     }
@@ -439,6 +445,8 @@ struct ForwardedWebSocketUpgrade<C, U> {
     context: FlowContext,
     /// Original HTTP upgrade request used as the WebSocket conversation anchor.
     request_head: Request<()>,
+    /// Upstream `101 Switching Protocols` response head.
+    response_head: Response<()>,
     /// Outcome for the HTTP upgrade exchange before WebSocket payload bytes.
     outcome: RelayOutcome,
 }

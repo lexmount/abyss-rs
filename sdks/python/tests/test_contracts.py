@@ -44,6 +44,9 @@ class AgentEventContractTests(unittest.TestCase):
         self.assertEqual(event.conversation.entries[0].item_id, "rs-123")
         self.assertEqual(event.omitted, ())
         self.assertEqual(event.conversation.completeness, "complete")
+        self.assertEqual(event.headers[1].name, "x-request-id")
+        self.assertEqual(event.headers[1].value, "req-123")
+        self.assertIsNone(event.headers[1].value_base64)
         self.assertFalse(hasattr(event, "turn_index"))
 
     def test_optional_context_and_entry_identities(self) -> None:
@@ -53,10 +56,12 @@ class AgentEventContractTests(unittest.TestCase):
             "previous_response_id",
             "purpose",
             "conversation",
+            "headers",
         ):
             fixture.pop(field)
         event = AgentEvent.from_dict(fixture)
         self.assertIsNone(event.response_id)
+        self.assertEqual(event.headers, ())
         self.assertIsNone(event.conversation)
         fixture["purpose"] = "compaction"
         fixture["omitted"] = ["conversation_text"]
@@ -88,6 +93,9 @@ class AgentEventContractTests(unittest.TestCase):
             (("conversation", "messages"), []),
             (("conversation", "instructions_present"), True),
             (("conversation", "policy_omitted"), False),
+            (("headers", 0, "value"), 1),
+            (("headers", 0, "value_base64"), "dg=="),
+            (("headers", 0, "raw"), True),
         ):
             with self.subTest(path=path):
                 fixture = json.loads(FIXTURE.read_text(encoding="utf-8"))

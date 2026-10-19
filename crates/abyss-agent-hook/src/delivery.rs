@@ -182,6 +182,7 @@ pub mod tests {
             text: Some("hello".to_owned()),
             omitted: Vec::new(),
             conversation: None,
+            headers: Vec::new(),
             token_usage: TokenUsage {
                 input_tokens: 1_i64,
                 total_tokens: 1_i64,
