@@ -6,14 +6,9 @@ export interface AgentEvent {
   device: DeviceContext;
   agent: AgentContext;
   session_id: string;
-  /** User turn declared by the Agent; absent when no turn was declared. */
-  turn_id?: string;
-  naming_thread?: boolean;
-  stream_id?: string;
   response_id?: string;
   previous_response_id?: string;
   purpose?: EventPurpose;
-  session_title?: string;
   llm: LlmContext;
   side: AgentEventSide;
   text?: string;
@@ -127,13 +122,9 @@ export function decodeAgentEvent(value: unknown): AgentEvent {
       "device",
       "agent",
       "session_id",
-      "turn_id",
-      "naming_thread",
-      "stream_id",
       "response_id",
       "previous_response_id",
       "purpose",
-      "session_title",
       "llm",
       "side",
       "text",
@@ -154,17 +145,8 @@ export function decodeAgentEvent(value: unknown): AgentEvent {
   decodeDevice(event.device);
   decodeAgent(event.agent);
   stringField(event, "session_id");
-  for (const field of [
-    "turn_id",
-    "stream_id",
-    "response_id",
-    "previous_response_id",
-    "session_title",
-  ]) {
+  for (const field of ["response_id", "previous_response_id"]) {
     optionalStringField(event, field);
-  }
-  if (event.naming_thread !== undefined) {
-    booleanField(event, "naming_thread");
   }
   if (event.purpose !== undefined) {
     choiceField(event, "purpose", ["session_title", "compaction", "prewarm"]);
@@ -350,12 +332,6 @@ function nonNegativeIntegerField(
     throw new TypeError(`${field} must be a non-negative safe integer`);
   }
   return fieldValue;
-}
-
-function booleanField(value: Record<string, unknown>, field: string): void {
-  if (typeof value[field] !== "boolean") {
-    throw new TypeError(`${field} must be a boolean`);
-  }
 }
 
 function choiceField(

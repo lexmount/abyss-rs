@@ -31,15 +31,6 @@
     "session_id": {
       "type": "string"
     },
-    "turn_id": {
-      "type": "string"
-    },
-    "naming_thread": {
-      "type": "boolean"
-    },
-    "stream_id": {
-      "type": "string"
-    },
     "response_id": {
       "type": "string"
     },
@@ -52,9 +43,6 @@
         "compaction",
         "prewarm"
       ]
-    },
-    "session_title": {
-      "type": "string"
     },
     "llm": {
       "$ref": "#/$defs/llmContext"

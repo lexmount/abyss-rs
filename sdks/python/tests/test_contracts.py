@@ -21,7 +21,6 @@ class AgentEventContractTests(unittest.TestCase):
     def test_explicit_prewarm_retains_observed_usage(self) -> None:
         fixture = json.loads(FIXTURE.read_text(encoding="utf-8"))
         fixture["purpose"] = "prewarm"
-        fixture.pop("session_title")
         event = AgentEvent.from_dict(fixture)
         self.assertEqual(event.purpose, "prewarm")
         self.assertEqual(event.token_usage.input_tokens, fixture["token_usage"]["input_tokens"])
@@ -30,15 +29,11 @@ class AgentEventContractTests(unittest.TestCase):
         event = AgentEvent.from_dict(json.loads(FIXTURE.read_text(encoding="utf-8")))
 
         self.assertEqual(event.event_id, "evt-123")
-        self.assertEqual(event.turn_id, "turn-123")
         self.assertEqual(event.llm.provider, "openai")
         self.assertEqual(event.tool_calls[0].name, "exec")
-        self.assertTrue(event.naming_thread)
-        self.assertEqual(event.stream_id, "thread-123")
         self.assertEqual(event.response_id, "resp-123")
         self.assertEqual(event.previous_response_id, "resp-122")
         self.assertEqual(event.purpose, "session_title")
-        self.assertEqual(event.session_title, "Repository overview")
         self.assertIsNotNone(event.conversation)
         self.assertEqual(
             [entry.role for entry in event.conversation.entries],
@@ -54,20 +49,15 @@ class AgentEventContractTests(unittest.TestCase):
     def test_optional_context_and_entry_identities(self) -> None:
         fixture = json.loads(FIXTURE.read_text(encoding="utf-8"))
         for field in (
-            "turn_id",
-            "naming_thread",
-            "stream_id",
             "response_id",
             "previous_response_id",
             "purpose",
-            "session_title",
             "conversation",
         ):
             fixture.pop(field)
         event = AgentEvent.from_dict(fixture)
-        self.assertIsNone(event.turn_id)
+        self.assertIsNone(event.response_id)
         self.assertIsNone(event.conversation)
-        self.assertFalse(event.naming_thread)
         fixture["purpose"] = "compaction"
         fixture["omitted"] = ["conversation_text"]
         fixture["conversation"] = {
@@ -83,8 +73,10 @@ class AgentEventContractTests(unittest.TestCase):
     def test_rejects_obsolete_fields_and_malformed_content(self) -> None:
         for path, value in (
             (("turn_index",), 1),
-            (("naming_thread",), 1),
-            (("stream_id",), 1),
+            (("turn_id",), "turn-1"),
+            (("naming_thread",), True),
+            (("stream_id",), "thread-1"),
+            (("session_title",), "title"),
             (("purpose",), "other"),
             (("omitted",), ["text"]),
             (("conversation", "entries", 0, "role"), "tool"),

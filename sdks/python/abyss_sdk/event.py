@@ -120,13 +120,9 @@ class AgentEvent:
     device: DeviceContext
     agent: AgentContext
     session_id: str
-    turn_id: Optional[str]
-    naming_thread: bool
-    stream_id: Optional[str]
     response_id: Optional[str]
     previous_response_id: Optional[str]
     purpose: Optional[EventPurpose]
-    session_title: Optional[str]
     llm: LlmContext
     side: str
     text: Optional[str]
@@ -150,13 +146,9 @@ class AgentEvent:
                 "device",
                 "agent",
                 "session_id",
-                "turn_id",
-                "naming_thread",
-                "stream_id",
                 "response_id",
                 "previous_response_id",
                 "purpose",
-                "session_title",
                 "llm",
                 "side",
                 "text",
@@ -182,13 +174,9 @@ class AgentEvent:
             device=_device(_mapping(event.get("device"), "AgentEvent.device")),
             agent=_agent(_mapping(event.get("agent"), "AgentEvent.agent")),
             session_id=_string(event, "session_id"),
-            turn_id=_optional_string(event, "turn_id"),
-            naming_thread=_boolean(event, "naming_thread") if "naming_thread" in event else False,
-            stream_id=_optional_string(event, "stream_id"),
             response_id=_optional_string(event, "response_id"),
             previous_response_id=_optional_string(event, "previous_response_id"),
             purpose=cast(Optional[EventPurpose], purpose),
-            session_title=_optional_string(event, "session_title"),
             llm=_llm(_mapping(event.get("llm"), "AgentEvent.llm")),
             side=side,
             text=_optional_string(event, "text"),
@@ -372,13 +360,6 @@ def _optional_string(value: Mapping[str, Any], field: str) -> Optional[str]:
         return None
     if not isinstance(result, str):
         raise TypeError(f"{field} must be a string when present")
-    return result
-
-
-def _boolean(value: Mapping[str, Any], field: str) -> bool:
-    result = value.get(field)
-    if not isinstance(result, bool):
-        raise TypeError(f"{field} must be a boolean")
     return result
 
 

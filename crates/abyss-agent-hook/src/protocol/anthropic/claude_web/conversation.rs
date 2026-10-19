@@ -72,8 +72,6 @@ pub struct ParsedClaudeWebExchange {
     pub request_images: Vec<ParsedImageAttachment>,
     /// File UUIDs referencing images uploaded through the Claude Web file API.
     pub request_file_uuids: Vec<String>,
-    /// Stable logical turn id supplied by Claude Web.
-    pub protocol_turn_id: Option<String>,
     /// Tool results submitted on the request side of this provider call.
     pub request_tool_events: Vec<ParsedToolEvent>,
     /// Tool calls and results streamed on the response side.
@@ -148,10 +146,6 @@ pub fn parse_claude_web_exchange(exchange: &HttpExchange) -> Option<ParsedClaude
             |usage| (usage, TokenUsageSource::ProviderReported),
         );
     let turn_message_uuids = turn_message_uuids(request_json);
-    let protocol_turn_id = turn_message_uuids
-        .assistant
-        .clone()
-        .or_else(|| turn_message_uuids.human.clone());
     let request_hash = sha256_hex(&format!(
         "{}\0{}\0{}\0{}",
         exchange.request.method(),
@@ -173,7 +167,6 @@ pub fn parse_claude_web_exchange(exchange: &HttpExchange) -> Option<ParsedClaude
         request_texts,
         request_images,
         request_file_uuids,
-        protocol_turn_id,
         request_tool_events,
         response_tool_events,
         response_texts,
@@ -250,7 +243,6 @@ mod tests {
         assert_eq!(parsed.request_texts, vec!["hello desktop"]);
         assert_eq!(parsed.response_texts, vec!["hello user"]);
         assert_eq!(parsed.request_file_uuids, vec!["file-1"]);
-        assert_eq!(parsed.protocol_turn_id.as_deref(), Some("assistant-1"));
         assert!(matches!(
             parsed.usage_source,
             TokenUsageSource::EstimatedVisibleContent

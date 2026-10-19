@@ -81,15 +81,6 @@ pub struct NormalizedUsageEvent {
     pub agent: AgentPayload,
     /// Provider/session correlation id when available, otherwise a flow-derived id.
     pub session_id: String,
-    /// The user turn this request works for, as the Agent declares it.
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub turn_id: Option<String>,
-    /// Whether the Agent opened the sending thread only to name another session.
-    #[serde(skip_serializing_if = "std::ops::Not::not")]
-    pub naming_thread: bool,
-    /// The thread that sent this exchange's request, as the Agent declares it.
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub stream_id: Option<String>,
     /// Provider identity of the response this exchange produced.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub response_id: Option<String>,
@@ -99,9 +90,6 @@ pub struct NormalizedUsageEvent {
     /// Purpose the Agent declared for this provider call.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub purpose: Option<EventPurpose>,
-    /// Title the Agent generated for this event's session.
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub session_title: Option<String>,
     /// LLM provider and model metadata.
     pub llm: LlmPayload,
     /// Logical event side: currently `request` or `response`.
@@ -133,13 +121,9 @@ impl TryFrom<NormalizedUsageEvent> for AgentEvent {
             device,
             agent,
             session_id,
-            turn_id,
-            naming_thread,
-            stream_id,
             response_id,
             previous_response_id,
             purpose,
-            session_title,
             llm,
             event_type,
             text,
@@ -175,13 +159,9 @@ impl TryFrom<NormalizedUsageEvent> for AgentEvent {
                 version: agent.version,
             },
             session_id,
-            turn_id,
-            naming_thread,
-            stream_id,
             response_id,
             previous_response_id,
             purpose,
-            session_title,
             llm: LlmContext {
                 provider: LlmProvider::from_wire_name(llm.provider),
                 model: llm.model,
@@ -394,11 +374,7 @@ where
     let continuation = parsed.continuation();
     // Only the traffic names these; without a declaration the events carry none.
     let declared = Declared {
-        turn_id: declaration.turn_id.as_deref(),
-        naming_thread: declaration.naming_thread,
-        stream_id: declaration.stream_id.as_deref(),
         purpose: parsed.purpose().or(declaration.purpose),
-        session_title: declaration.session_title.as_deref(),
         response_id: continuation.response_id,
         previous_response_id: continuation.previous_response_id,
     };
@@ -450,12 +426,7 @@ pub struct Continuation<'a> {
 /// traffic. Both events of the exchange carry it.
 #[derive(Clone, Copy, Default)]
 struct Declared<'a> {
-    turn_id: Option<&'a str>,
-    naming_thread: bool,
-    stream_id: Option<&'a str>,
     purpose: Option<EventPurpose>,
-    /// Title the Agent generated for its session; only the response carries it.
-    session_title: Option<&'a str>,
     response_id: Option<&'a str>,
     previous_response_id: Option<&'a str>,
 }
@@ -469,7 +440,6 @@ struct EventSide<'a> {
     attachments: &'a [ParsedImageAttachment],
     content: &'a HarnessUsageContentConfig,
     declared: Declared<'a>,
-    session_title: Option<&'a str>,
 }
 
 /// Generates strictly increasing collector timestamps for one normalized
@@ -572,7 +542,6 @@ fn events_for_parsed_exchange(
                 attachments: &parts.request_images,
                 content,
                 declared,
-                session_title: None,
             },
             timestamps.next(),
         ));
@@ -596,7 +565,6 @@ fn events_for_parsed_exchange(
                 attachments: &[],
                 content,
                 declared,
-                session_title: declared.session_title,
             },
             timestamps.next(),
         ));
@@ -760,17 +728,9 @@ fn usage_event(
             version: parts.harness_version.clone(),
         },
         session_id: parts.session_id.clone(),
-        turn_id: side.declared.turn_id.map(str::to_owned),
-        naming_thread: side.declared.naming_thread,
-        stream_id: side.declared.stream_id.map(str::to_owned),
         response_id: side.declared.response_id.map(str::to_owned),
         previous_response_id: side.declared.previous_response_id.map(str::to_owned),
         purpose: side.declared.purpose,
-        // The title is model output, retained like the reply text.
-        session_title: side
-            .session_title
-            .filter(|_| side.content.conversation_text)
-            .map(str::to_owned),
         llm: LlmPayload {
             provider: parts.llm_provider.clone(),
             model: parts
@@ -938,9 +898,7 @@ mod tests {
                 .iter()
                 .all(|event| event.llm.provider == "gateway.example")
         );
-        // Without a declared turn the events carry no turn identity.
-        assert!(events.iter().all(|event| event.turn_id.is_none()));
-        assert!(events.iter().all(|event| !event.naming_thread));
+        assert!(events.iter().all(|event| event.purpose.is_none()));
         assert_eq!(
             events[0].metadata["source_evidence"][0],
             "header:x-openai-originator"
@@ -954,10 +912,7 @@ mod tests {
         let mut parsed = openai_exchange();
         parsed.previous_response_id = Some("response-0".to_owned());
         let declaration = AgentDeclaration {
-            turn_id: Some("turn-7".to_owned()),
-            stream_id: Some("thread-7".to_owned()),
-            naming_thread: true,
-            ..AgentDeclaration::default()
+            purpose: Some(EventPurpose::Compaction),
         };
         let detection = detection(BuiltInHarness::Codex, "x-openai-originator");
 
@@ -973,9 +928,7 @@ mod tests {
         assert_eq!(events.len(), 2);
         for event in events {
             let event = AgentEvent::try_from(event).expect("event should convert");
-            assert_eq!(event.turn_id.as_deref(), Some("turn-7"));
-            assert!(event.naming_thread);
-            assert_eq!(event.stream_id.as_deref(), Some("thread-7"));
+            assert_eq!(event.purpose, Some(EventPurpose::Compaction));
             assert_eq!(event.response_id.as_deref(), Some("response-1"));
             assert_eq!(event.previous_response_id.as_deref(), Some("response-0"));
         }
@@ -1100,44 +1053,6 @@ mod tests {
     }
 
     #[test]
-    fn session_title_rides_on_the_response_and_follows_the_text_policy() {
-        let parsed = anthropic_messages_exchange();
-        let declaration = AgentDeclaration {
-            purpose: Some(EventPurpose::SessionTitle),
-            session_title: Some("登录修复".to_owned()),
-            ..AgentDeclaration::default()
-        };
-        let detection = detection(BuiltInHarness::ClaudeCode, "x-claude-code-session-id");
-
-        for conversation_text in [true, false] {
-            let content = HarnessUsageContentConfig {
-                conversation_text,
-                ..HarnessUsageContentConfig::default()
-            };
-            let events = normalize_exchange(
-                &hook_config(),
-                &parsed,
-                &content,
-                &detection,
-                &LlmProvider::Anthropic,
-                &declaration,
-            );
-
-            assert_eq!(events.len(), 2);
-            assert!(
-                events
-                    .iter()
-                    .all(|event| event.purpose == Some(EventPurpose::SessionTitle))
-            );
-            assert!(events[0].session_title.is_none());
-            assert_eq!(
-                events[1].session_title.as_deref(),
-                conversation_text.then_some("登录修复")
-            );
-        }
-    }
-
-    #[test]
     fn anthropic_messages_normalization_does_not_infer_harness_from_protocol() {
         let parsed = anthropic_messages_exchange();
         let detection = HarnessDetection {
@@ -1181,7 +1096,6 @@ mod tests {
             request_texts: vec!["hello".to_owned()],
             request_images: Vec::new(),
             request_file_uuids: Vec::new(),
-            protocol_turn_id: Some("assistant-message".to_owned()),
             request_tool_events: Vec::new(),
             response_tool_events: Vec::new(),
             response_texts: Vec::new(),

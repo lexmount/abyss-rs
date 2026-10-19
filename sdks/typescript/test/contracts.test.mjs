@@ -15,15 +15,11 @@ test("shared AgentEvent fixture decodes through the TypeScript SDK", async () =>
   const event = decodeAgentEvent(fixture);
 
   assert.equal(event.event_id, "evt-123");
-  assert.equal(event.turn_id, "turn-123");
   assert.equal(event.llm.provider, "openai");
   assert.equal(event.tool_calls[0].name, "exec");
-  assert.equal(event.naming_thread, true);
-  assert.equal(event.stream_id, "thread-123");
   assert.equal(event.response_id, "resp-123");
   assert.equal(event.previous_response_id, "resp-122");
   assert.equal(event.purpose, "session_title");
-  assert.equal(event.session_title, "Repository overview");
   assert.deepEqual(event.conversation, fixture.conversation);
   assert.equal("turn_index" in event, false);
 });
@@ -31,18 +27,14 @@ test("shared AgentEvent fixture decodes through the TypeScript SDK", async () =>
 test("undeclared context and entry identities may be omitted", async () => {
   const fixture = JSON.parse(await readFile(fixtureUrl, "utf8"));
   for (const field of [
-    "turn_id",
-    "naming_thread",
-    "stream_id",
     "response_id",
     "previous_response_id",
     "purpose",
-    "session_title",
     "conversation",
   ]) {
     delete fixture[field];
   }
-  assert.equal(decodeAgentEvent(fixture).turn_id, undefined);
+  assert.equal(decodeAgentEvent(fixture).response_id, undefined);
   fixture.purpose = "compaction";
   fixture.omitted = ["conversation_text"];
   fixture.conversation = {
@@ -57,7 +49,6 @@ test("undeclared context and entry identities may be omitted", async () => {
 test("explicit prewarm retains its observed usage in v1", async () => {
   const fixture = JSON.parse(await readFile(fixtureUrl, "utf8"));
   fixture.purpose = "prewarm";
-  delete fixture.session_title;
   const event = decodeAgentEvent(fixture);
   assert.equal(event.purpose, "prewarm");
   assert.deepEqual(event.token_usage, fixture.token_usage);
@@ -70,10 +61,16 @@ test("structured events reject obsolete fields and malformed content", async () 
       e.turn_index = 1;
     },
     (e) => {
-      e.naming_thread = 1;
+      e.turn_id = "turn-1";
     },
     (e) => {
-      e.stream_id = 1;
+      e.naming_thread = true;
+    },
+    (e) => {
+      e.stream_id = "thread-1";
+    },
+    (e) => {
+      e.session_title = "title";
     },
     (e) => {
       e.purpose = "other";

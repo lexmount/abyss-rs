@@ -76,19 +76,14 @@ where
         match protocol {
             LlmProtocol::OpenAi(OpenAiProtocol::Responses | OpenAiProtocol::ChatCompletions) => {
                 parse_openai_exchange(exchange).map(|parsed| {
-                    let declaration = http_declaration(
-                        &detection,
-                        exchange,
-                        parsed.client_metadata.as_ref(),
-                        &parsed.response_texts,
-                    );
+                    let declaration =
+                        http_declaration(&detection, exchange, parsed.client_metadata.as_ref());
                     self.normalize(&parsed, &content, &detection, &provider, &declaration)
                 })
             }
             LlmProtocol::Anthropic(AnthropicProtocol::Messages) => {
                 parse_anthropic_messages_exchange(exchange).map(|parsed| {
-                    let declaration =
-                        http_declaration(&detection, exchange, None, &parsed.response_texts);
+                    let declaration = http_declaration(&detection, exchange, None);
                     self.normalize(&parsed, &content, &detection, &provider, &declaration)
                 })
             }
@@ -97,11 +92,7 @@ where
             )) => parse_claude_web_exchange(exchange).map(|mut parsed| {
                 self.claude_web_context
                     .attach_referenced_images(&mut parsed);
-                // The claude.ai completion protocol names its own turn.
-                let declaration = AgentDeclaration {
-                    turn_id: parsed.protocol_turn_id.clone(),
-                    ..http_declaration(&detection, exchange, None, &parsed.response_texts)
-                };
+                let declaration = http_declaration(&detection, exchange, None);
                 self.normalize(&parsed, &content, &detection, &provider, &declaration)
             }),
         }
@@ -157,7 +148,6 @@ where
                 headers: None,
                 body: None,
                 client_metadata: parsed.client_metadata.as_ref(),
-                response_texts: &parsed.response_texts,
             },
         );
         self.normalize(&parsed, &content, &detection, &provider, &declaration)
@@ -202,7 +192,6 @@ fn http_declaration(
     detection: &HarnessDetection,
     exchange: &HttpExchange,
     client_metadata: Option<&serde_json::Value>,
-    response_texts: &[String],
 ) -> AgentDeclaration {
     HarnessRegistry::declare(
         &detection.harness_id,
@@ -210,7 +199,6 @@ fn http_declaration(
             headers: Some(exchange.request.headers()),
             body: exchange.request.body().json(),
             client_metadata,
-            response_texts,
         },
     )
 }
@@ -608,52 +596,22 @@ mod tests {
         let events = sink.events.lock().unwrap();
         assert_eq!(events.len(), requests.len() * 2);
         let expected = [
-            (Some("p1"), Some("session-1"), None, None),
-            (Some("p1"), Some("session-1"), Some("msg_1"), None),
-            (Some("p1"), Some("agent-a"), None, None),
-            (Some("p1"), Some("agent-b"), Some("msg_b"), None),
-            (None, None, None, None),
-            (None, None, None, Some(EventPurpose::Compaction)),
-            (None, None, None, None),
+            (None, None),
+            (Some("msg_1"), None),
+            (None, None),
+            (Some("msg_b"), None),
+            (None, None),
+            (None, Some(EventPurpose::Compaction)),
+            (None, None),
         ];
-        for (exchange_events, (turn, stream, previous, purpose)) in events.chunks(2).zip(expected) {
+        for (exchange_events, (previous, purpose)) in events.chunks(2).zip(expected) {
             for event in exchange_events {
                 assert_eq!(event.agent.name, "claude-code");
-                assert_eq!(event.turn_id.as_deref(), turn);
-                assert_eq!(event.stream_id.as_deref(), stream);
                 assert_eq!(event.previous_response_id.as_deref(), previous);
                 assert_eq!(event.purpose, purpose);
                 assert_eq!(event.response_id.as_deref(), Some("msg_test"));
-                assert!(!event.naming_thread);
             }
         }
-        drop(events);
-    }
-
-    #[tokio::test]
-    async fn other_anthropic_clients_carry_no_turn_id() {
-        let sink = Arc::new(RecordingSink::default());
-        let hook = hook(Arc::clone(&sink));
-        let request = serde_json::json!({
-            "messages": [
-                {"role": "user", "content": "hello"},
-                {"role": "assistant", "content": "hi"},
-                {"role": "user", "content": [
-                    {"type": "tool_result", "tool_use_id": "toolu_1", "content": "ok"}
-                ]}
-            ]
-        });
-
-        hook.on_http_exchange(&anthropic_exchange("acme-agent"))
-            .await
-            .unwrap();
-        hook.on_http_exchange(&anthropic_exchange_with_request("acme-agent", &request))
-            .await
-            .unwrap();
-
-        let events = sink.events.lock().unwrap();
-        assert_eq!(events.len(), 4);
-        assert!(events.iter().all(|event| event.turn_id.is_none()));
         drop(events);
     }
 

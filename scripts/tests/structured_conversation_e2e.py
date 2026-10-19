@@ -59,15 +59,14 @@ def assert_structured(events):
             assert entry["role"] in ROLES, entry
         assert conversation["completeness"] == "complete", event
         assert "omitted" not in event, event
+        # The collector infers no turn, thread, naming thread, or title.
+        for field in ("turn_id", "naming_thread", "stream_id", "session_title"):
+            assert field not in event, (field, event)
     first_request, first_reply, second_request, second_reply = events[:4]
-    # Codex declares the user turn each request works for as `root_turn_id`.
     for turn, (request, reply) in enumerate(
         [(first_request, first_reply), (second_request, second_reply)]
     ):
-        assert request["turn_id"] == reply["turn_id"] == f"turn-{turn}", request
-        assert "naming_thread" not in request, request
-        # Both events of an exchange carry its thread and response identity.
-        assert request["stream_id"] == reply["stream_id"] == "codex-thread", request
+        # Both events of an exchange carry its response identity.
         assert request["response_id"] == reply["response_id"] == f"resp_{turn}", request
         assert "previous_response_id" not in request, request
     # Responses `instructions` is the leading system entry.
@@ -89,9 +88,7 @@ def assert_structured(events):
         assert entries(reply) == [("assistant", "working")], reply
         assert item_ids(reply) == [f"m{turn}"], reply
     anthropic_request, anthropic_reply = events[4:]
-    # A plain Anthropic client declares no thread; the message id is the
-    # response identity.
-    assert "stream_id" not in anthropic_request, anthropic_request
+    # The message id is the response identity.
     assert (
         anthropic_request["response_id"]
         == anthropic_reply["response_id"]
@@ -238,13 +235,9 @@ def main():
     assert_structured(events[:6])
     naming_request, naming_reply = events[6:]
     assert naming_request["purpose"] == naming_reply["purpose"] == "session_title"
-    # The naming call carries no prompt id, so it works for no user turn.
-    assert "turn_id" not in naming_request and "turn_id" not in naming_reply
-    # Without a turn index it is not a main-loop request, so it names no stream.
-    assert "stream_id" not in naming_request and "stream_id" not in naming_reply
     assert naming_request["response_id"] == "msg_title"
-    assert "session_title" not in naming_request
-    assert naming_reply["session_title"] == "Greeting"
+    for field in ("turn_id", "stream_id", "session_title"):
+        assert field not in naming_request and field not in naming_reply, field
     # Re-observing the same exchanges yields the same deterministic event ids.
     replayed = replay(args.replay_binary, fixtures)
     assert [e["event_id"] for e in replayed] == [e["event_id"] for e in events]
@@ -359,7 +352,7 @@ def main():
                     else:
                         raise AssertionError("delivery did not persist all events")
                     # The backend keeps each exchange's placement as sent.
-                    placement = ("stream_id", "response_id", "previous_response_id")
+                    placement = ("response_id", "previous_response_id")
                     by_id = {e["event_id"]: e for e in stored["events"]}
                     for event in events:
                         for field in placement:

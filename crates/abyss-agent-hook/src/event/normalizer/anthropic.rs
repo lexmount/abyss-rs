@@ -127,7 +127,6 @@ impl NormalizableExchange for ParsedClaudeWebExchange {
             usage_source: self.usage_source,
             metadata: json!({
                 "message_id": self.message_id,
-                "turn_id": self.protocol_turn_id,
                 "request_hash": self.request_hash,
                 "source_evidence": detection.evidence_names(),
                 "working_directory": detection.working_directory,
