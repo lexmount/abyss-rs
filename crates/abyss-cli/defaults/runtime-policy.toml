@@ -34,6 +34,12 @@ enabled = true
 action = "intercept"
 destination_hosts = ["open.bigmodel.cn", "api.z.ai"]
 
+[[mitm.tls_decryption.rules]]
+id = "decrypt-kimi-api"
+enabled = true
+action = "intercept"
+destination_hosts = ["api.moonshot.cn", "api.moonshot.ai"]
+
 [hooks.harness_usage]
 enabled = true
 

@@ -42,9 +42,9 @@ Built-in Harness support includes:
 - Claude Desktop
 - DeepSeek Harness: Headless, [dsh-tui](https://github.com/ccch1mneyyy/dsh-TUI), and Web UI
 
-GLM models use the shared Chat Completions, Responses, and Messages parsers,
+GLM and Kimi models use the shared Chat Completions, Responses, and Messages parsers,
 including streamed thinking, tool calls, and cache usage.
-See [GLM with DSH](docs/glm.md) for client setup.
+See [GLM with DSH](docs/glm.md) and [Kimi with DSH](docs/kimi.md) for client setup.
 
 Open the dashboard to review captured activity, or inspect the runtime from your terminal:
 
