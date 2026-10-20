@@ -25,7 +25,7 @@ events, including pending delivery retries, are not rewritten or deleted.
 
 The CLI's packaged policy enables DeepSeek Harness and intercepts
 `api.deepseek.com`, `open.bigmodel.cn`, `api.z.ai`, `api.moonshot.cn`, and
-`api.moonshot.ai`. DSH Web (`dsh web`),
+`api.moonshot.ai`, and the Qwen API hosts listed below. DSH Web (`dsh web`),
 headless launchers (including `dsh-headless`), and
 [dsh-tui](https://github.com/ccch1mneyyy/dsh-TUI) using the DSH backend share
 the same request identity and use the existing protocol parsers. Run an
@@ -115,6 +115,32 @@ destination_hosts = ["api.moonshot.cn", "api.moonshot.ai"]
 
 See [Kimi with DSH](kimi.md) for Responses, Chat Completions, and Messages
 configuration. The rule selects only these API hosts, not the entire Moonshot domain.
+
+For Qwen, add the Model Studio API hosts and regional workspace endpoints:
+
+```toml
+[[mitm.tls_decryption.rules]]
+id = "decrypt-qwen-api"
+enabled = true
+action = "intercept"
+destination_hosts = [
+    "dashscope.aliyuncs.com",
+    "dashscope-intl.aliyuncs.com",
+    "dashscope-us.aliyuncs.com",
+    "coding.dashscope.aliyuncs.com",
+    "coding-intl.dashscope.aliyuncs.com",
+    "*.cn-beijing.maas.aliyuncs.com",
+    "*.ap-southeast-1.maas.aliyuncs.com",
+    "*.us-east-1.maas.aliyuncs.com",
+    "*.eu-central-1.maas.aliyuncs.com",
+    "*.ap-northeast-1.maas.aliyuncs.com",
+    "*.cn-hongkong.maas.aliyuncs.com",
+]
+```
+
+These rules target Model Studio API endpoints, not the entire `aliyuncs.com`
+domain. See [Qwen with DSH](qwen.md) for the three compatible APIs, client
+configuration, and session attribution.
 
 The built-in DSH detector recognizes the literal, case-sensitive
 `deepseek-harness/` prefix in the model request's User-Agent without source

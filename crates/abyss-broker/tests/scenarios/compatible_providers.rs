@@ -25,6 +25,7 @@ struct StreamScenario<'a> {
     reasoning_tokens: u64,
     thinking: &'a str,
     tool_name: &'a str,
+    call_id: &'a str,
 }
 
 #[test]
@@ -40,6 +41,7 @@ fn glm_stream_reaches_plugin_with_thinking_tool_call_and_usage() {
         reasoning_tokens: 5,
         thinking: "I should read the file.",
         tool_name: "read_file",
+        call_id: "glm-call-1",
     }
     .verify();
 }
@@ -69,9 +71,47 @@ fn kimi_protocol_streams_reach_plugin_with_disjoint_cache_and_thinking_usage() {
             request: &fixture["request"].to_string(),
             response,
             model: "kimi-k3",
+            call_id: "kimi-call-1",
             input_tokens: 10,
             cache_read_tokens: 60,
             cache_write_tokens: 30,
+            reasoning_tokens,
+            thinking: "Read the file.",
+            tool_name: "read",
+        }
+        .verify();
+    }
+}
+
+#[test]
+fn qwen_streams_preserve_tool_identity_and_corrected_messages_usage() {
+    for (fixture, response, reasoning_tokens) in [
+        (
+            include_str!("../../../abyss-agent-hook/tests/fixtures/qwen/chat-completions.json"),
+            include_str!("../../../abyss-agent-hook/tests/fixtures/qwen/chat-completions.sse"),
+            5,
+        ),
+        (
+            include_str!("../../../abyss-agent-hook/tests/fixtures/qwen/responses.json"),
+            include_str!("../../../abyss-agent-hook/tests/fixtures/qwen/responses.sse"),
+            5,
+        ),
+        (
+            include_str!("../../../abyss-agent-hook/tests/fixtures/qwen/messages.json"),
+            include_str!("../../../abyss-agent-hook/tests/fixtures/qwen/messages.sse"),
+            0,
+        ),
+    ] {
+        let fixture: serde_json::Value = serde_json::from_str(fixture).unwrap();
+        StreamScenario {
+            path: fixture["path"].as_str().unwrap(),
+            request: &fixture["request"].to_string(),
+            response,
+            model: "qwen3.8-flash",
+            call_id: "qwen-call-1",
+            input_tokens: 40,
+            cache_read_tokens: 60,
+            cache_write_tokens: 0,
             reasoning_tokens,
             thinking: "Read the file.",
             tool_name: "read",
@@ -168,6 +208,10 @@ impl StreamScenario<'_> {
         let request = read_plugin_frame(&mut plugin);
         let response = read_plugin_frame(&mut plugin);
         self.verify_events(&request, &response);
+        assert_eq!(
+            response["tool_calls"][0]["call_id"], self.call_id,
+            "empty argument-only metadata must not erase the tool call ID"
+        );
         broker.shutdown();
         broker.wait_for_exit();
     }

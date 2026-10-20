@@ -304,6 +304,24 @@ fn packaged_default_tls_decryption_policy() -> TlsDecryptionPolicy {
                 true,
                 &["api.moonshot.cn", "api.moonshot.ai"],
             ),
+            tls_rule(
+                "decrypt-qwen-api",
+                TlsDecryptionAction::Intercept,
+                true,
+                &[
+                    "dashscope.aliyuncs.com",
+                    "dashscope-intl.aliyuncs.com",
+                    "dashscope-us.aliyuncs.com",
+                    "coding.dashscope.aliyuncs.com",
+                    "coding-intl.dashscope.aliyuncs.com",
+                    "*.cn-beijing.maas.aliyuncs.com",
+                    "*.ap-southeast-1.maas.aliyuncs.com",
+                    "*.us-east-1.maas.aliyuncs.com",
+                    "*.eu-central-1.maas.aliyuncs.com",
+                    "*.ap-northeast-1.maas.aliyuncs.com",
+                    "*.cn-hongkong.maas.aliyuncs.com",
+                ],
+            ),
         ],
     }
 }
@@ -581,6 +599,17 @@ mod tests {
                 "api.z.ai",
                 "api.moonshot.cn",
                 "api.moonshot.ai",
+                "dashscope.aliyuncs.com",
+                "dashscope-intl.aliyuncs.com",
+                "dashscope-us.aliyuncs.com",
+                "coding.dashscope.aliyuncs.com",
+                "coding-intl.dashscope.aliyuncs.com",
+                "workspace.cn-beijing.maas.aliyuncs.com",
+                "workspace.ap-southeast-1.maas.aliyuncs.com",
+                "workspace.us-east-1.maas.aliyuncs.com",
+                "workspace.eu-central-1.maas.aliyuncs.com",
+                "workspace.ap-northeast-1.maas.aliyuncs.com",
+                "workspace.cn-hongkong.maas.aliyuncs.com",
             ] {
                 assert_eq!(
                     policy.decide(Some(host)).action(),
@@ -596,6 +625,13 @@ mod tests {
                 "moonshot.ai",
                 "api.moonshot.cn.example",
                 "api.moonshot.ai.example",
+                "aliyuncs.com",
+                "oss-cn-beijing.aliyuncs.com",
+                "maas.aliyuncs.com",
+                "workspace.other-region.maas.aliyuncs.com",
+                "dashscope.aliyuncs.com.example",
+                "other.dashscope.aliyuncs.com",
+                "workspace.cn-beijing.maas.aliyuncs.com.example",
                 "example.com",
             ] {
                 assert_eq!(

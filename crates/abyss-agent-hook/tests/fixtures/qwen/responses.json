@@ -1,0 +1,108 @@
+{
+  "path": "/compatible-mode/v1/responses",
+  "request": {
+    "model": "qwen3.8-flash",
+    "stream": true,
+    "input": [
+      {
+        "role": "user",
+        "content": "Read probe.txt."
+      }
+    ]
+  },
+  "followup": {
+    "model": "qwen3.8-flash",
+    "stream": true,
+    "input": [
+      {
+        "role": "user",
+        "content": "Read probe.txt."
+      },
+      {
+        "id": "rs_qwen",
+        "type": "reasoning",
+        "summary": [
+          {
+            "type": "summary_text",
+            "text": "Read the file."
+          }
+        ]
+      },
+      {
+        "id": "fc_qwen",
+        "type": "function_call",
+        "call_id": "qwen-call-1",
+        "name": "read",
+        "arguments": "{\"path\":\"probe.txt\"}"
+      },
+      {
+        "type": "function_call_output",
+        "call_id": "qwen-call-1",
+        "output": "QWEN_PROBE_OK"
+      }
+    ]
+  },
+  "response": {
+    "id": "resp_qwen_1",
+    "model": "qwen3.8-flash",
+    "status": "completed",
+    "output": [
+      {
+        "id": "rs_qwen",
+        "type": "reasoning",
+        "summary": [
+          {
+            "type": "summary_text",
+            "text": "Read the file."
+          }
+        ]
+      },
+      {
+        "id": "fc_qwen",
+        "type": "function_call",
+        "call_id": "qwen-call-1",
+        "name": "read",
+        "arguments": "{\"path\":\"probe.txt\"}"
+      }
+    ],
+    "usage": {
+      "input_tokens": 100,
+      "input_tokens_details": {
+        "cached_tokens": 60
+      },
+      "output_tokens": 12,
+      "output_tokens_details": {
+        "reasoning_tokens": 5
+      },
+      "total_tokens": 112
+    }
+  },
+  "reply": {
+    "id": "resp_qwen_2",
+    "model": "qwen3.8-flash",
+    "status": "completed",
+    "output": [
+      {
+        "type": "message",
+        "role": "assistant",
+        "content": [
+          {
+            "type": "output_text",
+            "text": "QWEN_PROBE_OK"
+          }
+        ]
+      }
+    ],
+    "usage": {
+      "input_tokens": 120,
+      "input_tokens_details": {
+        "cached_tokens": 60
+      },
+      "output_tokens": 12,
+      "output_tokens_details": {
+        "reasoning_tokens": 5
+      },
+      "total_tokens": 132
+    }
+  }
+}
