@@ -129,21 +129,6 @@ impl CapturedBody {
         self
     }
 
-    pub(super) fn mark_pending(&mut self, headers: &http::HeaderMap) {
-        if headers.contains_key(http::header::CONTENT_ENCODING)
-            || headers
-                .get_all(http::header::TRANSFER_ENCODING)
-                .iter()
-                .any(|value| {
-                    value
-                        .to_str()
-                        .map_or(true, |value| !value.trim().eq_ignore_ascii_case("chunked"))
-                })
-        {
-            self.set_decoded(Bytes::new(), BodyDecodingStatus::Pending);
-        }
-    }
-
     pub(super) fn encoded_bytes(&self) -> Bytes {
         self.raw_bytes.clone()
     }

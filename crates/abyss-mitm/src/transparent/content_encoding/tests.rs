@@ -1,5 +1,6 @@
 //! Content coding contracts, corruption handling, and independent capture budgets.
 
+mod fast_path;
 mod logging;
 
 use std::io::Write;
@@ -41,7 +42,7 @@ fn decode(coding: &str, raw: Vec<u8>, truncated: bool, limit: usize) -> Captured
         CapturedBody::from_bytes(raw.into())
     }
     .with_decode_limit(limit);
-    body.mark_pending(&headers);
+    body.set_decoded(Bytes::new(), BodyDecodingStatus::Pending);
     assert!(body.bytes().is_empty());
     ContentDecoder::decode_body(&headers, &mut body, false);
     body

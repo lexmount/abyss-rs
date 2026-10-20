@@ -13,6 +13,11 @@ bytes for every host and route. After transfer framing is removed, the backgroun
 hook worker decodes `Content-Encoding` for both requests and responses: gzip,
 zlib-wrapped deflate, Brotli, zstd, and identity. Stacked codings are decoded in
 reverse order, including repeated header fields.
+When both captures already have usable uncompressed views, the hook worker
+reuses their bytes and parsed JSON without scheduling a blocking decode task.
+This includes valid `identity` codings and dechunked bodies. Either compressed
+side, invalid encoding metadata, or a required output-limit adjustment uses
+the blocking decoder.
 
 `CapturedBody::bytes()` and `json()` expose the observation view; `raw_bytes()`
 and `raw_truncated()` retain the encoded capture. Headers always describe the

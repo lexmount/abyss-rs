@@ -496,16 +496,24 @@ async fn run_hook_worker(chain: HookChain, mut receiver: mpsc::Receiver<HookEven
         // must not feed back into the network path.
         match event {
             HookEvent::HttpExchange(exchange) => {
-                // Decode on one blocking worker at a time, preserving queue ordering
-                // and keeping codec CPU work off both relay and async executor threads.
-                match tokio::task::spawn_blocking(move || {
-                    ContentDecoder::decode_exchange(*exchange)
-                })
-                .await
-                {
-                    Ok(exchange) => drop(chain.on_http_exchange(&exchange).await),
-                    Err(error) => tracing::warn!(%error, "HTTP capture decoding task failed"),
-                }
+                // Reuse ready identity captures. Offload actual decoding or
+                // capture normalization while preserving the queue's ordering.
+                let exchange = if ContentDecoder::requires_processing(&exchange) {
+                    match tokio::task::spawn_blocking(move || {
+                        ContentDecoder::decode_exchange(*exchange)
+                    })
+                    .await
+                    {
+                        Ok(exchange) => exchange,
+                        Err(error) => {
+                            tracing::warn!(%error, "HTTP capture decoding task failed");
+                            continue;
+                        }
+                    }
+                } else {
+                    *exchange
+                };
+                drop(chain.on_http_exchange(&exchange).await);
             }
             HookEvent::WebSocketMessage(message) => {
                 drop(chain.on_websocket_message(&message).await);
@@ -849,6 +857,38 @@ mod tests {
             HookDispatcher::with_capacity(1).submit(test_exchange("/no-hooks")),
             HookDispatchStatus::NoHooks
         );
+    }
+
+    #[test]
+    fn identity_exchange_does_not_wait_for_a_busy_blocking_pool() {
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .max_blocking_threads(1)
+            .build()
+            .unwrap();
+        let (release, wait_for_release) = std::sync::mpsc::channel::<()>();
+        let (observed, blocking_worker) = runtime.block_on(async {
+            let (started, worker_started) = tokio::sync::oneshot::channel();
+            let blocking_worker = tokio::task::spawn_blocking(move || {
+                started.send(()).unwrap();
+                let _release = wait_for_release.recv();
+            });
+            worker_started.await.unwrap();
+            let (observed, mut events) = mpsc::unbounded_channel();
+            let dispatcher = HookDispatcher::with_capacity(1);
+            dispatcher.push(RecordingHook { observed });
+            assert_eq!(
+                dispatcher.submit(test_exchange("/identity")),
+                HookDispatchStatus::Enqueued
+            );
+            let observed =
+                tokio::time::timeout(std::time::Duration::from_secs(2), events.recv()).await;
+            (observed, blocking_worker)
+        });
+        // Release the occupied pool before asserting, including on a timeout.
+        drop(release);
+        runtime.block_on(blocking_worker).unwrap();
+        assert_eq!(observed.unwrap(), Some("observed"));
     }
 
     #[tokio::test]

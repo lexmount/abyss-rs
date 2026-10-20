@@ -34,6 +34,7 @@ use crate::http1::{
 use super::{
     CapturedBody, FlowContext, FlowOperation, HttpExchange, MitmTimeouts, TransparentFlowError,
     TransparentProtocol,
+    content_encoding::ContentDecoder,
     hook::HookDispatcher,
     utils::{
         content_length, has_expect_continue, http_request_head_without_relay_headers, is_chunked,
@@ -1293,14 +1294,14 @@ where
 /// Attach a captured body to a request while preserving the parsed head parts.
 fn request_with_body(request: Request<()>, mut body: CapturedBody) -> Request<CapturedBody> {
     let (parts, ()) = request.into_parts();
-    body.mark_pending(&parts.headers);
+    ContentDecoder::prepare_body(&parts.headers, &mut body);
     Request::from_parts(parts, body)
 }
 
 /// Attach a captured body to a response while preserving the parsed head parts.
 fn response_with_body(response: Response<()>, mut body: CapturedBody) -> Response<CapturedBody> {
     let (parts, ()) = response.into_parts();
-    body.mark_pending(&parts.headers);
+    ContentDecoder::prepare_body(&parts.headers, &mut body);
     Response::from_parts(parts, body)
 }
 

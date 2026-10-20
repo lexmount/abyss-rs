@@ -61,16 +61,59 @@ pub(super) struct ContentDecoder {
 }
 
 impl ContentDecoder {
-    pub(super) fn decode_exchange(mut exchange: HttpExchange) -> HttpExchange {
-        let (parts, mut body) = exchange.request.into_parts();
-        Self::decode_body(&parts.headers, &mut body, false);
-        exchange.request = http::Request::from_parts(parts, body);
-        let no_body = exchange.request.method() == Method::HEAD
+    /// Keeps already parsed identity captures ready for direct hook delivery.
+    pub(super) fn prepare_body(headers: &HeaderMap, body: &mut CapturedBody) {
+        if !Self::identity_only(headers) {
+            body.set_decoded(Bytes::new(), BodyDecodingStatus::Pending);
+        }
+    }
+
+    /// Both sides must be ready before bypassing the blocking decoder.
+    /// Reapplying a smaller output limit can also require expensive JSON parsing.
+    pub(super) fn requires_processing(exchange: &HttpExchange) -> bool {
+        !Self::body_ready(exchange.request.headers(), exchange.request.body(), false)
+            || !Self::body_ready(
+                exchange.response.headers(),
+                exchange.response.body(),
+                Self::response_has_no_body(exchange),
+            )
+    }
+
+    fn response_has_no_body(exchange: &HttpExchange) -> bool {
+        exchange.request.method() == Method::HEAD
             || exchange.response.status().is_informational()
             || matches!(
                 exchange.response.status(),
                 StatusCode::NO_CONTENT | StatusCode::NOT_MODIFIED
-            );
+            )
+    }
+
+    fn identity_only(headers: &HeaderMap) -> bool {
+        Self::codings(headers).is_ok_and(|codings| {
+            codings
+                .iter()
+                .all(|coding| matches!(coding, ContentCoding::Identity))
+        })
+    }
+
+    fn body_ready(headers: &HeaderMap, body: &CapturedBody, no_body: bool) -> bool {
+        if no_body {
+            return body.decoding_status() == BodyDecodingStatus::Complete
+                && body.bytes().is_empty();
+        }
+        Self::identity_only(headers)
+            && matches!(
+                body.decoding_status(),
+                BodyDecodingStatus::Complete | BodyDecodingStatus::Truncated
+            )
+            && body.raw_bytes().len() <= body.decode_limit.min(DEFAULT_MAX_HTTP1_BODY_BYTES)
+    }
+
+    pub(super) fn decode_exchange(mut exchange: HttpExchange) -> HttpExchange {
+        let (parts, mut body) = exchange.request.into_parts();
+        Self::decode_body(&parts.headers, &mut body, false);
+        exchange.request = http::Request::from_parts(parts, body);
+        let no_body = Self::response_has_no_body(&exchange);
         let (parts, mut body) = exchange.response.into_parts();
         Self::decode_body(&parts.headers, &mut body, no_body);
         exchange.response = http::Response::from_parts(parts, body);
@@ -78,6 +121,10 @@ impl ContentDecoder {
     }
 
     fn decode_body(headers: &HeaderMap, body: &mut CapturedBody, no_body: bool) {
+        if Self::body_ready(headers, body, no_body) {
+            Self::log_decoded(headers, body);
+            return;
+        }
         if no_body {
             body.set_decoded(Bytes::new(), BodyDecodingStatus::Complete);
             return;
@@ -95,6 +142,10 @@ impl ContentDecoder {
                 body.set_decoded(Bytes::new(), status);
             }
         }
+        Self::log_decoded(headers, body);
+    }
+
+    fn log_decoded(headers: &HeaderMap, body: &CapturedBody) {
         tracing::debug!(
             content_encoding = ?headers.get(CONTENT_ENCODING),
             status = ?body.decoding_status(),
