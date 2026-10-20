@@ -35,16 +35,20 @@ abyss deploy-local start
 abyss run -- codex
 ```
 
-Built-in Harness support includes:
+**Supported Harnesses**
 
 - OpenAI Codex
 - Claude Code
 - Claude Desktop
 - DeepSeek Harness: Headless, [dsh-tui](https://github.com/ccch1mneyyy/dsh-TUI), and Web UI
 
-GLM and Kimi models use the shared Chat Completions, Responses, and Messages parsers,
-including streamed thinking, tool calls, and cache usage.
-See [GLM with DSH](docs/glm.md) and [Kimi with DSH](docs/kimi.md) for client setup.
+**Supported Model Families**
+
+- OpenAI GPT / o-series
+- Anthropic Claude
+- DeepSeek
+- [GLM](docs/glm.md)
+- [Kimi](docs/kimi.md)
 
 Open the dashboard to review captured activity, or inspect the runtime from your terminal:
 
