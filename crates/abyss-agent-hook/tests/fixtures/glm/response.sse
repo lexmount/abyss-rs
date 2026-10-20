@@ -1,0 +1,10 @@
+data: {"id":"glm-response-1","model":"glm-4.7","choices":[{"index":0,"delta":{"role":"assistant","reasoning_content":"I should "}}]}
+
+data: {"id":"glm-response-1","model":"glm-4.7","choices":[{"index":0,"delta":{"reasoning_content":"read the file."}}]}
+
+data: {"id":"glm-response-1","model":"glm-4.7","choices":[{"index":0,"delta":{"tool_calls":[{"index":0,"id":"glm-call-1","type":"function","function":{"name":"read_file","arguments":"{\"path\":"}}]}}]}
+
+data: {"id":"glm-response-1","model":"glm-4.7","choices":[{"index":0,"delta":{"tool_calls":[{"index":0,"function":{"arguments":"\"probe.txt\"}"}}]},"finish_reason":"tool_calls"}],"usage":{"prompt_tokens":100,"completion_tokens":12,"prompt_tokens_details":{"cached_tokens":80},"completion_tokens_details":{"reasoning_tokens":5},"total_tokens":112}}
+
+data: [DONE]
+

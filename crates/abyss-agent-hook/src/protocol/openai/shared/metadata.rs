@@ -35,6 +35,7 @@ pub fn session_id(headers: &HeaderMap) -> Option<String> {
         .map(str::to_owned)
         .or_else(|| metadata_header_value(headers, "session_id"))
         .or_else(|| metadata_header_value(headers, "thread_id"))
+        .or_else(|| header(headers, "x-deepseek-harness-session-id").map(str::to_owned))
 }
 
 fn metadata_header_value(headers: &HeaderMap, key: &str) -> Option<String> {

@@ -70,7 +70,9 @@ impl ResponsesResponse {
             }
         };
         match value["type"].as_str().unwrap_or_default() {
-            kind @ ("response.output_text.delta" | "response.reasoning_summary_text.delta") => {
+            kind @ ("response.output_text.delta"
+            | "response.reasoning_summary_text.delta"
+            | "response.reasoning_text.delta") => {
                 if let Some(delta) = value["delta"].as_str() {
                     slots
                         .entry(output_index)
@@ -82,7 +84,9 @@ impl ResponsesResponse {
                         .push_str(delta);
                 }
             }
-            kind @ ("response.output_text.done" | "response.reasoning_summary_text.done") => {
+            kind @ ("response.output_text.done"
+            | "response.reasoning_summary_text.done"
+            | "response.reasoning_text.done") => {
                 if let Some(text) = value["text"].as_str() {
                     slots
                         .entry(output_index)

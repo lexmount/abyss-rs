@@ -24,8 +24,8 @@ the policy and applies it to subsequent event processing; previously captured
 events, including pending delivery retries, are not rewritten or deleted.
 
 The CLI's packaged policy enables DeepSeek Harness and intercepts
-`api.deepseek.com`. DSH Web (`dsh web`), headless launchers (including
-`dsh-headless`), and
+`api.deepseek.com`, `open.bigmodel.cn`, and `api.z.ai`. DSH Web (`dsh web`),
+headless launchers (including `dsh-headless`), and
 [dsh-tui](https://github.com/ccch1mneyyy/dsh-TUI) using the DSH backend share
 the same request identity and use the existing protocol parsers. Run an
 installed client through the proxy with:
@@ -87,6 +87,20 @@ enabled = true
 action = "intercept"
 destination_hosts = ["api.deepseek.com"]
 ```
+
+For GLM, add a separate rule for its official API hosts:
+
+```toml
+[[mitm.tls_decryption.rules]]
+id = "decrypt-glm-api"
+enabled = true
+action = "intercept"
+destination_hosts = ["open.bigmodel.cn", "api.z.ai"]
+```
+
+Both standard and Coding Plan Chat Completions paths use the shared parser.
+Custom gateways require their own TLS rule. See [GLM with DSH](glm.md) for
+model configuration and session attribution details.
 
 The built-in DSH detector recognizes the literal, case-sensitive
 `deepseek-harness/` prefix in the model request's User-Agent without source

@@ -7,12 +7,13 @@ use serde_json::Value;
 
 use super::tools::ChatToolCalls;
 use crate::protocol::{
-    model::conversation::ConversationProjection,
+    model::conversation::{ConversationProjection, MessageDraft},
     openai::shared::{output::OutputText, response::OpenAiResponse},
 };
 
 struct ChatChoice {
     text: OutputText,
+    reasoning: OutputText,
     tools: ChatToolCalls,
 }
 
@@ -20,8 +21,19 @@ impl ChatChoice {
     fn new() -> Self {
         Self {
             text: OutputText::new(MessageRole::Assistant),
+            reasoning: OutputText::new(MessageRole::Reasoning),
             tools: ChatToolCalls::default(),
         }
+    }
+
+    fn into_messages(self) -> Vec<MessageDraft> {
+        let mut messages = Vec::new();
+        let reasoning = self.reasoning.into_draft();
+        if !reasoning.parts.is_empty() {
+            messages.push(reasoning);
+        }
+        messages.push(self.text.into_draft());
+        messages
     }
 }
 
@@ -41,13 +53,20 @@ impl ChatResponse {
                     let slot = choices.entry(index).or_insert_with(ChatChoice::new);
                     slot.text.reconcile_item(message);
                     slot.tools.reconcile(message);
+                    if let Some(text) = message.get("reasoning_content").and_then(Value::as_str) {
+                        slot.reasoning.reconcile(0, text);
+                    }
                 }
                 if let Some(delta) = choice.get("delta") {
-                    choices
-                        .entry(index)
-                        .or_insert_with(ChatChoice::new)
-                        .tools
-                        .apply_delta(delta);
+                    let slot = choices.entry(index).or_insert_with(ChatChoice::new);
+                    slot.tools.apply_delta(delta);
+                    if let Some(fragment) = delta.get("reasoning_content").and_then(Value::as_str) {
+                        slot.reasoning
+                            .parts
+                            .entry(0)
+                            .or_default()
+                            .push_str(fragment);
+                    }
                 }
                 if let Some(fragment) = choice
                     .pointer("/delta/content")
@@ -72,7 +91,7 @@ impl ChatResponse {
         OpenAiResponse {
             messages: choices
                 .into_values()
-                .map(|slot| slot.text.into_draft())
+                .flat_map(ChatChoice::into_messages)
                 .collect(),
             tool_calls,
             completeness: ConversationProjection::completeness(!values.is_empty(), incomplete),

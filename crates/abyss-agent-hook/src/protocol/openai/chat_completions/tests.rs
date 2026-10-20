@@ -1,6 +1,6 @@
 //! Conversation projection regression cases.
 
-use abyss_plugin_protocol::event::ContentCompleteness;
+use abyss_plugin_protocol::event::{ContentCompleteness, MessageRole};
 use serde_json::json;
 
 use super::response::ChatResponse;
@@ -58,5 +58,52 @@ fn chat_truncated_arguments_stay_partial_without_inventing_json() {
             name: Some("read".into()),
             input: r#"{"path":"#.into(),
         }]
+    );
+}
+
+#[test]
+fn compatible_thinking_is_assembled_per_choice_and_reconciled_with_snapshots() {
+    let response = ChatResponse::assemble(
+        &[
+            json!({"choices":[
+                {"index":0_i32,"delta":{"reasoning_content":"partial "}},
+                {"index":1_i32,"delta":{"reasoning_content":"other","content":"second answer"}}
+            ]}),
+            json!({"choices":[{"index":0_i32,"delta":{"reasoning_content":"thought","content":"answer"}}]}),
+            json!({"choices":[{"index":0_i32,"message":{"role":"assistant","reasoning_content":"correct thought","content":"answer"}}]}),
+        ],
+        false,
+    );
+    let messages = response.conversation().messages;
+    assert_eq!(messages.len(), 4);
+    assert_eq!(messages[0].role, MessageRole::Reasoning);
+    assert_eq!(messages[0].text, "correct thought");
+    assert_eq!(messages[1].text, "answer");
+    assert_eq!(messages[2].role, MessageRole::Reasoning);
+    assert_eq!(messages[2].text, "other");
+    assert_eq!(messages[3].text, "second answer");
+}
+
+#[test]
+fn incomplete_thinking_keeps_partial_status_and_null_thinking_adds_no_message() {
+    let response = ChatResponse::assemble(
+        &[json!({"choices":[{"index":0_i32,"delta":{"reasoning_content":"unfinished"}}]})],
+        true,
+    );
+    assert_eq!(
+        response.conversation().completeness,
+        ContentCompleteness::Partial
+    );
+    assert_eq!(response.conversation().messages[0].text, "unfinished");
+    let response = ChatResponse::assemble(
+        &[
+            json!({"choices":[{"index":0_i32,"message":{"role":"assistant","reasoning_content":null,"content":"answer"}}]}),
+        ],
+        false,
+    );
+    assert_eq!(response.conversation().messages.len(), 1);
+    assert_eq!(
+        response.conversation().messages[0].role,
+        MessageRole::Assistant
     );
 }

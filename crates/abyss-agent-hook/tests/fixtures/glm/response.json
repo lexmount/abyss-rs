@@ -1,0 +1,6 @@
+{
+  "id": "glm-response-2",
+  "model": "glm-4.7",
+  "choices": [{"index": 0, "message": {"role": "assistant", "reasoning_content": "The file was read.", "content": "GLM_PROBE_OK"}, "finish_reason": "stop"}],
+  "usage": {"prompt_tokens": 120, "completion_tokens": 15, "prompt_tokens_details": {"cached_tokens": 100}, "total_tokens": 135}
+}

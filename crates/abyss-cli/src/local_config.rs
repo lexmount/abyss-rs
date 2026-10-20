@@ -292,6 +292,12 @@ fn packaged_default_tls_decryption_policy() -> TlsDecryptionPolicy {
                 true,
                 &["api.deepseek.com"],
             ),
+            tls_rule(
+                "decrypt-glm-api",
+                TlsDecryptionAction::Intercept,
+                true,
+                &["open.bigmodel.cn", "api.z.ai"],
+            ),
         ],
     }
 }
@@ -554,6 +560,31 @@ mod tests {
             &policy.hooks.harness_usage.config.harnesses[BuiltInHarness::DeepSeekHarness.id()];
         assert_eq!(deepseek.enabled, Some(true));
         assert!(deepseek.matchers.is_empty());
+    }
+
+    #[test]
+    fn glm_interception_is_scoped_to_official_api_hosts_in_both_defaults() {
+        let packaged = toml::from_str::<LocalRuntimePolicy>(super::PACKAGED_RUNTIME_POLICY)
+            .expect("packaged policy should parse");
+        for policy in [
+            packaged.mitm.tls_decryption,
+            super::packaged_default_tls_decryption_policy(),
+        ] {
+            for host in ["open.bigmodel.cn", "api.z.ai"] {
+                assert_eq!(
+                    policy.decide(Some(host)).action(),
+                    super::TlsDecryptionAction::Intercept,
+                    "{host}"
+                );
+            }
+            for host in ["bigmodel.cn", "z.ai", "api.z.ai.example", "example.com"] {
+                assert_eq!(
+                    policy.decide(Some(host)).action(),
+                    super::TlsDecryptionAction::Passthrough,
+                    "{host}"
+                );
+            }
+        }
     }
 
     #[test]

@@ -1436,6 +1436,10 @@ const fn broker_binary() -> &'static str {
     env!("CARGO_BIN_EXE_abyss-broker")
 }
 
+#[cfg(unix)]
+#[path = "scenarios/glm.rs"]
+mod glm;
+
 struct BrokerProcess {
     api_addr: SocketAddr,
     auth_token_file: PathBuf,

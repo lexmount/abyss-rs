@@ -43,7 +43,7 @@ impl OpenAiContent {
         let role = Self::item_role(item, default_role);
         let mut draft = MessageDraft::new(role, item_id(item));
         let content = if role == MessageRole::Reasoning {
-            item.get("summary")
+            item.get("content").or_else(|| item.get("summary"))
         } else {
             item.get("content")
         };
@@ -72,7 +72,10 @@ pub fn response_part_text(part: &Value) -> Option<&str> {
                 .get("type")
                 .and_then(Value::as_str)
                 .is_none_or(|kind| {
-                    matches!(kind, "output_text" | "text" | "summary_text" | "input_text")
+                    matches!(
+                        kind,
+                        "output_text" | "text" | "summary_text" | "reasoning_text" | "input_text"
+                    )
                 });
             text_part
                 .then(|| object.get("text").and_then(Value::as_str))
