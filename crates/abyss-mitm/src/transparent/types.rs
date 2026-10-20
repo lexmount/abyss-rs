@@ -295,6 +295,9 @@ pub enum TransparentProtocol {
 }
 
 /// Metadata and byte counts returned after an intercepted HTTP flow closes.
+///
+/// Encoded bodies remain pending here: use `raw_bytes()` for their capture.
+/// Content decoding occurs separately on the background hook worker.
 #[derive(Debug, Clone)]
 #[non_exhaustive]
 pub struct InterceptedHttpOutcome {

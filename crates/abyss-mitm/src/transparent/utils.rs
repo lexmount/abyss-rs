@@ -9,14 +9,12 @@
 use http::{
     HeaderMap, Request, StatusCode, Version,
     header::{
-        ACCEPT_ENCODING, CONNECTION, CONTENT_LENGTH, EXPECT, HOST, SEC_WEBSOCKET_EXTENSIONS,
-        SEC_WEBSOCKET_KEY, TRANSFER_ENCODING, UPGRADE,
+        CONNECTION, CONTENT_LENGTH, EXPECT, HOST, SEC_WEBSOCKET_EXTENSIONS, SEC_WEBSOCKET_KEY,
+        TRANSFER_ENCODING, UPGRADE,
     },
 };
 
 use crate::http1::Http1Error;
-
-use super::{FlowContext, TransparentProtocol};
 
 pub(super) fn request_host(request: &Request<()>) -> Option<&str> {
     request
@@ -40,27 +38,6 @@ pub(super) fn is_websocket_upgrade_request(request: &Request<()>) -> bool {
         && header_contains_token(request.headers(), UPGRADE, "websocket")
 }
 
-/// Returns whether the relay should strip `Accept-Encoding` for this request.
-///
-/// Default relay behavior should preserve the client request head byte-for-byte.
-/// Model API routes and legacy Claude/Anthropic targets are exceptions because
-/// hooks need plaintext JSON/SSE bodies. The relay decodes transfer framing,
-/// but does not decompress response content encodings such as Brotli.
-pub(super) fn should_strip_accept_encoding(flow: &FlowContext, request: &Request<()>) -> bool {
-    if !request.headers().contains_key(ACCEPT_ENCODING) {
-        return false;
-    }
-    let path = request.uri().path();
-    let model_api = request.method() == http::Method::POST
-        && ["/responses", "/chat/completions", "/messages"]
-            .iter()
-            .any(|suffix| path.ends_with(suffix));
-    model_api
-        || flow_target_host(flow)
-            .or_else(|| request_host(request))
-            .is_some_and(is_claude_plaintext_response_host)
-}
-
 /// Serializes an HTTP/1 request head after applying relay-owned header rewrites.
 ///
 /// This is used only when transparent relay has to change protocol negotiation
@@ -68,12 +45,9 @@ pub(super) fn should_strip_accept_encoding(flow: &FlowContext, request: &Request
 /// still forwards the original head bytes preserved by the HTTP/1 decoder.
 pub(super) fn http_request_head_without_relay_headers(
     request: &Request<()>,
-    strip_accept_encoding: bool,
     strip_expect: bool,
 ) -> Result<Vec<u8>, Http1Error> {
-    request_head_bytes_excluding(request, |name| {
-        (strip_accept_encoding && name == ACCEPT_ENCODING) || (strip_expect && name == EXPECT)
-    })
+    request_head_bytes_excluding(request, |name| strip_expect && name == EXPECT)
 }
 
 /// Returns whether a request asks the server to send `100 Continue` before body bytes.
@@ -84,23 +58,6 @@ pub(super) fn has_expect_continue(request: &Request<()>) -> bool {
         .iter()
         .filter_map(|value| value.to_str().ok())
         .any(|value| value.trim().eq_ignore_ascii_case("100-continue"))
-}
-
-const fn flow_target_host(flow: &FlowContext) -> Option<&str> {
-    match &flow.protocol {
-        TransparentProtocol::PlainHttp => None,
-        TransparentProtocol::TlsHttp { server_name } => Some(server_name.as_str()),
-    }
-}
-
-fn is_claude_plaintext_response_host(host: &str) -> bool {
-    let host = host.trim().trim_end_matches('.').to_ascii_lowercase();
-    host == "anthropic.com"
-        || host.ends_with(".anthropic.com")
-        || host == "claude.ai"
-        || host.ends_with(".claude.ai")
-        || host == "dmxapi.cn"
-        || host.ends_with(".dmxapi.cn")
 }
 
 /// Serializes the request head that should be forwarded for a WebSocket upgrade.
@@ -236,7 +193,6 @@ pub(super) fn status_has_no_body(status: StatusCode) -> bool {
 
 #[cfg(test)]
 mod tests {
-    use std::net::SocketAddr;
 
     use http::{
         HeaderMap,
@@ -245,12 +201,9 @@ mod tests {
 
     use super::{
         content_length, has_expect_continue, http_request_head_without_relay_headers, is_chunked,
-        is_websocket_upgrade_request, should_strip_accept_encoding, websocket_request_head_bytes,
+        is_websocket_upgrade_request, websocket_request_head_bytes,
     };
-    use crate::{
-        http1::Http1Error,
-        transparent::{FlowContext, OriginalDestination, TransparentProtocol},
-    };
+    use crate::http1::Http1Error;
 
     #[test]
     fn transfer_encoding_requires_chunked_to_be_final_coding() {
@@ -315,121 +268,6 @@ mod tests {
     }
 
     #[test]
-    fn accept_encoding_strip_policy_matches_claude_tls_targets() {
-        let request = http::Request::builder()
-            .method("POST")
-            .uri("/v1/messages")
-            .header("host", "api.anthropic.com")
-            .header("accept-encoding", "br, gzip, zstd")
-            .body(())
-            .expect("test HTTP request should build");
-        let flow = test_flow(TransparentProtocol::TlsHttp {
-            server_name: "api.anthropic.com".to_owned(),
-        });
-
-        assert!(
-            should_strip_accept_encoding(&flow, &request),
-            "Claude/Anthropic targets need uncompressed parseable responses"
-        );
-    }
-
-    #[test]
-    fn accept_encoding_strip_policy_keeps_unrelated_tls_routes() {
-        let request = http::Request::builder()
-            .method("POST")
-            .uri("/v1/files")
-            .header("host", "api.openai.com")
-            .header("accept-encoding", "br, gzip, zstd")
-            .body(())
-            .expect("test HTTP request should build");
-        let flow = test_flow(TransparentProtocol::TlsHttp {
-            server_name: "api.openai.com".to_owned(),
-        });
-
-        assert!(
-            !should_strip_accept_encoding(&flow, &request),
-            "unrelated routes should preserve the original request head"
-        );
-    }
-
-    #[test]
-    fn accept_encoding_strip_policy_supports_model_routes_on_any_host() {
-        for protocol in [
-            TransparentProtocol::PlainHttp,
-            TransparentProtocol::TlsHttp {
-                server_name: "gateway.example".to_owned(),
-            },
-        ] {
-            let flow = test_flow(protocol);
-            for (method, path, expected) in [
-                ("POST", "/chat/completions", true),
-                ("POST", "/v1/chat/completions?beta=true", true),
-                ("POST", "/gateway/responses", true),
-                ("POST", "/v1/messages", true),
-                ("POST", "/v1/files", false),
-                ("POST", "/v1/responses-other", false),
-                ("GET", "/v1/responses", false),
-            ] {
-                let mut request = http::Request::builder()
-                    .method(method)
-                    .uri(path)
-                    .header("host", "gateway.example")
-                    .header("accept-encoding", "br, gzip, zstd")
-                    .body(())
-                    .unwrap();
-                assert_eq!(
-                    should_strip_accept_encoding(&flow, &request),
-                    expected,
-                    "{method} {path}"
-                );
-                request.headers_mut().remove("accept-encoding");
-                assert!(
-                    !should_strip_accept_encoding(&flow, &request),
-                    "requests without compression negotiation should retain their original head"
-                );
-            }
-        }
-    }
-
-    #[test]
-    fn http_request_head_rewrite_strips_accept_encoding() {
-        let request = http::Request::builder()
-            .method("POST")
-            .uri("/api/organizations/org-1/chat_conversations/conversation-1/completion")
-            .header("host", "claude.ai")
-            .header("accept", "text/event-stream")
-            .header("accept-encoding", "br, gzip, zstd")
-            .header("content-length", "2")
-            .body(())
-            .expect("test HTTP request should build");
-
-        let head = String::from_utf8(
-            http_request_head_without_relay_headers(&request, true, false)
-                .expect("head should serialize"),
-        )
-        .expect("HTTP request head should be UTF-8 in this test");
-
-        assert!(
-            head.starts_with(
-                "POST /api/organizations/org-1/chat_conversations/conversation-1/completion HTTP/1.1\r\n"
-            ),
-            "serialized request should preserve request line"
-        );
-        assert!(
-            head.to_ascii_lowercase().contains("host: claude.ai"),
-            "serialized request should preserve host"
-        );
-        assert!(
-            head.to_ascii_lowercase().contains("content-length: 2"),
-            "serialized request should preserve body framing"
-        );
-        assert!(
-            !head.to_ascii_lowercase().contains("accept-encoding"),
-            "Claude request head rewriting strips response content encoding negotiation"
-        );
-    }
-
-    #[test]
     fn http_request_head_without_relay_headers_strips_selected_headers() {
         let request = http::Request::builder()
             .method("POST")
@@ -442,8 +280,7 @@ mod tests {
             .expect("test HTTP request should build");
 
         let head = String::from_utf8(
-            http_request_head_without_relay_headers(&request, true, true)
-                .expect("head should serialize"),
+            http_request_head_without_relay_headers(&request, true).expect("head should serialize"),
         )
         .expect("HTTP request head should be UTF-8 in this test");
         let lower = head.to_ascii_lowercase();
@@ -461,8 +298,8 @@ mod tests {
             "serialized request should preserve body framing"
         );
         assert!(
-            !lower.contains("accept-encoding"),
-            "relay rewrite should strip negotiated response compression when requested"
+            lower.contains("accept-encoding: gzip"),
+            "relay rewrite must preserve response compression negotiation"
         );
         assert!(
             !lower.contains("expect"),
@@ -519,14 +356,5 @@ mod tests {
                 .contains("sec-websocket-extensions"),
             "first WebSocket relay version intentionally disables negotiated compression"
         );
-    }
-
-    fn test_flow(protocol: TransparentProtocol) -> FlowContext {
-        FlowContext::new(
-            SocketAddr::from(([127, 0, 0, 1], 50000)),
-            SocketAddr::from(([127, 0, 0, 1], 18080)),
-            OriginalDestination::from(SocketAddr::from(([127, 0, 0, 1], 443))),
-            protocol,
-        )
     }
 }

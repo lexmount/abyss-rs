@@ -100,7 +100,10 @@ impl MitmEngine {
         self
     }
 
-    /// Sets the maximum decoded HTTP/1 body bytes captured per message.
+    /// Sets the encoded capture and decoded observation limits per HTTP/1 message.
+    ///
+    /// Decoded output and intermediate layers are also capped at 16 MiB.
+    /// These limits never truncate network forwarding.
     #[must_use]
     pub const fn with_max_http1_body_bytes(mut self, limit: usize) -> Self {
         self.max_http1_body_bytes = limit;

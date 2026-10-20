@@ -133,9 +133,12 @@ Populated fields in one matcher must all match; values within a field and
 separate matchers are alternatives. Exactly one enabled Harness must match.
 Request headers provide attribution, not authenticated process identity.
 TLS traffic must also be selected for interception by the MITM policy.
-For intercepted POST requests ending in `/responses`, `/chat/completions`, or
-`/messages`, the HTTP relay removes `Accept-Encoding` so compatible providers
-return plaintext JSON/SSE for capture, regardless of their hostname.
+HTTP compression negotiation and forwarded bytes are preserved. The background
+MITM hook worker decodes request/response `Content-Encoding` before Agent parsing
+(gzip, deflate, Brotli, zstd, identity, and stacked codings), independent of
+hostname and route. Encoded captures remain available separately; unsupported or
+invalid encodings cannot be mistaken for plaintext. Capture and decoding limits
+affect observation only; see [abyss-mitm](../crates/abyss-mitm/README.md).
 
 Harness matching does not select or customize a protocol parser. Recognized
 traffic is parsed using its existing wire protocol, such as OpenAI Responses
