@@ -107,41 +107,9 @@ impl StreamScenario<'_> {
 
         let upstream = TcpListener::bind(loopback_ephemeral_addr()).unwrap();
         let upstream_addr = upstream.local_addr().unwrap();
-        let request_body = self.request.to_owned();
-        let response_body = self.response.to_owned();
-        let path = self.path.to_owned();
-        let server = thread::spawn(move || {
-            let (mut stream, _) = upstream.accept().unwrap();
-            stream.set_read_timeout(Some(HTTP_TIMEOUT)).unwrap();
-            let mut request = Vec::new();
-            loop {
-                let mut chunk = [0_u8; 4096];
-                let count = stream.read(&mut chunk).unwrap();
-                assert!(
-                    count > 0,
-                    "broker must forward the complete provider request"
-                );
-                request.extend_from_slice(&chunk[..count]);
-                if request.ends_with(request_body.as_bytes()) {
-                    break;
-                }
-            }
-            let request = String::from_utf8(request).unwrap();
-            assert!(
-                request.starts_with(&format!("POST {path} HTTP/1.1")),
-                "broker must preserve the provider request path"
-            );
-            assert!(
-                !request.to_ascii_lowercase().contains("accept-encoding:"),
-                "broker must request uncompressed Agent response content"
-            );
-            write!(
-                stream,
-                "HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{response_body}",
-                response_body.len()
-            )
-            .unwrap();
-        });
+        let request_body = Self::gzip(self.request.as_bytes());
+        let response_body = Self::gzip(self.response.as_bytes());
+        let server = self.spawn_upstream(upstream, request_body.clone(), response_body.clone());
         let client = reqwest::blocking::Client::builder()
             .proxy(reqwest::Proxy::all(format!("http://{proxy_addr}")).unwrap())
             .timeout(HTTP_TIMEOUT)
@@ -153,15 +121,21 @@ impl StreamScenario<'_> {
             .header("x-deepseek-harness-session-id", "provider-blackbox-session")
             .header("content-type", "application/json")
             .header("accept-encoding", "gzip, br")
-            .body(self.request.to_owned())
+            .header("content-encoding", "gzip")
+            .body(request_body)
             .send()
             .unwrap()
             .error_for_status()
             .unwrap();
         assert_eq!(
-            response.text().unwrap(),
-            self.response,
-            "the client must receive the original provider stream"
+            response.headers()["content-encoding"],
+            "gzip",
+            "the client must receive the original content coding"
+        );
+        assert_eq!(
+            response.bytes().unwrap().as_ref(),
+            response_body,
+            "the client must receive the original compressed provider stream"
         );
         server.join().unwrap();
 
@@ -170,6 +144,69 @@ impl StreamScenario<'_> {
         self.verify_events(&request, &response);
         broker.shutdown();
         broker.wait_for_exit();
+    }
+
+    fn gzip(bytes: &[u8]) -> Vec<u8> {
+        let mut writer = flate2::write::GzEncoder::new(Vec::new(), flate2::Compression::default());
+        writer.write_all(bytes).unwrap();
+        writer.finish().unwrap()
+    }
+
+    fn spawn_upstream(
+        &self,
+        upstream: TcpListener,
+        request_body: Vec<u8>,
+        response_body: Vec<u8>,
+    ) -> thread::JoinHandle<()> {
+        let path = self.path.to_owned();
+        thread::spawn(move || {
+            let (mut stream, _) = upstream.accept().unwrap();
+            stream.set_read_timeout(Some(HTTP_TIMEOUT)).unwrap();
+            let mut request = Vec::new();
+            loop {
+                let mut chunk = [0_u8; 4096];
+                let count = stream.read(&mut chunk).unwrap();
+                assert!(
+                    count > 0,
+                    "broker must forward the complete provider request"
+                );
+                request.extend_from_slice(&chunk[..count]);
+                if request.ends_with(&request_body) {
+                    break;
+                }
+            }
+            let head_end = request
+                .windows(4)
+                .position(|bytes| bytes == b"\r\n\r\n")
+                .unwrap()
+                .checked_add(4)
+                .unwrap();
+            assert_eq!(
+                &request[head_end..],
+                request_body,
+                "request body stays compressed on the wire"
+            );
+            let request = String::from_utf8(request[..head_end].to_vec()).unwrap();
+            assert!(
+                request.starts_with(&format!("POST {path} HTTP/1.1")),
+                "broker must preserve the provider request path"
+            );
+            let lower = request.to_ascii_lowercase();
+            assert!(
+                lower.contains("accept-encoding: gzip, br"),
+                "broker must preserve response compression negotiation"
+            );
+            assert!(
+                lower.contains("content-encoding: gzip"),
+                "request content coding stays intact"
+            );
+            write!(
+                stream,
+                "HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\nContent-Encoding: gzip\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+                response_body.len()
+            ).unwrap();
+            stream.write_all(&response_body).unwrap();
+        })
     }
 
     fn verify_events(&self, request: &serde_json::Value, response: &serde_json::Value) {

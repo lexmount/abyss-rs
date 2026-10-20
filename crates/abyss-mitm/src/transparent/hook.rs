@@ -16,10 +16,11 @@ use std::{
 use bytes::Bytes;
 use http::{Request, Response, header::HOST};
 use parking_lot::Mutex;
-use serde_json::Value;
 use thiserror::Error;
 use tokio::sync::mpsc;
 
+pub use super::body::CapturedBody;
+use super::content_encoding::ContentDecoder;
 use super::{FlowId, FlowIngress, OriginalDestination, TransparentFlowSource, TransparentProtocol};
 
 const DEFAULT_HOOK_QUEUE_CAPACITY: usize = 1024;
@@ -264,72 +265,6 @@ impl SourceProcess {
     }
 }
 
-/// Captured HTTP body made available to hooks.
-///
-/// The bytes may be a configured-size prefix of the decoded HTTP body when the
-/// original message exceeded the relay capture budget. Network relay remains
-/// independent from this representation and still forwards the full body.
-#[derive(Debug, Clone)]
-pub struct CapturedBody {
-    /// Decoded HTTP body bytes retained for hooks.
-    bytes: Bytes,
-    /// Whether the original decoded body exceeded the hook capture budget.
-    truncated: bool,
-    /// Best-effort structured view for JSON object/array payloads.
-    ///
-    /// Non-JSON payloads stay available through `bytes`; hooks should treat this
-    /// as optional enrichment rather than a replacement for the raw body.
-    json: Option<Value>,
-}
-
-impl CapturedBody {
-    /// Builds a captured body and parses JSON when the bytes represent a JSON
-    /// object or array.
-    #[must_use]
-    pub fn from_bytes(bytes: Bytes) -> Self {
-        Self {
-            json: parse_json_body(&bytes),
-            bytes,
-            truncated: false,
-        }
-    }
-
-    /// Builds a captured body prefix for a message whose full body exceeded the
-    /// hook capture budget.
-    #[must_use]
-    pub fn from_truncated_bytes(bytes: Bytes) -> Self {
-        Self {
-            json: parse_json_body(&bytes),
-            bytes,
-            truncated: true,
-        }
-    }
-
-    /// Raw decoded HTTP body bytes.
-    #[must_use]
-    pub fn bytes(&self) -> &[u8] {
-        &self.bytes
-    }
-
-    /// Shared raw decoded HTTP body bytes.
-    #[must_use]
-    pub const fn bytes_ref(&self) -> &Bytes {
-        &self.bytes
-    }
-
-    /// Parsed JSON body when the payload is a JSON object or array.
-    #[must_use]
-    pub const fn json(&self) -> Option<&Value> {
-        self.json.as_ref()
-    }
-
-    /// Whether the captured bytes are only a prefix of the decoded HTTP body.
-    #[must_use]
-    pub const fn truncated(&self) -> bool {
-        self.truncated
-    }
-}
-
 /// One complete proxied HTTP request/response pair.
 ///
 /// This is the event boundary exposed by `abyss-mitm`: hooks observe network
@@ -500,13 +435,13 @@ impl HookDispatcher {
     /// events without retaining the full body payload in logs.
     #[tracing::instrument(level = "trace", skip_all)]
     pub(super) fn submit(&self, exchange: HttpExchange) -> HookDispatchStatus {
-        self.submit_event(HookEvent::HttpExchange(exchange))
+        self.submit_event(HookEvent::HttpExchange(Box::new(exchange)))
     }
 
     /// Submits one WebSocket message without waiting for hook execution.
     #[tracing::instrument(level = "trace", skip_all)]
     pub(super) fn submit_websocket_message(&self, message: WebSocketMessage) -> HookDispatchStatus {
-        self.submit_event(HookEvent::WebSocketMessage(message))
+        self.submit_event(HookEvent::WebSocketMessage(Box::new(message)))
     }
 
     #[tracing::instrument(level = "trace", skip_all)]
@@ -561,7 +496,16 @@ async fn run_hook_worker(chain: HookChain, mut receiver: mpsc::Receiver<HookEven
         // must not feed back into the network path.
         match event {
             HookEvent::HttpExchange(exchange) => {
-                drop(chain.on_http_exchange(&exchange).await);
+                // Decode on one blocking worker at a time, preserving queue ordering
+                // and keeping codec CPU work off both relay and async executor threads.
+                match tokio::task::spawn_blocking(move || {
+                    ContentDecoder::decode_exchange(*exchange)
+                })
+                .await
+                {
+                    Ok(exchange) => drop(chain.on_http_exchange(&exchange).await),
+                    Err(error) => tracing::warn!(%error, "HTTP capture decoding task failed"),
+                }
             }
             HookEvent::WebSocketMessage(message) => {
                 drop(chain.on_websocket_message(&message).await);
@@ -572,8 +516,8 @@ async fn run_hook_worker(chain: HookChain, mut receiver: mpsc::Receiver<HookEven
 
 #[derive(Debug)]
 enum HookEvent {
-    HttpExchange(HttpExchange),
-    WebSocketMessage(WebSocketMessage),
+    HttpExchange(Box<HttpExchange>),
+    WebSocketMessage(Box<WebSocketMessage>),
 }
 
 impl HookEvent {
@@ -709,26 +653,6 @@ impl fmt::Debug for HookChain {
             .field("hook_count", &self.hook_count())
             .finish()
     }
-}
-
-fn parse_json_body(bytes: &[u8]) -> Option<Value> {
-    let trimmed = trim_ascii_whitespace(bytes);
-    if !matches!(trimmed.first(), Some(b'{' | b'[')) {
-        return None;
-    }
-    serde_json::from_slice(trimmed).ok()
-}
-
-fn trim_ascii_whitespace(bytes: &[u8]) -> &[u8] {
-    let leading = bytes
-        .iter()
-        .position(|byte| !byte.is_ascii_whitespace())
-        .unwrap_or(bytes.len());
-    let trailing = bytes
-        .iter()
-        .rposition(|byte| !byte.is_ascii_whitespace())
-        .map_or(leading, |index| index.saturating_add(1));
-    &bytes[leading..trailing]
 }
 
 #[cfg(test)]

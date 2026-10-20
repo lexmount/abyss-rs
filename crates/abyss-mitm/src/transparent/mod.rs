@@ -7,7 +7,9 @@
 //! bytes.
 
 mod accepted_flow;
+mod body;
 mod client_hello;
+mod content_encoding;
 mod decrypt_policy;
 mod display;
 mod engine;
@@ -27,6 +29,7 @@ mod utils;
 mod websocket;
 
 pub use self::accepted_flow::AcceptedTcpFlow;
+pub use self::body::BodyDecodingStatus;
 pub use self::decrypt_policy::{
     TlsDecryptionAction, TlsDecryptionContext, TlsDecryptionDecision, TlsDecryptionPolicy,
     TlsDecryptionPolicyError, TlsDecryptionRule, ValidatedTlsDecryptionPolicy,
@@ -327,32 +330,27 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn relay_applies_compression_policy_and_preserves_encoded_bodies() {
-        // Model API paths and legacy hosts strip negotiation; other routes retain it.
-        for (host, path, strip_accept_encoding) in [
-            ("api.deepseek.com", "/chat/completions", true),
-            ("api.openai.com", "/v1/responses", true),
-            ("api.anthropic.com", "/v1/messages", true),
+    async fn relay_preserves_compression_negotiation_and_encoded_bodies() {
+        // All hosts and routes retain the client's compression negotiation.
+        for (host, path) in [
+            ("api.deepseek.com", "/chat/completions"),
+            ("api.openai.com", "/v1/responses"),
+            ("api.anthropic.com", "/v1/messages"),
             (
                 "claude.ai",
                 "/api/organizations/o/chat_conversations/c/completion",
-                true,
             ),
-            ("www.dmxapi.cn", "/other", true),
-            ("gateway.example", "/gateway/responses", true),
-            ("gateway.example", "/v1/messages?beta=true", true),
-            ("api.openai.com", "/v1/files", false),
-            ("gateway.example", "/upload", false),
+            ("www.dmxapi.cn", "/other"),
+            ("gateway.example", "/gateway/responses"),
+            ("gateway.example", "/v1/messages?beta=true"),
+            ("api.openai.com", "/v1/files"),
+            ("gateway.example", "/upload"),
         ] {
-            assert_compression_policy_roundtrip(host, path, strip_accept_encoding).await;
+            assert_compression_policy_roundtrip(host, path).await;
         }
     }
 
-    async fn assert_compression_policy_roundtrip(
-        host: &'static str,
-        path: &'static str,
-        strip_accept_encoding: bool,
-    ) {
+    async fn assert_compression_policy_roundtrip(host: &'static str, path: &'static str) {
         // gzip-encoded {"ok":true}; content decoding belongs outside forwarding.
         const BODY: &[u8] = &[
             31, 139, 8, 0, 0, 0, 0, 0, 2, 255, 171, 86, 202, 207, 86, 178, 42, 41, 42, 77, 173, 5,
@@ -391,31 +389,10 @@ mod tests {
                 .unwrap();
             let mut received = head.as_bytes().to_vec();
             received.extend_from_slice(&body);
-            if strip_accept_encoding {
-                assert!(head.starts_with(&format!("POST {path} HTTP/1.1\r\n")));
-                let mut headers: Vec<_> = head
-                    .lines()
-                    .skip(1)
-                    .filter(|line| !line.is_empty())
-                    .map(str::to_ascii_lowercase)
-                    .collect();
-                headers.sort();
-                assert_eq!(
-                    headers,
-                    vec![
-                        "content-encoding: gzip".to_owned(),
-                        format!("content-length: {}", BODY.len()),
-                        format!("host: {host}"),
-                    ],
-                    "only Accept-Encoding should be removed for {host}{path}"
-                );
-                assert_eq!(body, BODY);
-            } else {
-                assert_eq!(
-                    received, expected_request,
-                    "unmatched request wire bytes changed for {host}{path}"
-                );
-            }
+            assert_eq!(
+                received, expected_request,
+                "request wire bytes changed for {host}{path}"
+            );
             stream.write_all(&upstream_response).await.unwrap();
             received.len()
         });
@@ -443,8 +420,8 @@ mod tests {
         );
         assert_eq!(outcome.first_request.headers()["content-encoding"], "gzip");
         assert_eq!(outcome.first_response.headers()["content-encoding"], "gzip");
-        assert_eq!(outcome.first_request.body().bytes(), BODY);
-        assert_eq!(outcome.first_response.body().bytes(), BODY);
+        assert_eq!(outcome.first_request.body().raw_bytes(), BODY);
+        assert_eq!(outcome.first_response.body().raw_bytes(), BODY);
         assert_eq!(
             outcome.client_to_upstream_bytes,
             u64::try_from(forwarded_request_len).unwrap()

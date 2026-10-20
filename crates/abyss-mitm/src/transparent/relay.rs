@@ -37,8 +37,7 @@ use super::{
     hook::HookDispatcher,
     utils::{
         content_length, has_expect_continue, http_request_head_without_relay_headers, is_chunked,
-        is_websocket_upgrade_request, should_strip_accept_encoding, status_has_no_body,
-        websocket_request_head_bytes,
+        is_websocket_upgrade_request, status_has_no_body, websocket_request_head_bytes,
     },
     websocket::{WebSocketRelayOutcome, relay_websocket_messages},
 };
@@ -616,10 +615,9 @@ enum BodyFraming {
 
 /// Copy the first request to upstream and capture the decoded request body.
 ///
-/// Relay preserves the original request head bytes unless the flow targets a
-/// provider endpoint where hooks require uncompressed, parseable response
-/// bodies. `head_buffer` still carries any body bytes already read while
-/// decoding the head.
+/// Relay preserves the original request head bytes except for locally handled
+/// `Expect: 100-continue` negotiation. `head_buffer` still carries any body
+/// bytes already read while decoding the head.
 #[tracing::instrument(level = "trace", skip_all)]
 async fn forward_request<R, W>(
     client: &mut R,
@@ -638,7 +636,7 @@ where
     })?;
     let handle_expect_continue =
         has_expect_continue(request) && !matches!(body_framing, BodyFraming::Empty);
-    let request_head = request_head_for_relay(request, head_buffer, flow, handle_expect_continue)?;
+    let request_head = request_head_for_relay(request, head_buffer, handle_expect_continue)?;
 
     upstream
         .write_all(&request_head)
@@ -680,20 +678,15 @@ where
 fn request_head_for_relay<'a>(
     request: &'a Request<()>,
     head_buffer: &'a Http1HeadBuffer,
-    flow: &FlowContext,
     strip_expect_continue: bool,
 ) -> Result<Cow<'a, [u8]>, TransparentFlowError> {
-    let strip_accept_encoding = should_strip_accept_encoding(flow, request);
-    if strip_accept_encoding || strip_expect_continue {
+    if strip_expect_continue {
         return Ok(Cow::Owned(
-            http_request_head_without_relay_headers(
-                request,
-                strip_accept_encoding,
-                strip_expect_continue,
-            )
-            .map_err(|source| {
-                TransparentFlowError::http1(FlowOperation::WriteProviderRequestHead, source)
-            })?,
+            http_request_head_without_relay_headers(request, strip_expect_continue).map_err(
+                |source| {
+                    TransparentFlowError::http1(FlowOperation::WriteProviderRequestHead, source)
+                },
+            )?,
         ));
     }
     Ok(Cow::Borrowed(head_buffer.head_bytes()))
@@ -974,7 +967,7 @@ where
     }
 
     Ok(BodyCapture {
-        body: captured_body(body, capture_body),
+        body: captured_body(body, capture_body, max_body_bytes),
         forwarded_bytes: usize_to_u64(length)?,
     })
 }
@@ -1182,7 +1175,7 @@ impl ChunkedBodyCapture {
                     if &self.pending[..2] == b"\r\n" {
                         self.pending.drain(..2);
                         self.reject_pipelined_bytes()?;
-                        return Ok(Some(self.finish()));
+                        return Ok(Some(self.finish(max_body_bytes)));
                     }
                     if self.pending.len() > MAX_HTTP1_HEADER_BYTES {
                         return Err(TransparentFlowError::http1(
@@ -1202,7 +1195,7 @@ impl ChunkedBodyCapture {
                         .ok_or(TransparentFlowError::ByteCountOverflow)?;
                     self.pending.drain(..trailer_end);
                     self.reject_pipelined_bytes()?;
-                    return Ok(Some(self.finish()));
+                    return Ok(Some(self.finish(max_body_bytes)));
                 }
             }
         }
@@ -1219,9 +1212,13 @@ impl ChunkedBodyCapture {
         }
     }
 
-    fn finish(&mut self) -> BodyCapture {
+    fn finish(&mut self, max_body_bytes: usize) -> BodyCapture {
         BodyCapture {
-            body: captured_body(std::mem::take(&mut self.body), self.capture_body),
+            body: captured_body(
+                std::mem::take(&mut self.body),
+                self.capture_body,
+                max_body_bytes,
+            ),
             forwarded_bytes: self.forwarded_bytes,
         }
     }
@@ -1272,7 +1269,7 @@ where
                 })?;
         if read_len == 0 {
             return Ok(BodyCapture {
-                body: captured_body(body, capture_body),
+                body: captured_body(body, capture_body, max_body_bytes),
                 forwarded_bytes,
             });
         }
@@ -1294,14 +1291,16 @@ where
 }
 
 /// Attach a captured body to a request while preserving the parsed head parts.
-fn request_with_body(request: Request<()>, body: CapturedBody) -> Request<CapturedBody> {
+fn request_with_body(request: Request<()>, mut body: CapturedBody) -> Request<CapturedBody> {
     let (parts, ()) = request.into_parts();
+    body.mark_pending(&parts.headers);
     Request::from_parts(parts, body)
 }
 
 /// Attach a captured body to a response while preserving the parsed head parts.
-fn response_with_body(response: Response<()>, body: CapturedBody) -> Response<CapturedBody> {
+fn response_with_body(response: Response<()>, mut body: CapturedBody) -> Response<CapturedBody> {
     let (parts, ()) = response.into_parts();
+    body.mark_pending(&parts.headers);
     Response::from_parts(parts, body)
 }
 
@@ -1371,12 +1370,17 @@ fn append_body_for_capture(
     body.extend_from_slice(bytes);
 }
 
-fn captured_body(body: Vec<u8>, capture_completed_within_limit: bool) -> CapturedBody {
-    if capture_completed_within_limit {
+fn captured_body(
+    body: Vec<u8>,
+    capture_completed_within_limit: bool,
+    max_body_bytes: usize,
+) -> CapturedBody {
+    let captured = if capture_completed_within_limit {
         CapturedBody::from_bytes(Bytes::from(body))
     } else {
         CapturedBody::from_truncated_bytes(Bytes::from(body))
-    }
+    };
+    captured.with_decode_limit(max_body_bytes)
 }
 
 /// Add forwarded byte counts without silently wrapping.
@@ -1601,8 +1605,8 @@ mod tests {
             "locally-handled Expect must not be forwarded upstream"
         );
         assert!(
-            !lower.contains("accept-encoding:"),
-            "model API routes should strip response compression negotiation"
+            lower.contains("accept-encoding:"),
+            "model API routes must preserve response compression negotiation"
         );
         assert!(
             upstream_text.ends_with("ping"),
