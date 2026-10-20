@@ -117,6 +117,44 @@ fn session_header_alias_preserves_precedence_and_ignores_blank_values() {
 }
 
 #[test]
+fn dsh_session_header_correlates_compatible_protocols_without_overriding_existing_ids() {
+    for path in [
+        "/api/paas/v4/chat/completions",
+        "/api/coding/paas/v4/chat/completions",
+        "/v1/responses",
+    ] {
+        let mut exchange = json_exchange(
+            path,
+            &json!({"input": "hi", "messages": [{"role": "user", "content": "hi"}]}),
+            &json!({}),
+        );
+        exchange.request.headers_mut().insert(
+            "x-deepseek-harness-session-id",
+            " dsh-session ".parse().unwrap(),
+        );
+        assert_eq!(
+            parse_openai_exchange(&exchange).unwrap().session_id,
+            "session-1"
+        );
+        exchange.request.headers_mut().remove("session-id");
+        assert_eq!(
+            parse_openai_exchange(&exchange).unwrap().session_id,
+            "dsh-session"
+        );
+        exchange
+            .request
+            .headers_mut()
+            .insert("x-deepseek-harness-session-id", " ".parse().unwrap());
+        assert!(
+            parse_openai_exchange(&exchange)
+                .unwrap()
+                .session_id
+                .starts_with("flow-")
+        );
+    }
+}
+
+#[test]
 fn removes_cached_tokens_from_input() {
     let exchange = json_exchange(
         "/v1/responses",

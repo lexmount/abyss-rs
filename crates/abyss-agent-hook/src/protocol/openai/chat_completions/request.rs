@@ -22,7 +22,7 @@ impl ChatRequest {
             .and_then(Value::as_array)
             .into_iter()
             .flatten()
-            .map(|m| OpenAiContent::request_item(m, MessageRole::Unknown))
+            .flat_map(Self::message_drafts)
             .collect();
         let prompt = payload
             .and_then(|p| p.get("prompt"))
@@ -39,6 +39,26 @@ impl ChatRequest {
             completeness: ConversationProjection::completeness(payload.is_some(), truncated),
         }
     }
+
+    fn message_drafts(message: &Value) -> Vec<MessageDraft> {
+        let content = OpenAiContent::request_item(message, MessageRole::Unknown);
+        let mut drafts = Vec::new();
+        // Compatible APIs can carry preserved thinking alongside assistant
+        // content. Keep its role distinct and retain the original history order.
+        if content.role == MessageRole::Assistant
+            && let Some(text) = message
+                .get("reasoning_content")
+                .and_then(Value::as_str)
+                .and_then(non_empty_trimmed)
+        {
+            let mut reasoning = MessageDraft::new(MessageRole::Reasoning, content.id.clone());
+            reasoning.push_part(text);
+            drafts.push(reasoning);
+        }
+        drafts.push(content);
+        drafts
+    }
+
     pub fn texts(&self) -> Vec<String> {
         dedupe_texts(
             self.prompt

@@ -28,6 +28,12 @@ enabled = true
 action = "intercept"
 destination_hosts = ["api.deepseek.com"]
 
+[[mitm.tls_decryption.rules]]
+id = "decrypt-glm-api"
+enabled = true
+action = "intercept"
+destination_hosts = ["open.bigmodel.cn", "api.z.ai"]
+
 [hooks.harness_usage]
 enabled = true
 

@@ -1,0 +1,11 @@
+{
+  "model": "glm-4.7",
+  "messages": [
+    {"role": "system", "content": "Read the requested file."},
+    {"role": "user", "content": "Read probe.txt"}
+  ],
+  "stream": true,
+  "tools": [
+    {"type": "function", "function": {"name": "read_file", "parameters": {"type": "object", "properties": {"path": {"type": "string"}}}}}
+  ]
+}

@@ -44,6 +44,51 @@ fn unfinished_parallel_blocks_keep_order_and_identical_text() {
 }
 
 #[test]
+fn reasoning_text_deltas_and_snapshots_preserve_content_without_duplicates() {
+    let item = json!({
+        "id":"reason-glm", "type":"reasoning", "summary":[],
+        "encrypted_content":"must not become visible",
+        "content":[{"type":"reasoning_text","text":"Read the file."}]
+    });
+    let values = [
+        json!({"type":"response.reasoning_text.delta","output_index":0_i32,"content_index":0_i32,"delta":"Read "}),
+        json!({"type":"response.reasoning_text.delta","output_index":0_i32,"content_index":0_i32,"delta":"the file."}),
+        json!({"type":"response.reasoning_text.done","output_index":0_i32,"content_index":0_i32,"text":"Read the file."}),
+        json!({"type":"response.content_part.done","output_index":0_i32,"content_index":0_i32,"part":item["content"][0]}),
+        json!({"type":"response.output_item.done","output_index":0_i32,"item":item}),
+        json!({"type":"response.completed","response":{"output":[item]}}),
+    ];
+    // Exercise accumulation, done-only reconciliation, final snapshots and JSON separately.
+    for (events, partial) in [
+        (&values[..2], true),
+        (&values[2..3], true),
+        (&values[..], false),
+        (&values[5..], false),
+        (&[json!({"output":[item]})][..], false),
+    ] {
+        let response = ResponsesResponse::assemble(events, partial);
+        let conversation = response.conversation();
+        assert_eq!(conversation.messages.len(), 1);
+        assert_eq!(conversation.messages[0].role, MessageRole::Reasoning);
+        assert_eq!(conversation.messages[0].text, "Read the file.");
+        assert_eq!(
+            conversation.completeness,
+            if partial {
+                ContentCompleteness::Partial
+            } else {
+                ContentCompleteness::Complete
+            }
+        );
+    }
+
+    let request = ResponsesRequest::parse(Some(&json!({"input":[item]})), false);
+    let conversation = request.conversation();
+    assert_eq!(conversation.messages[0].role, MessageRole::Reasoning);
+    assert_eq!(conversation.messages[0].id.as_deref(), Some("reason-glm"));
+    assert_eq!(conversation.messages[0].text, "Read the file.");
+}
+
+#[test]
 fn request_preserves_roles_and_repeated_messages() {
     let request = ResponsesRequest::parse(
         Some(&json!({

@@ -58,6 +58,7 @@ fn usage_from_object(object: &serde_json::Map<String, Value>) -> Option<TokenUsa
         .or_else(|| nested_int_field(object, "prompt_tokens_details", "cache_creation_tokens"))
         .unwrap_or(0);
     let reasoning = nested_int_field(object, "output_tokens_details", "reasoning_tokens")
+        .or_else(|| nested_int_field(object, "completion_tokens_details", "reasoning_tokens"))
         .or_else(|| int_field(object, "reasoning_tokens"))
         .unwrap_or(0);
     // OpenAI input counts include cached tokens and output counts include
