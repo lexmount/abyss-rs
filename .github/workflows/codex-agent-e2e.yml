@@ -5,7 +5,14 @@ on:
     inputs:
       run_ids:
         description: Space-separated existing run-attempt IDs to inspect
-        required: true
+        required: false
+        type: string
+      reproduce:
+        description: Reproduce once with a separately observed judge request
+        type: boolean
+        default: false
+      seed:
+        description: Scenario seed for reproduction
         type: string
 
 concurrency:
@@ -19,16 +26,32 @@ jobs:
   diagnostics:
     name: Inspect retained Codex diagnostics
     runs-on: [self-hosted, abyss, Linux, X64]
-    timeout-minutes: 5
+    timeout-minutes: 20
     steps:
       - uses: actions/checkout@v4
       - name: Test diagnostic redaction
         run: python3 -m unittest discover -s scripts/tests -p 'test_codex_retained_diagnostics.py'
       - name: Read existing evidence without model requests
+        if: inputs.reproduce != true
         env:
           DIAGNOSTIC_RUN_IDS: ${{ inputs.run_ids }}
         run: python3 scripts/codex_retained_diagnostics.py
+      - name: Reproduce with temporary judge observation
+        if: inputs.reproduce == true
+        env:
+          ABYSS_AGENT_E2E_RUN_ID: ${{ github.run_id }}-${{ github.run_attempt }}
+          ABYSS_AGENT_E2E_RUNTIME_ROOT: ${{ runner.temp }}/abyss-agent-e2e-${{ github.run_id }}-${{ github.run_attempt }}
+          ABYSS_AGENT_E2E_SEED: ${{ inputs.seed }}
+          ABYSS_AGENT_E2E_MAX_SCENARIOS: "2"
+        run: python3 -m scripts.agent_e2e_ci run
+      - name: Collect bounded diagnostics before runner cleanup
+        if: always() && inputs.reproduce == true
+        env:
+          DIAGNOSTIC_RUN_IDS: ${{ inputs.run_ids }}
+          DIAGNOSTIC_CURRENT_RUN: ${{ github.run_id }}-${{ github.run_attempt }}
+        run: python3 scripts/codex_retained_diagnostics.py
       - uses: actions/upload-artifact@v4
+        if: always()
         with:
           name: codex-retained-diagnostics-${{ github.run_id }}
           path: ${{ runner.temp }}/codex-retained-diagnostics.json

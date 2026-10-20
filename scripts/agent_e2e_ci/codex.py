@@ -75,10 +75,13 @@ class CodexOrchestrator:
         config: RuntimeConfig,
         commands: CommandRunner,
         prompts: PromptRenderer,
+        *,
+        diagnostic_stack: TestStack | None = None,
     ) -> None:
         self.config = config
         self.commands = commands
         self.prompts = prompts
+        self.diagnostic_stack = diagnostic_stack
 
     def generate_plan(self) -> ScenarioPlan:
         coordinator = self.config.runtime_root / "coordinator"
@@ -230,10 +233,22 @@ class CodexOrchestrator:
         # Generator and judge prompts contain audit evidence; keep them out of
         # world-readable process argument lists on the shared runner.
         arguments.extend(("--", "-"))
+        environment = self._direct_codex_environment()
+        if output_path.name == "verdict.json" and self.diagnostic_stack is not None:
+            stack = self.diagnostic_stack
+            environment.update({
+                "HTTP_PROXY": stack.proxy_url,
+                "HTTPS_PROXY": stack.proxy_url,
+                "http_proxy": stack.proxy_url,
+                "https_proxy": stack.proxy_url,
+                "CODEX_CA_CERTIFICATE": str(stack.ca_certificate),
+                "SSL_CERT_FILE": str(stack.ca_certificate),
+            })
+        print(f"agent-e2e diagnostic: phase={output_path.stem} prompt_bytes={len(prompt.encode())}", flush=True)
         return self.commands.run(
             arguments,
             cwd=self.config.runtime_root / "coordinator",
-            env=self._direct_codex_environment(),
+            env=environment,
             input_text=prompt,
             timeout=self.config.codex_timeout_seconds,
             check=False,

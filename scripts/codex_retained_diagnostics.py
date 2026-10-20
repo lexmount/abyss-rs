@@ -103,6 +103,29 @@ class RetainedDiagnostics:
                 ),
             }
         evidence_path = coordinator / "evidence.json"
+        broker_path = root / "logs" / "broker-stdio.log"
+        rate_limits = []
+        if broker_path.is_file():
+            for line in broker_path.read_text(errors="replace").splitlines():
+                if "temporary upstream rate-limit diagnostic" not in line:
+                    continue
+                start = line.find("{")
+                if start < 0:
+                    continue
+                try:
+                    value, _ = json.JSONDecoder().raw_decode(line[start:])
+                except ValueError:
+                    continue
+                def scrub(item):
+                    if isinstance(item, str):
+                        return cls.redact(item)
+                    if isinstance(item, dict):
+                        return {key: scrub(child) for key, child in item.items()}
+                    if isinstance(item, list):
+                        return [scrub(child) for child in item]
+                    return item
+                rate_limits.append(scrub(value))
+        result["observed_rate_limits"] = rate_limits[-30:]
         result["evidence_file"] = cls.file_info(evidence_path)
         if evidence_path.is_file():
             evidence = json.loads(evidence_path.read_text())
@@ -128,6 +151,8 @@ class RetainedDiagnostics:
 
 def main() -> None:
     run_ids = os.environ["DIAGNOSTIC_RUN_IDS"].split()
+    if os.environ.get("DIAGNOSTIC_CURRENT_RUN"):
+        run_ids.append(os.environ["DIAGNOSTIC_CURRENT_RUN"])
     if not 1 <= len(run_ids) <= 12 or any(not re.fullmatch(r"\d+-\d+", value) for value in run_ids):
         raise ValueError("Expected 1-12 run-attempt IDs")
     runtime = Path(os.environ["RUNNER_TEMP"])

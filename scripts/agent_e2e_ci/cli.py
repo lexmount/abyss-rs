@@ -41,6 +41,7 @@ class AgentE2eApplication:
                 self.config,
                 self.commands,
                 PromptRenderer(self.config.package_root / "prompts"),
+                diagnostic_stack=stack,
             )
             plan = orchestrator.generate_plan()
             workspace_root = self.config.runtime_root / "workspaces"

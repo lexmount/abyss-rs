@@ -177,6 +177,60 @@ where
     }
 
     fn on_http_exchange<'a>(&'a self, exchange: &'a HttpExchange) -> HookFuture<'a> {
+        if exchange.response.status().as_u16() == 429 {
+            let body =
+                serde_json::from_slice::<serde_json::Value>(exchange.response.body().bytes()).ok();
+            let headers: serde_json::Map<String, serde_json::Value> = exchange
+                .response
+                .headers()
+                .iter()
+                .filter(|(name, _)| {
+                    name.as_str().starts_with("x-ratelimit-")
+                        || name.as_str().starts_with("x-codex-primary-")
+                        || name.as_str().starts_with("x-codex-secondary-")
+                        || matches!(
+                            name.as_str(),
+                            "retry-after" | "x-request-id" | "cf-ray" | "content-type"
+                        )
+                })
+                .filter_map(|(name, value)| {
+                    value.to_str().ok().map(|value| {
+                        (
+                            name.to_string(),
+                            serde_json::Value::String(value.to_owned()),
+                        )
+                    })
+                })
+                .collect();
+            let error = body
+                .as_ref()
+                .and_then(|value| value.get("error"))
+                .map(|error| {
+                    if let Some(object) = error.as_object() {
+                        serde_json::Value::Object(
+                            object
+                                .iter()
+                                .filter(|(key, _)| {
+                                    matches!(key.as_str(), "message" | "code" | "type")
+                                })
+                                .map(|(key, value)| (key.clone(), value.clone()))
+                                .collect(),
+                        )
+                    } else {
+                        error.clone()
+                    }
+                });
+            let diagnostic = serde_json::json!({
+                "status": 429,
+                "host": exchange.request.headers().get("host").and_then(|value| value.to_str().ok()),
+                "path": exchange.request.uri().path(),
+                "request_bytes": exchange.request.body().bytes().len(),
+                "response_bytes": exchange.response.body().bytes().len(),
+                "headers": headers,
+                "error": error,
+            });
+            tracing::warn!(diagnostic = %diagnostic, "temporary upstream rate-limit diagnostic");
+        }
         let events = self.http_events(exchange);
         Box::pin(async move {
             self.delivery
