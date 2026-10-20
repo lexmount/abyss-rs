@@ -43,7 +43,7 @@ fn decode(coding: &str, raw: Vec<u8>, truncated: bool, limit: usize) -> Captured
     }
     .with_decode_limit(limit);
     body.set_decoded(Bytes::new(), BodyDecodingStatus::Pending);
-    assert!(body.bytes().is_empty());
+    assert_eq!(body.bytes(), b"");
     ContentDecoder::decode_body(&headers, &mut body, false);
     body
 }
@@ -94,7 +94,7 @@ fn corrupt_incomplete_and_trailing_data_do_not_become_plaintext() {
                 BodyDecodingStatus::InvalidData,
                 "{coding}"
             );
-            assert!(body.bytes().is_empty());
+            assert_eq!(body.bytes(), b"");
             assert!(body.json().is_none());
             assert_eq!(body.raw_bytes(), invalid);
             assert!(body.truncated());
@@ -147,7 +147,7 @@ fn exact_output_limit_and_empty_representations_are_complete() {
             BodyDecodingStatus::Complete,
             "{coding}"
         );
-        assert!(body.bytes().is_empty());
+        assert_eq!(body.bytes(), b"");
     }
 }
 
@@ -183,7 +183,7 @@ fn invalid_headers_and_excessive_chains_are_explicit() {
         body.decoding_status(),
         BodyDecodingStatus::UnsupportedTransferEncoding
     );
-    assert!(body.bytes().is_empty());
+    assert_eq!(body.bytes(), b"");
 }
 
 #[test]
