@@ -1437,8 +1437,8 @@ const fn broker_binary() -> &'static str {
 }
 
 #[cfg(unix)]
-#[path = "scenarios/glm.rs"]
-mod glm;
+#[path = "scenarios/compatible_providers.rs"]
+mod compatible_providers;
 
 struct BrokerProcess {
     api_addr: SocketAddr,

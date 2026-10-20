@@ -298,6 +298,12 @@ fn packaged_default_tls_decryption_policy() -> TlsDecryptionPolicy {
                 true,
                 &["open.bigmodel.cn", "api.z.ai"],
             ),
+            tls_rule(
+                "decrypt-kimi-api",
+                TlsDecryptionAction::Intercept,
+                true,
+                &["api.moonshot.cn", "api.moonshot.ai"],
+            ),
         ],
     }
 }
@@ -563,21 +569,35 @@ mod tests {
     }
 
     #[test]
-    fn glm_interception_is_scoped_to_official_api_hosts_in_both_defaults() {
+    fn compatible_provider_interception_is_scoped_to_official_api_hosts_in_both_defaults() {
         let packaged = toml::from_str::<LocalRuntimePolicy>(super::PACKAGED_RUNTIME_POLICY)
             .expect("packaged policy should parse");
         for policy in [
             packaged.mitm.tls_decryption,
             super::packaged_default_tls_decryption_policy(),
         ] {
-            for host in ["open.bigmodel.cn", "api.z.ai"] {
+            for host in [
+                "open.bigmodel.cn",
+                "api.z.ai",
+                "api.moonshot.cn",
+                "api.moonshot.ai",
+            ] {
                 assert_eq!(
                     policy.decide(Some(host)).action(),
                     super::TlsDecryptionAction::Intercept,
                     "{host}"
                 );
             }
-            for host in ["bigmodel.cn", "z.ai", "api.z.ai.example", "example.com"] {
+            for host in [
+                "bigmodel.cn",
+                "z.ai",
+                "api.z.ai.example",
+                "moonshot.cn",
+                "moonshot.ai",
+                "api.moonshot.cn.example",
+                "api.moonshot.ai.example",
+                "example.com",
+            ] {
                 assert_eq!(
                     policy.decide(Some(host)).action(),
                     super::TlsDecryptionAction::Passthrough,

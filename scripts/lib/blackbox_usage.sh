@@ -40,17 +40,20 @@ blackbox_extract_codex_usage() {
           elif ($usage.input_tokens | type) != "number"
             or ($usage.output_tokens | type) != "number"
             or (($usage.cached_input_tokens // 0) | type) != "number"
-            or (($usage.cache_write_input_tokens // 0) | type) != "number"
+            or (($usage | has("cache_write_input_tokens"))
+              and ($usage.cache_write_input_tokens | type) != "number")
             or (($usage.reasoning_output_tokens // 0) | type) != "number" then
             error("Codex usage schema has an invalid token field")
           else
             {
               input_tokens: $usage.input_tokens,
               cached_input_tokens: ($usage.cached_input_tokens // 0),
-              cache_write_input_tokens: ($usage.cache_write_input_tokens // 0),
               output_tokens: $usage.output_tokens,
               reasoning_output_tokens: ($usage.reasoning_output_tokens // 0)
             }
+            + (if $usage | has("cache_write_input_tokens") then
+                {cache_write_input_tokens: $usage.cache_write_input_tokens}
+              else {} end)
           end
       end
   ' "${jsonl_file}"
@@ -119,20 +122,19 @@ blackbox_assert_pair_identity() {
 blackbox_assert_codex_usage_matches_pair() {
   local usage_json="$1"
   local pair_json="$2"
+  local completed_usage_json
+  local events_json
+  local comparison
 
-  jq -e \
-    --argjson usage "${usage_json}" \
-    --argjson pair "${pair_json}" \
-    '
-      $usage.input_tokens
-        == ($pair.request.input_tokens
-          + $pair.request.cache_read_tokens
-          + $pair.request.cache_write_tokens)
-      and $usage.cached_input_tokens == $pair.request.cache_read_tokens
-      and $usage.cache_write_input_tokens == $pair.request.cache_write_tokens
-      and $usage.output_tokens == $pair.response.output_tokens
-      and $usage.reasoning_output_tokens == $pair.response.reasoning_tokens
-    ' <<<"{}" >/dev/null
+  completed_usage_json="$(jq -cn --argjson usage "${usage_json}" '[$usage]')"
+  events_json="$(jq -c '[.request, .response]' <<<"${pair_json}")"
+  if comparison="$(blackbox_assert_codex_session_usage \
+    "${completed_usage_json}" "${events_json}")"; then
+    return 0
+  fi
+  # Only counters and event ids are printed, never captured request content.
+  printf '%s\n' "${comparison}" >&2
+  return 1
 }
 
 blackbox_assert_codex_session_usage() {
