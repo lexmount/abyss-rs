@@ -8,11 +8,13 @@ use crate::protocol::{
 };
 
 pub fn best_usage(values: &[Value]) -> Option<TokenUsage> {
-    let mut counters = UsageCounters::default();
-    for value in values {
-        counters.visit(value, MAX_PARSE_DEPTH);
-    }
-    let usage = counters.into_usage();
+    let usage = values
+        .iter()
+        .fold(UsageCounters::default(), |mut counters, value| {
+            counters.visit(value, MAX_PARSE_DEPTH);
+            counters
+        })
+        .into_usage();
     (!usage.is_empty()).then_some(usage)
 }
 
