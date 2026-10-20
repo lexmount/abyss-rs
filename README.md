@@ -49,6 +49,7 @@ abyss run -- codex
 - DeepSeek
 - [GLM](docs/glm.md)
 - [Kimi](docs/kimi.md)
+- [Qwen](docs/qwen.md)
 
 Open the dashboard to review captured activity, or inspect the runtime from your terminal:
 

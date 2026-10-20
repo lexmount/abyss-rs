@@ -40,6 +40,24 @@ enabled = true
 action = "intercept"
 destination_hosts = ["api.moonshot.cn", "api.moonshot.ai"]
 
+[[mitm.tls_decryption.rules]]
+id = "decrypt-qwen-api"
+enabled = true
+action = "intercept"
+destination_hosts = [
+    "dashscope.aliyuncs.com",
+    "dashscope-intl.aliyuncs.com",
+    "dashscope-us.aliyuncs.com",
+    "coding.dashscope.aliyuncs.com",
+    "coding-intl.dashscope.aliyuncs.com",
+    "*.cn-beijing.maas.aliyuncs.com",
+    "*.ap-southeast-1.maas.aliyuncs.com",
+    "*.us-east-1.maas.aliyuncs.com",
+    "*.eu-central-1.maas.aliyuncs.com",
+    "*.ap-northeast-1.maas.aliyuncs.com",
+    "*.cn-hongkong.maas.aliyuncs.com",
+]
+
 [hooks.harness_usage]
 enabled = true
 

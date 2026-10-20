@@ -1,0 +1,100 @@
+{
+  "path": "/apps/anthropic/anthropic/v1/messages",
+  "request": {
+    "model": "qwen3.8-flash",
+    "stream": true,
+    "max_tokens": 2048,
+    "messages": [
+      {
+        "role": "user",
+        "content": "Read probe.txt."
+      }
+    ]
+  },
+  "followup": {
+    "model": "qwen3.8-flash",
+    "stream": true,
+    "max_tokens": 2048,
+    "messages": [
+      {
+        "role": "user",
+        "content": "Read probe.txt."
+      },
+      {
+        "role": "assistant",
+        "content": [
+          {
+            "type": "thinking",
+            "thinking": "Read the file.",
+            "signature": "fixture-signature"
+          },
+          {
+            "type": "tool_use",
+            "id": "qwen-call-1",
+            "name": "read",
+            "input": {
+              "path": "probe.txt"
+            }
+          }
+        ]
+      },
+      {
+        "role": "user",
+        "content": [
+          {
+            "type": "tool_result",
+            "tool_use_id": "qwen-call-1",
+            "content": "QWEN_PROBE_OK"
+          }
+        ]
+      }
+    ]
+  },
+  "response": {
+    "id": "msg_qwen_1",
+    "type": "message",
+    "role": "assistant",
+    "model": "qwen3.8-flash",
+    "content": [
+      {
+        "type": "thinking",
+        "thinking": "Read the file.",
+        "signature": "fixture-signature"
+      },
+      {
+        "type": "tool_use",
+        "id": "qwen-call-1",
+        "name": "read",
+        "input": {
+          "path": "probe.txt"
+        }
+      }
+    ],
+    "stop_reason": "tool_use",
+    "usage": {
+      "input_tokens": 40,
+      "cache_read_input_tokens": 60,
+      "cache_creation_input_tokens": 0,
+      "output_tokens": 12
+    }
+  },
+  "reply": {
+    "id": "msg_qwen_2",
+    "type": "message",
+    "role": "assistant",
+    "model": "qwen3.8-flash",
+    "content": [
+      {
+        "type": "text",
+        "text": "QWEN_PROBE_OK"
+      }
+    ],
+    "stop_reason": "end_turn",
+    "usage": {
+      "input_tokens": 60,
+      "cache_read_input_tokens": 60,
+      "cache_creation_input_tokens": 0,
+      "output_tokens": 12
+    }
+  }
+}

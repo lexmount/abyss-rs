@@ -7,6 +7,32 @@ use super::response::ChatResponse;
 use crate::protocol::model::tool::ParsedToolEvent;
 
 #[test]
+fn empty_tool_metadata_in_later_deltas_preserves_call_identity() {
+    for (kind, input_key) in [("function", "arguments"), ("custom", "input")] {
+        let response = ChatResponse::assemble(
+            &[
+                json!({"choices":[{"delta":{"tool_calls":[{"index":0_i32,"id":"c1","type":kind,
+                    kind:{"name":"read",input_key:"first"}}]}}]}),
+                json!({"choices":[{"delta":{"tool_calls":[{"index":0_i32,"id":"","type":kind,
+                    kind:{"name":"",input_key:" second"}}]}}]}),
+                json!({"choices":[{"delta":{"tool_calls":[{"index":0_i32,"id":null,
+                    kind:{input_key:""}}]}}]}),
+            ],
+            false,
+        );
+        assert_eq!(
+            response.tool_calls(),
+            vec![ParsedToolEvent::ToolCall {
+                item_id: None,
+                call_id: Some("c1".into()),
+                name: Some("read".into()),
+                input: "first second".into(),
+            }]
+        );
+    }
+}
+
+#[test]
 fn chat_choices_are_independent_and_final_message_is_authoritative() {
     let values = vec![
         json!({"choices":[{"index":0_i32,"delta":{"content":"hel"}},{"index":1_i32,"delta":{"content":"other"}}]}),

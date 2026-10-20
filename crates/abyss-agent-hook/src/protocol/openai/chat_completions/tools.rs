@@ -105,14 +105,23 @@ impl ChatToolCall {
             Some(_) => return,
             None => {}
         }
-        if let Some(id) = call.get("id").and_then(Value::as_str) {
+        // Compatible streams may repeat empty metadata on argument-only chunks.
+        if let Some(id) = call
+            .get("id")
+            .and_then(Value::as_str)
+            .filter(|id| !id.is_empty())
+        {
             self.id = Some(id.to_owned());
         }
         let Some((payload, input_key)) = self.kind.as_ref().and_then(|kind| kind.payload(call))
         else {
             return;
         };
-        if let Some(name) = payload.get("name").and_then(Value::as_str) {
+        if let Some(name) = payload
+            .get("name")
+            .and_then(Value::as_str)
+            .filter(|name| !name.is_empty())
+        {
             self.name = Some(name.to_owned());
         }
         if let Some(fragment) = payload.get(input_key).and_then(Value::as_str) {
