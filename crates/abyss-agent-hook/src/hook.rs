@@ -241,6 +241,53 @@ where
     }
 
     fn on_websocket_message<'a>(&'a self, message: &'a WebSocketMessage) -> HookFuture<'a> {
+        if matches!(
+            message.direction,
+            abyss_mitm::WebSocketDirection::ServerToClient
+        ) {
+            let payload = match (&message.text, &message.binary) {
+                (Some(text), _) => serde_json::from_str::<serde_json::Value>(text).ok(),
+                (None, Some(bytes)) => serde_json::from_slice(bytes).ok(),
+                _ => None,
+            };
+            if let Some(payload) = payload
+                && payload.get("type").and_then(serde_json::Value::as_str) == Some("error")
+            {
+                let headers: serde_json::Map<String, serde_json::Value> = payload
+                    .get("headers")
+                    .and_then(serde_json::Value::as_object)
+                    .into_iter()
+                    .flat_map(|headers| headers.iter())
+                    .filter(|(name, _)| {
+                        name.starts_with("x-ratelimit-")
+                            || name.starts_with("x-codex-primary-")
+                            || name.starts_with("x-codex-secondary-")
+                            || matches!(
+                                name.as_str(),
+                                "retry-after" | "x-request-id" | "cf-ray" | "content-type"
+                            )
+                    })
+                    .map(|(name, value)| (name.clone(), value.clone()))
+                    .collect();
+                let error: serde_json::Map<String, serde_json::Value> = payload
+                    .get("error")
+                    .and_then(serde_json::Value::as_object)
+                    .into_iter()
+                    .flat_map(|error| error.iter())
+                    .filter(|(name, _)| matches!(name.as_str(), "message" | "code" | "type"))
+                    .map(|(name, value)| (name.clone(), value.clone()))
+                    .collect();
+                let diagnostic = serde_json::json!({
+                    "transport": "websocket",
+                    "status": payload.get("status").or_else(|| payload.get("status_code")),
+                    "host": message.upgrade_request.headers().get("host").and_then(|value| value.to_str().ok()),
+                    "path": message.upgrade_request.uri().path(),
+                    "headers": headers,
+                    "error": error,
+                });
+                tracing::warn!(diagnostic = %diagnostic, "temporary upstream rate-limit diagnostic");
+            }
+        }
         let events = self.websocket_events(message);
         Box::pin(async move {
             self.delivery
