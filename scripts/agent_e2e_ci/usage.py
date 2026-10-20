@@ -33,13 +33,23 @@ class UsageAccounting:
             field: sum(cls._counter(usage, field) for usage in completed_usage)
             for field in cls.FIELDS
         }
-        difference = {field: actual[field] - expected[field] for field in cls.FIELDS}
+        # Codex 0.144.3 does not expose cache writes in turn.completed. Missing
+        # evidence is not an explicit zero; input totals still include writes.
+        unavailable_native_fields = [
+            field
+            for field in ("cache_write_input_tokens",)
+            if any(field not in usage for usage in completed_usage)
+        ]
+        for field in unavailable_native_fields:
+            del expected[field]
+        difference = {field: actual[field] - expected[field] for field in expected}
         return {
             "scope": "completed_inference_excluding_explicit_prewarm",
             "backend_all_observed": cls._backend_totals(events),
             "backend_prewarm": cls._backend_totals(prewarm),
             "backend_inference": actual,
             "codex_completed_inference": expected,
+            "unavailable_native_fields": unavailable_native_fields,
             "prewarm_event_ids": [event["event_id"] for event in prewarm],
             "difference": difference,
             "matches": bool(completed_usage)
