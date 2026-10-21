@@ -43,6 +43,10 @@ jobs:
     name: Codex agent-driven E2E
     runs-on: ubuntu-latest
     timeout-minutes: 45
+    concurrency:
+      group: abyss-e2e-provider-openai
+      queue: max
+      cancel-in-progress: false
     env:
       ABYSS_AGENT_E2E_MANUAL_SKIP: ${{ (github.event_name == 'pull_request' && contains(github.event.pull_request.labels.*.name, 'skip-agent-e2e')) || (github.event_name == 'workflow_dispatch' && inputs.skip) }}
       ABYSS_AGENT_E2E_FORK_SKIP: ${{ github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name != github.repository }}

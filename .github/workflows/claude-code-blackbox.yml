@@ -20,6 +20,10 @@ jobs:
   claude-code-upload:
     name: Real Claude Code context upload
     runs-on: ubuntu-latest
+    concurrency:
+      group: abyss-e2e-provider-anthropic
+      queue: max
+      cancel-in-progress: false
     steps:
       - name: Checkout
         uses: actions/checkout@v4

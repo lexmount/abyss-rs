@@ -584,10 +584,10 @@ class MatrixCliBlackboxTests(unittest.TestCase):
         self.assertIn("if: needs.plan.outputs.enabled == 'true'", workflow)
         self.assertNotIn("pull_request_target", workflow)
         self.assertNotIn("login", workflow)
-        self.assertIn("max-parallel: ${{ inputs.max-parallel }}", workflow)
+        self.assertNotIn("max-parallel:", workflow)
         self.assertIn("workflow_call:", workflow)
         self.assertNotIn("workflow_dispatch:", workflow)
-        self.assertNotIn("concurrency:", workflow)
+        self.assertNotIn("concurrency:", workflow.split("\njobs:", 1)[0])
         self.assertNotIn("self-hosted", workflow)
         self.assertIn("uses: ./.github/actions/setup-rust", workflow)
         self.assertIn("cache-shared-key: agent-e2e", workflow)
@@ -606,11 +606,11 @@ class MatrixCliBlackboxTests(unittest.TestCase):
         catalog = MatrixCatalog()
         planned_ids = []
         groups = (
-            ("codex", "codex", 7, 2),
-            ("claude-code", "claude-code", 6, 2),
-            ("dsh", "deepseek-harness", 19, 4),
+            ("codex", "codex", 7),
+            ("claude-code", "claude-code", 6),
+            ("dsh", "deepseek-harness", 19),
         )
-        for stem, harness, count, parallel in groups:
+        for stem, harness, count in groups:
             with self.subTest(harness=harness):
                 workflow = (
                     ROOT / f".github/workflows/{stem}-model-matrix.yml"
@@ -622,7 +622,6 @@ class MatrixCliBlackboxTests(unittest.TestCase):
                     "uses: ./.github/workflows/agent-model-matrix.yml", workflow
                 )
                 self.assertIn(f"harness: {harness}\n", workflow)
-                self.assertIn(f"max-parallel: {parallel}\n", workflow)
                 self.assertIn("group: ${{ github.workflow }}-", workflow)
                 self.assertIn("secrets: inherit", workflow)
                 for field in ("provider", "protocol", "model"):
@@ -631,7 +630,6 @@ class MatrixCliBlackboxTests(unittest.TestCase):
                 self.assertEqual(len(cases), count)
                 planned_ids.extend(c.id for c in cases)
         self.assertCountEqual(planned_ids, [c.id for c in catalog.cases()])
-        self.assertEqual(sum(parallel for _, _, _, parallel in groups), 8)
 
     def test_secret_redaction_in_nested_artifacts(self):
         result = SecretRedactor("api-secret", "broker-secret").document(

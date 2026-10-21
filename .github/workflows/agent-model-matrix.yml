@@ -16,10 +16,6 @@ on:
       model:
         description: Optional exact model filter
         type: string
-      max-parallel:
-        description: Concurrent cells allocated to this harness group
-        required: true
-        type: number
 
 permissions:
   contents: read
@@ -69,9 +65,14 @@ jobs:
     name: ${{ matrix.harness }} / ${{ matrix.provider }} / ${{ matrix.model }} / ${{ matrix.protocol }}
     runs-on: ubuntu-latest
     timeout-minutes: 45
+    # Share one provider slot across harness workflows, PRs and legacy E2E jobs.
+    # The default single pending slot would cancel other waiting matrix cells.
+    concurrency:
+      group: abyss-e2e-provider-${{ matrix.provider }}
+      queue: max
+      cancel-in-progress: false
     strategy:
       fail-fast: false
-      max-parallel: ${{ inputs.max-parallel }}
       matrix: ${{ fromJSON(needs.plan.outputs.matrix) }}
     env:
       ABYSS_AGENT_E2E_RUN_ID: matrix-${{ github.run_id }}-${{ github.run_attempt }}-${{ matrix.id }}

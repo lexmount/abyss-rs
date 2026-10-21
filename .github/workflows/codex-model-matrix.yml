@@ -29,7 +29,6 @@ jobs:
     uses: ./.github/workflows/agent-model-matrix.yml
     with:
       harness: codex
-      max-parallel: 2
       provider: ${{ inputs.provider || '' }}
       protocol: ${{ inputs.protocol || '' }}
       model: ${{ inputs.model || '' }}

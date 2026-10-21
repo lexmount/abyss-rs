@@ -29,7 +29,6 @@ jobs:
     uses: ./.github/workflows/agent-model-matrix.yml
     with:
       harness: deepseek-harness
-      max-parallel: 4
       provider: ${{ inputs.provider || '' }}
       protocol: ${{ inputs.protocol || '' }}
       model: ${{ inputs.model || '' }}
