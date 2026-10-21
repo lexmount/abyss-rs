@@ -63,9 +63,13 @@ use provider API credentials. The workflow deliberately does not use
 
 ## Runner prerequisites
 
-The `abyss-debian-runner` is selected through its registered labels
-`self-hosted`, `abyss`, `Linux`, and `X64`. Its service account must provide
-these preinstalled commands:
+CI runs on GitHub-hosted `ubuntu-latest`. The workflow sets up stable Rust with
+the repository's shared action and Cargo build cache, selects Node.js 24, and
+installs Codex `0.163.0` into the job's temporary directory. It shares the
+`agent-e2e` Rust cache key with the headless matrix. No persistent runner login
+or preinstalled Codex CLI is required.
+
+For local runs, provide these commands:
 
 - `bash` and `git` for the GitHub job and checkout;
 - Python 3.10 or newer with the standard library;
@@ -84,8 +88,7 @@ read-only check with:
 python3 -m scripts.agent_e2e_ci preflight
 ```
 
-The workflow has no package-manager or toolchain installation step. Docker pulls
-the digest-pinned public Backend image recorded in
+Docker pulls the digest-pinned public Backend image recorded in
 `scripts/ci/abyss-backend-image.txt` and may also need `postgres:16`. Pre-cache
 those images on the runner if CI must operate without downloading inputs. Real
 test traffic requires outbound access to the Codex/OpenAI endpoints.
@@ -106,10 +109,10 @@ The uploaded `artifacts` directory contains only:
 - the structured A2 verdict and runner version inventory;
 - a Markdown summary.
 
-The internal runtime is preserved for self-hosted runner diagnostics, while
-containers, the dedicated network, and broker process are stopped or removed by
-the orchestrator. The shared digest-pinned Backend image remains in Docker's
-local cache.
+The orchestrator stops or removes containers, the dedicated network, and broker
+process. On GitHub-hosted runners, the internal runtime and Docker cache are
+discarded with the VM after the job; only sanitized artifacts are uploaded.
+Local runs retain the internal runtime for diagnostics and Docker's image cache.
 
 ## Configuration
 

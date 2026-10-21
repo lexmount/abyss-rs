@@ -1,4 +1,4 @@
-"""Self-hosted runner capability checks with no installation side effects."""
+"""Linux runner capability checks with no installation side effects."""
 
 from __future__ import annotations
 
@@ -53,7 +53,7 @@ class RunnerPreflight:
     def run(self) -> PreflightResult:
         issues: list[str] = []
         if platform.system() != "Linux":
-            issues.append("Agent E2E CI requires a Linux self-hosted runner")
+            issues.append("Agent E2E CI requires a Linux runner")
         missing = [
             command for command in REQUIRED_COMMANDS if shutil.which(command) is None
         ]

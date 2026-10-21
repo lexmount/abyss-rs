@@ -1,4 +1,4 @@
-"""Runtime configuration derived from the self-hosted CI environment."""
+"""Runtime configuration derived from the CI or local environment."""
 
 from __future__ import annotations
 
@@ -85,7 +85,9 @@ class RuntimeConfig:
             backend_platform=os.environ.get(
                 "ABYSS_AGENT_E2E_BACKEND_PLATFORM", "linux/amd64"
             ),
-            postgres_image=os.environ.get("ABYSS_AGENT_E2E_POSTGRES_IMAGE", "postgres:16"),
+            postgres_image=os.environ.get(
+                "ABYSS_AGENT_E2E_POSTGRES_IMAGE", "postgres:16"
+            ),
             generator_model=os.environ.get("ABYSS_AGENT_E2E_GENERATOR_MODEL") or None,
             b_model=os.environ.get("ABYSS_AGENT_E2E_B_MODEL") or None,
             judge_model=os.environ.get("ABYSS_AGENT_E2E_JUDGE_MODEL") or None,

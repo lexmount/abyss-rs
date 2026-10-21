@@ -68,16 +68,20 @@ jobs:
     needs: plan
     if: needs.plan.outputs.enabled == 'true'
     name: ${{ matrix.harness }} / ${{ matrix.provider }} / ${{ matrix.model }} / ${{ matrix.protocol }}
-    runs-on: [self-hosted, abyss, Linux, X64]
+    runs-on: ubuntu-latest
     timeout-minutes: 45
     strategy:
       fail-fast: false
-      max-parallel: 3
+      max-parallel: 8
       matrix: ${{ fromJSON(needs.plan.outputs.matrix) }}
     env:
       ABYSS_AGENT_E2E_RUN_ID: matrix-${{ github.run_id }}-${{ github.run_attempt }}-${{ matrix.id }}
     steps:
       - uses: actions/checkout@v4
+      - name: Set up Rust and build cache
+        uses: ./.github/actions/setup-rust
+        with:
+          cache-shared-key: agent-e2e
       - name: Set up client runtime
         uses: actions/setup-node@v4
         with:

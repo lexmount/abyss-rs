@@ -125,21 +125,24 @@ login. Local legacy Codex runs without the key environment retain login support.
 
 The workflow runs on same-repository PRs and manual dispatch. Manual inputs
 filter harness, provider, protocol, or exact model; unmatched filters fail.
-`fail-fast: false` preserves remaining results, with concurrency capped at three.
+`fail-fast: false` preserves remaining results, with concurrency capped at eight.
 The final aggregation requires an artifact and PASS from **every planned cell**;
 missing artifacts, failed clients, 429s, unavailable models, and mismatches all
 fail. The `skip-agent-e2e` label records a deliberate whole-matrix skip. Forks
 run credential-free contracts on GitHub-hosted runners and never start the
-self-hosted matrix jobs.
+live matrix jobs.
 
 ## Runner and local use
 
-Self-hosted runner labels: `self-hosted`, `abyss`, `Linux`, `X64`. Preinstall
-Docker, Cargo/Rust, OpenSSL, and Python 3.10+, as for the existing Agent E2E job.
-The matrix workflow selects Node.js 24 and installs only the cell's client into
+All jobs run on GitHub-hosted `ubuntu-latest` runners. Each live cell uses a
+fresh VM with Docker, OpenSSL and Python; the workflow sets up stable Rust
+through the repository's shared action and restores cached Cargo build outputs.
+The matrix and randomized Codex E2E jobs share the `agent-e2e` Rust cache key.
+The workflow selects Node.js 24 and installs only the cell's client into
 its temporary job directory: Codex `0.163.0`, Claude Code `2.1.206`, or DSH
 `0.2.0-rc.2`. Installation receives no API secrets. Local runs use preinstalled
-clients. Required CLI capabilities are checked and actual versions recorded;
+clients, Docker, Cargo/Rust, OpenSSL and Python 3.10+. Required CLI capabilities
+are checked and actual versions recorded;
 the job does not modify global client installations, login, CA trust or user config.
 DSH uses a fresh `DSH_HOME`; Codex ignores user rules/config; Claude uses bare
 mode with settings sources disabled.
