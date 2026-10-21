@@ -148,6 +148,7 @@ fn websocket_session_id(message: &WebSocketMessage, payload: &Value) -> String {
     header(message.upgrade_request.headers(), "session-id")
         .or_else(|| header(message.upgrade_request.headers(), "session_id"))
         .or_else(|| header(message.upgrade_request.headers(), "thread-id"))
+        .or_else(|| header(message.upgrade_request.headers(), "x-hermes-session-id"))
         .map(str::to_owned)
         .or_else(|| collect_string_field(payload, "session_id"))
         .or_else(|| collect_string_field(payload, "thread_id"))

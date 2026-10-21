@@ -8,14 +8,11 @@ use http::HeaderMap;
 use serde_json::Value;
 
 /// Request and response material an Agent writes its declarations into.
-#[derive(Clone, Copy, Default)]
+#[derive(Clone, Copy)]
 pub struct DeclarationSource<'a> {
     /// Request headers; `None` where no header describes the request, such as
     /// a WebSocket frame after the upgrade.
     pub headers: Option<&'a HeaderMap>,
-    /// WebSocket handshake headers, usable for connection-level session identity
-    /// but not for a later frame's user turn.
-    pub upgrade_headers: Option<&'a HeaderMap>,
     /// Decoded request body, when the protocol sends one per request.
     pub body: Option<&'a Value>,
     /// The OpenAI request `client_metadata` object.
@@ -27,8 +24,6 @@ pub struct DeclarationSource<'a> {
 /// What the Agent declared about a request; empty when it declared nothing.
 #[derive(Clone, Debug, Default, Eq, PartialEq)]
 pub struct AgentDeclaration {
-    /// The client-owned session, overriding protocol-level fallback identities.
-    pub session_id: Option<String>,
     /// The user turn the request works for.
     pub turn_id: Option<String>,
     /// The thread that sent the request.

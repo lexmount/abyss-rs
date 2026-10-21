@@ -155,6 +155,31 @@ fn dsh_session_header_correlates_compatible_protocols_without_overriding_existin
 }
 
 #[test]
+fn hermes_session_header_uses_existing_http_precedence_and_fallbacks() {
+    for path in ["/v1/responses", "/v1/chat/completions"] {
+        for (canonical, hermes, expected) in [
+            ("canonical", "hermes-session", Some("canonical")),
+            (" ", " hermes-session ", Some("hermes-session")),
+            (" ", " ", None),
+        ] {
+            let mut exchange = json_exchange(
+                path,
+                &json!({"input": "hi", "messages": [{"role": "user", "content": "hi"}]}),
+                &json!({}),
+            );
+            let headers = exchange.request.headers_mut();
+            headers.insert("session-id", canonical.parse().unwrap());
+            headers.insert("x-hermes-session-id", hermes.parse().unwrap());
+            let parsed = parse_openai_exchange(&exchange).unwrap();
+            match expected {
+                Some(session) => assert_eq!(parsed.session_id, session),
+                None => assert!(parsed.session_id.starts_with("flow-")),
+            }
+        }
+    }
+}
+
+#[test]
 fn removes_cached_tokens_from_input() {
     let exchange = json_exchange(
         "/v1/responses",
@@ -499,6 +524,34 @@ fn correlates_websocket_frames_with_underscore_session_header() {
 
         assert_eq!(parsed.session_id, "shared-session");
         assert_eq!(parsed.request_texts, vec![text]);
+    }
+}
+
+#[test]
+fn hermes_websocket_session_header_preserves_existing_header_precedence() {
+    for (canonical, hermes, expected) in [
+        ("canonical", "hermes-session", "canonical"),
+        (" ", " hermes-session ", "hermes-session"),
+        ("canonical", " ", "canonical"),
+    ] {
+        let message = WebSocketMessage::new(
+            flow(),
+            Request::builder()
+                .uri("/v1/responses")
+                .header("host", "gateway.example")
+                .header("session-id", canonical)
+                .header("x-hermes-session-id", hermes)
+                .body(())
+                .unwrap(),
+            WebSocketDirection::ClientToServer,
+            1,
+            Some(json!({"type": "response.create", "input": "hello"}).to_string()),
+            None,
+        );
+        let OpenAiWebSocketFrame::Request(parsed) = parse_openai_websocket_message(&message) else {
+            panic!("WebSocket request message");
+        };
+        assert_eq!(parsed.session_id, expected);
     }
 }
 

@@ -118,12 +118,6 @@ impl HarnessRegistry {
 }
 
 impl HarnessRegistry {
-    /// Newly integrated clients require an explicit client-owned session.
-    #[must_use]
-    pub fn requires_session(harness_id: &HarnessId) -> bool {
-        harness_id.as_str() == "hermes"
-    }
-
     /// Reads what the detected Agent declares about a request. Agents without
     /// built-in declarations declare nothing.
     #[must_use]

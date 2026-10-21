@@ -157,7 +157,7 @@ Custom Harnesses can declare `process_names` and `application_ids` matchers in
 metadata.
 Populated fields in one matcher must all match; values within a field and
 separate matchers are alternatives. Exactly one enabled Harness must match.
-Hermes is also built in; see [client setup and session requirements](hermes.md).
+Hermes is also built in; see [client setup and session handling](hermes.md).
 Its explicit identity takes precedence over Codex/Claude Code compatibility
 fingerprints, including when capture for that client is disabled. Other ambiguous
 matches are skipped. Request headers provide attribution, not authenticated process identity.

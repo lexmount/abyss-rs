@@ -39,7 +39,6 @@ pub(super) fn declare(source: &DeclarationSource<'_>) -> AgentDeclaration {
     };
     let field = |key| string_field(&metadata, key).map(str::to_owned);
     AgentDeclaration {
-        session_id: None,
         // A guardian thread shares `root_turn_id` with the turn it reviews.
         turn_id: field("root_turn_id"),
         // The main thread and a guardian differ in `thread_id`.
@@ -189,7 +188,6 @@ mod tests {
             body: None,
             client_metadata,
             response_texts: &[],
-            ..DeclarationSource::default()
         })
     }
 

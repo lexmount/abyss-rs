@@ -1,5 +1,4 @@
-//! Hermes identity and client-owned session/user-turn declarations.
-//! Native Codex requests carry `session_id`; other routes can use its middleware.
+//! Hermes identity and user-turn declarations; protocol parsers resolve sessions.
 
 use abyss_mitm::FlowContext;
 use http::HeaderMap;
@@ -56,11 +55,6 @@ impl HarnessDetector for HermesDetector {
 
 pub(super) fn declare(source: &DeclarationSource<'_>) -> AgentDeclaration {
     AgentDeclaration {
-        session_id: source
-            .headers
-            .and_then(session_header)
-            .or_else(|| source.upgrade_headers.and_then(session_header))
-            .map(str::to_owned),
         // Only per-request headers describe a user turn; upgrade headers can
         // outlive many turns on a persistent WebSocket.
         turn_id: source
@@ -69,10 +63,4 @@ pub(super) fn declare(source: &DeclarationSource<'_>) -> AgentDeclaration {
             .map(str::to_owned),
         ..AgentDeclaration::default()
     }
-}
-
-fn session_header(headers: &HeaderMap) -> Option<&str> {
-    header(headers, SESSION_ID)
-        .or_else(|| header(headers, "session_id"))
-        .or_else(|| header(headers, "session-id"))
 }

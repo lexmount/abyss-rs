@@ -237,7 +237,7 @@ async fn process_identity_attributes_generic_transports_with_native_sessions() {
 }
 
 #[tokio::test]
-async fn process_detection_still_requires_session_and_respects_policy() {
+async fn process_detection_uses_protocol_fallback_and_respects_policy() {
     let harness = "hermes";
     let missing_session = Scenario::new(json!({})).with_process(Some(harness), None);
     missing_session
@@ -246,7 +246,14 @@ async fn process_detection_still_requires_session_and_respects_policy() {
     missing_session.websocket(&[], &[
         json!({"type": "response.create", "model": "test", "input": "hello", "prompt_cache_key": "not-session"}),
     ]).await;
-    assert!(missing_session.sink.0.lock().is_empty());
+    {
+        let events = missing_session.sink.0.lock();
+        assert_eq!(events.len(), 4);
+        for event in events.iter() {
+            assert_eq!(event.agent.name, harness);
+            assert!(event.session_id.starts_with("flow-"));
+        }
+    }
 
     for enabled in [true, false] {
         let scenario = Scenario::new(json!({"harness_usage": {"config": {"harnesses": {
@@ -308,7 +315,7 @@ async fn generic_interpreters_and_similar_process_names_are_not_client_identity(
 }
 
 #[tokio::test]
-async fn missing_session_is_not_replaced_by_response_or_cache_identity() {
+async fn missing_or_blank_session_uses_each_protocols_existing_fallback() {
     let scenario = Scenario::new(json!({}));
     for headers in [
         vec![("user-agent", "HermesAgent/0.22.0")],
@@ -316,16 +323,29 @@ async fn missing_session_is_not_replaced_by_response_or_cache_identity() {
             ("user-agent", "HermesAgent/0.22.0"),
             ("x-hermes-session-id", " "),
         ],
-        vec![
-            ("user-agent", "pi (darwin; arm64)"),
-            ("session_id", "unattributed-pi"),
-        ],
     ] {
-        scenario
-            .http(&headers, "/backend-api/codex/responses", "resp-1")
-            .await;
+        for path in ["/v1/responses", "/v1/chat/completions", "/v1/messages"] {
+            scenario.http(&headers, path, "resp-1").await;
+        }
     }
-    assert!(scenario.sink.0.lock().is_empty());
+    let events = scenario.sink.0.lock();
+    assert_eq!(events.len(), 12);
+    for (pair, messages) in events
+        .as_chunks::<2>()
+        .0
+        .iter()
+        .zip([false, false, true].into_iter().cycle())
+    {
+        assert_eq!(pair[0].session_id, pair[1].session_id);
+        for event in pair {
+            assert_eq!(event.agent.name, "hermes");
+            if messages {
+                assert_eq!(event.session_id, "anthropic-unattributed-chatgpt-com");
+            } else {
+                assert!(event.session_id.starts_with("flow-"));
+            }
+        }
+    }
 }
 
 #[tokio::test]
@@ -393,13 +413,17 @@ async fn websocket_retains_session_and_never_reuses_upgrade_turns() {
         )
         .await;
     let events = scenario.sink.0.lock();
-    assert_eq!(events.len(), 4);
-    for event in events.iter() {
+    assert_eq!(events.len(), 6);
+    for event in &events[..4] {
         assert_eq!(event.session_id, "hermes-session");
         assert!(event.turn_id.is_none());
         assert!(event.response_id.is_some());
     }
     assert_eq!(events[2].previous_response_id.as_deref(), Some("resp-0"));
+    for event in &events[4..] {
+        assert!(event.session_id.starts_with("flow-"));
+        assert!(event.turn_id.is_none());
+    }
 }
 
 #[tokio::test]

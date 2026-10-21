@@ -1,8 +1,10 @@
 # Hermes
 
 The built-in `hermes` harness reuses the Responses, Chat Completions, and
-Anthropic Messages parsers, including Responses WebSocket traffic. A non-empty
-client-owned session ID is required; response IDs and cache keys cannot replace it.
+Anthropic Messages parsers, including Responses WebSocket traffic. These parsers
+read Hermes session headers alongside the existing harness headers, retaining
+their session precedence rules. When no session can be extracted, the existing
+protocol fallback applies; it does not guarantee correlation across user turns.
 
 Hermes is enabled by default, including with older policies. Use
 `abyss config harness disable hermes` to disable it. A Codex backend URL identifies
@@ -38,7 +40,8 @@ abyss run -- hermes chat -q 'Hello' --oneshot
 Restart an existing Hermes process after enabling the plugin. The plugin leaves
 provider bodies, authentication, and other headers intact. Calls without runtime
 session context are not assigned a synthetic session. In particular, auxiliary
-calls that bypass this middleware need their own session marker. Static
+calls that bypass this middleware need their own session marker to preserve
+session correlation. Static
 `model.default_headers` cannot express a different real session for every run;
 Hermes' `session_affinity_header` uses a routing/cache scope that may differ from
 the physical session ID.

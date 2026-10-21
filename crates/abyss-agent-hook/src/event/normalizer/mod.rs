@@ -385,10 +385,7 @@ pub fn normalize_exchange<E>(
 where
     E: NormalizableExchange,
 {
-    let mut parts = parsed.event_parts(content, detection, provider);
-    if let Some(session_id) = &declaration.session_id {
-        parts.session_id.clone_from(session_id);
-    }
+    let parts = parsed.event_parts(content, detection, provider);
     let continuation = parsed.continuation();
     // Only the traffic names these; without a declaration the events carry none.
     let declared = Declared {
