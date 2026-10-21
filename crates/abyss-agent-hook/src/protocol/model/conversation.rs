@@ -142,6 +142,16 @@ impl ConversationProjection {
     }
 }
 
+/// The role and text of every entry, in order, for test assertions.
+#[cfg(test)]
+pub fn role_texts(conversation: &Conversation) -> Vec<(EntryRole, &str)> {
+    conversation
+        .entries
+        .iter()
+        .map(|entry| (entry.role, entry.text.as_str()))
+        .collect()
+}
+
 #[cfg(test)]
 mod tests {
     use serde_json::json;

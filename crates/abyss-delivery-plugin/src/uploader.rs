@@ -2,7 +2,7 @@
 
 use std::{path::PathBuf, sync::Arc};
 
-use abyss_sdk::plugin::{AgentEvent, ImageAttachment, TokenUsage, ToolCall, ToolResult};
+use abyss_sdk::plugin::{AgentEvent, ImageAttachment, TokenUsage};
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use tokio::{
@@ -358,7 +358,6 @@ struct IngestUsageEvent {
     previous_response_id: Option<String>,
     llm: LlmPayload,
     event_type: String,
-    text: Option<String>,
     token_usage: BackendTokenUsage,
     metadata: Value,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
@@ -369,7 +368,7 @@ impl TryFrom<AgentEvent> for IngestUsageEvent {
     type Error = DeliveryPluginError;
 
     fn try_from(event: AgentEvent) -> Result<Self, Self::Error> {
-        let mut metadata = tool_activity_metadata(event.tool_calls, event.tool_results);
+        let mut metadata = json!({});
         if let Some(purpose) = event.purpose {
             metadata["purpose"] = serde_json::to_value(purpose)
                 .map_err(|error| DeliveryPluginError::Translate(error.to_string()))?;
@@ -407,7 +406,6 @@ impl TryFrom<AgentEvent> for IngestUsageEvent {
                 model: event.llm.model,
             },
             event_type: event.side.wire_name().to_owned(),
-            text: event.text,
             token_usage: BackendTokenUsage::try_from(event.token_usage)?,
             metadata,
             attachments: event
@@ -514,54 +512,30 @@ fn token_counter(name: &str, value: u64) -> Result<i64, DeliveryPluginError> {
     })
 }
 
-fn tool_activity_metadata(tool_calls: Vec<ToolCall>, tool_results: Vec<ToolResult>) -> Value {
-    let capacity = tool_calls.len().saturating_add(tool_results.len());
-    let mut segments = Vec::with_capacity(capacity);
-    segments.extend(tool_calls.into_iter().map(|call| {
-        json!({
-            "type": "tool_call",
-            "call_id": call.call_id,
-            "name": call.name,
-            "input": call.input,
-            "input_sha256": call.input_sha256,
-        })
-    }));
-    segments.extend(tool_results.into_iter().map(|result| {
-        json!({
-            "type": "tool_result",
-            "call_id": result.call_id,
-            "output": result.output,
-            "output_sha256": result.output_sha256,
-        })
-    }));
-    if segments.is_empty() {
-        json!({})
-    } else {
-        json!({"content_segments": segments})
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use abyss_sdk::plugin::{
         AgentContext, AgentEvent, AgentEventSide, DeviceContext, HttpHeader, HttpHeaderValue,
-        LlmContext, LlmProvider, TokenUsage, ToolCall,
+        LlmContext, LlmProvider, TokenUsage,
     };
     use serde_json::Value;
 
     use super::{IngestEventsRequest, SpoolRecord};
 
     #[test]
-    fn translates_public_tool_types_into_backend_metadata() {
+    fn uploads_tool_activity_only_inside_the_conversation() {
         let event: AgentEvent = serde_json::from_str(include_str!(
             "../../../specs/broker-plugin-protocol/v1/fixtures/agent-event.json"
         ))
         .expect("fixture should decode");
         let request = IngestEventsRequest::try_from(event).expect("event should translate");
         let serialized = serde_json::to_value(request).expect("request should serialize");
+        let ingest_event = &serialized["events"][0];
 
+        assert!(ingest_event.get("text").is_none());
+        assert!(ingest_event["metadata"].get("content_segments").is_none());
         assert_eq!(
-            serialized["events"][0]["metadata"]["content_segments"][0]["type"],
+            ingest_event["metadata"]["conversation"]["entries"][2]["role"],
             "tool_call"
         );
         assert_eq!(serialized["diagnostic_captures"], serde_json::json!([]));
@@ -620,6 +594,8 @@ mod tests {
         legacy_event.remove("attachments");
         // Older spools also carry the collector-counted turn number.
         legacy_event.insert("turn_index".to_owned(), 3_u32.into());
+        // And the retired event text.
+        legacy_event.insert("text".to_owned(), "hello".into());
         let legacy_record = serde_json::json!({
             "reason": "delivery destination returned HTTP 401 Unauthorized",
             "request": request,
@@ -635,6 +611,7 @@ mod tests {
                 .get("turn_index")
                 .is_none()
         );
+        assert!(serialized["request"]["events"][0].get("text").is_none());
     }
 
     #[test]
@@ -660,7 +637,6 @@ mod tests {
                 model: "gpt".to_owned(),
             },
             side: AgentEventSide::Request,
-            text: None,
             omitted: Vec::new(),
             conversation: None,
             headers: vec![HttpHeader {
@@ -675,22 +651,17 @@ mod tests {
                 reasoning_tokens: 0,
                 total_tokens: 1,
             },
-            tool_calls: vec![ToolCall {
-                call_id: "call-1".to_owned(),
-                name: "exec".to_owned(),
-                input: "pwd".to_owned(),
-                input_sha256: "hash".to_owned(),
-            }],
-            tool_results: Vec::new(),
             attachments: Vec::new(),
         };
         let request = IngestEventsRequest::try_from(event).expect("event should translate");
         let serialized: Value = serde_json::to_value(request).expect("request should serialize");
 
         assert_eq!(serialized["events"][0]["event_type"], "request");
-        assert_eq!(
-            serialized["events"][0]["metadata"]["content_segments"][0]["name"],
-            "exec"
+        assert!(serialized["events"][0].get("text").is_none());
+        assert!(
+            serialized["events"][0]["metadata"]
+                .get("content_segments")
+                .is_none()
         );
         assert_eq!(serialized["events"][0]["response_id"], "resp-1");
         assert!(

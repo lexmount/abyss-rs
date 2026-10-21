@@ -179,7 +179,6 @@ pub mod tests {
                 model: "gpt-test".to_owned(),
             },
             event_type: "request",
-            text: Some("hello".to_owned()),
             omitted: Vec::new(),
             conversation: None,
             headers: Vec::new(),

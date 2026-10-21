@@ -8,7 +8,7 @@ mod transport;
 pub use abyss_plugin_protocol::event::{
     AgentContext, AgentEvent, AgentEventSide, ContentCategory, ContentCompleteness, Conversation,
     ConversationEntry, DeviceContext, EntryRole, EventPurpose, HttpHeader, HttpHeaderValue,
-    ImageAttachment, ImageMediaType, LlmContext, LlmProvider, TokenUsage, ToolCall, ToolResult,
+    ImageAttachment, ImageMediaType, LlmContext, LlmProvider, TokenUsage,
 };
 pub use client::{AgentEventStream, BrokerPlugin, BrokerPluginError};
 pub use protocol::{

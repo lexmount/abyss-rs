@@ -91,25 +91,6 @@ class TokenUsage:
 
 
 @dataclass(frozen=True)
-class ToolCall:
-    """One normalized model-requested tool invocation."""
-
-    call_id: str
-    name: str
-    input: str
-    input_sha256: str
-
-
-@dataclass(frozen=True)
-class ToolResult:
-    """One normalized tool result returned to the model."""
-
-    call_id: str
-    output: str
-    output_sha256: str
-
-
-@dataclass(frozen=True)
 class ImageAttachment:
     """One policy-retained image attachment."""
 
@@ -134,13 +115,10 @@ class AgentEvent:
     purpose: Optional[EventPurpose]
     llm: LlmContext
     side: str
-    text: Optional[str]
     omitted: tuple[ContentCategory, ...]
     conversation: Optional[Conversation]
     headers: tuple[HttpHeader, ...]
     token_usage: TokenUsage
-    tool_calls: tuple[ToolCall, ...]
-    tool_results: tuple[ToolResult, ...]
     attachments: tuple[ImageAttachment, ...]
 
     @classmethod
@@ -161,13 +139,10 @@ class AgentEvent:
                 "purpose",
                 "llm",
                 "side",
-                "text",
                 "omitted",
                 "conversation",
                 "headers",
                 "token_usage",
-                "tool_calls",
-                "tool_results",
                 "attachments",
             },
             "AgentEvent",
@@ -190,7 +165,6 @@ class AgentEvent:
             purpose=cast(Optional[EventPurpose], purpose),
             llm=_llm(_mapping(event.get("llm"), "AgentEvent.llm")),
             side=side,
-            text=_optional_string(event, "text"),
             omitted=tuple(
                 _content_category(item)
                 for item in _list(event.get("omitted", []), "AgentEvent.omitted")
@@ -204,14 +178,6 @@ class AgentEvent:
                 _header(item) for item in _list(event.get("headers", []), "AgentEvent.headers")
             ),
             token_usage=_token_usage(_mapping(event.get("token_usage"), "AgentEvent.token_usage")),
-            tool_calls=tuple(
-                _tool_call(item)
-                for item in _list(event.get("tool_calls", []), "AgentEvent.tool_calls")
-            ),
-            tool_results=tuple(
-                _tool_result(item)
-                for item in _list(event.get("tool_results", []), "AgentEvent.tool_results")
-            ),
             attachments=tuple(
                 _attachment(item)
                 for item in _list(event.get("attachments", []), "AgentEvent.attachments")
@@ -316,27 +282,6 @@ def _token_usage(value: Mapping[str, Any]) -> TokenUsage:
             raise ValueError(f"AgentEvent.token_usage.{field} must not be negative")
         counters[field] = counter
     return TokenUsage(**counters)
-
-
-def _tool_call(value: Any) -> ToolCall:
-    item = _mapping(value, "AgentEvent.tool_calls[]")
-    _reject_unknown(item, {"call_id", "name", "input", "input_sha256"}, "tool call")
-    return ToolCall(
-        call_id=_string(item, "call_id"),
-        name=_string(item, "name"),
-        input=_string(item, "input"),
-        input_sha256=_string(item, "input_sha256"),
-    )
-
-
-def _tool_result(value: Any) -> ToolResult:
-    item = _mapping(value, "AgentEvent.tool_results[]")
-    _reject_unknown(item, {"call_id", "output", "output_sha256"}, "tool result")
-    return ToolResult(
-        call_id=_string(item, "call_id"),
-        output=_string(item, "output"),
-        output_sha256=_string(item, "output_sha256"),
-    )
 
 
 def _attachment(value: Any) -> ImageAttachment:

@@ -4,7 +4,6 @@ use abyss_plugin_protocol::event::LlmProvider;
 use serde_json::json;
 
 use crate::{
-    config::HarnessUsageContentConfig,
     harness::HarnessDetection,
     protocol::{
         anthropic::{ParsedAnthropicMessagesExchange, ParsedClaudeWebExchange},
@@ -12,10 +11,7 @@ use crate::{
     },
 };
 
-use super::{
-    Continuation, HttpMetadata, NormalizableExchange, ParsedEventParts, content_segments_metadata,
-    harness_client,
-};
+use super::{Continuation, HttpMetadata, NormalizableExchange, ParsedEventParts, harness_client};
 
 impl NormalizableExchange for ParsedAnthropicMessagesExchange {
     fn session_id(&self) -> &str {
@@ -31,7 +27,6 @@ impl NormalizableExchange for ParsedAnthropicMessagesExchange {
 
     fn event_parts(
         &self,
-        content: &HarnessUsageContentConfig,
         detection: &HarnessDetection,
         provider: &LlmProvider,
     ) -> ParsedEventParts<'_> {
@@ -54,9 +49,7 @@ impl NormalizableExchange for ParsedAnthropicMessagesExchange {
                 .unwrap_or_else(|| self.request_hash.clone()),
             request_conversation: &self.request_conversation,
             response_conversation: &self.response_conversation,
-            request_text: self.request_texts.join("\n\n"),
             request_images: self.request_images.clone(),
-            response_text: self.response_texts.join("\n\n"),
             usage: self.usage.clone(),
             usage_source: TokenUsageSource::provider_or_absent(&self.usage),
             metadata: json!({
@@ -68,15 +61,6 @@ impl NormalizableExchange for ParsedAnthropicMessagesExchange {
                 "anthropic_version": self.anthropic_version,
                 "provider_event_types": self.event_types,
             }),
-            request_metadata: content_segments_metadata(
-                &self.request_tool_events,
-                &self.request_images,
-                content,
-            ),
-            response_metadata: content_segments_metadata(&self.response_tool_events, &[], content),
-            request_has_structured_content: !self.request_tool_events.is_empty()
-                || !self.request_images.is_empty(),
-            response_has_structured_content: !self.response_tool_events.is_empty(),
             allow_request_without_response: false,
         }
     }
@@ -96,7 +80,6 @@ impl NormalizableExchange for ParsedClaudeWebExchange {
 
     fn event_parts(
         &self,
-        content: &HarnessUsageContentConfig,
         detection: &HarnessDetection,
         provider: &LlmProvider,
     ) -> ParsedEventParts<'_> {
@@ -120,9 +103,7 @@ impl NormalizableExchange for ParsedClaudeWebExchange {
                 .unwrap_or_else(|| self.request_hash.clone()),
             request_conversation: &self.request_conversation,
             response_conversation: &self.response_conversation,
-            request_text: self.request_texts.join("\n\n"),
             request_images: self.request_images.clone(),
-            response_text: self.response_texts.join("\n\n"),
             usage: self.usage.clone(),
             usage_source: self.usage_source,
             metadata: json!({
@@ -137,15 +118,6 @@ impl NormalizableExchange for ParsedClaudeWebExchange {
                 "path_kind": "claude_web_completion",
                 "provider_event_types": self.event_types,
             }),
-            request_metadata: content_segments_metadata(
-                &self.request_tool_events,
-                &self.request_images,
-                content,
-            ),
-            response_metadata: content_segments_metadata(&self.response_tool_events, &[], content),
-            request_has_structured_content: !self.request_tool_events.is_empty()
-                || !self.request_images.is_empty(),
-            response_has_structured_content: !self.response_tool_events.is_empty(),
             allow_request_without_response: true,
         }
     }

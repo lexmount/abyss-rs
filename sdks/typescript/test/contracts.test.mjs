@@ -16,7 +16,6 @@ test("shared AgentEvent fixture decodes through the TypeScript SDK", async () =>
 
   assert.equal(event.event_id, "evt-123");
   assert.equal(event.llm.provider, "openai");
-  assert.equal(event.tool_calls[0].name, "exec");
   assert.equal(event.response_id, "resp-123");
   assert.equal(event.previous_response_id, "resp-122");
   assert.equal(event.purpose, "session_title");
@@ -62,6 +61,15 @@ test("structured events reject obsolete fields and malformed content", async () 
   for (const mutate of [
     (e) => {
       e.turn_index = 1;
+    },
+    (e) => {
+      e.text = "hello";
+    },
+    (e) => {
+      e.tool_calls = [];
+    },
+    (e) => {
+      e.tool_results = [];
     },
     (e) => {
       e.turn_id = "turn-1";

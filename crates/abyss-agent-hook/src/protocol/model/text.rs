@@ -12,18 +12,6 @@ pub fn non_empty_trimmed(value: &str) -> Option<&str> {
     (!trimmed.is_empty()).then_some(trimmed)
 }
 
-/// Keeps the first occurrence of each non-blank text, preserving order.
-#[must_use]
-pub fn dedupe_texts(texts: Vec<String>) -> Vec<String> {
-    let mut result = Vec::new();
-    for text in texts {
-        if non_empty_trimmed(&text).is_some() && !result.contains(&text) {
-            result.push(text);
-        }
-    }
-    result
-}
-
 /// Extracts text from a JSON scalar/object/array with bounded recursion.
 #[must_use]
 pub fn json_to_text(value: &Value, depth: usize) -> Option<String> {

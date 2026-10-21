@@ -13,8 +13,6 @@ from ..event import (
     ImageAttachment,
     LlmContext,
     TokenUsage,
-    ToolCall,
-    ToolResult,
 )
 from .errors import BrokerPluginError, HandshakeRejectedError, UnexpectedBrokerEofError
 from .plugin import AgentEventStream, BrokerClose, BrokerPlugin
@@ -37,7 +35,5 @@ __all__ = [
     "ImageAttachment",
     "LlmContext",
     "TokenUsage",
-    "ToolCall",
-    "ToolResult",
     "UnexpectedBrokerEofError",
 ]

@@ -1,13 +1,14 @@
 //! Anthropic Messages wire parsing.
 //!
 //! This module consumes decoded HTTP exchanges from `abyss-mitm` and recognizes
-//! Anthropic Messages-style traffic. It extracts user-visible request text,
-//! assistant response text, message ids, model names, and token usage while
-//! keeping provider-specific details out of the MITM protocol layer.
+//! Anthropic Messages-style traffic. It extracts the request and response
+//! conversations, message ids, model names, and token usage while keeping
+//! provider-specific details out of the MITM protocol layer.
 
-use std::{collections::BTreeMap, fmt};
+use std::fmt;
 
 use abyss_mitm::{FlowContext, HttpExchange, TransparentProtocol};
+use abyss_plugin_protocol::event::{Conversation, EntryRole};
 use http::{HeaderMap, Method, header::HOST};
 use serde::Serialize;
 use serde_json::Value;
@@ -17,7 +18,6 @@ use crate::{
     protocol::model::digest::sha256_hex,
     protocol::model::image::{ParsedImageAttachment, extract_anthropic_request_images},
     protocol::model::text::{MAX_PARSE_DEPTH, json_to_text, non_empty_trimmed},
-    protocol::model::tool::ParsedToolEvent,
     protocol::model::usage::TokenUsage,
     protocol::sse::ResponseDocuments,
 };
@@ -61,22 +61,14 @@ pub struct ParsedAnthropicMessagesExchange {
     /// Hash of method, host, path, and request body for event correlation.
     pub request_hash: String,
     /// Structured request messages decoded from the request body.
-    pub request_conversation: abyss_plugin_protocol::event::Conversation,
+    pub request_conversation: Conversation,
     /// Structured response messages assembled from the response documents.
-    pub response_conversation: abyss_plugin_protocol::event::Conversation,
-    /// User-visible prompt/input fragments derived from the request messages.
-    pub request_texts: Vec<String>,
+    pub response_conversation: Conversation,
     /// Validated image attachments embedded in user request content.
     pub request_images: Vec<ParsedImageAttachment>,
     /// The response this request continues after: `previous_message_id` of a
     /// `thread` `continue`.
     pub previous_response_id: Option<String>,
-    /// Tool results submitted on the request side of this provider call.
-    pub request_tool_events: Vec<ParsedToolEvent>,
-    /// Tool calls streamed by the response side of this provider call.
-    pub response_tool_events: Vec<ParsedToolEvent>,
-    /// Model-visible response fragments derived from the response messages.
-    pub response_texts: Vec<String>,
     /// Best token counters found in request or response payloads.
     pub usage: TokenUsage,
     /// Anthropic message id when present.
@@ -108,13 +100,13 @@ pub fn parse_anthropic_messages_exchange(
     };
     let headers = exchange.request.headers();
 
-    let request = AnthropicRequest::parse(request_json, exchange.request.body().truncated());
-    let request_texts = request.texts();
+    let request_conversation =
+        AnthropicRequest::parse(request_json, exchange.request.body().truncated()).conversation();
     let request_images = extract_anthropic_request_images(request_json);
-    let request_tool_events = extract_request_tool_events(request_json);
     // Bootstrap, registry, and telemetry calls are useful transport evidence but
-    // not dialogue turns. Upload only exchanges with model-visible input.
-    if request_texts.is_empty() && request_images.is_empty() && request_tool_events.is_empty() {
+    // not dialogue turns. Upload only exchanges whose request carries content:
+    // a conversation entry or an image.
+    if request_conversation.entries.is_empty() && request_images.is_empty() {
         log_parse_skip(exchange, Some(&host), path, "no_dialogue_request_text");
         return None;
     }
@@ -122,8 +114,6 @@ pub fn parse_anthropic_messages_exchange(
     let response_documents = ResponseDocuments::decode(exchange.response.body());
     let response_values = response_documents.values;
     let response = AnthropicResponse::assemble(&response_values, response_documents.incomplete);
-    let response_texts = response.texts();
-    let response_tool_events = extract_response_tool_events(&response_values);
     let usage = best_usage(&response_values)
         .or_else(|| best_usage(std::slice::from_ref(request_json)))
         .unwrap_or_default();
@@ -152,14 +142,10 @@ pub fn parse_anthropic_messages_exchange(
         session_id: session.id,
         session_id_source: session.source,
         request_hash,
-        request_conversation: request.conversation(),
+        request_conversation,
         response_conversation: response.conversation(),
-        request_texts,
         request_images,
         previous_response_id,
-        request_tool_events,
-        response_tool_events,
-        response_texts,
         usage,
         message_id,
         model,
@@ -188,55 +174,6 @@ pub(super) fn flow_server_name(flow: &FlowContext) -> Option<String> {
     match &flow.protocol {
         TransparentProtocol::TlsHttp { server_name } => Some(normalize_host(server_name)),
         _ => None,
-    }
-}
-
-pub(super) fn extract_request_tool_events(payload: &Value) -> Vec<ParsedToolEvent> {
-    let mut events = Vec::new();
-    let latest_user_content = payload
-        .get("messages")
-        .and_then(Value::as_array)
-        .and_then(|messages| {
-            messages
-                .iter()
-                .rev()
-                .find(|message| string_field(message, "role") == Some("user"))
-        })
-        .and_then(|message| message.get("content"));
-    if let Some(content) = latest_user_content.or_else(|| payload.get("input")) {
-        collect_request_tool_events(content, MAX_PARSE_DEPTH, &mut events);
-    }
-    events
-}
-
-fn collect_request_tool_events(value: &Value, depth: usize, events: &mut Vec<ParsedToolEvent>) {
-    if depth == 0 {
-        return;
-    }
-    match value {
-        Value::Object(object) => {
-            if object.get("type").and_then(Value::as_str) == Some("tool_result") {
-                let output = object
-                    .get("content")
-                    .map(tool_result_output)
-                    .unwrap_or_default();
-                let event = ParsedToolEvent::ToolResult {
-                    call_id: optional_object_string(object, "tool_use_id"),
-                    output,
-                };
-                push_unique_tool_event(events, event);
-                return;
-            }
-            for child in object.values() {
-                collect_request_tool_events(child, depth.saturating_sub(1), events);
-            }
-        }
-        Value::Array(items) => {
-            for item in items {
-                collect_request_tool_events(item, depth.saturating_sub(1), events);
-            }
-        }
-        _ => {}
     }
 }
 
@@ -272,180 +209,6 @@ fn tool_result_part(value: &Value) -> Option<String> {
     json_to_text(value, MAX_PARSE_DEPTH).or_else(|| serde_json::to_string(value).ok())
 }
 
-pub(super) fn extract_response_tool_events(values: &[Value]) -> Vec<ParsedToolEvent> {
-    let streaming = streaming_tool_events(values);
-    if !streaming.is_empty() {
-        return streaming;
-    }
-    let mut events = Vec::new();
-    for value in values {
-        collect_response_tool_events(value, MAX_PARSE_DEPTH, &mut events);
-    }
-    events
-}
-
-#[derive(Default)]
-struct StreamingToolCall {
-    id: Option<String>,
-    name: Option<String>,
-    initial_input: Option<Value>,
-    input_json: String,
-}
-
-enum StreamingToolBlock {
-    Call(StreamingToolCall),
-    Result(ParsedToolEvent),
-}
-
-fn streaming_tool_events(values: &[Value]) -> Vec<ParsedToolEvent> {
-    let mut blocks = BTreeMap::<u64, StreamingToolBlock>::new();
-    for value in values {
-        let index = value.get("index").and_then(Value::as_u64).unwrap_or(0);
-        match value.get("type").and_then(Value::as_str) {
-            Some("content_block_start") => {
-                let Some(block) = value.get("content_block").and_then(Value::as_object) else {
-                    continue;
-                };
-                match block.get("type").and_then(Value::as_str) {
-                    Some("tool_use") => {
-                        blocks.insert(
-                            index,
-                            StreamingToolBlock::Call(StreamingToolCall {
-                                id: optional_object_string(block, "id"),
-                                name: optional_object_string(block, "name"),
-                                initial_input: block.get("input").cloned(),
-                                input_json: String::new(),
-                            }),
-                        );
-                    }
-                    Some("tool_result") => {
-                        let output = block
-                            .get("content")
-                            .map(tool_result_output)
-                            .unwrap_or_default();
-                        blocks.insert(
-                            index,
-                            StreamingToolBlock::Result(ParsedToolEvent::ToolResult {
-                                call_id: optional_object_string(block, "tool_use_id"),
-                                output,
-                            }),
-                        );
-                    }
-                    _ => {}
-                }
-            }
-            Some("content_block_delta") => {
-                let Some(delta) = value.get("delta").and_then(Value::as_object) else {
-                    continue;
-                };
-                if delta.get("type").and_then(Value::as_str) != Some("input_json_delta") {
-                    continue;
-                }
-                if let Some(fragment) = delta.get("partial_json").and_then(Value::as_str)
-                    && let Some(StreamingToolBlock::Call(call)) = blocks.get_mut(&index)
-                {
-                    call.input_json.push_str(fragment);
-                }
-            }
-            _ => {}
-        }
-    }
-
-    blocks
-        .into_values()
-        .map(|block| match block {
-            StreamingToolBlock::Call(call) => {
-                let input = if non_empty_trimmed(&call.input_json).is_some() {
-                    canonical_tool_input(&Value::String(call.input_json))
-                } else {
-                    call.initial_input
-                        .as_ref()
-                        .map_or_else(|| "{}".to_owned(), canonical_tool_input)
-                };
-                ParsedToolEvent::ToolCall {
-                    item_id: call.id.clone(),
-                    call_id: call.id,
-                    name: call.name,
-                    input,
-                }
-            }
-            StreamingToolBlock::Result(result) => result,
-        })
-        .collect()
-}
-
-fn collect_response_tool_events(value: &Value, depth: usize, events: &mut Vec<ParsedToolEvent>) {
-    if depth == 0 {
-        return;
-    }
-    match value {
-        Value::Object(object) => {
-            if object.get("type").and_then(Value::as_str) == Some("tool_result") {
-                let output = object
-                    .get("content")
-                    .map(tool_result_output)
-                    .unwrap_or_default();
-                push_unique_tool_event(
-                    events,
-                    ParsedToolEvent::ToolResult {
-                        call_id: optional_object_string(object, "tool_use_id"),
-                        output,
-                    },
-                );
-                return;
-            }
-            if object.get("type").and_then(Value::as_str) == Some("tool_use") {
-                let id = optional_object_string(object, "id");
-                push_unique_tool_event(
-                    events,
-                    ParsedToolEvent::ToolCall {
-                        item_id: id.clone(),
-                        call_id: id,
-                        name: optional_object_string(object, "name"),
-                        input: object
-                            .get("input")
-                            .map_or_else(|| "{}".to_owned(), canonical_tool_input),
-                    },
-                );
-                return;
-            }
-            for child in object.values() {
-                collect_response_tool_events(child, depth.saturating_sub(1), events);
-            }
-        }
-        Value::Array(items) => {
-            for item in items {
-                collect_response_tool_events(item, depth.saturating_sub(1), events);
-            }
-        }
-        _ => {}
-    }
-}
-
-fn canonical_tool_input(input: &Value) -> String {
-    if let Some(input) = input.as_str() {
-        return serde_json::from_str::<Value>(input)
-            .ok()
-            .and_then(|value| serde_json::to_string(&value).ok())
-            .unwrap_or_else(|| input.to_owned());
-    }
-    serde_json::to_string(input).unwrap_or_default()
-}
-
-fn optional_object_string(object: &serde_json::Map<String, Value>, key: &str) -> Option<String> {
-    object
-        .get(key)
-        .and_then(Value::as_str)
-        .and_then(non_empty_trimmed)
-        .map(str::to_owned)
-}
-
-fn push_unique_tool_event(events: &mut Vec<ParsedToolEvent>, event: ParsedToolEvent) {
-    if !events.contains(&event) {
-        events.push(event);
-    }
-}
-
 pub(super) fn best_usage(values: &[Value]) -> Option<TokenUsage> {
     let usages = values
         .iter()
@@ -474,33 +237,29 @@ pub(super) fn best_usage(values: &[Value]) -> Option<TokenUsage> {
     ))
 }
 
+/// Estimates token usage from the visible content of both conversations:
+/// one token per four bytes of trimmed entry text, tool names included.
 pub(super) fn estimated_visible_usage(
-    request_texts: &[String],
-    request_tool_events: &[ParsedToolEvent],
-    response_texts: &[String],
-    response_tool_events: &[ParsedToolEvent],
+    request_conversation: &Conversation,
+    response_conversation: &Conversation,
 ) -> TokenUsage {
-    let input_tokens = estimate_visible_tokens(request_texts, request_tool_events);
-    let output_tokens = estimate_visible_tokens(response_texts, response_tool_events);
+    let input_tokens = estimate_visible_tokens(request_conversation);
+    let output_tokens = estimate_visible_tokens(response_conversation);
     TokenUsage::from_parts(input_tokens, 0, 0, output_tokens, 0)
 }
 
-fn estimate_visible_tokens(texts: &[String], tool_events: &[ParsedToolEvent]) -> i64 {
-    let text_byte_count = texts
+fn estimate_visible_tokens(conversation: &Conversation) -> i64 {
+    let byte_count = conversation
+        .entries
         .iter()
-        .map(|text| text.trim().len())
-        .fold(0_usize, usize::saturating_add);
-    let tool_byte_count = tool_events
-        .iter()
-        .map(|event| match event {
-            ParsedToolEvent::ToolCall { name, input, .. } => name
-                .as_deref()
-                .map_or(0, str::len)
-                .saturating_add(input.trim().len()),
-            ParsedToolEvent::ToolResult { output, .. } => output.trim().len(),
+        .map(|entry| {
+            let name = match entry.role {
+                EntryRole::ToolCall => entry.name.as_deref().map_or(0, str::len),
+                _ => 0,
+            };
+            name.saturating_add(entry.text.trim().len())
         })
         .fold(0_usize, usize::saturating_add);
-    let byte_count = text_byte_count.saturating_add(tool_byte_count);
     if byte_count == 0 {
         return 0;
     }
@@ -809,10 +568,12 @@ mod tests {
     use abyss_mitm::{
         CapturedBody, FlowContext, HttpExchange, OriginalDestination, TransparentProtocol,
     };
+    use abyss_plugin_protocol::event::EntryRole;
     use http::{Request, Response};
     use serde_json::{Value, json};
 
     use super::{AnthropicSessionIdSource, parse_anthropic_messages_exchange};
+    use crate::protocol::model::conversation::role_texts;
 
     #[test]
     fn parses_messages_json_without_harness_assumptions() {
@@ -839,8 +600,14 @@ mod tests {
             parsed.session_id_source,
             AnthropicSessionIdSource::Provider
         ));
-        assert_eq!(parsed.request_texts, vec!["hello"]);
-        assert_eq!(parsed.response_texts, vec!["hi"]);
+        assert_eq!(
+            role_texts(&parsed.request_conversation),
+            [(EntryRole::User, "hello")]
+        );
+        assert_eq!(
+            role_texts(&parsed.response_conversation),
+            [(EntryRole::Assistant, "hi")]
+        );
         assert_eq!(parsed.message_id.as_deref(), Some("msg_1"));
         assert_eq!(parsed.model.as_deref(), Some("claude-test"));
         assert_eq!(parsed.usage.input_tokens, 3);
@@ -867,7 +634,10 @@ mod tests {
         let parsed = parse_anthropic_messages_exchange(&exchange).expect("Anthropic SSE exchange");
 
         assert_eq!(parsed.message_id.as_deref(), Some("msg_2"));
-        assert_eq!(parsed.response_tool_events.len(), 1);
+        assert_eq!(
+            role_texts(&parsed.response_conversation),
+            [(EntryRole::ToolCall, "{\"command\":\"pwd\"}")]
+        );
         assert_eq!(parsed.usage.input_tokens, 5);
         assert_eq!(parsed.usage.output_tokens, 2);
     }
@@ -922,8 +692,13 @@ mod tests {
 
         let parsed = parse_anthropic_messages_exchange(&exchange).expect("tool-result exchange");
 
-        assert_eq!(parsed.request_tool_events.len(), 1);
-        assert_eq!(parsed.request_texts, Vec::<String>::new());
+        assert_eq!(
+            role_texts(&parsed.request_conversation),
+            [
+                (EntryRole::ToolCall, "{\"path\":\"a\"}"),
+                (EntryRole::ToolResult, "file contents"),
+            ]
+        );
     }
 
     #[test]

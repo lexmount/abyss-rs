@@ -8,9 +8,6 @@
 //! terminal events is reported once. Every entry of a Responses input or
 //! output item carries the item's `id`; Chat Completions entries carry none.
 //!
-//! The same items also yield the event `text` projection and the tool calls a
-//! response requests.
-//!
 //! Both dialects are recognized by the fields a body carries, not by its path.
 //! This module holds what they share: the message and part table, the request
 //! and response entry points, and the output slots. [`responses`] holds the
@@ -29,8 +26,7 @@ use serde_json::Value;
 
 use crate::protocol::model::{
     conversation::ConversationProjection,
-    text::{MAX_PARSE_DEPTH, dedupe_texts, json_to_text, non_empty_trimmed, visible_text},
-    tool::ParsedToolEvent,
+    text::{MAX_PARSE_DEPTH, json_to_text, non_empty_trimmed},
 };
 
 type Projection = ConversationProjection;
@@ -39,42 +35,6 @@ type Projection = ConversationProjection;
 pub struct OpenAiContent;
 
 impl OpenAiContent {
-    /// Returns the visible text of a content value, skipping tool items.
-    #[must_use]
-    pub fn text(value: &Value, depth: usize) -> Option<String> {
-        visible_text(value, depth, Self::is_tool_item)
-    }
-
-    /// Whether an item or part type carries tool calls or tool results.
-    #[must_use]
-    pub fn is_tool_item(item_type: &str) -> bool {
-        matches!(item_type, "tool_call" | "tool_result" | "tool_use")
-            || item_type.ends_with("_call")
-            || item_type.ends_with("_call_output")
-    }
-
-    /// Event text of one request item: its content parts' visible text, or
-    /// none for reasoning and tool items.
-    fn item_text(item: &Value) -> Option<String> {
-        match item.get("type").and_then(Value::as_str) {
-            Some("reasoning") => return None,
-            Some(kind) if Self::is_tool_item(kind) => return None,
-            _ => {}
-        }
-        let text = match item.get("content") {
-            Some(Value::Array(parts)) => parts
-                .iter()
-                .filter_map(|part| Self::text(part, MAX_PARSE_DEPTH.saturating_sub(1)))
-                .filter_map(|text| non_empty_trimmed(&text).map(str::to_owned))
-                .collect::<Vec<_>>()
-                .join("\n"),
-            _ => Self::text(item, MAX_PARSE_DEPTH)
-                .and_then(|text| non_empty_trimmed(&text).map(str::to_owned))
-                .unwrap_or_default(),
-        };
-        (!text.is_empty()).then_some(text)
-    }
-
     /// Appends the entries of one request item, by the block-to-role table:
     /// messages contribute one entry per content part, `reasoning` one entry,
     /// every `*_call` a tool call, every `*_output` a tool result, and any
@@ -162,9 +122,6 @@ pub struct OpenAiRequest {
     /// One entry per item or part: `instructions`, `input`, `messages`, then
     /// `prompt`. Entries of a Responses item carry its `id`.
     entries: Vec<ConversationEntry>,
-    /// Event text: flattened non-tool `input`, the prompt, and Chat user
-    /// messages.
-    texts: Vec<String>,
     /// Decoding state of the request body.
     completeness: ContentCompleteness,
 }
@@ -176,36 +133,24 @@ impl OpenAiRequest {
         let mut request = Self {
             carries_messages: false,
             entries: Vec::new(),
-            texts: Vec::new(),
             completeness: Projection::completeness(payload.is_some(), truncated),
         };
         let Some(payload) = payload else {
             return request;
         };
-        let input_texts = responses::push_request(&mut request, payload);
-        let user_texts = chat::push_request(&mut request, payload);
-        let mut texts = vec![input_texts.join("\n")];
+        responses::push_request(&mut request, payload);
+        chat::push_request(&mut request, payload);
         if let Some(prompt) = payload
             .get("prompt")
             .and_then(Value::as_str)
             .filter(|prompt| non_empty_trimmed(prompt).is_some())
         {
             request.carries_messages = true;
-            texts.extend(non_empty_trimmed(prompt).map(str::to_owned));
             request
                 .entries
                 .push(Projection::text(EntryRole::User, prompt));
         }
-        texts.extend(user_texts);
-        request.texts = dedupe_texts(texts);
         request
-    }
-
-    /// Event text: flattened non-tool `input`, the prompt, and Chat user
-    /// messages.
-    #[must_use]
-    pub fn texts(&self) -> Vec<String> {
-        self.texts.clone()
     }
 
     /// Whether the request carried no message-bearing field.
@@ -312,8 +257,6 @@ struct OutputSlot {
     role: EntryRole,
     /// What the item holds.
     body: SlotBody,
-    /// Tool call the item requests, from its latest snapshot with input.
-    tool_call: Option<ParsedToolEvent>,
 }
 
 impl OutputSlot {
@@ -322,7 +265,6 @@ impl OutputSlot {
             item_id: None,
             role: EntryRole::Assistant,
             body,
-            tool_call: None,
         }
     }
 
@@ -366,9 +308,6 @@ impl OutputSlot {
     /// Reconciles the body and role with one item snapshot. A snapshot of
     /// another kind than the body was started as replaces the body.
     fn reconcile_item(&mut self, item: &Value) {
-        if let Some(call) = responses::tool_call(item) {
-            self.tool_call = Some(call);
-        }
         let body = SlotBody::for_item(item.get("type").and_then(Value::as_str));
         if std::mem::discriminant(&body) != std::mem::discriminant(&self.body) {
             self.body = body;
@@ -422,22 +361,6 @@ impl OutputSlot {
         }
     }
 
-    /// Event text of the item: its text parts, including reasoning
-    /// summaries, excluding refusals and tool items.
-    fn texts(&self) -> Vec<&String> {
-        match &self.body {
-            SlotBody::Message { parts, .. } => parts
-                .values()
-                .filter_map(|part| match part {
-                    Part::Text(text) => Some(text),
-                    Part::Refusal(_) => None,
-                })
-                .collect(),
-            SlotBody::Reasoning { parts } => parts.values().collect(),
-            _ => Vec::new(),
-        }
-    }
-
     /// The item's entries, by the block-to-role table, each carrying the
     /// item's identity.
     fn entries(&self) -> Vec<ConversationEntry> {
@@ -474,10 +397,6 @@ pub struct OpenAiResponse {
     empty: bool,
     /// One entry per output item or content part, in index order.
     entries: Vec<ConversationEntry>,
-    /// Event text: every assembled text part, including reasoning summaries.
-    texts: Vec<String>,
-    /// One tool call per tool-call output item, in index order.
-    tool_calls: Vec<ParsedToolEvent>,
     /// Decoding state of the response documents.
     completeness: ContentCompleteness,
 }
@@ -495,17 +414,6 @@ impl OpenAiResponse {
         Self {
             empty: slots.is_empty(),
             entries: slots.values().flat_map(OutputSlot::entries).collect(),
-            texts: dedupe_texts(
-                slots
-                    .values()
-                    .flat_map(OutputSlot::texts)
-                    .cloned()
-                    .collect(),
-            ),
-            tool_calls: slots
-                .values()
-                .filter_map(|slot| slot.tool_call.clone())
-                .collect(),
             completeness: Projection::completeness(!values.is_empty(), incomplete),
         }
     }
@@ -539,22 +447,10 @@ impl OpenAiResponse {
         self.empty
     }
 
-    /// Event text: every assembled text part, including reasoning summaries.
-    #[must_use]
-    pub fn texts(&self) -> Vec<String> {
-        self.texts.clone()
-    }
-
     /// Public response conversation.
     #[must_use]
     pub fn conversation(&self) -> Conversation {
         Projection::from_entries(self.entries.clone(), self.completeness)
-    }
-
-    /// Tool calls the response requests, one per output item.
-    #[must_use]
-    pub fn tool_calls(&self) -> Vec<ParsedToolEvent> {
-        self.tool_calls.clone()
     }
 }
 
@@ -583,8 +479,6 @@ fn slot_index(position: usize) -> u64 {
 
 #[cfg(test)]
 mod tests {
-    use serde_json::json;
-
     use super::*;
 
     pub(super) fn summary(
@@ -610,44 +504,5 @@ mod tests {
             .iter()
             .map(|entry| entry.item_id.as_deref())
             .collect()
-    }
-
-    #[test]
-    fn request_text_flattens_input_and_keeps_chat_user_messages() {
-        let request = OpenAiRequest::parse(
-            Some(&json!({
-                "instructions":"", "previous_response_id":"r1",
-                "input":[{"role":"developer","content":"rules"},
-                    {"role":"user","content":[{"type":"input_text","text":"hello","future":42_i32}]},
-                    {"role":"user","content":"hello"},
-                    {"type":"function_call_output","call_id":"c1","output":"secret"},
-                    {"content":"role unavailable"}]
-            })),
-            false,
-        );
-        assert_eq!(
-            request.texts(),
-            vec!["rules\nhello\nhello\nrole unavailable"]
-        );
-
-        let images = OpenAiRequest::parse(
-            Some(&json!({"input":[{"role":"user","content":[
-                {"type":"input_text","text":"visible"},
-                {"type":"tool_result","content":"tool secret"},
-                {"type":"input_image","image_url":"image secret"}
-            ]}]})),
-            false,
-        );
-        assert_eq!(images.texts(), vec!["visible"]);
-
-        let chat = OpenAiRequest::parse(
-            Some(&json!({"messages":[
-                {"role":"system","content":"rules"},
-                {"role":"user","content":"question"},
-                {"role":"assistant","content":"answer"}
-            ]})),
-            false,
-        );
-        assert_eq!(chat.texts(), vec!["question"]);
     }
 }

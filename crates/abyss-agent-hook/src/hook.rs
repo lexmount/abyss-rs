@@ -365,7 +365,6 @@ mod tests {
             assert_eq!(reply.entries[0].role, EntryRole::Assistant);
             assert_eq!(reply.entries[0].text, "hi");
             assert_eq!(reply.completeness, ContentCompleteness::Complete);
-            assert_eq!(events[1].text.as_deref(), Some("hi"));
             drop(events);
         }
     }
@@ -442,7 +441,6 @@ mod tests {
         );
         assert_eq!(response_content.entries[0].text, "hi there");
         assert_eq!(response_content.completeness, ContentCompleteness::Partial);
-        assert_eq!(events[1].text.as_deref(), Some("hi there"));
         // Every turn of the connection carries the upgrade request's headers
         // and the `101` response's headers.
         assert_eq!(
@@ -561,7 +559,6 @@ mod tests {
         let reply = events[1].conversation.as_ref().unwrap();
         assert_eq!(reply.completeness, ContentCompleteness::Partial);
         assert_eq!(reply.entries[0].text, "hi");
-        assert_eq!(events[1].text.as_deref(), Some("hi"));
         drop(events);
     }
 

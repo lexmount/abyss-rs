@@ -11,7 +11,7 @@ use parking_lot::Mutex;
 use serde_json::Value;
 
 use crate::protocol::{
-    model::{conversation::ConversationProjection, tool::ParsedToolEvent},
+    model::conversation::ConversationProjection,
     openai::{ParsedOpenAiExchange, conversation::OpenAiResponse},
 };
 
@@ -129,8 +129,12 @@ impl PendingTurn {
                     &mut exchange.request_conversation,
                     ConversationProjection::empty(),
                 );
+                // The first client frame that carries content, a conversation
+                // entry or an image, identifies the turn.
+                let identifies_turn = !self.carries_request_content()
+                    && (!conversation.entries.is_empty() || !exchange.request_images.is_empty());
                 self.merge_request_conversation(conversation);
-                self.merge_exchange(exchange);
+                self.merge_exchange(exchange, identifies_turn);
             }
             OpenAiWebSocketFrame::Response(response) => {
                 let OpenAiWebSocketResponse {
@@ -139,7 +143,7 @@ impl PendingTurn {
                     byte_len,
                 } = *response;
                 self.buffer_response_document(document, byte_len);
-                self.merge_exchange(exchange);
+                self.merge_exchange(exchange, false);
             }
             OpenAiWebSocketFrame::Undecodable(WebSocketDirection::ClientToServer) => {
                 self.request_decode_failed = true;
@@ -147,6 +151,17 @@ impl PendingTurn {
             OpenAiWebSocketFrame::Undecodable(_) => self.response_decode_failed = true,
             OpenAiWebSocketFrame::Irrelevant => {}
         }
+    }
+
+    /// Whether a merged client frame carried a conversation entry or an image.
+    fn carries_request_content(&self) -> bool {
+        self.request_conversation
+            .as_ref()
+            .is_some_and(|conversation| !conversation.entries.is_empty())
+            || self
+                .exchange
+                .as_ref()
+                .is_some_and(|exchange| !exchange.request_images.is_empty())
     }
 
     /// Merges one client frame's request conversation into the turn.
@@ -186,7 +201,9 @@ impl PendingTurn {
         self.response_documents.push(document);
     }
 
-    fn merge_exchange(&mut self, next: ParsedOpenAiExchange) {
+    /// Merges one frame's values; a frame that `identifies_turn` supplies the
+    /// turn's session id and request hash.
+    fn merge_exchange(&mut self, next: ParsedOpenAiExchange, identifies_turn: bool) {
         let Some(current) = self.exchange.as_mut() else {
             self.exchange = Some(next);
             return;
@@ -197,19 +214,14 @@ impl PendingTurn {
             current.generates_output =
                 Some(current.generates_output.unwrap_or(false) || generates_output);
         }
-        if current.request_texts.is_empty()
-            && current.request_images.is_empty()
-            && (!next.request_texts.is_empty() || !next.request_images.is_empty())
-        {
+        if identifies_turn {
             current.session_id.clone_from(&next.session_id);
             current.request_hash.clone_from(&next.request_hash);
         }
-        append_unique(&mut current.request_texts, next.request_texts);
         if current.request_images.is_empty() {
             current.request_images = next.request_images;
         }
         append_unique(&mut current.event_types, next.event_types);
-        append_unique_tools(&mut current.request_tool_events, next.request_tool_events);
         if !next.usage.is_empty() && next.usage.total_tokens >= current.usage.total_tokens {
             current.usage = next.usage;
         }
@@ -234,8 +246,6 @@ impl PendingTurn {
             &self.response_documents,
             self.response_overflowed || self.response_decode_failed,
         );
-        exchange.response_texts = response.texts();
-        exchange.response_tool_events = response.tool_calls();
         exchange.response_conversation = response.conversation();
         exchange.request_conversation = self.request_conversation.unwrap_or_else(|| {
             let mut unobserved = ConversationProjection::empty();
@@ -274,14 +284,6 @@ fn append_unique(target: &mut Vec<String>, source: Vec<String>) {
     }
 }
 
-fn append_unique_tools(target: &mut Vec<ParsedToolEvent>, source: Vec<ParsedToolEvent>) {
-    for event in source {
-        if !target.contains(&event) {
-            target.push(event);
-        }
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use abyss_mitm::{FlowId, WebSocketDirection};
@@ -289,7 +291,10 @@ mod tests {
     use serde_json::{Value, json};
 
     use crate::protocol::{
-        model::{conversation::ConversationProjection, usage::TokenUsage},
+        model::{
+            conversation::{ConversationProjection, role_texts},
+            usage::TokenUsage,
+        },
         openai::{ParsedOpenAiExchange, conversation::OpenAiRequest},
     };
 
@@ -318,10 +323,17 @@ mod tests {
             .push(&flow_id, response(1, "part two", true))
             .expect("terminal response should complete the interaction");
 
-        assert_eq!(completed.request_texts, vec!["hello"]);
-        assert_eq!(completed.response_texts, vec!["part one", "part two"]);
-        assert_eq!(completed.request_conversation.entries[0].text, "hello");
-        assert_eq!(completed.response_conversation.entries.len(), 2);
+        assert_eq!(
+            role_texts(&completed.request_conversation),
+            [(EntryRole::User, "hello")]
+        );
+        assert_eq!(
+            role_texts(&completed.response_conversation),
+            [
+                (EntryRole::Assistant, "part one"),
+                (EntryRole::Assistant, "part two")
+            ]
+        );
         assert_eq!(
             completed.response_conversation.completeness,
             ContentCompleteness::Complete
@@ -369,7 +381,10 @@ mod tests {
         let first = accumulator
             .push(&first_flow, response(0, "done", true))
             .expect("first flow should complete");
-        assert_eq!(first.request_texts, vec!["first"]);
+        assert_eq!(
+            role_texts(&first.request_conversation),
+            [(EntryRole::User, "first")]
+        );
     }
 
     #[test]
@@ -400,7 +415,10 @@ mod tests {
 
             assert_eq!(completed.request_conversation.completeness, request_side);
             assert_eq!(completed.response_conversation.completeness, response_side);
-            assert_eq!(completed.response_texts, vec!["answer"]);
+            assert_eq!(
+                role_texts(&completed.response_conversation),
+                [(EntryRole::Assistant, "answer")]
+            );
         }
     }
 
@@ -423,7 +441,10 @@ mod tests {
             .push(&flow_id, response(2, "after overflow", true))
             .expect("terminal response should complete the interaction");
 
-        assert_eq!(completed.response_texts, vec!["kept"]);
+        assert_eq!(
+            role_texts(&completed.response_conversation),
+            [(EntryRole::Assistant, "kept")]
+        );
         assert_eq!(
             completed.response_conversation.completeness,
             ContentCompleteness::Partial
@@ -465,18 +486,36 @@ mod tests {
 
         assert_eq!(completed.previous_response_id.as_deref(), Some("resp_1"));
         assert_eq!(
-            conversation
-                .entries
-                .iter()
-                .map(|entry| (entry.role, entry.text.as_str()))
-                .collect::<Vec<_>>(),
-            vec![
+            role_texts(conversation),
+            [
                 (EntryRole::User, "first"),
                 (EntryRole::System, "rules"),
                 (EntryRole::User, "second"),
             ]
         );
-        assert_eq!(completed.request_texts, vec!["first", "second"]);
+    }
+
+    #[test]
+    fn the_first_client_frame_with_content_identifies_the_turn() {
+        let accumulator = OpenAiWebSocketAccumulator::default();
+        let flow_id = FlowId::generate();
+        let mut empty = exchange();
+        empty.session_id = "frame-without-entries".to_owned();
+        accumulator.push(&flow_id, OpenAiWebSocketFrame::Request(Box::new(empty)));
+        for (session_id, text) in [("first-content", "first"), ("later-content", "second")] {
+            let OpenAiWebSocketFrame::Request(mut frame) = request(text) else {
+                unreachable!("request frames are requests");
+            };
+            frame.session_id = session_id.to_owned();
+            frame.request_hash = format!("{session_id}-hash");
+            accumulator.push(&flow_id, OpenAiWebSocketFrame::Request(frame));
+        }
+        let completed = accumulator
+            .push(&flow_id, response(0, "done", true))
+            .expect("terminal response should complete the interaction");
+
+        assert_eq!(completed.session_id, "first-content");
+        assert_eq!(completed.request_hash, "first-content-hash");
     }
 
     fn request(text: &str) -> OpenAiWebSocketFrame {
@@ -486,7 +525,6 @@ mod tests {
     fn request_frame(payload: &Value) -> OpenAiWebSocketFrame {
         let request = OpenAiRequest::parse(Some(payload), false);
         let mut parsed = exchange();
-        parsed.request_texts = request.texts();
         parsed.request_conversation = request.conversation();
         parsed.previous_response_id = payload
             .get("previous_response_id")
@@ -529,15 +567,11 @@ mod tests {
             request_hash: "request-hash".to_owned(),
             request_conversation: ConversationProjection::empty(),
             response_conversation: ConversationProjection::empty(),
-            request_texts: Vec::new(),
             request_images: Vec::new(),
-            response_texts: Vec::new(),
             usage: TokenUsage::default(),
             response_id: None,
             previous_response_id: None,
             client_metadata: None,
-            request_tool_events: Vec::new(),
-            response_tool_events: Vec::new(),
             model: Some("model-test".to_owned()),
             event_types: Vec::new(),
         }

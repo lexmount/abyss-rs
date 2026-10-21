@@ -25,14 +25,16 @@ jq -n \
         llm_model: "gpt-test",
         session_id: "session-test",
         turn_index: 3,
-        text: $marker,
         input_tokens: 8,
         output_tokens: 0,
         cache_read_tokens: 2,
         cache_write_tokens: 1,
         reasoning_tokens: 0,
         total_tokens: 11,
-        metadata: {provider_usage: {input_tokens: 11, output_tokens: 7, total_tokens: 21}}
+        metadata: {
+          provider_usage: {input_tokens: 11, output_tokens: 7, total_tokens: 21},
+          conversation: {entries: [{role: "user", text: $marker}], completeness: "complete"}
+        }
       },
       {
         event_id: "response-event",
@@ -42,14 +44,18 @@ jq -n \
         llm_model: "gpt-test",
         session_id: "session-test",
         turn_index: 3,
-        text: "response",
         input_tokens: 0,
         output_tokens: 7,
         cache_read_tokens: 0,
         cache_write_tokens: 0,
         reasoning_tokens: 3,
         total_tokens: 7,
-        metadata: {}
+        metadata: {
+          conversation: {
+            entries: [{role: "assistant", text: "response"}],
+            completeness: "complete"
+          }
+        }
       }
     ]
   }' >"${EVENTS_FILE}"
@@ -85,7 +91,8 @@ blackbox_assert_summary_matches_pairs "${SUMMARY_TWO_JSON}" "${TWO_PAIRS_JSON}"
 # message. The session summary must include that request, while the native
 # turn.completed usage still matches only the marker request/response pair.
 PREWARM_EVENTS_JSON="$(jq -c '.events + [(.events[0] | .event_id = "prewarm-event"
-  | .text = "prewarm instructions" | .input_tokens = 6 | .cache_read_tokens = 0
+  | .metadata.conversation.entries = [{role: "system", text: "prewarm instructions"}]
+  | .input_tokens = 6 | .cache_read_tokens = 0
   | .cache_write_tokens = 0 | .total_tokens = 6
   | .metadata.purpose = "prewarm")]' "${EVENTS_FILE}")"
 PREWARM_SUMMARY_JSON="$(jq -c '.rows[0].requests += 1

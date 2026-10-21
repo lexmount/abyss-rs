@@ -30,7 +30,6 @@ class AgentEventContractTests(unittest.TestCase):
 
         self.assertEqual(event.event_id, "evt-123")
         self.assertEqual(event.llm.provider, "openai")
-        self.assertEqual(event.tool_calls[0].name, "exec")
         self.assertEqual(event.response_id, "resp-123")
         self.assertEqual(event.previous_response_id, "resp-122")
         self.assertEqual(event.purpose, "session_title")
@@ -48,6 +47,8 @@ class AgentEventContractTests(unittest.TestCase):
         self.assertEqual(event.headers[1].value, "req-123")
         self.assertIsNone(event.headers[1].value_base64)
         self.assertFalse(hasattr(event, "turn_index"))
+        for field in ("text", "tool_calls", "tool_results"):
+            self.assertFalse(hasattr(event, field))
 
     def test_optional_context_and_entry_identities(self) -> None:
         fixture = json.loads(FIXTURE.read_text(encoding="utf-8"))
@@ -78,6 +79,9 @@ class AgentEventContractTests(unittest.TestCase):
     def test_rejects_obsolete_fields_and_malformed_content(self) -> None:
         for path, value in (
             (("turn_index",), 1),
+            (("text",), "hello"),
+            (("tool_calls",), []),
+            (("tool_results",), []),
             (("turn_id",), "turn-1"),
             (("naming_thread",), True),
             (("stream_id",), "thread-1"),

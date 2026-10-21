@@ -11,15 +11,13 @@ export interface AgentEvent {
   purpose?: EventPurpose;
   llm: LlmContext;
   side: AgentEventSide;
-  text?: string;
   /** Content categories the content policy omitted; absent when none were. */
   omitted?: ContentCategory[];
+  /** The side's content, one entry per protocol block or item. */
   conversation?: Conversation;
   /** Captured headers of the event's side, credential values redacted. */
   headers?: HttpHeader[];
   token_usage: TokenUsage;
-  tool_calls?: ToolCall[];
-  tool_results?: ToolResult[];
   attachments?: ImageAttachment[];
 }
 
@@ -94,19 +92,6 @@ export interface TokenUsage {
   total_tokens: number;
 }
 
-export interface ToolCall {
-  call_id: string;
-  name: string;
-  input: string;
-  input_sha256: string;
-}
-
-export interface ToolResult {
-  call_id: string;
-  output: string;
-  output_sha256: string;
-}
-
 export type ImageMediaType =
   "image/png" | "image/jpeg" | "image/webp" | "image/gif";
 
@@ -133,13 +118,10 @@ export function decodeAgentEvent(value: unknown): AgentEvent {
       "purpose",
       "llm",
       "side",
-      "text",
       "omitted",
       "conversation",
       "headers",
       "token_usage",
-      "tool_calls",
-      "tool_results",
       "attachments",
     ],
     "AgentEvent",
@@ -162,7 +144,6 @@ export function decodeAgentEvent(value: unknown): AgentEvent {
   if (event.side !== "request" && event.side !== "response") {
     throw new TypeError("AgentEvent.side must be request or response");
   }
-  optionalStringField(event, "text");
   optionalArray(event, "omitted").forEach((category, index) => {
     if (
       typeof category !== "string" ||
@@ -178,8 +159,6 @@ export function decodeAgentEvent(value: unknown): AgentEvent {
   }
   optionalArray(event, "headers").forEach(decodeHeader);
   decodeTokenUsage(event.token_usage);
-  optionalArray(event, "tool_calls").forEach(decodeToolCall);
-  optionalArray(event, "tool_results").forEach(decodeToolResult);
   optionalArray(event, "attachments").forEach(decodeAttachment);
   return event as unknown as AgentEvent;
 }
@@ -272,27 +251,6 @@ function decodeTokenUsage(value: unknown): void {
   for (const field of fields) {
     nonNegativeIntegerField(usage, field);
   }
-}
-
-function decodeToolCall(value: unknown): void {
-  const call = record(value, "AgentEvent.tool_calls[]");
-  rejectUnknown(
-    call,
-    ["call_id", "name", "input", "input_sha256"],
-    "tool call",
-  );
-  stringField(call, "call_id");
-  stringField(call, "name");
-  stringField(call, "input");
-  stringField(call, "input_sha256");
-}
-
-function decodeToolResult(value: unknown): void {
-  const result = record(value, "AgentEvent.tool_results[]");
-  rejectUnknown(result, ["call_id", "output", "output_sha256"], "tool result");
-  stringField(result, "call_id");
-  stringField(result, "output");
-  stringField(result, "output_sha256");
 }
 
 function decodeAttachment(value: unknown): void {
