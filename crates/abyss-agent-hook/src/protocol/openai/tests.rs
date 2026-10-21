@@ -974,7 +974,6 @@ fn conversation_header_uses_the_existing_http_session_chain() {
     }
 }
 
-
 #[test]
 fn conversation_header_does_not_override_existing_session_metadata() {
     for (name, value, expected) in [
@@ -1008,7 +1007,6 @@ fn conversation_header_does_not_override_existing_session_metadata() {
     }
 }
 
-
 #[test]
 fn conversation_header_uses_the_existing_websocket_session_chain() {
     for (sequence, text) in [(1, "first request"), (2, "second request")] {
@@ -1033,4 +1031,3 @@ fn conversation_header_uses_the_existing_websocket_session_chain() {
         assert_eq!(parsed.request_texts, vec![text]);
     }
 }
-

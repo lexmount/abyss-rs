@@ -1,12 +1,12 @@
-//! Fallback process-context provider for targets without cwd lookup support.
+//! Fallback process-context provider for targets without native process-context lookup.
 
 use std::path::PathBuf;
 
-use super::cache::WorkingDirectoryProvider;
+use super::cache::ProcessContextProvider;
 
-pub(super) struct UnavailableWorkingDirectoryProvider;
+pub(super) struct UnavailableProcessContextProvider;
 
-impl WorkingDirectoryProvider for UnavailableWorkingDirectoryProvider {
+impl ProcessContextProvider for UnavailableProcessContextProvider {
     fn lookup(&self, _pid: u32) -> Option<PathBuf> {
         None
     }

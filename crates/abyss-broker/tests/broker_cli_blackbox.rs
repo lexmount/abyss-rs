@@ -995,6 +995,7 @@ fn broker_mitm_config_updates_over_rest_without_restart() {
                     "id": "decrypt-openai",
                     "action": "intercept",
                     "process_names": ["codex"],
+                    "process_entry_points": ["Contents/Resources/cli.js"],
                     "application_ids": ["com.openai.codex"],
                     "destination_hosts": ["api.openai.com"]
                 }
@@ -1019,12 +1020,34 @@ fn broker_mitm_config_updates_over_rest_without_restart() {
         "REST config should expose one platform-neutral application identity"
     );
 
+    assert_eq!(
+        updated["tls_decryption"]["rules"][0]["process_entry_points"],
+        json!(["Contents/Resources/cli.js"])
+    );
     let read_back = request_mitm_config(api_addr, &token);
     assert_eq!(
         read_back["tls_decryption"]["rules"][0]["id"], "decrypt-openai",
         "GET should read the current runtime MITM config"
     );
     assert_runtime_mitm_policy_persisted(&broker, "com.openai.codex");
+    let persisted: toml::Value =
+        toml::from_str(&fs::read_to_string(broker.runtime_policy_path()).unwrap()).unwrap();
+    assert_eq!(
+        persisted["mitm"]["tls_decryption"]["rules"][0]["process_entry_points"][0].as_str(),
+        Some("Contents/Resources/cli.js")
+    );
+    for entry in ["", "Contents/../daemon.js", "Contents/*.js"] {
+        let mut invalid_entry = requested.clone();
+        invalid_entry["tls_decryption"]["rules"][0]["process_entry_points"] = json!([entry]);
+        let response = client()
+            .put(url(api_addr, "/v1/mitm/config"))
+            .bearer_auth(&token)
+            .json(&invalid_entry)
+            .send()
+            .unwrap();
+        assert_eq!(response.status().as_u16(), 400);
+        assert_eq!(request_mitm_config(api_addr, &token), read_back);
+    }
 
     let invalid = json!({
         "tls_decryption": {
@@ -1439,6 +1462,10 @@ const fn broker_binary() -> &'static str {
 #[cfg(unix)]
 #[path = "scenarios/compatible_providers.rs"]
 mod compatible_providers;
+
+#[cfg(target_os = "macos")]
+#[path = "scenarios/process_entry_points.rs"]
+mod process_entry_points;
 
 struct BrokerProcess {
     api_addr: SocketAddr,

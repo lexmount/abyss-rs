@@ -46,6 +46,7 @@ dependencies = [
  "rand",
  "rcgen",
  "reqwest",
+ "rustls",
  "serde",
  "serde_json",
  "sha2",

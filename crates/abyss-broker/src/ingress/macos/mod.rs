@@ -444,6 +444,10 @@ impl<'a> SourceProcessBuilder<'a> {
             abyss_mitm::SourceProcess::new(self.payload.source_pid, name, executable_path)
                 .with_pid_version(self.payload.source_pid_version)
                 .with_application_id(self.payload.source_application_id.clone())
+                .with_entry_point(
+                    process_context_resolver
+                        .entry_point(self.payload.source_pid, self.payload.source_pid_version),
+                )
                 .with_working_directory(
                     process_context_resolver
                         .working_directory(self.payload.source_pid, self.payload.source_pid_version)

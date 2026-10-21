@@ -1,4 +1,4 @@
-//! Shared process-identity cache for platform working-directory providers.
+//! Shared process-identity cache for platform process-context providers.
 
 use std::{
     collections::HashMap,
@@ -24,11 +24,16 @@ struct ProcessIdentity {
 
 struct CacheEntry {
     working_directory: OnceLock<Option<PathBuf>>,
+    entry_point: OnceLock<Option<String>>,
     expires_at: Instant,
 }
 
-pub(super) trait WorkingDirectoryProvider: Send + Sync {
+pub(super) trait ProcessContextProvider: Send + Sync {
     fn lookup(&self, pid: u32) -> Option<PathBuf>;
+
+    fn entry_point(&self, _pid: u32, _pid_version: Option<u32>) -> Option<String> {
+        None
+    }
 }
 
 pub(super) struct CachedProcessContextResolver<P> {
@@ -38,7 +43,7 @@ pub(super) struct CachedProcessContextResolver<P> {
 
 impl<P> CachedProcessContextResolver<P>
 where
-    P: WorkingDirectoryProvider,
+    P: ProcessContextProvider,
 {
     pub(super) fn new(provider: P) -> Self {
         Self {
@@ -47,10 +52,9 @@ where
         }
     }
 
-    fn resolve(&self, identity: ProcessIdentity) -> Option<PathBuf> {
+    fn entry(&self, identity: ProcessIdentity) -> Arc<CacheEntry> {
         let now = Instant::now();
-        let pid = identity.pid;
-        let entry = {
+        {
             let mut entries = self.entries.lock();
             if let Some(entry) = entries.get(&identity)
                 && entry.expires_at > now
@@ -61,29 +65,39 @@ where
                 let expires_at = now.checked_add(CACHE_TTL).unwrap_or(now);
                 let entry = Arc::new(CacheEntry {
                     working_directory: OnceLock::new(),
+                    entry_point: OnceLock::new(),
                     expires_at,
                 });
                 entries.insert(identity, Arc::clone(&entry));
                 entry
             }
-        };
-
-        entry
-            .working_directory
-            .get_or_init(|| self.provider.lookup(pid))
-            .clone()
+        }
     }
 }
 
 impl<P> ProcessContextResolver for CachedProcessContextResolver<P>
 where
-    P: WorkingDirectoryProvider,
+    P: ProcessContextProvider,
 {
     fn working_directory(&self, pid: Option<u32>, pid_version: Option<u32>) -> Option<PathBuf> {
-        self.resolve(ProcessIdentity {
-            pid: pid?,
-            pid_version,
-        })
+        let pid = pid?;
+        self.entry(ProcessIdentity { pid, pid_version })
+            .working_directory
+            .get_or_init(|| self.provider.lookup(pid))
+            .clone()
+    }
+
+    fn entry_point(&self, pid: Option<u32>, pid_version: Option<u32>) -> Option<String> {
+        let pid = pid?;
+        // Without an incarnation identifier, never reuse a cached entry script
+        // for a PID that the OS may have reassigned to another process.
+        if pid_version.is_none() {
+            return self.provider.entry_point(pid, None);
+        }
+        self.entry(ProcessIdentity { pid, pid_version })
+            .entry_point
+            .get_or_init(|| self.provider.entry_point(pid, pid_version))
+            .clone()
     }
 }
 
@@ -99,7 +113,7 @@ mod tests {
         time::Duration,
     };
 
-    use super::{CachedProcessContextResolver, WorkingDirectoryProvider};
+    use super::{CachedProcessContextResolver, ProcessContextProvider};
     use crate::process_context::ProcessContextResolver;
 
     struct CountingProvider {
@@ -107,7 +121,7 @@ mod tests {
         result: Option<PathBuf>,
     }
 
-    impl WorkingDirectoryProvider for CountingProvider {
+    impl ProcessContextProvider for CountingProvider {
         fn lookup(&self, _pid: u32) -> Option<PathBuf> {
             self.calls.fetch_add(1, Ordering::Relaxed);
             self.result.clone()
@@ -171,7 +185,7 @@ mod tests {
         calls: AtomicUsize,
     }
 
-    impl WorkingDirectoryProvider for SlowCountingProvider {
+    impl ProcessContextProvider for SlowCountingProvider {
         fn lookup(&self, _pid: u32) -> Option<PathBuf> {
             self.calls.fetch_add(1, Ordering::Relaxed);
             thread::sleep(Duration::from_millis(10));
@@ -205,7 +219,7 @@ mod tests {
         max_active: AtomicUsize,
     }
 
-    impl WorkingDirectoryProvider for ConcurrentProvider {
+    impl ProcessContextProvider for ConcurrentProvider {
         fn lookup(&self, pid: u32) -> Option<PathBuf> {
             let active = self.active.fetch_add(1, Ordering::SeqCst).saturating_add(1);
             self.max_active.fetch_max(active, Ordering::SeqCst);
@@ -239,5 +253,39 @@ mod tests {
             );
         }
         assert_eq!(resolver.provider.max_active.load(Ordering::SeqCst), 2);
+    }
+
+    struct EntryPointProvider(AtomicUsize);
+
+    impl ProcessContextProvider for EntryPointProvider {
+        fn lookup(&self, _pid: u32) -> Option<PathBuf> {
+            None
+        }
+        fn entry_point(&self, _pid: u32, version: Option<u32>) -> Option<String> {
+            self.0.fetch_add(1, Ordering::Relaxed);
+            version.map(|version| format!("/tmp/entry-{version}.js"))
+        }
+    }
+
+    #[test]
+    fn entry_points_cache_by_incarnation_and_do_not_cache_unversioned_pids() {
+        let resolver = CachedProcessContextResolver::new(EntryPointProvider(AtomicUsize::new(0)));
+        assert_eq!(
+            resolver.entry_point(Some(42), Some(7)),
+            Some("/tmp/entry-7.js".to_owned())
+        );
+        assert_eq!(
+            resolver.entry_point(Some(42), Some(7)),
+            Some("/tmp/entry-7.js".to_owned())
+        );
+        assert_eq!(
+            resolver.entry_point(Some(42), Some(8)),
+            Some("/tmp/entry-8.js".to_owned())
+        );
+        assert_eq!(resolver.provider.0.load(Ordering::Relaxed), 2);
+        assert_eq!(resolver.entry_point(None, None), None);
+        assert_eq!(resolver.entry_point(Some(42), None), None);
+        assert_eq!(resolver.entry_point(Some(42), None), None);
+        assert_eq!(resolver.provider.0.load(Ordering::Relaxed), 4);
     }
 }

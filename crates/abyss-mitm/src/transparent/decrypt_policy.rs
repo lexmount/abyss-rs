@@ -74,6 +74,13 @@ pub struct TlsDecryptionRule {
     /// A populated selector does not match when application identity is absent.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub application_ids: Vec<String>,
+    /// Exact normalized process entry points; no glob or suffix matching.
+    ///
+    /// macOS Node/Electron app entries are relative to the executable's `.app`
+    /// bundle (for example `Contents/Resources/app.asar/main/daemon.js`). Other
+    /// supported Node entries are absolute paths. Missing metadata never matches.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub process_entry_points: Vec<String>,
     /// Exact hosts or leading-wildcard suffixes such as `*.openai.com`.
     #[serde(default)]
     pub destination_hosts: Vec<String>,
@@ -110,7 +117,7 @@ pub enum TlsDecryptionPolicyError {
     EmptyRuleId,
     /// A rule did not constrain any source or destination dimension.
     #[error(
-        "TLS decryption rule `{rule_id}` requires destination_hosts, process_names, or application_ids"
+        "TLS decryption rule `{rule_id}` requires destination_hosts, process_names, application_ids, or process_entry_points"
     )]
     EmptySelectors {
         /// Rule id that failed validation.
@@ -127,6 +134,14 @@ pub enum TlsDecryptionPolicyError {
     EmptyApplicationId {
         /// Rule id that failed validation.
         rule_id: String,
+    },
+    /// An entry point was empty or was not a normalized exact path.
+    #[error("TLS decryption rule `{rule_id}` contains invalid process entry point `{entry_point}`")]
+    InvalidProcessEntryPoint {
+        /// Rule containing the invalid selector.
+        rule_id: String,
+        /// Entry point that failed validation.
+        entry_point: String,
     },
     /// A host pattern was malformed.
     #[error("TLS decryption rule `{rule_id}` contains invalid host pattern `{pattern}`: {reason}")]
@@ -195,6 +210,7 @@ impl TlsDecryptionPolicy {
             }
             if rule.process_names.is_empty()
                 && rule.application_ids.is_empty()
+                && rule.process_entry_points.is_empty()
                 && rule.destination_hosts.is_empty()
             {
                 return Err(TlsDecryptionPolicyError::EmptySelectors {
@@ -214,6 +230,14 @@ impl TlsDecryptionPolicy {
                 return Err(TlsDecryptionPolicyError::EmptyApplicationId {
                     rule_id: rule.id.clone(),
                 });
+            }
+            for entry_point in &rule.process_entry_points {
+                if !valid_entry_point(entry_point) {
+                    return Err(TlsDecryptionPolicyError::InvalidProcessEntryPoint {
+                        rule_id: rule.id.clone(),
+                        entry_point: entry_point.clone(),
+                    });
+                }
             }
             for pattern in &rule.destination_hosts {
                 validate_host_pattern(pattern).map_err(|reason| {
@@ -284,8 +308,21 @@ impl TlsDecryptionRule {
         ) && selector_matches(
             &self.application_ids,
             source_process.and_then(|source| source.application_id.as_deref()),
+        ) && selector_matches(
+            &self.process_entry_points,
+            source_process.and_then(|source| source.entry_point.as_deref()),
         ) && destination_selector_matches(&self.destination_hosts, destination_domain)
     }
+}
+
+fn valid_entry_point(value: &str) -> bool {
+    let path = value.strip_prefix('/').unwrap_or(value);
+    !value.trim().is_empty()
+        && !value
+            .chars()
+            .any(|c| c.is_control() || matches!(c, '*' | '?' | '\\'))
+        && (value.starts_with('/') || value.starts_with("Contents/"))
+        && path.split('/').all(|part| !matches!(part, "" | "." | ".."))
 }
 
 impl TlsDecryptionDecision {
@@ -440,6 +477,7 @@ mod tests {
                     action: TlsDecryptionAction::Intercept,
                     process_names: Vec::new(),
                     application_ids: Vec::new(),
+                    process_entry_points: Vec::new(),
                     destination_hosts: vec!["openai.com".to_owned(), "*.openai.com".to_owned()],
                 },
                 TlsDecryptionRule {
@@ -448,6 +486,7 @@ mod tests {
                     action: TlsDecryptionAction::Passthrough,
                     process_names: Vec::new(),
                     application_ids: Vec::new(),
+                    process_entry_points: Vec::new(),
                     destination_hosts: vec!["api.openai.com".to_owned()],
                 },
             ],
@@ -472,6 +511,7 @@ mod tests {
                 action: TlsDecryptionAction::Intercept,
                 process_names: Vec::new(),
                 application_ids: Vec::new(),
+                process_entry_points: Vec::new(),
                 destination_hosts: vec!["*.example.test".to_owned()],
             }],
         };
@@ -518,6 +558,7 @@ mod tests {
                     "com.example.other".to_owned(),
                     "com.openai.codex".to_owned(),
                 ],
+                process_entry_points: Vec::new(),
                 destination_hosts: vec!["openai.com".to_owned(), "*.openai.com".to_owned()],
             }],
         };
@@ -556,6 +597,7 @@ mod tests {
                 action: TlsDecryptionAction::Intercept,
                 process_names: vec!["codex".to_owned()],
                 application_ids: vec!["com.openai.codex".to_owned()],
+                process_entry_points: Vec::new(),
                 destination_hosts: Vec::new(),
             }],
         };
@@ -590,6 +632,7 @@ mod tests {
                 action: TlsDecryptionAction::Intercept,
                 process_names: vec!["codex.exe".to_owned()],
                 application_ids: vec![r"c:\program files\openai\codex.exe".to_owned()],
+                process_entry_points: Vec::new(),
                 destination_hosts: Vec::new(),
             }],
         };
@@ -617,6 +660,7 @@ mod tests {
                 action: TlsDecryptionAction::Intercept,
                 process_names: vec!["codex".to_owned()],
                 application_ids: Vec::new(),
+                process_entry_points: Vec::new(),
                 destination_hosts: Vec::new(),
             }],
         };
@@ -641,6 +685,7 @@ mod tests {
                 action: TlsDecryptionAction::Intercept,
                 process_names: Vec::new(),
                 application_ids: Vec::new(),
+                process_entry_points: Vec::new(),
                 destination_hosts: Vec::new(),
             }],
         };
@@ -706,6 +751,7 @@ mod tests {
             action: TlsDecryptionAction::Intercept,
             process_names: vec![process_name.to_owned()],
             application_ids: Vec::new(),
+            process_entry_points: Vec::new(),
             destination_hosts: Vec::new(),
         }
     }
@@ -713,5 +759,108 @@ mod tests {
     fn source_process(name: Option<&str>, application_id: Option<&str>) -> SourceProcess {
         SourceProcess::new(None, name.map(str::to_owned), None)
             .with_application_id(application_id.map(str::to_owned))
+    }
+
+    #[test]
+    fn entry_point_rules_are_exact_ordered_and_require_all_dimensions() {
+        let policy: TlsDecryptionPolicy = serde_json::from_value(serde_json::json!({
+            "default_action": "intercept",
+            "rules": [{"id":"daemon", "action":"passthrough",
+                "application_ids":["com.example.agent"],
+                "process_entry_points":["Contents/Resources/daemon.js", "Contents/Resources/service.js"]}]
+        })).unwrap();
+        policy.validate().unwrap();
+        for (application, entry, expected) in [
+            (
+                "com.example.agent",
+                Some("Contents/Resources/daemon.js"),
+                TlsDecryptionAction::Passthrough,
+            ),
+            (
+                "com.example.agent",
+                Some("Contents/Resources/service.js"),
+                TlsDecryptionAction::Passthrough,
+            ),
+            (
+                "com.other.agent",
+                Some("Contents/Resources/daemon.js"),
+                TlsDecryptionAction::Intercept,
+            ),
+            (
+                "com.example.agent",
+                Some("Contents/Resources/daemon.js.extra"),
+                TlsDecryptionAction::Intercept,
+            ),
+            (
+                "com.example.agent",
+                Some("Contents/Resources/cli.js"),
+                TlsDecryptionAction::Intercept,
+            ),
+            ("com.example.agent", None, TlsDecryptionAction::Intercept),
+        ] {
+            let source = source_process(Some("Electron"), Some(application))
+                .with_entry_point(entry.map(str::to_owned));
+            assert_eq!(
+                policy
+                    .decide(TlsDecryptionContext::new(
+                        Some("gateway.example"),
+                        Some(&source)
+                    ))
+                    .action(),
+                expected
+            );
+        }
+        assert_eq!(
+            policy.decide(Some("gateway.example")).action(),
+            TlsDecryptionAction::Intercept
+        );
+        let mut disabled = policy;
+        disabled.rules[0].enabled = false;
+        let source = source_process(Some("Electron"), Some("com.example.agent"))
+            .with_entry_point(Some("Contents/Resources/daemon.js".to_owned()));
+        assert_eq!(
+            disabled
+                .decide(TlsDecryptionContext::new(None, Some(&source)))
+                .action(),
+            TlsDecryptionAction::Intercept
+        );
+    }
+
+    #[test]
+    fn entry_point_only_selectors_validate_and_round_trip_without_weakening_paths() {
+        for entry in ["Contents/Resources/My Script.js", "/opt/agent/daemon.js"] {
+            let policy: TlsDecryptionPolicy = serde_json::from_value(serde_json::json!({
+                "rules":[{"id":"entry", "action":"passthrough", "process_entry_points":[entry]}]
+            }))
+            .unwrap();
+            policy.validate().unwrap();
+            assert_eq!(
+                serde_json::to_value(policy).unwrap()["rules"][0]["process_entry_points"][0],
+                entry
+            );
+        }
+        for entry in [
+            "",
+            " ",
+            "daemon.js",
+            "Contents/../daemon.js",
+            "Contents//daemon.js",
+            "Contents/./daemon.js",
+            "Contents/*.js",
+            "Contents/daemon.js/",
+            "/tmp/agent\n.js",
+        ] {
+            let policy: TlsDecryptionPolicy = serde_json::from_value(serde_json::json!({
+                "rules":[{"id":"entry", "action":"passthrough", "process_entry_points":[entry]}]
+            }))
+            .unwrap();
+            assert!(
+                matches!(
+                    policy.validate(),
+                    Err(TlsDecryptionPolicyError::InvalidProcessEntryPoint { .. })
+                ),
+                "invalid entry: {entry:?}"
+            );
+        }
     }
 }

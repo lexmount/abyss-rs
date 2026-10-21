@@ -14,6 +14,8 @@
 
 mod cache;
 #[cfg(target_os = "macos")]
+mod entry_point;
+#[cfg(target_os = "macos")]
 mod macos;
 #[cfg(not(target_os = "macos"))]
 mod unavailable;
@@ -26,6 +28,11 @@ use cache::CachedProcessContextResolver;
 pub trait ProcessContextResolver: Send + Sync {
     /// Returns the source process working directory when the platform exposes it.
     fn working_directory(&self, pid: Option<u32>, pid_version: Option<u32>) -> Option<PathBuf>;
+
+    /// Returns a normalized runtime entry point when it can be identified reliably.
+    fn entry_point(&self, _pid: Option<u32>, _pid_version: Option<u32>) -> Option<String> {
+        None
+    }
 }
 
 /// Shared process-context resolver used across accepted flow tasks.
@@ -36,7 +43,7 @@ pub type SharedProcessContextResolver = Arc<dyn ProcessContextResolver>;
 #[must_use]
 pub fn default_process_context_resolver() -> SharedProcessContextResolver {
     Arc::new(CachedProcessContextResolver::new(
-        macos::MacOsWorkingDirectoryProvider,
+        macos::MacOsProcessContextProvider,
     ))
 }
 
@@ -45,6 +52,6 @@ pub fn default_process_context_resolver() -> SharedProcessContextResolver {
 #[must_use]
 pub fn default_process_context_resolver() -> SharedProcessContextResolver {
     Arc::new(CachedProcessContextResolver::new(
-        unavailable::UnavailableWorkingDirectoryProvider,
+        unavailable::UnavailableProcessContextProvider,
     ))
 }

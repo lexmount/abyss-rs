@@ -440,4 +440,3 @@ fn conversation_header_uses_the_existing_messages_session_chain() {
         AnthropicSessionIdSource::Unattributed
     ));
 }
-

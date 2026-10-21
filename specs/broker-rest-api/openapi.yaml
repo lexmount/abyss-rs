@@ -288,6 +288,12 @@ components:
           items:
             type: string
             minLength: 1
+        process_entry_points:
+          description: Exact normalized entry scripts; macOS app entries are bundle-relative, other supported Node entries are absolute. Missing metadata does not match. No globs.
+          type: array
+          items:
+            type: string
+            minLength: 1
         destination_hosts:
           type: array
           items:

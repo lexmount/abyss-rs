@@ -377,6 +377,8 @@ if rule.get("process_names") != ["codex"]:
     raise SystemExit(f"unexpected process_names: {rule!r}")
 if rule.get("application_ids") != ["com.openai.codex"]:
     raise SystemExit(f"unexpected application_ids: {rule!r}")
+if rule.get("process_entry_points") != ["Contents/Resources/cli.js"]:
+    raise SystemExit(f"unexpected process_entry_points: {rule!r}")
 if rule.get("destination_hosts") != ["api.openai.com"]:
     raise SystemExit(f"unexpected destination_hosts: {rule!r}")
 PY
@@ -537,6 +539,7 @@ cat >"${UPDATE_REQUEST}" <<'EOF'
         "action": "intercept",
         "process_names": ["codex"],
         "application_ids": ["com.openai.codex"],
+        "process_entry_points": ["Contents/Resources/cli.js"],
         "destination_hosts": ["api.openai.com"]
       }
     ]

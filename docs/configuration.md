@@ -208,3 +208,54 @@ Closed Host packages may apply a different ownership lifecycle, but those
 profiles, installers, platform adapter settings, and product update rules are
 owned by the product distribution and service repositories rather than this
 project.
+
+### TLS rules for processes sharing one executable
+
+`mitm.tls_decryption.rules[].process_entry_points` matches normalized runtime
+entry scripts exactly. Like other selectors, values within the array use OR;
+entry points, application IDs, process names, and destination hosts combine with
+AND. The first enabled matching rule wins. Omitted or empty entry-point arrays
+preserve existing behavior. Unavailable metadata does not match a populated
+entry-point selector; evaluation continues to subsequent rules and defaults.
+
+For example, place a background-service bypass before broader gateway intercept
+rules, while the sibling CLI continues to use those intercept rules:
+
+```toml
+[[mitm.tls_decryption.rules]]
+id = "passthrough-agent-background-service"
+enabled = true
+action = "passthrough"
+application_ids = ["com.example.agent"]
+process_entry_points = ["Contents/Resources/app.asar/main/daemon.js"]
+destination_hosts = []
+```
+
+An empty `destination_hosts` array applies to every TLS destination of that
+matched process, including connections without SNI. This is process-level
+selection; it does not select individual HTTP paths within that process.
+
+The macOS framed ingress resolves Node/Electron script entries from native
+process arguments. Scripts in the executable's own `.app` bundle use a
+bundle-relative path beginning with `Contents/`; standalone Node scripts use
+absolute paths. Installation location therefore does not affect bundled entry
+selectors. Matching is case-sensitive, with no regex, glob, or suffix expansion.
+Selectors must be normalized paths: empty components, `.`/`..`, backslashes,
+control characters, and wildcard characters are rejected.
+
+Extraction is conservative: only absolute script arguments in recognized
+Node/Electron launch forms are supported. Eval/print modes, renderer options,
+unknown runtime options, external scripts of bundled executables, relative
+scripts, permissions failures, and exited processes leave entry metadata absent.
+Recognized pre-script options are `--`, `--optimize-for-size`, `--no-warnings`,
+`--enable-source-maps`, and numeric `--max-semi-space-size=` / `--max-old-space-size=`.
+Arguments following the script and environment variables are not retained in
+flow metadata. Entry points appear as `source_process.entry_point` in support
+diagnostics. This metadata describes a process role, not an executable-integrity
+or authorization guarantee; combine it with application identity.
+
+PID incarnation is checked around native reads. Lookups, including unavailable
+results, are cached with the existing per-process TTL when a PID version is
+provided. Unversioned PIDs are not cached for entry matching. Windows and explicit
+proxy ingress currently provide no entry-point metadata and therefore cannot
+match a populated entry-point selector. Existing source/host rules still apply.
