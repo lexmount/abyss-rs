@@ -332,7 +332,7 @@ async fn hook_waits_for_client_shutdown_before_observing_complete_body() {
         .await
         .unwrap()
         .unwrap();
-    assert!(exchange.response.body().bytes().is_empty());
+    assert_eq!(exchange.response.body().bytes(), b"");
     assert!(events.try_recv().is_err());
 }
 
