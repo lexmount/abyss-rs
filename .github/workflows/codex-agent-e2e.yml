@@ -41,8 +41,12 @@ permissions:
 jobs:
   agent-e2e:
     name: Codex agent-driven E2E
-    runs-on: [self-hosted, abyss, Linux, X64]
+    runs-on: ubuntu-latest
     timeout-minutes: 45
+    concurrency:
+      group: abyss-e2e-provider-openai
+      queue: max
+      cancel-in-progress: false
     env:
       ABYSS_AGENT_E2E_MANUAL_SKIP: ${{ (github.event_name == 'pull_request' && contains(github.event.pull_request.labels.*.name, 'skip-agent-e2e')) || (github.event_name == 'workflow_dispatch' && inputs.skip) }}
       ABYSS_AGENT_E2E_FORK_SKIP: ${{ github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name != github.repository }}
@@ -58,7 +62,7 @@ jobs:
           set -euo pipefail
           reason="manual skip requested"
           if [[ "${ABYSS_AGENT_E2E_FORK_SKIP}" == "true" ]]; then
-            reason="fork pull requests cannot use the self-hosted Codex login"
+            reason="fork pull requests cannot use provider API credentials"
           fi
           {
             echo "## Codex agent-driven E2E"
@@ -73,8 +77,35 @@ jobs:
         if: env.ABYSS_AGENT_E2E_MANUAL_SKIP != 'true' && env.ABYSS_AGENT_E2E_FORK_SKIP != 'true'
         uses: actions/checkout@v4
 
+      - name: Set up Rust and build cache
+        if: env.ABYSS_AGENT_E2E_MANUAL_SKIP != 'true' && env.ABYSS_AGENT_E2E_FORK_SKIP != 'true'
+        uses: ./.github/actions/setup-rust
+        with:
+          cache-shared-key: agent-e2e
+
+      - name: Set up client runtime
+        if: env.ABYSS_AGENT_E2E_MANUAL_SKIP != 'true' && env.ABYSS_AGENT_E2E_FORK_SKIP != 'true'
+        uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+
+      - name: Install pinned Codex CLI in job directory
+        if: env.ABYSS_AGENT_E2E_MANUAL_SKIP != 'true' && env.ABYSS_AGENT_E2E_FORK_SKIP != 'true'
+        shell: bash
+        run: |
+          set -euo pipefail
+          tools_dir="$RUNNER_TEMP/abyss-agent-e2e-tools-$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT"
+          npm install --prefix "$tools_dir" --no-audit --no-fund @openai/codex@0.163.0
+          echo "$tools_dir/node_modules/.bin" >> "$GITHUB_PATH"
+
+      - name: Set up Codex Linux sandbox
+        if: env.ABYSS_AGENT_E2E_MANUAL_SKIP != 'true' && env.ABYSS_AGENT_E2E_FORK_SKIP != 'true'
+        uses: ./.github/actions/setup-codex-sandbox
+
       - name: Validate runner prerequisites
         if: env.ABYSS_AGENT_E2E_MANUAL_SKIP != 'true' && env.ABYSS_AGENT_E2E_FORK_SKIP != 'true'
+        env:
+          CODEX_API_KEY: ${{ secrets.CODEX_API_KEY }}
         run: python3 -m scripts.agent_e2e_ci preflight
 
       - name: Test CI orchestration contracts
@@ -84,6 +115,7 @@ jobs:
       - name: Run agent-driven E2E
         if: env.ABYSS_AGENT_E2E_MANUAL_SKIP != 'true' && env.ABYSS_AGENT_E2E_FORK_SKIP != 'true'
         env:
+          CODEX_API_KEY: ${{ secrets.CODEX_API_KEY }}
           ABYSS_AGENT_E2E_RUNTIME_ROOT: ${{ runner.temp }}/abyss-agent-e2e-${{ github.run_id }}-${{ github.run_attempt }}
         run: python3 -m scripts.agent_e2e_ci run
 
