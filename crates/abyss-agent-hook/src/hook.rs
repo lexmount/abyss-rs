@@ -178,6 +178,15 @@ where
 
     fn on_http_exchange<'a>(&'a self, exchange: &'a HttpExchange) -> HookFuture<'a> {
         let events = self.http_events(exchange);
+        tracing::info!(
+            flow_id = ?exchange.flow.flow_id,
+            path = %exchange.request.uri().path(),
+            request_bytes = exchange.request.body().bytes().len(),
+            response_bytes = exchange.response.body().bytes().len(),
+            response_status = %exchange.response.status(),
+            event_count = events.len(),
+            "TEMP DSH diagnosis: exchange normalized"
+        );
         Box::pin(async move {
             self.delivery
                 .deliver(events)

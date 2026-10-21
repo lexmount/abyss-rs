@@ -55,6 +55,13 @@ impl AgentEventSink for PluginEventBroadcaster {
     type Error = Infallible;
 
     fn publish(&self, event: AgentEvent) -> impl Future<Output = Result<(), Self::Error>> + Send {
+        tracing::info!(
+            event_id = %event.event_id,
+            response_id = ?event.response_id,
+            side = ?event.side,
+            receivers = self.sender.receiver_count(),
+            "TEMP DSH diagnosis: publishing event"
+        );
         // A live stream intentionally drops events when there are no receivers.
         drop(self.sender.send(Arc::new(event)));
         std::future::ready(Ok(()))

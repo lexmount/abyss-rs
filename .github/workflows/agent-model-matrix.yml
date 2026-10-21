@@ -123,7 +123,18 @@ jobs:
           CLAUDE_CODE_BASE_URL: ${{ matrix.provider == 'anthropic' && secrets.CLAUDE_CODE_BASE_URL || '' }}
           MATRIX_CASE: ${{ matrix.id }}
           ABYSS_AGENT_E2E_RUNTIME_ROOT: ${{ runner.temp }}/abyss-matrix-${{ github.run_id }}-${{ github.run_attempt }}-${{ matrix.id }}
-        run: python3 -m scripts.agent_matrix_ci run --case "$MATRIX_CASE"
+        shell: bash
+        run: |
+          set -uo pipefail
+          diagnostic_root="$ABYSS_AGENT_E2E_RUNTIME_ROOT"
+          for attempt in 1 2 3 4 5; do
+            export ABYSS_AGENT_E2E_RUNTIME_ROOT="$diagnostic_root/attempt-$attempt"
+            python3 -m scripts.agent_matrix_ci run --case "$MATRIX_CASE"
+            result=$?
+            mkdir -p "$diagnostic_root/artifacts/attempt-$attempt"
+            cp "$ABYSS_AGENT_E2E_RUNTIME_ROOT"/artifacts/*.json "$diagnostic_root/artifacts/attempt-$attempt/"
+            if [[ "$result" != 0 ]]; then exit "$result"; fi
+          done
       - name: Upload sanitized cell evidence
         if: always()
         uses: actions/upload-artifact@v4
@@ -136,7 +147,7 @@ jobs:
   result:
     name: Result ${{ inputs.harness }}
     needs: [plan, matrix]
-    if: always() && needs.plan.outputs.enabled == 'true'
+    if: ${{ false }}
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4

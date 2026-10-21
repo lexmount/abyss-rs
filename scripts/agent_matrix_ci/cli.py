@@ -54,6 +54,7 @@ class MatrixApplication:
         )
         redactor = SecretRedactor(self.key, stack.native_token, *self.endpoint_secrets)
         report = {"status": "error", "case": self.case.as_dict()}
+        diagnostic = {}
         old_handler = signal.getsignal(signal.SIGTERM)
         signal.signal(signal.SIGTERM, self._terminate)
         try:
@@ -82,6 +83,7 @@ class MatrixApplication:
                 "Do not edit any files, use the network, or read anything outside this workspace."
             )
             result = self._run_client(client, workspace, stack, prompt)
+            diagnostic["native_stdout"] = result.stdout
             report["process"] = {
                 "exit_code": result.returncode,
                 "timed_out": result.timed_out,
@@ -121,6 +123,17 @@ class MatrixApplication:
         except Exception as error:
             report.update(status="error", error=f"{type(error).__name__}: {error}")
         finally:
+            if stack.broker_token:
+                for name, route in (
+                    ("broker_diagnostics", "/v1/support/diagnostics"),
+                    ("network_observations", "/v1/network/observations?limit=100"),
+                ):
+                    try:
+                        diagnostic[name] = self.http.json(
+                            stack.broker_base_url + route, bearer=stack.broker_token
+                        )
+                    except Exception as error:
+                        diagnostic[name] = {"error": str(error)}
             try:
                 stack.stop()
             except Exception as error:
@@ -132,6 +145,16 @@ class MatrixApplication:
         # Also write preflight/missing-secret failures. Never overwrite an
         # existing runtime: the CLI rejects it before constructing a stack.
         self.config.artifact_root.mkdir(mode=0o700, parents=True, exist_ok=True)
+        diagnostic["service_logs"] = {
+            str(path.relative_to(self.config.runtime_root)): path.read_text(
+                encoding="utf-8", errors="replace"
+            )[-1_000_000:]
+            for path in (self.config.runtime_root / "logs").rglob("*")
+            if path.is_file()
+        }
+        (self.config.artifact_root / "diagnostic.json").write_text(
+            redactor.document(diagnostic), encoding="utf-8"
+        )
         path = self.config.artifact_root / "result.json"
         artifact = json.loads(redactor.document(report))
         # Restore only the public plan identity after redaction, including when
