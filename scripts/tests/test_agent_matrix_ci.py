@@ -584,7 +584,10 @@ class MatrixCliBlackboxTests(unittest.TestCase):
         self.assertIn("if: needs.plan.outputs.enabled == 'true'", workflow)
         self.assertNotIn("pull_request_target", workflow)
         self.assertNotIn("login", workflow)
-        self.assertIn("max-parallel: 8", workflow)
+        self.assertIn("max-parallel: ${{ inputs.max-parallel }}", workflow)
+        self.assertIn("workflow_call:", workflow)
+        self.assertNotIn("workflow_dispatch:", workflow)
+        self.assertNotIn("concurrency:", workflow)
         self.assertNotIn("self-hosted", workflow)
         self.assertIn("uses: ./.github/actions/setup-rust", workflow)
         self.assertIn("cache-shared-key: agent-e2e", workflow)
@@ -598,6 +601,37 @@ class MatrixCliBlackboxTests(unittest.TestCase):
         self.assertIn("@openai/codex@0.163.0", workflow)
         self.assertIn("@anthropic-ai/claude-code@2.1.206", workflow)
         self.assertIn("@deepseek-ai/dsh@0.2.0-rc.2", workflow)
+
+    def test_harness_workflows_partition_the_complete_matrix(self):
+        catalog = MatrixCatalog()
+        planned_ids = []
+        groups = (
+            ("codex", "codex", 7, 2),
+            ("claude-code", "claude-code", 6, 2),
+            ("dsh", "deepseek-harness", 19, 4),
+        )
+        for stem, harness, count, parallel in groups:
+            with self.subTest(harness=harness):
+                workflow = (
+                    ROOT / f".github/workflows/{stem}-model-matrix.yml"
+                ).read_text()
+                self.assertIn("pull_request:", workflow)
+                self.assertIn("workflow_dispatch:", workflow)
+                self.assertNotIn("pull_request_target", workflow)
+                self.assertIn(
+                    "uses: ./.github/workflows/agent-model-matrix.yml", workflow
+                )
+                self.assertIn(f"harness: {harness}\n", workflow)
+                self.assertIn(f"max-parallel: {parallel}\n", workflow)
+                self.assertIn("group: ${{ github.workflow }}-", workflow)
+                self.assertIn("secrets: inherit", workflow)
+                for field in ("provider", "protocol", "model"):
+                    self.assertIn(f"{field}: ${{{{ inputs.{field} || '' }}}}", workflow)
+                cases = catalog.cases(harness=harness)
+                self.assertEqual(len(cases), count)
+                planned_ids.extend(c.id for c in cases)
+        self.assertCountEqual(planned_ids, [c.id for c in catalog.cases()])
+        self.assertEqual(sum(parallel for _, _, _, parallel in groups), 8)
 
     def test_secret_redaction_in_nested_artifacts(self):
         result = SecretRedactor("api-secret", "broker-secret").document(

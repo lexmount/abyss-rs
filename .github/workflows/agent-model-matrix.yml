@@ -1,13 +1,11 @@
-name: Headless Harness Model Matrix
+name: Shared Headless Model Matrix
 
 on:
-  pull_request:
-    branches: [main]
-    types: [opened, synchronize, reopened, labeled, unlabeled]
-  workflow_dispatch:
+  workflow_call:
     inputs:
       harness:
-        description: Optional harness filter (codex, claude-code, deepseek-harness)
+        description: Harness selected by the calling workflow
+        required: true
         type: string
       provider:
         description: Optional provider filter (openai, anthropic, deepseek, glm, kimi, qwen)
@@ -18,13 +16,13 @@ on:
       model:
         description: Optional exact model filter
         type: string
+      max-parallel:
+        description: Concurrent cells allocated to this harness group
+        required: true
+        type: number
 
 permissions:
   contents: read
-
-concurrency:
-  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
-  cancel-in-progress: true
 
 env:
   ABYSS_E2E_MODELS: ${{ vars.ABYSS_E2E_MODELS }}
@@ -32,6 +30,7 @@ env:
 
 jobs:
   plan:
+    name: Plan ${{ inputs.harness }}
     runs-on: ubuntu-latest
     outputs:
       matrix: ${{ steps.plan.outputs.matrix }}
@@ -72,7 +71,7 @@ jobs:
     timeout-minutes: 45
     strategy:
       fail-fast: false
-      max-parallel: 8
+      max-parallel: ${{ inputs.max-parallel }}
       matrix: ${{ fromJSON(needs.plan.outputs.matrix) }}
     env:
       ABYSS_AGENT_E2E_RUN_ID: matrix-${{ github.run_id }}-${{ github.run_attempt }}-${{ matrix.id }}
@@ -122,6 +121,7 @@ jobs:
           retention-days: 14
 
   result:
+    name: Result ${{ inputs.harness }}
     needs: [plan, matrix]
     if: always() && needs.plan.outputs.enabled == 'true'
     runs-on: ubuntu-latest

@@ -1,9 +1,20 @@
 # Headless harness × model CI
 
-`.github/workflows/agent-model-matrix.yml` runs real Codex CLI, Claude Code
-`--print`, and DSH headless clients through the current checkout's broker and
-delivery plugin into a fresh, digest-pinned Backend and PostgreSQL. It shares
+Three independent Actions workflows run real Codex CLI, Claude Code `--print`,
+and DSH headless clients through the current checkout's broker and
+delivery plugin into a fresh, digest-pinned Backend and PostgreSQL. They share
 `scripts.agent_e2e_ci`'s stack lifecycle and subprocess handling.
+
+| Workflow | Default cells | Concurrent cells |
+| --- | ---: | ---: |
+| [Codex Model Matrix](../../.github/workflows/codex-model-matrix.yml) | 7 | 2 |
+| [Claude Code Model Matrix](../../.github/workflows/claude-code-model-matrix.yml) | 6 | 2 |
+| [DSH Model Matrix](../../.github/workflows/dsh-model-matrix.yml) | 19 | 4 |
+
+Each group has its own run, per-cell checks, artifacts and required aggregation.
+Select the harness's workflow in Actions to inspect or rerun only that group.
+All three call [the shared execution workflow](../../.github/workflows/agent-model-matrix.yml)
+so client installation, assertions and credential handling stay consistent.
 
 The default matrix has **32 cells, 16 harness/provider combinations, and 25
 harness/provider/protocol routes**. Each model in a route is tested separately.
@@ -123,10 +134,11 @@ that also works for text-only models, without requiring an extra judge API call
 for each cell. Both workflows use API keys in GitHub, not a runner subscription
 login. Local legacy Codex runs without the key environment retain login support.
 
-The workflow runs on same-repository PRs and manual dispatch. Manual inputs
-filter harness, provider, protocol, or exact model; unmatched filters fail.
-`fail-fast: false` preserves remaining results, with concurrency capped at eight.
-The final aggregation requires an artifact and PASS from **every planned cell**;
+All three workflows run on same-repository PRs and manual dispatch. Select the
+harness's workflow, then optionally filter provider, protocol or exact model;
+unmatched filters fail. `fail-fast: false` preserves remaining results. The
+groups share a total concurrency budget of eight cells per PR run (2 + 2 + 4).
+Each group's final aggregation requires an artifact and PASS from **every planned cell**;
 missing artifacts, failed clients, 429s, unavailable models, and mismatches all
 fail. The `skip-agent-e2e` label records a deliberate whole-matrix skip. Forks
 run credential-free contracts on GitHub-hosted runners and never start the
