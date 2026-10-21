@@ -101,6 +101,7 @@ jobs:
       - name: Run real headless client through Abyss
         env:
           ABYSS_MATRIX_API_KEY: ${{ secrets[matrix.secret] }}
+          CLAUDE_CODE_BASE_URL: ${{ matrix.provider == 'anthropic' && secrets.CLAUDE_CODE_BASE_URL || '' }}
           MATRIX_CASE: ${{ matrix.id }}
           ABYSS_AGENT_E2E_RUNTIME_ROOT: ${{ runner.temp }}/abyss-matrix-${{ github.run_id }}-${{ github.run_attempt }}-${{ matrix.id }}
         run: python3 -m scripts.agent_matrix_ci run --case "$MATRIX_CASE"

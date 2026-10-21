@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import copy
+import io
 import json
 import os
 import subprocess
@@ -18,6 +19,7 @@ from scripts.agent_e2e_ci.codex import CodexOrchestrator
 from scripts.agent_e2e_ci.preflight import RunnerPreflight, REQUIRED_CODEX_EXEC_OPTIONS
 from scripts.agent_e2e_ci.process import CommandRunner, OrchestrationError
 from scripts.agent_matrix_ci.catalog import HARNESS_PROTOCOLS, MatrixCatalog
+from scripts.agent_matrix_ci.cli import MatrixApplication, summarize
 from scripts.agent_matrix_ci.clients import HeadlessClient
 from scripts.agent_matrix_ci.transcript import Transcript
 from scripts.agent_matrix_ci.verification import MatrixVerifier, SecretRedactor
@@ -45,13 +47,21 @@ class CatalogTests(unittest.TestCase):
 
     def test_complete_supported_cross_product(self):
         cases = MatrixCatalog().cases()
+        expected_secrets = {
+            "openai": "CODEX_API_KEY",
+            "anthropic": "CLAUDE_CODE_API_KEY",
+            "deepseek": "ABYSS_E2E_DEEPSEEK_API_KEY",
+            "glm": "ABYSS_E2E_GLM_API_KEY",
+            "kimi": "ABYSS_E2E_KIMI_API_KEY",
+            "qwen": "ABYSS_E2E_QWEN_API_KEY",
+        }
         self.assertEqual(len(cases), 32)
         self.assertEqual(len({c.id for c in cases}), len(cases))
         self.assertEqual(len({(c.harness, c.provider) for c in cases}), 16)
         for c in cases:
             self.assertIn(c.protocol, HARNESS_PROTOCOLS[c.harness])
             self.assertNotIn(c.harness, ("claude-desktop", "dsh-tui", "dsh-web"))
-            self.assertEqual(c.secret, f"ABYSS_E2E_{c.provider.upper()}_API_KEY")
+            self.assertEqual(c.secret, expected_secrets[c.provider])
         self.assertEqual(
             {c.provider for c in cases if c.harness == "codex"},
             {"openai", "deepseek", "glm", "kimi", "qwen"},
@@ -110,6 +120,70 @@ class CatalogTests(unittest.TestCase):
 
 
 class ClientTests(unittest.TestCase):
+    def test_runtime_relay_routes_both_anthropic_clients_only(self):
+        endpoint = "https://private-relay.example/anthropic/"
+        with tempfile.TemporaryDirectory() as root:
+            workspace = Path(root) / "workspace"
+            workspace.mkdir()
+            stack = SimpleNamespace(
+                proxy_url="http://127.0.0.1:1234", ca_certificate=Path(root) / "ca.pem"
+            )
+            for case in MatrixCatalog().cases():
+                app = MatrixApplication(case, None, "fixture-key", endpoint=endpoint)
+                with self.subTest(case=case.id):
+                    self.assertEqual(app.planned_case, case)
+                    if case.provider != "anthropic":
+                        self.assertEqual(app.case, case)
+                        self.assertFalse(app.endpoint_secrets)
+                        continue
+                    self.assertEqual(app.case.event_provider, "private-relay.example")
+                    self.assertEqual(app.case.base_url, endpoint.rstrip("/"))
+                    client = HeadlessClient(app.case, CommandRunner())
+                    _, env = client.invocation(workspace, stack, "fixture-key")
+                    if case.harness == "claude-code":
+                        self.assertEqual(env["ANTHROPIC_BASE_URL"], app.case.base_url)
+                    else:
+                        self.assertEqual(
+                            client.dsh_patch()[-1]["config"]["baseURL"],
+                            app.case.base_url,
+                        )
+
+    def test_runtime_relay_errors_are_redacted_and_keep_plan_identity(self):
+        endpoint = "https://private-relay.example/anthropic"
+        case = MatrixCatalog().cases(provider="anthropic")[0]
+        with tempfile.TemporaryDirectory() as root:
+            runtime = Path(root) / "runtime"
+            config = SimpleNamespace(
+                run_id="fixture",
+                runtime_root=runtime,
+                artifact_root=runtime / "artifacts",
+            )
+            app = MatrixApplication(case, config, "fixture-key", endpoint=endpoint)
+            with (
+                patch("scripts.agent_matrix_ci.cli.TestStack") as stack,
+                patch.object(
+                    HeadlessClient,
+                    "preflight",
+                    side_effect=OrchestrationError(
+                        f"failed {endpoint}: private-relay.example fixture-key"
+                    ),
+                ),
+                patch("sys.stdout", new_callable=io.StringIO) as output,
+            ):
+                stack.return_value.native_token = "fixture-native-token"
+                self.assertEqual(app.run(), 1)
+                self.assertEqual(
+                    stack.call_args.kwargs["interception_hosts"],
+                    ("private-relay.example",),
+                )
+                report = json.loads((config.artifact_root / "result.json").read_text())
+                self.assertEqual(report["case"], case.as_dict())
+                self.assertEqual(report["endpoint_source"], "CLAUDE_CODE_BASE_URL")
+                self.assertEqual(summarize([case.as_dict()], config.artifact_root), 1)
+                for secret in (endpoint, "private-relay.example", "fixture-key"):
+                    self.assertNotIn(secret, json.dumps(report))
+                    self.assertNotIn(secret, output.getvalue())
+
     def test_existing_codex_workflow_accepts_key_without_login(self):
         class Commands:
             def __init__(self):
@@ -125,7 +199,7 @@ class ClientTests(unittest.TestCase):
 
         commands = Commands()
         with (
-            patch.dict(os.environ, {"ABYSS_E2E_OPENAI_API_KEY": "fixture-key"}),
+            patch.dict(os.environ, {"CODEX_API_KEY": "fixture-key"}),
             patch(
                 "scripts.agent_e2e_ci.preflight.platform.system", return_value="Linux"
             ),
@@ -136,9 +210,9 @@ class ClientTests(unittest.TestCase):
             RunnerPreflight(commands).run()
             args = CodexOrchestrator._api_provider_arguments()
             self.assertNotIn("fixture-key", json.dumps(args))
-            self.assertIn("ABYSS_E2E_OPENAI_API_KEY", json.dumps(args))
+            self.assertIn("CODEX_API_KEY", json.dumps(args))
         self.assertNotIn(["codex", "login", "status"], commands.calls)
-        with patch.dict(os.environ, {"ABYSS_E2E_OPENAI_API_KEY": ""}):
+        with patch.dict(os.environ, {"CODEX_API_KEY": ""}):
             with self.assertRaises(OrchestrationError):
                 CodexOrchestrator._api_provider_arguments()
 
@@ -442,26 +516,40 @@ class MatrixCliBlackboxTests(unittest.TestCase):
         )
 
     def test_plan_and_invalid_filter(self):
-        result = self.command("plan", "--harness", "claude-code")
+        result = self.command(
+            "plan",
+            "--harness",
+            "claude-code",
+            env={"CLAUDE_CODE_BASE_URL": "https://private-relay.example/anthropic"},
+        )
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertEqual(len(json.loads(result.stdout)["include"]), 6)
+        self.assertNotIn("private-relay.example", result.stdout + result.stderr)
         self.assertNotEqual(self.command("plan", "--provider", "typo").returncode, 0)
 
     def test_missing_secret_creates_failure_artifact_without_tools_or_login(self):
-        case = MatrixCatalog().cases()[0]
-        with tempfile.TemporaryDirectory() as root:
-            runtime = Path(root) / "run"
-            result = self.command(
-                "run",
-                "--case",
-                case.id,
-                env={"ABYSS_AGENT_E2E_RUNTIME_ROOT": str(runtime)},
-            )
-            self.assertEqual(result.returncode, 1, result.stderr)
-            report = json.loads((runtime / "artifacts/result.json").read_text())
-            self.assertEqual(report["status"], "error")
-            self.assertIn(case.secret, report["error"])
-            self.assertFalse((runtime / "ca").exists())
+        cases = [
+            MatrixCatalog().cases()[0],
+            MatrixCatalog().cases(provider="anthropic")[0],
+        ]
+        for case in cases:
+            with self.subTest(case=case.id), tempfile.TemporaryDirectory() as root:
+                runtime = Path(root) / "run"
+                result = self.command(
+                    "run",
+                    "--case",
+                    case.id,
+                    env={
+                        "ABYSS_AGENT_E2E_RUNTIME_ROOT": str(runtime),
+                        "CLAUDE_CODE_BASE_URL": "https://api.anthropic.com",
+                    },
+                )
+                self.assertEqual(result.returncode, 1, result.stderr)
+                report = json.loads((runtime / "artifacts/result.json").read_text())
+                self.assertEqual(report["status"], "error")
+                self.assertEqual(report["case"], case.as_dict())
+                self.assertIn(case.secret, report["error"])
+                self.assertFalse((runtime / "ca").exists())
 
     def test_aggregate_requires_all_planned_cells(self):
         cases = [
@@ -490,6 +578,9 @@ class MatrixCliBlackboxTests(unittest.TestCase):
         workflow = (ROOT / ".github/workflows/agent-model-matrix.yml").read_text()
         self.assertIn("fail-fast: false", workflow)
         self.assertIn("secrets[matrix.secret]", workflow)
+        self.assertIn(
+            "matrix.provider == 'anthropic' && secrets.CLAUDE_CODE_BASE_URL", workflow
+        )
         self.assertIn("if: needs.plan.outputs.enabled == 'true'", workflow)
         self.assertNotIn("pull_request_target", workflow)
         self.assertNotIn("login", workflow)

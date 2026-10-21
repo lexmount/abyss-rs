@@ -28,8 +28,16 @@ from .verification import MatrixVerifier, SecretRedactor
 
 
 class MatrixApplication:
-    def __init__(self, case: MatrixCase, config: RuntimeConfig, key: str) -> None:
+    def __init__(
+        self, case: MatrixCase, config: RuntimeConfig, key: str, *, endpoint: str = ""
+    ) -> None:
         self.case, self.config, self.key = case, config, key
+        self.planned_case = case
+        self.endpoint_secrets: tuple[str, ...] = ()
+        if endpoint and case.provider == "anthropic":
+            MatrixCatalog.validate_url(endpoint)
+            self.case = replace(case, base_url=endpoint.rstrip("/"))
+            self.endpoint_secrets = (endpoint, self.case.base_url, self.case.host)
         self.commands = CommandRunner()
         self.http = LoopbackHttpClient()
 
@@ -43,7 +51,7 @@ class MatrixApplication:
             harness_id=self.case.harness,
             interception_hosts=(self.case.host,),
         )
-        redactor = SecretRedactor(self.key, stack.native_token)
+        redactor = SecretRedactor(self.key, stack.native_token, *self.endpoint_secrets)
         report = {"status": "error", "case": self.case.as_dict()}
         old_handler = signal.getsignal(signal.SIGTERM)
         signal.signal(signal.SIGTERM, self._terminate)
@@ -56,7 +64,9 @@ class MatrixApplication:
             versions = client.preflight()
             print(f"matrix: starting {self.case.id}", flush=True)
             stack.start()
-            redactor = SecretRedactor(self.key, stack.native_token, stack.broker_token)
+            redactor = SecretRedactor(
+                self.key, stack.native_token, stack.broker_token, *self.endpoint_secrets
+            )
             workspace = self.config.runtime_root / "workspace"
             workspace.mkdir(mode=0o700)
             nonce = "OBSERVED_" + secrets.token_hex(16)
@@ -126,11 +136,20 @@ class MatrixApplication:
                 report.update(status="error", cleanup_error=str(error))
             signal.signal(signal.SIGTERM, old_handler)
         report["run_id"] = self.config.run_id
+        if self.endpoint_secrets:
+            report["endpoint_source"] = "CLAUDE_CODE_BASE_URL"
         # Also write preflight/missing-secret failures. Never overwrite an
         # existing runtime: the CLI rejects it before constructing a stack.
         self.config.artifact_root.mkdir(mode=0o700, parents=True, exist_ok=True)
         path = self.config.artifact_root / "result.json"
-        path.write_text(redactor.document(report), encoding="utf-8")
+        artifact = json.loads(redactor.document(report))
+        # Restore only the public plan identity after redaction, including when
+        # the secret endpoint happens to equal the public default. Runtime
+        # provider assertions above still use the effective relay hostname.
+        artifact["case"] = self.planned_case.as_dict()
+        path.write_text(
+            json.dumps(artifact, ensure_ascii=False, indent=2) + "\n", encoding="utf-8"
+        )
         summary = f"{self.case.id}: {report['status'].upper()}"
         if report.get("failed_checks"):
             summary += " (" + ", ".join(report["failed_checks"]) + ")"
@@ -245,13 +264,14 @@ def main(arguments: list[str] | None = None) -> int:
         if len(selected) != 1:
             raise ContractError("--case must identify exactly one planned matrix case")
         key = os.environ.pop("ABYSS_MATRIX_API_KEY", "")
+        endpoint = os.environ.pop("CLAUDE_CODE_BASE_URL", "")
         config = RuntimeConfig.from_environment()
         # Add the cell hash to Docker names even when a local caller only supplies
         # a workflow run ID. GitHub also gives each cell a distinct runtime path.
         config = replace(config, run_id=selected[0].resource_id(config.run_id))
         if config.runtime_root.exists():
             raise ContractError("runtime root already exists; use a fresh path")
-        return MatrixApplication(selected[0], config, key).run()
+        return MatrixApplication(selected[0], config, key, endpoint=endpoint).run()
     except (ContractError, OrchestrationError, OSError, ValueError, KeyError) as error:
         print(f"matrix: {error}", file=sys.stderr)
         return 2

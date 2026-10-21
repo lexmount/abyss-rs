@@ -29,19 +29,31 @@ explicitly supports Codex. Other provider paths follow the repository's
 ## GitHub configuration
 
 Set these **repository Actions Secrets** (Settings → Secrets and variables →
-Actions → Secrets). Values are raw provider API keys, without `Bearer `:
+Actions → Secrets). API key values are raw keys, without `Bearer `:
 
 | Secret | Credential |
 | --- | --- |
-| `ABYSS_E2E_OPENAI_API_KEY` | OpenAI API key; also used by the existing randomized Codex CI |
-| `ABYSS_E2E_ANTHROPIC_API_KEY` | Anthropic API key, or the Messages gateway key when overriding its endpoint |
+| `CODEX_API_KEY` | OpenAI API key; also used by the existing randomized Codex CI |
+| `CLAUDE_CODE_API_KEY` | Anthropic API key, or the Messages gateway key when overriding its endpoint |
+| `CLAUDE_CODE_BASE_URL` | Optional Anthropic Messages API root; reuses the existing Claude Code relay configuration |
 | `ABYSS_E2E_DEEPSEEK_API_KEY` | DeepSeek API key |
 | `ABYSS_E2E_GLM_API_KEY` | GLM general API key for `open.bigmodel.cn` |
 | `ABYSS_E2E_KIMI_API_KEY` | Moonshot API key for `api.moonshot.cn` |
 | `ABYSS_E2E_QWEN_API_KEY` | General Beijing-region Model Studio key for `dashscope.aliyuncs.com` |
 
+`CODEX_API_KEY`, `CLAUDE_CODE_API_KEY`, and `CLAUDE_CODE_BASE_URL` reuse the
+existing black-box workflows' Secrets. No additional OpenAI or Anthropic key
+Secrets are needed. The relay URL applies to both Claude Code and DSH's
+Anthropic cells. It is read only at run time and takes precedence over the
+Anthropic `ABYSS_E2E_ENDPOINTS` override; when empty, the configured public
+endpoint (or `https://api.anthropic.com` by default) is used. Planning and
+aggregation do not receive this Secret. The uploaded case retains the public
+plan identity, records `endpoint_source: CLAUDE_CODE_BASE_URL`, and redacts the
+runtime relay URL/hostname. Provider assertions use the actual relay hostname.
+
 Each cell receives **only its selected provider's secret**, only in the run
-step. It is passed to the client environment, never command-line arguments,
+step (plus the relay URL for Anthropic cells). The API key is passed to the
+client environment, never command-line arguments,
 client configuration files, or workflow outputs. Uploads contain sanitized
 comparison evidence only; raw service logs and CA/private configuration stay
 outside `artifacts/`. Missing credentials fail with the exact secret name and

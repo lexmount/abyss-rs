@@ -63,6 +63,14 @@ HARNESS_PROTOCOLS = {
     "claude-code": ("messages",),
     "deepseek-harness": ("responses", "chat", "messages"),
 }
+PROVIDER_SECRETS = {
+    "openai": "CODEX_API_KEY",
+    "anthropic": "CLAUDE_CODE_API_KEY",
+    "deepseek": "ABYSS_E2E_DEEPSEEK_API_KEY",
+    "glm": "ABYSS_E2E_GLM_API_KEY",
+    "kimi": "ABYSS_E2E_KIMI_API_KEY",
+    "qwen": "ABYSS_E2E_QWEN_API_KEY",
+}
 
 
 @dataclass(frozen=True)
@@ -135,11 +143,11 @@ class MatrixCatalog:
                     ):
                         raise ContractError("invalid model identifier")
                 else:
-                    MatrixCatalog._validate_url(value)
+                    MatrixCatalog.validate_url(value)
         return values
 
     @staticmethod
-    def _validate_url(value: str) -> None:
+    def validate_url(value: str) -> None:
         if not isinstance(value, str):
             raise ContractError("endpoint must be an HTTPS URL")
         parsed = urlsplit(value)
@@ -199,7 +207,7 @@ class MatrixCatalog:
                                 dialect,
                                 selected_model,
                                 url,
-                                f"ABYSS_E2E_{service.upper()}_API_KEY",
+                                PROVIDER_SECRETS[service],
                             )
                         )
         if not result:

@@ -69,11 +69,9 @@ class RunnerPreflight:
                 detail = docker_info.stderr.strip() or docker_info.stdout.strip()
                 issues.append(f"Docker broker is unavailable: {detail[-1_000:]}")
         if "codex" not in missing:
-            if "ABYSS_E2E_OPENAI_API_KEY" in os.environ:
-                if not os.environ["ABYSS_E2E_OPENAI_API_KEY"].strip():
-                    issues.append(
-                        "required GitHub secret ABYSS_E2E_OPENAI_API_KEY is empty"
-                    )
+            if "CODEX_API_KEY" in os.environ:
+                if not os.environ["CODEX_API_KEY"].strip():
+                    issues.append("required GitHub secret CODEX_API_KEY is empty")
             else:
                 login = self.commands.run(
                     ["codex", "login", "status"],

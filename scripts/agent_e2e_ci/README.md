@@ -3,7 +3,7 @@
 The complementary [headless harness × model matrix](../agent_matrix_ci/README.md)
 covers Codex, Claude Code and DSH across provider protocols. Both GitHub
 workflows use repository API Secrets; this workflow uses
-`ABYSS_E2E_OPENAI_API_KEY` for all three Codex phases. No runner login is needed
+`CODEX_API_KEY` for all three Codex phases. No runner login is needed
 when that key is supplied; local runs can still use an existing login when the
 environment variable is absent.
 
@@ -72,7 +72,7 @@ these preinstalled commands:
 - `cargo` and the repository's Rust toolchain/dependency cache;
 - `docker` with permission to use a running broker;
 - `openssl`;
-- `codex`, with `ABYSS_E2E_OPENAI_API_KEY` supplied by GitHub (or an existing
+- `codex`, with `CODEX_API_KEY` supplied by GitHub (or an existing
   service-account login for local runs without that variable).
 
 The installed Codex CLI must support `exec --json`, `--image`, `--ephemeral`,

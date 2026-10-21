@@ -251,17 +251,15 @@ class CodexOrchestrator:
 
     @staticmethod
     def _api_provider_arguments() -> list[str]:
-        if "ABYSS_E2E_OPENAI_API_KEY" not in os.environ:
+        if "CODEX_API_KEY" not in os.environ:
             return []
-        if not os.environ["ABYSS_E2E_OPENAI_API_KEY"].strip():
-            raise OrchestrationError(
-                "required GitHub secret ABYSS_E2E_OPENAI_API_KEY is empty"
-            )
+        if not os.environ["CODEX_API_KEY"].strip():
+            raise OrchestrationError("required GitHub secret CODEX_API_KEY is empty")
         return [
             "-c",
             'model_provider="ci_openai"',
             "-c",
-            'model_providers.ci_openai={name="OpenAI",base_url="https://api.openai.com/v1",env_key="ABYSS_E2E_OPENAI_API_KEY",wire_api="responses"}',
+            'model_providers.ci_openai={name="OpenAI",base_url="https://api.openai.com/v1",env_key="CODEX_API_KEY",wire_api="responses"}',
         ]
 
     @staticmethod

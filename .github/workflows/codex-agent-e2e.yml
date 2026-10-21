@@ -76,7 +76,7 @@ jobs:
       - name: Validate runner prerequisites
         if: env.ABYSS_AGENT_E2E_MANUAL_SKIP != 'true' && env.ABYSS_AGENT_E2E_FORK_SKIP != 'true'
         env:
-          ABYSS_E2E_OPENAI_API_KEY: ${{ secrets.ABYSS_E2E_OPENAI_API_KEY }}
+          CODEX_API_KEY: ${{ secrets.CODEX_API_KEY }}
         run: python3 -m scripts.agent_e2e_ci preflight
 
       - name: Test CI orchestration contracts
@@ -86,7 +86,7 @@ jobs:
       - name: Run agent-driven E2E
         if: env.ABYSS_AGENT_E2E_MANUAL_SKIP != 'true' && env.ABYSS_AGENT_E2E_FORK_SKIP != 'true'
         env:
-          ABYSS_E2E_OPENAI_API_KEY: ${{ secrets.ABYSS_E2E_OPENAI_API_KEY }}
+          CODEX_API_KEY: ${{ secrets.CODEX_API_KEY }}
           ABYSS_AGENT_E2E_RUNTIME_ROOT: ${{ runner.temp }}/abyss-agent-e2e-${{ github.run_id }}-${{ github.run_attempt }}
         run: python3 -m scripts.agent_e2e_ci run
 
