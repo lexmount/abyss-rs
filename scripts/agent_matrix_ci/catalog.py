@@ -62,6 +62,7 @@ HARNESS_PROTOCOLS = {
     "codex": ("responses",),
     "claude-code": ("messages",),
     "deepseek-harness": ("responses", "chat", "messages"),
+    "hermes": ("responses", "chat", "messages"),
 }
 PROVIDER_SECRETS = {
     "openai": "CODEX_API_KEY",

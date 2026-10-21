@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 import os
 import shutil
+import tempfile
 import uuid
 from pathlib import Path
 
@@ -12,6 +13,7 @@ from scripts.agent_e2e_ci.process import CommandRunner, OrchestrationError
 from scripts.agent_e2e_ci.stack import TestStack
 
 from .catalog import MatrixCase
+from .hermes import HermesClient
 
 
 class HeadlessClient:
@@ -21,11 +23,22 @@ class HeadlessClient:
 
     @property
     def executable(self) -> str:
-        return {"codex": "codex", "claude-code": "claude", "deepseek-harness": "dsh"}[
-            self.case.harness
-        ]
+        return {
+            "codex": "codex",
+            "claude-code": "claude",
+            "deepseek-harness": "dsh",
+            "hermes": "hermes",
+        }[self.case.harness]
 
     def preflight(self) -> dict[str, str]:
+        if self.case.harness != "hermes":
+            return self._preflight(None)
+        with tempfile.TemporaryDirectory(prefix="abyss-matrix-preflight-") as home:
+            environment = self.base_environment()
+            environment.update(HERMES_HOME=home, HERMES_DISABLE_LAZY_INSTALLS="1")
+            return self._preflight(environment)
+
+    def _preflight(self, environment: dict[str, str] | None) -> dict[str, str]:
         required = (self.executable, "cargo", "docker", "openssl")
         missing = [name for name in required if not shutil.which(name)]
         if missing:
@@ -36,7 +49,9 @@ class HeadlessClient:
         versions = {}
         for name in required:
             result = self.commands.run(
-                [name, "version" if name == "openssl" else "--version"], timeout=30
+                [name, "version" if name == "openssl" else "--version"],
+                env=environment if name == self.executable else None,
+                timeout=30,
             )
             versions[name] = (result.stdout or result.stderr).strip()[:500]
         options = {
@@ -48,13 +63,23 @@ class HeadlessClient:
             ),
             "claude": ("--bare", "--setting-sources", "--include-partial-messages"),
             "dsh": ("--profile", "--patch"),
+            "hermes": (
+                "--format",
+                "--resume",
+                "--no-restore-cwd",
+                "--ignore-rules",
+                "--oneshot",
+                "--query",
+            ),
         }
         command = (
             [self.executable, "exec", "--help"]
             if self.executable == "codex"
             else [self.executable, "--help"]
         )
-        help_text = self.commands.run(command, timeout=30).stdout
+        if self.executable == "hermes":
+            command = ["hermes", "chat", "--help"]
+        help_text = self.commands.run(command, env=environment, timeout=30).stdout
         if any(option not in help_text for option in options[self.executable]):
             raise OrchestrationError(
                 f"{self.executable} lacks required noninteractive options"
@@ -163,6 +188,8 @@ class HeadlessClient:
                 "--print",
             ], environment
         environment["MATRIX_PROVIDER_KEY"] = key
+        if case.harness == "hermes":
+            return HermesClient(case).invocation(workspace, stack, environment)
         environment["DSH_HOME"] = str(workspace.parent / "dsh-home")
         patch = workspace.parent / "dsh-patch.json"
         patch.write_text(

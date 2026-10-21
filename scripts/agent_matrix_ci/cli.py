@@ -16,6 +16,7 @@ from scripts.agent_e2e_ci.config import RuntimeConfig
 from scripts.agent_e2e_ci.model import ContractError
 from scripts.agent_e2e_ci.process import (
     CommandRunner,
+    CommandResult,
     LoopbackHttpClient,
     OrchestrationError,
 )
@@ -80,17 +81,7 @@ class MatrixApplication:
                 f"this audit marker: {marker}. You must actually use the tool. "
                 "Do not edit any files, use the network, or read anything outside this workspace."
             )
-            args, environment = client.invocation(workspace, stack, self.key)
-            if self.case.harness == "deepseek-harness":
-                args.append(prompt)
-            result = self.commands.run(
-                args,
-                cwd=workspace,
-                env=environment,
-                input_text=None if self.case.harness == "deepseek-harness" else prompt,
-                timeout=self.config.codex_timeout_seconds,
-                check=False,
-            )
+            result = self._run_client(client, workspace, stack, prompt)
             report["process"] = {
                 "exit_code": result.returncode,
                 "timed_out": result.timed_out,
@@ -157,6 +148,67 @@ class MatrixApplication:
             summary += ": " + redactor.text(report["error"])
         print(summary, flush=True)
         return 0 if report["status"] == "pass" else 1
+
+    def _run_client(
+        self, client: HeadlessClient, workspace: Path, stack: TestStack, prompt: str
+    ) -> CommandResult:
+        args, environment = client.invocation(workspace, stack, self.key)
+        if self.case.harness != "hermes":
+            positional = self.case.harness == "deepseek-harness"
+            return self.commands.run(
+                args + ([prompt] if positional else []),
+                cwd=workspace,
+                env=environment,
+                input_text=None if positional else prompt,
+                timeout=self.config.codex_timeout_seconds,
+                check=False,
+            )
+        prompts = [prompt]
+        prompts.extend(
+            f"User turn {turn}: From our conversation, repeat the exact Verification code "
+            "and audit marker from the first turn. Do not use any tools or read files. "
+            "Reply with both strings only."
+            for turn in (2, 3)
+        )
+        results = []
+        session = None
+        for turn, query in enumerate(prompts, 1):
+            command = args + ["-q", query]
+            if session:
+                command += ["--resume", session, "--no-restore-cwd"]
+            result = self.commands.run(
+                command,
+                cwd=workspace,
+                env=environment,
+                timeout=self.config.codex_timeout_seconds,
+                check=False,
+            )
+            results.append(result)
+            native = Transcript.parse("hermes", result.stdout)
+            if (
+                result.returncode
+                or result.timed_out
+                or not native.completed
+                or not native.session_id
+            ):
+                break
+            if session and native.session_id != session:
+                break  # Aggregate validation also rejects the changed identity.
+            session = native.session_id
+            if turn == 1:
+                # The subsequent answers must use resumed history, not re-read
+                # the first-turn fixture. Preserve it outside the test workspace.
+                (workspace / "probe.txt").rename(
+                    workspace.parent / "probe-first-turn.txt"
+                )
+        return CommandResult(
+            args=results[0].args,
+            returncode=next((r.returncode for r in results if r.returncode), 0),
+            stdout="\n".join(r.stdout for r in results),
+            stderr="\n".join(r.stderr for r in results),
+            duration_seconds=sum(r.duration_seconds for r in results),
+            timed_out=any(r.timed_out for r in results),
+        )
 
     def _collect(self, stack: TestStack) -> list[dict]:
         deadline = time.monotonic() + self.config.event_timeout_seconds

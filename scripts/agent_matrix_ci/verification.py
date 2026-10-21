@@ -139,6 +139,29 @@ class MatrixVerifier:
             and totals["input_tokens"] > 0
             and totals["output_tokens"] > 0
         )
+        if case.harness == "hermes":
+            checks["three_native_user_turns"] = len(native.turns) == 3 and all(
+                turn["completed"]
+                and turn["session_id"] == native.session_id
+                and marker in turn["text"]
+                and nonce in turn["text"]
+                for turn in native.turns
+            )
+            checks["resumed_memory_without_tools"] = len(native.turns) == 3 and all(
+                turn["tool_results"] == 0 for turn in native.turns[1:]
+            )
+            checks["three_captured_user_turns"] = {
+                e.get("turn_index") for e in events
+            } == {1, 2, 3} and all(
+                any(
+                    event.get("event_type") == "response"
+                    and event.get("turn_index") == index
+                    and marker in (event.get("text") or "")
+                    and nonce in (event.get("text") or "")
+                    for event in events
+                )
+                for index in (1, 2, 3)
+            )
         checks["healthy_services"] = healthy
         checks["empty_delivery_spool"] = spool_empty
         return {
@@ -159,6 +182,7 @@ class MatrixVerifier:
             },
             "native": {
                 "completed": native.completed,
+                "turns": native.turns,
                 "usage_samples": native.usage,
                 "session_id": native.session_id,
                 "final_text": native.final_text,

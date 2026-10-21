@@ -87,6 +87,7 @@ jobs:
         with:
           node-version: '24'
       - name: Install pinned headless client in job directory
+        if: matrix.harness != 'hermes'
         env:
           HARNESS: ${{ matrix.harness }}
           MATRIX_CASE: ${{ matrix.id }}
@@ -102,6 +103,17 @@ jobs:
           tools_dir="$RUNNER_TEMP/abyss-matrix-tools-$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT-$MATRIX_CASE"
           npm install --prefix "$tools_dir" --no-audit --no-fund "$package"
           echo "$tools_dir/node_modules/.bin" >> "$GITHUB_PATH"
+      - name: Set up Hermes Python installer
+        if: matrix.harness == 'hermes'
+        uses: astral-sh/setup-uv@fac544c07dec837d0ccb6301d7b5580bf5edae39 # v8.2.0
+        with:
+          version: '0.12.13'
+          enable-cache: false
+      - name: Install pinned Hermes with locked dependencies
+        if: matrix.harness == 'hermes'
+        env:
+          MATRIX_CASE: ${{ matrix.id }}
+        run: bash scripts/ci/install_hermes.sh "$RUNNER_TEMP/abyss-hermes-$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT-$MATRIX_CASE"
       - name: Set up Codex Linux sandbox
         if: matrix.harness == 'codex'
         uses: ./.github/actions/setup-codex-sandbox
