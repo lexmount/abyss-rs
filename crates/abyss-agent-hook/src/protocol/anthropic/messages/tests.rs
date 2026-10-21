@@ -404,3 +404,40 @@ fn flow() -> FlowContext {
         },
     )
 }
+
+#[test]
+fn conversation_header_uses_the_existing_messages_session_chain() {
+    let mut exchange = json_exchange(
+        "/v1/messages",
+        &json!({"messages": [{"role": "user", "content": "hello"}]}),
+        &json!({"content": [{"type": "text", "text": "hi"}]}),
+    );
+    exchange.request.headers_mut().insert(
+        http::HeaderName::from_bytes(b"X-Conversation-ID").unwrap(),
+        " conversation-1 ".parse().unwrap(),
+    );
+    assert_eq!(
+        parse_anthropic_messages_exchange(&exchange)
+            .unwrap()
+            .session_id,
+        "session-1"
+    );
+    exchange.request.headers_mut().remove("session-id");
+    let parsed = parse_anthropic_messages_exchange(&exchange).unwrap();
+    assert_eq!(parsed.session_id, "conversation-1");
+    assert!(matches!(
+        parsed.session_id_source,
+        AnthropicSessionIdSource::Provider
+    ));
+    exchange
+        .request
+        .headers_mut()
+        .insert("x-conversation-id", " \t".parse().unwrap());
+    let parsed = parse_anthropic_messages_exchange(&exchange).unwrap();
+    assert_eq!(parsed.session_id, "anthropic-unattributed-gateway-example");
+    assert!(matches!(
+        parsed.session_id_source,
+        AnthropicSessionIdSource::Unattributed
+    ));
+}
+

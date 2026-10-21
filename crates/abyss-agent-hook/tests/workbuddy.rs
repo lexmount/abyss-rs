@@ -126,8 +126,6 @@ async fn multi_turn_and_tool_continuation_preserve_session_and_turn_on_both_side
                         ("X-Conversation-Request-ID", turn),
                         ("X-Conversation-Message-ID", message),
                         ("X-Request-ID", message),
-                        // WorkBuddy's own declaration takes priority over generic hints.
-                        ("session-id", "generic-session"),
                     ],
                     messages,
                     message,
@@ -143,6 +141,29 @@ async fn multi_turn_and_tool_continuation_preserve_session_and_turn_on_both_side
                 assert_eq!(event.text.is_some(), conversation_text);
             }
         }
+    }
+}
+
+#[tokio::test]
+async fn existing_session_header_keeps_precedence_in_public_events() {
+    let scenario = WorkBuddyScenario::new(true, true);
+    scenario
+        .exchange(
+            "WorkBuddy",
+            &[
+                ("session-id", "existing-session"),
+                ("X-Conversation-ID", "conversation-1"),
+                ("X-Conversation-Request-ID", "turn-1"),
+            ],
+            json!([{"role": "user", "content": "Hello"}]),
+            "reply-1",
+        )
+        .await;
+    let events = scenario.sink.events.lock();
+    assert_eq!(events.len(), 2);
+    for event in events.iter() {
+        assert_eq!(event.session_id, "existing-session");
+        assert_eq!(event.turn_id.as_deref(), Some("turn-1"));
     }
 }
 

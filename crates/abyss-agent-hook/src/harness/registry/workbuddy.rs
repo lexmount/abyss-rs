@@ -1,4 +1,4 @@
-//! `WorkBuddy` session and user-turn declarations from ordinary HTTP requests.
+//! `WorkBuddy` user-turn declarations from ordinary HTTP requests.
 //! Identity remains policy-configured; these headers do not identify a Harness.
 
 use crate::harness::{AgentDeclaration, DeclarationSource};
@@ -8,7 +8,6 @@ use super::header;
 pub(super) fn declare(source: &DeclarationSource<'_>) -> AgentDeclaration {
     let header = |name| source.headers.and_then(|headers| header(headers, name));
     AgentDeclaration {
-        session_id: header("x-conversation-id").map(str::to_owned),
         // WorkBuddy retains this ID across model calls within one user turn.
         // Message IDs and transport request IDs have a different lifetime.
         turn_id: header("x-conversation-request-id").map(str::to_owned),
@@ -42,7 +41,7 @@ mod tests {
     }
 
     #[test]
-    fn conversation_and_user_turn_are_independent_of_message_ids() {
+    fn user_turn_is_independent_of_session_and_message_ids() {
         for turn in ["turn-1", "turn-2"] {
             for message in ["model-call-1", "model-call-2"] {
                 let declaration = declared(
@@ -54,7 +53,6 @@ mod tests {
                         ("X-Request-ID", message),
                     ],
                 );
-                assert_eq!(declaration.session_id.as_deref(), Some("session-1"));
                 assert_eq!(declaration.turn_id.as_deref(), Some(turn));
                 assert!(declaration.stream_id.is_none());
             }
@@ -77,15 +75,13 @@ mod tests {
             assert_eq!(declared("workbuddy", &pairs), AgentDeclaration::default());
         }
         let session_only = declared("workbuddy", &[("x-conversation-id", "session-1")]);
-        assert_eq!(session_only.session_id.as_deref(), Some("session-1"));
-        assert!(session_only.turn_id.is_none());
+        assert_eq!(session_only, AgentDeclaration::default());
         let turn_only = declared("workbuddy", &[("x-conversation-request-id", " turn-1 ")]);
-        assert!(turn_only.session_id.is_none());
         assert_eq!(turn_only.turn_id.as_deref(), Some("turn-1"));
     }
 
     #[test]
-    fn conversation_headers_do_not_override_other_harnesses() {
+    fn turn_header_does_not_declare_turns_for_other_harnesses() {
         for harness in ["codex", "claude-code", "deepseek-harness", "custom-client"] {
             assert_eq!(
                 declared(

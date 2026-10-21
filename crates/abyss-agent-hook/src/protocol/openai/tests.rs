@@ -932,3 +932,105 @@ fn chat_conversation_preserves_system_assistant_and_repeated_user_history() {
         }]
     );
 }
+
+#[test]
+fn conversation_header_uses_the_existing_http_session_chain() {
+    for (path, messages_field) in [
+        ("/v2/chat/completions", "messages"),
+        ("/v1/responses", "input"),
+    ] {
+        for (session, text) in [
+            ("conversation-1", "first request"),
+            ("conversation-1", "tool continuation"),
+            ("conversation-2", "new conversation"),
+        ] {
+            let mut body = json!({"model": "compatible-model"});
+            body[messages_field] = json!([{"role": "user", "content": text}]);
+            let mut exchange = json_exchange(path, &body, &json!({}));
+            exchange.request.headers_mut().insert(
+                http::HeaderName::from_bytes(b"X-Conversation-ID").unwrap(),
+                format!(" {session} ").parse().unwrap(),
+            );
+            // Existing session sources retain their precedence.
+            assert_eq!(
+                parse_openai_exchange(&exchange).unwrap().session_id,
+                "session-1"
+            );
+            exchange.request.headers_mut().remove("session-id");
+            let parsed = parse_openai_exchange(&exchange).unwrap();
+            assert_eq!(parsed.session_id, session);
+            assert_eq!(parsed.request_texts, vec![text]);
+            exchange
+                .request
+                .headers_mut()
+                .insert("x-conversation-id", " \t".parse().unwrap());
+            assert!(
+                parse_openai_exchange(&exchange)
+                    .unwrap()
+                    .session_id
+                    .starts_with("flow-")
+            );
+        }
+    }
+}
+
+
+#[test]
+fn conversation_header_does_not_override_existing_session_metadata() {
+    for (name, value, expected) in [
+        ("session_id", "alias-session", "alias-session"),
+        ("thread-id", "thread-session", "thread-session"),
+        (
+            "x-codex-turn-metadata",
+            r#"{"session_id":"codex-session"}"#,
+            "codex-session",
+        ),
+        (
+            "x-codex-turn-metadata",
+            r#"{"thread_id":"codex-thread"}"#,
+            "codex-thread",
+        ),
+        (
+            "x-deepseek-harness-session-id",
+            "dsh-session",
+            "dsh-session",
+        ),
+    ] {
+        let mut exchange = json_exchange("/v1/responses", &json!({"input": "hi"}), &json!({}));
+        let headers = exchange.request.headers_mut();
+        headers.remove("session-id");
+        headers.insert("x-conversation-id", "conversation-1".parse().unwrap());
+        headers.insert(name, value.parse().unwrap());
+        assert_eq!(
+            parse_openai_exchange(&exchange).unwrap().session_id,
+            expected
+        );
+    }
+}
+
+
+#[test]
+fn conversation_header_uses_the_existing_websocket_session_chain() {
+    for (sequence, text) in [(1, "first request"), (2, "second request")] {
+        let message = WebSocketMessage::new(
+            flow(),
+            Request::builder()
+                .method("GET")
+                .uri("/v1/responses")
+                .header("host", "gateway.example")
+                .header("X-Conversation-ID", " shared-conversation ")
+                .body(())
+                .unwrap(),
+            WebSocketDirection::ClientToServer,
+            sequence,
+            Some(json!({"type": "response.create", "input": text}).to_string()),
+            None,
+        );
+        let OpenAiWebSocketFrame::Request(parsed) = parse_openai_websocket_message(&message) else {
+            panic!("WebSocket request message");
+        };
+        assert_eq!(parsed.session_id, "shared-conversation");
+        assert_eq!(parsed.request_texts, vec![text]);
+    }
+}
+

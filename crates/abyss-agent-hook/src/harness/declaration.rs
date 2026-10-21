@@ -24,8 +24,6 @@ pub struct DeclarationSource<'a> {
 /// What the Agent declared about a request; empty when it declared nothing.
 #[derive(Clone, Debug, Default, Eq, PartialEq)]
 pub struct AgentDeclaration {
-    /// Session explicitly named by the Harness, overriding provider fallbacks.
-    pub session_id: Option<String>,
     /// The user turn the request works for.
     pub turn_id: Option<String>,
     /// The thread that sent the request.
