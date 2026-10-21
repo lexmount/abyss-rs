@@ -102,6 +102,9 @@ jobs:
           tools_dir="$RUNNER_TEMP/abyss-matrix-tools-$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT-$MATRIX_CASE"
           npm install --prefix "$tools_dir" --no-audit --no-fund "$package"
           echo "$tools_dir/node_modules/.bin" >> "$GITHUB_PATH"
+      - name: Set up Codex Linux sandbox
+        if: matrix.harness == 'codex'
+        uses: ./.github/actions/setup-codex-sandbox
       - name: Run real headless client through Abyss
         env:
           ABYSS_MATRIX_API_KEY: ${{ secrets[matrix.secret] }}

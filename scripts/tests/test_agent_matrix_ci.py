@@ -588,6 +588,11 @@ class MatrixCliBlackboxTests(unittest.TestCase):
         self.assertNotIn("self-hosted", workflow)
         self.assertIn("uses: ./.github/actions/setup-rust", workflow)
         self.assertIn("cache-shared-key: agent-e2e", workflow)
+        self.assertIn("uses: ./.github/actions/setup-codex-sandbox", workflow)
+        self.assertLess(
+            workflow.index("uses: ./.github/actions/setup-codex-sandbox"),
+            workflow.index("- name: Run real headless client through Abyss"),
+        )
         self.assertIn('npm install --prefix "$tools_dir"', workflow)
         self.assertNotIn("npm install -g", workflow)
         self.assertIn("@openai/codex@0.163.0", workflow)

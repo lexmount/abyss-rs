@@ -147,6 +147,14 @@ the job does not modify global client installations, login, CA trust or user con
 DSH uses a fresh `DSH_HOME`; Codex ignores user rules/config; Claude uses bare
 mode with settings sources disabled.
 
+Codex jobs install Ubuntu's `bubblewrap` package and load its distribution
+`bwrap-userns-restrict` AppArmor profile, as described in the
+[Codex sandbox prerequisites](https://learn.chatgpt.com/docs/sandboxing#prerequisites).
+This permits bubblewrap's namespace setup while keeping Codex's filesystem and
+network sandbox enabled. A credential-free `codex sandbox` probe checks file
+reads, denied read-only writes, and workspace writes before any model traffic.
+Local Linux runs need the same bubblewrap/AppArmor prerequisites.
+
 ```bash
 python3 -m scripts.agent_matrix_ci plan
 python3 -m scripts.agent_matrix_ci plan --harness codex --provider deepseek

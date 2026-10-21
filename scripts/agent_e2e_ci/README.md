@@ -69,6 +69,13 @@ installs Codex `0.163.0` into the job's temporary directory. It shares the
 `agent-e2e` Rust cache key with the headless matrix. No persistent runner login
 or preinstalled Codex CLI is required.
 
+The shared `setup-codex-sandbox` action installs distribution bubblewrap and
+loads its AppArmor user-namespace profile. It probes Codex's read-only and
+workspace-write sandbox modes before invoking models. This follows the
+[official sandbox prerequisites](https://learn.chatgpt.com/docs/sandboxing#prerequisites)
+and keeps sandbox enforcement enabled on Ubuntu 24.04. Local Linux runners
+must also provide a functioning bubblewrap sandbox.
+
 For local runs, provide these commands:
 
 - `bash` and `git` for the GitHub job and checkout;

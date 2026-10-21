@@ -34,10 +34,11 @@ class AgentE2eWorkflowTests(unittest.TestCase):
         self.assertIn("cache-shared-key: agent-e2e", self.workflow)
         self.assertIn("uses: actions/setup-node@v4", self.workflow)
         self.assertIn("@openai/codex@0.163.0", self.workflow)
+        self.assertIn("uses: ./.github/actions/setup-codex-sandbox", self.workflow)
         self.assertIn('npm install --prefix "$tools_dir"', self.workflow)
         self.assertNotIn("npm install --global", self.workflow)
         self.assertLess(
-            self.workflow.index("@openai/codex@0.163.0"),
+            self.workflow.index("uses: ./.github/actions/setup-codex-sandbox"),
             self.workflow.index("- name: Validate runner prerequisites"),
         )
 

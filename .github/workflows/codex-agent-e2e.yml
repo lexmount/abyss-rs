@@ -94,6 +94,10 @@ jobs:
           npm install --prefix "$tools_dir" --no-audit --no-fund @openai/codex@0.163.0
           echo "$tools_dir/node_modules/.bin" >> "$GITHUB_PATH"
 
+      - name: Set up Codex Linux sandbox
+        if: env.ABYSS_AGENT_E2E_MANUAL_SKIP != 'true' && env.ABYSS_AGENT_E2E_FORK_SKIP != 'true'
+        uses: ./.github/actions/setup-codex-sandbox
+
       - name: Validate runner prerequisites
         if: env.ABYSS_AGENT_E2E_MANUAL_SKIP != 'true' && env.ABYSS_AGENT_E2E_FORK_SKIP != 'true'
         env:
