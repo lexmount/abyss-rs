@@ -24,6 +24,7 @@ class Transcript:
     usage: list[dict[str, int]] = field(default_factory=list)
     errors: list[str] = field(default_factory=list)
     completed: bool = False
+    turns: list[dict] = field(default_factory=list)
 
     @classmethod
     def parse(cls, harness: str, output: str) -> "Transcript":
@@ -104,6 +105,8 @@ class Transcript:
                     ):
                         transcript.usage.append(cls._messages_usage(current_usage))
                         current_usage = None
+            elif harness == "hermes":
+                transcript._hermes_event(event)
             else:
                 if kind == "session":
                     transcript.session_id = event.get("sessionId")
@@ -138,6 +141,49 @@ class Transcript:
                             result[target] = counter(usage, source)
                     transcript.usage.append(result)
         return transcript
+
+    def _hermes_event(self, event: dict) -> None:
+        kind = event.get("type")
+        if kind == "tool_result":
+            self.tool_outputs.append(event.get("output", ""))
+            if identity := event.get("tool_call_id"):
+                self.call_ids.add(identity)
+        elif kind == "result":
+            session = event.get("session_id")
+            if self.session_id and session != self.session_id:
+                self.errors.append("Hermes changed session during resume")
+            self.session_id = session
+            self.completed = event.get("exit_code") == 0 and not event.get("error")
+            if not self.completed:
+                self.errors.append(json.dumps(event))
+            self.final_text = event.get("text", "")
+            tokens = event.get("tokens", {})
+            # Hermes reports uncached input separately. A fresh CLI process
+            # starts fresh counters even when it resumes persisted history.
+            usage = {}
+            if "input" in tokens:
+                usage["input_tokens"] = sum(
+                    counter(tokens, name)
+                    for name in ("input", "cache_read", "cache_write")
+                )
+            for source, target in (
+                ("output", "output_tokens"),
+                ("cache_read", "cached_input_tokens"),
+                ("cache_write", "cache_write_input_tokens"),
+            ):
+                if source in tokens:
+                    usage[target] = counter(tokens, source)
+            self.usage.append(usage)
+            previous_tools = sum(turn["tool_results"] for turn in self.turns)
+            self.turns.append(
+                {
+                    "session_id": session,
+                    "completed": self.completed,
+                    "text": self.final_text,
+                    "usage": usage,
+                    "tool_results": len(self.tool_outputs) - previous_tools,
+                }
+            )
 
     @staticmethod
     def _messages_usage(usage: dict) -> dict[str, int]:

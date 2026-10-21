@@ -468,6 +468,7 @@ impl StatusCommandRunner {
             BuiltInHarness::Codex.id(),
             BuiltInHarness::ClaudeCode.id(),
             BuiltInHarness::DeepSeekHarness.id(),
+            BuiltInHarness::Hermes.id(),
         ]
         .into_iter()
         .chain(
@@ -607,6 +608,7 @@ fn parse_harness(value: &str, hooks: &HooksConfig) -> Result<HarnessId, CliError
         "codex" => Ok(BuiltInHarness::Codex.into()),
         "claude-code" | "claude-cli" => Ok(BuiltInHarness::ClaudeCode.into()),
         "deepseek-harness" => Ok(BuiltInHarness::DeepSeekHarness.into()),
+        "hermes" => Ok(BuiltInHarness::Hermes.into()),
         name => hooks
             .harness_usage
             .config
@@ -642,17 +644,19 @@ mod tests {
     use super::{CliCommand, ConfigCommandRunner};
 
     #[test]
-    fn deepseek_can_be_selected_without_a_policy_entry() {
+    fn builtins_can_be_selected_without_a_policy_entry() {
         let hooks = HooksConfig::default();
-        let id = super::parse_harness("deepseek-harness", &hooks).unwrap();
-        assert_eq!(id.as_str(), "deepseek-harness");
-        assert_eq!(super::enabled_label(&hooks, id.as_str()), "enabled");
-        let disabled = serde_json::from_value::<HooksConfig>(json!({
-            "harness_usage": {"config": {"harnesses": {"deepseek-harness": {"enabled": false}}}}
-        }))
-        .unwrap();
-        assert_eq!(super::enabled_label(&disabled, id.as_str()), "disabled");
-        assert_eq!(super::parse_harness(id.as_str(), &disabled).unwrap(), id);
+        for name in ["deepseek-harness", "hermes"] {
+            let id = super::parse_harness(name, &hooks).unwrap();
+            assert_eq!(id.as_str(), name);
+            assert_eq!(super::enabled_label(&hooks, id.as_str()), "enabled");
+            let disabled = serde_json::from_value::<HooksConfig>(json!({
+                "harness_usage": {"config": {"harnesses": {name: {"enabled": false}}}}
+            }))
+            .unwrap();
+            assert_eq!(super::enabled_label(&disabled, id.as_str()), "disabled");
+            assert_eq!(super::parse_harness(id.as_str(), &disabled).unwrap(), id);
+        }
     }
 
     #[test]

@@ -55,9 +55,9 @@ class CatalogTests(unittest.TestCase):
             "kimi": "ABYSS_E2E_KIMI_API_KEY",
             "qwen": "ABYSS_E2E_QWEN_API_KEY",
         }
-        self.assertEqual(len(cases), 32)
+        self.assertEqual(len(cases), 51)
         self.assertEqual(len({c.id for c in cases}), len(cases))
-        self.assertEqual(len({(c.harness, c.provider) for c in cases}), 16)
+        self.assertEqual(len({(c.harness, c.provider) for c in cases}), 22)
         for c in cases:
             self.assertIn(c.protocol, HARNESS_PROTOCOLS[c.harness])
             self.assertNotIn(c.harness, ("claude-desktop", "dsh-tui", "dsh-web"))
@@ -77,10 +77,10 @@ class CatalogTests(unittest.TestCase):
             '{"qwen":{"messages":"https://coding.dashscope.aliyuncs.com/apps/anthropic/"}}',
         )
         cases = catalog.cases(provider="qwen", protocol="messages")
-        self.assertEqual(len(cases), 4)
+        self.assertEqual(len(cases), 6)
         self.assertEqual(cases[0].event_provider, "coding.dashscope.aliyuncs.com")
         self.assertFalse(cases[0].base_url.endswith("/"))
-        self.assertEqual(len(catalog.cases(model="qwen-test-a")), 2)
+        self.assertEqual(len(catalog.cases(model="qwen-test-a")), 3)
 
     def test_invalid_or_empty_selections_never_succeed(self):
         for kwargs in (
@@ -120,7 +120,7 @@ class CatalogTests(unittest.TestCase):
 
 
 class ClientTests(unittest.TestCase):
-    def test_runtime_relay_routes_both_anthropic_clients_only(self):
+    def test_runtime_relay_routes_all_anthropic_clients_only(self):
         endpoint = "https://private-relay.example/anthropic/"
         with tempfile.TemporaryDirectory() as root:
             workspace = Path(root) / "workspace"
@@ -128,6 +128,7 @@ class ClientTests(unittest.TestCase):
             stack = SimpleNamespace(
                 proxy_url="http://127.0.0.1:1234", ca_certificate=Path(root) / "ca.pem"
             )
+            stack.ca_certificate.write_text("fixture-ca\n")
             for case in MatrixCatalog().cases():
                 app = MatrixApplication(case, None, "fixture-key", endpoint=endpoint)
                 with self.subTest(case=case.id):
@@ -142,6 +143,13 @@ class ClientTests(unittest.TestCase):
                     _, env = client.invocation(workspace, stack, "fixture-key")
                     if case.harness == "claude-code":
                         self.assertEqual(env["ANTHROPIC_BASE_URL"], app.case.base_url)
+                    elif case.harness == "hermes":
+                        config = json.loads(
+                            (Path(env["HERMES_HOME"]) / "config.yaml").read_text()
+                        )
+                        self.assertEqual(
+                            config["providers"]["matrix"]["base_url"], app.case.base_url
+                        )
                     else:
                         self.assertEqual(
                             client.dsh_patch()[-1]["config"]["baseURL"],
@@ -233,6 +241,7 @@ class ClientTests(unittest.TestCase):
             stack = SimpleNamespace(
                 proxy_url="http://127.0.0.1:1234", ca_certificate=Path(root) / "ca.pem"
             )
+            stack.ca_certificate.write_text("fixture-ca\n")
             for case in MatrixCatalog().cases():
                 with self.subTest(case=case.id):
                     args, env = HeadlessClient(case, CommandRunner()).invocation(
@@ -609,6 +618,7 @@ class MatrixCliBlackboxTests(unittest.TestCase):
             ("codex", "codex", 7),
             ("claude-code", "claude-code", 6),
             ("dsh", "deepseek-harness", 19),
+            ("hermes", "hermes", 19),
         )
         for stem, harness, count in groups:
             with self.subTest(harness=harness):

@@ -2,6 +2,7 @@
 
 test:
 	cargo test --locked --workspace
+	python3 -m unittest discover -s integrations/hermes -p 'test_*.py'
 
 lint:
 	cargo clippy --locked --workspace --all-targets -- -D warnings

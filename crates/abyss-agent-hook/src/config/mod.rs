@@ -401,7 +401,7 @@ mod tests {
 
     #[test]
     fn built_in_harness_cannot_be_redefined_with_custom_matchers() {
-        for harness in ["codex", "deepseek-harness"] {
+        for harness in ["codex", "deepseek-harness", "hermes"] {
             let input = serde_json::json!({
                 "harness_usage": {"config": {"harnesses": {
                     harness: {"matchers": [{"process_names": ["other"]}]}

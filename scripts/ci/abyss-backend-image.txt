@@ -1,1 +1,1 @@
-docker.io/lexmount/abyss-backend@sha256:550486ddbf2b3b12a9e55eb86d290c2452325898738e0ce25c664b6c0226c9e4
+docker.io/lexmount/abyss-backend@sha256:dbfa46f8ef5ce96378294ab8eefb1579317696b6ec691287751deb48410ff478

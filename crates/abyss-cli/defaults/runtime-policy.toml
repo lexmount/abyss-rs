@@ -97,3 +97,6 @@ images = true
 # DSH's headless, TUI, and Web clients use the built-in Harness detector.
 [hooks.harness_usage.config.harnesses."deepseek-harness"]
 enabled = true
+
+[hooks.harness_usage.config.harnesses.hermes]
+enabled = true

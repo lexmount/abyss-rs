@@ -177,6 +177,48 @@ fn ignores_blank_deepseek_session_header() {
 }
 
 #[test]
+fn hermes_session_headers_follow_messages_precedence_and_fallbacks() {
+    for name in ["x-hermes-session-id", "session_id"] {
+        let mut exchange = json_exchange(
+            "/v1/messages",
+            &json!({"messages": [{"role": "user", "content": "hello"}]}),
+            &json!({"content": [{"type": "text", "text": "hi"}]}),
+        );
+        let headers = exchange.request.headers_mut();
+        headers.remove("session-id");
+        headers.insert(name, " hermes-session ".parse().unwrap());
+        headers.insert(
+            "x-claude-code-session-id",
+            "claude-session".parse().unwrap(),
+        );
+        let parsed = parse_anthropic_messages_exchange(&exchange).unwrap();
+        assert_eq!(parsed.session_id, "claude-session");
+
+        exchange
+            .request
+            .headers_mut()
+            .remove("x-claude-code-session-id");
+        let parsed = parse_anthropic_messages_exchange(&exchange).unwrap();
+        assert_eq!(parsed.session_id, "hermes-session");
+        assert!(matches!(
+            parsed.session_id_source,
+            AnthropicSessionIdSource::Provider
+        ));
+
+        exchange
+            .request
+            .headers_mut()
+            .insert(name, " ".parse().unwrap());
+        let parsed = parse_anthropic_messages_exchange(&exchange).unwrap();
+        assert_eq!(parsed.session_id, "anthropic-unattributed-gateway-example");
+        assert!(matches!(
+            parsed.session_id_source,
+            AnthropicSessionIdSource::Unattributed
+        ));
+    }
+}
+
+#[test]
 fn retains_unattributed_session_bucket_when_protocol_has_no_session_id() {
     let mut exchange = json_exchange(
         "/v1/messages",

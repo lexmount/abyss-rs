@@ -1,7 +1,7 @@
 # Headless harness × model CI
 
-Three independent Actions workflows run real Codex CLI, Claude Code `--print`,
-and DSH headless clients through the current checkout's broker and
+Four independent Actions workflows run real Codex CLI, Claude Code `--print`,
+DSH headless, and Hermes CLI clients through the current checkout's broker and
 delivery plugin into a fresh, digest-pinned Backend and PostgreSQL. They share
 `scripts.agent_e2e_ci`'s stack lifecycle and subprocess handling.
 
@@ -10,10 +10,11 @@ delivery plugin into a fresh, digest-pinned Backend and PostgreSQL. They share
 | [Codex Model Matrix](../../.github/workflows/codex-model-matrix.yml) | 7 |
 | [Claude Code Model Matrix](../../.github/workflows/claude-code-model-matrix.yml) | 6 |
 | [DSH Model Matrix](../../.github/workflows/dsh-model-matrix.yml) | 19 |
+| [Hermes Model Matrix](../../.github/workflows/hermes-model-matrix.yml) | 19 |
 
 Each group has its own run, per-cell checks, artifacts and required aggregation.
 Select the harness's workflow in Actions to inspect or rerun only that group.
-All three call [the shared execution workflow](../../.github/workflows/agent-model-matrix.yml)
+All four call [the shared execution workflow](../../.github/workflows/agent-model-matrix.yml)
 so client installation, assertions and credential handling stay consistent.
 
 **Only one live CI job per provider runs at a time across the repository.**
@@ -33,10 +34,10 @@ existing workflow-level cancellation still supersedes older commits on the
 same PR. Serialization controls CI job overlap; it does not retry or hide
 provider errors, or coordinate callers outside this repository's workflows.
 
-The default matrix has **32 cells, 16 harness/provider combinations, and 25
+The default matrix has **51 cells, 22 harness/provider combinations, and 40
 harness/provider/protocol routes**. Each model in a route is tested separately.
 
-| Provider | Default models | Codex CLI | Claude Code | DSH headless |
+| Provider | Default models | Codex CLI | Claude Code | DSH headless / Hermes CLI |
 | --- | --- | --- | --- | --- |
 | OpenAI | `gpt-5`, `gpt-5.3-codex` | Responses, both models | Not a native Messages service | Responses, both models; Chat Completions, `gpt-5` |
 | Anthropic | `claude-sonnet-5` | Not a native Responses service | Messages | Messages |
@@ -45,7 +46,7 @@ harness/provider/protocol routes**. Each model in a route is tested separately.
 | Kimi | `kimi-k3` | Responses | Messages | All three protocols |
 | Qwen | `qwen3.8-flash` | Responses | Messages | All three protocols |
 
-There are 7 Codex, 6 Claude Code, and 19 DSH cells. Desktop, TUI and Web UI
+There are 7 Codex, 6 Claude Code, 19 DSH, and 19 Hermes cells. Desktop, TUI and Web UI
 clients are excluded. This tests the actual clients, not hand-written API
 requests bearing spoofed harness headers. Incompatible direct combinations are
 not scheduled; the matrix does not install a protocol-converting gateway.
@@ -71,7 +72,7 @@ Actions → Secrets). API key values are raw keys, without `Bearer `:
 
 `CODEX_API_KEY`, `CLAUDE_CODE_API_KEY`, and `CLAUDE_CODE_BASE_URL` reuse the
 existing black-box workflows' Secrets. No additional OpenAI or Anthropic key
-Secrets are needed. The relay URL applies to both Claude Code and DSH's
+Secrets are needed. The relay URL applies to Claude Code, DSH, and Hermes
 Anthropic cells. It is read only at run time and takes precedence over the
 Anthropic `ABYSS_E2E_ENDPOINTS` override; when empty, the configured public
 endpoint (or `https://api.anthropic.com` by default) is used. Planning and
@@ -139,6 +140,24 @@ it with the audit marker. Every cell asserts:
 - native session attribution, or DSH pi Chat Completions' documented per-request
   `flow-*` fallback. Response IDs are never substituted for session IDs.
 
+Hermes cells run **three separate user turns** using `hermes chat --oneshot`
+and native `--resume`, with machine-readable `--format stream-json` output.
+The first turn reads the hidden code. The fixture is moved outside the workspace
+before turns two and three, which must recall the code and marker from history
+without tools. Both native replies and backend response events must contain them,
+and all events must share the real Hermes session with exactly three backend
+turns. Repeated request history is retained; this test does not change deduplication.
+
+The checkout's [Hermes plugin](../../integrations/hermes/abyss) is installed in
+each cell's isolated `HERMES_HOME`; it declares real runtime session/user-turn IDs
+through Hermes' supported middleware. The provider's `api_mode` is explicitly
+set to `chat_completions`, `codex_responses`, or `anthropic_messages`. OpenAI Chat
+uses `reasoning=none` for tool compatibility; OpenAI/Messages is not scheduled.
+Hermes' final JSONL result contains that process's usage, including uncached
+input and separate cache read/write counters. Each resumed CLI is a new process;
+the verifier sums the three results after adding caches back to inclusive input.
+The result format does not expose reasoning-token counts, so they remain unavailable.
+
 Claude uses completed streaming message usage, including later downward
 corrections, rather than provisional assistant snapshots. DSH sums `step_end`
 usage. Codex uses `turn.completed`. Input comparisons include cached tokens;
@@ -151,7 +170,7 @@ that also works for text-only models, without requiring an extra judge API call
 for each cell. Both workflows use API keys in GitHub, not a runner subscription
 login. Local legacy Codex runs without the key environment retain login support.
 
-All three workflows run on same-repository PRs and manual dispatch. Select the
+All four workflows run on same-repository PRs and manual dispatch. Select the
 harness's workflow, then optionally filter provider, protocol or exact model;
 unmatched filters fail. `fail-fast: false` preserves remaining results. The
 repository-wide limit is one job per provider. With six configured providers,
@@ -170,12 +189,20 @@ through the repository's shared action and restores cached Cargo build outputs.
 The matrix and randomized Codex E2E jobs share the `agent-e2e` Rust cache key.
 The workflow selects Node.js 24 and installs only the cell's client into
 its temporary job directory: Codex `0.163.0`, Claude Code `2.1.206`, or DSH
-`0.2.0-rc.2`. Installation receives no API secrets. Local runs use preinstalled
+`0.2.0-rc.2`. Hermes is fetched from the immutable upstream commit in
+[`scripts/ci/hermes-revision.txt`](../ci/hermes-revision.txt) and installed using
+Python 3.14, uv 0.12.13, and its committed `uv.lock` (`uv sync --locked --no-dev
+--extra anthropic`). The Anthropic SDK is installed before testing; automatic
+lazy installation is disabled. The pinned revision supports JSONL output and
+`llm_request` middleware. Its Python environment lives entirely in the temporary
+job directory. Installation receives no API secrets. Local runs use preinstalled
 clients, Docker, Cargo/Rust, OpenSSL and Python 3.10+. Required CLI capabilities
 are checked and actual versions recorded;
 the job does not modify global client installations, login, CA trust or user config.
 DSH uses a fresh `DSH_HOME`; Codex ignores user rules/config; Claude uses bare
-mode with settings sources disabled.
+mode with settings sources disabled. Hermes uses a fresh `HERMES_HOME`, disables
+memory, ignores workspace rules, and configures a per-provider CA bundle containing
+public roots and the test CA. It never writes to the user's Hermes installation.
 
 Codex jobs install Ubuntu's `bubblewrap` package and load its distribution
 `bwrap-userns-restrict` AppArmor profile, as described in the
@@ -189,8 +216,8 @@ Local Linux runs need the same bubblewrap/AppArmor prerequisites.
 python3 -m scripts.agent_matrix_ci plan
 python3 -m scripts.agent_matrix_ci plan --harness codex --provider deepseek
 python3 -m unittest discover -s scripts/tests -p 'test_agent_*py'
-python3 -m ruff check scripts/agent_matrix_ci scripts/tests/test_agent_matrix_ci.py
-python3 -m ruff format --check scripts/agent_matrix_ci scripts/tests/test_agent_matrix_ci.py
+python3 -m ruff check scripts/agent_matrix_ci scripts/tests/test_agent_matrix_ci.py scripts/tests/test_agent_hermes_matrix.py
+python3 -m ruff format --check scripts/agent_matrix_ci scripts/tests/test_agent_matrix_ci.py scripts/tests/test_agent_hermes_matrix.py
 ```
 
 For a real local run, select an `id` from `plan`, provide the corresponding raw

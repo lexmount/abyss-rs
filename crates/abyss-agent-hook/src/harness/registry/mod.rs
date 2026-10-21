@@ -4,6 +4,7 @@ mod claude_code;
 mod claude_desktop;
 mod codex;
 mod deepseek_harness;
+mod hermes;
 
 use abyss_mitm::{FlowContext, HttpExchange, WebSocketMessage};
 use http::HeaderMap;
@@ -59,17 +60,30 @@ impl HarnessRegistry {
         path: &str,
         config: &HarnessUsageConfig,
     ) -> Option<HarnessDetection> {
-        let detectors: [&dyn HarnessDetector; 4] = [
+        let detectors: [&dyn HarnessDetector; 5] = [
             &codex::CodexDetector,
             &claude_desktop::ClaudeDesktopDetector,
             &claude_code::ClaudeCodeDetector,
             &deepseek_harness::DeepSeekHarnessDetector,
+            &hermes::HermesDetector,
         ];
         let mut detections = detectors
             .into_iter()
             .filter_map(|detector| detector.detect(flow, headers, path))
-            .filter(|detection| config.enabled_for_harness(detection.harness_id.as_str()))
             .collect::<Vec<_>>();
+
+        // Hermes can send Codex/Claude compatibility fingerprints.
+        // Apply their explicit identity before policy filtering so disabling
+        // one cannot relabel its traffic as the impersonated client.
+        if detections
+            .iter()
+            .any(|detection| detection.harness_id.as_str() == "hermes")
+        {
+            detections.retain(|detection| {
+                !matches!(detection.harness_id.as_str(), "codex" | "claude-code")
+            });
+        }
+        detections.retain(|detection| config.enabled_for_harness(detection.harness_id.as_str()));
 
         for (harness_id, harness) in &config.harnesses {
             if harness_id.is_reserved() || !harness.enabled.unwrap_or(true) {
@@ -111,6 +125,7 @@ impl HarnessRegistry {
         match harness_id.as_str() {
             id if id == BuiltInHarness::Codex.id() => codex::declare(source),
             id if id == BuiltInHarness::ClaudeCode.id() => claude_code::declare(source),
+            id if id == BuiltInHarness::Hermes.id() => hermes::declare(source),
             _ => AgentDeclaration::default(),
         }
     }
@@ -141,12 +156,112 @@ fn client_version(user_agent: &str, prefixes: &[&str]) -> Option<String> {
 mod tests {
     use std::net::SocketAddr;
 
-    use abyss_mitm::{FlowContext, OriginalDestination, TransparentProtocol};
-    use http::HeaderMap;
+    use abyss_mitm::{
+        CapturedBody, FlowContext, HttpExchange, OriginalDestination, TransparentProtocol,
+        WebSocketDirection, WebSocketMessage,
+    };
+    use http::{HeaderMap, Request, Response};
 
     use crate::config::HarnessUsageConfig;
 
     use super::HarnessRegistry;
+
+    #[test]
+    fn codex_backend_does_not_identify_http_or_websocket_callers() {
+        let flow = FlowContext::from_optional_addrs(
+            None,
+            None,
+            OriginalDestination::from(SocketAddr::from(([127, 0, 0, 1], 443))),
+            TransparentProtocol::PlainHttp,
+            None,
+        );
+        let config = HarnessUsageConfig::default();
+        for (headers, expected) in [
+            (vec![], None),
+            // A generic Pi client is not identified by the Codex backend.
+            (
+                vec![("user-agent", "pi (darwin; arm64)"), ("originator", "pi")],
+                None,
+            ),
+            (
+                vec![
+                    ("user-agent", "HermesAgent/0.22.0"),
+                    ("originator", "hermes-agent"),
+                ],
+                Some("hermes"),
+            ),
+            // Hermes retains Codex compatibility headers for custom backends.
+            (
+                vec![
+                    ("user-agent", "codex_cli_rs/0.0.0 (Hermes Agent)"),
+                    ("originator", "codex_cli_rs"),
+                ],
+                Some("hermes"),
+            ),
+            (
+                vec![
+                    ("user-agent", "codex_cli_rs/0.1.0"),
+                    ("originator", "codex_cli_rs"),
+                    ("x-hermes-session-id", "session-1"),
+                ],
+                Some("hermes"),
+            ),
+            (vec![("user-agent", "another-codex-client/1.0")], None),
+            (vec![("originator", "my-codex-proxy")], None),
+            (
+                vec![("user-agent", "deepseek-harness/0.2.0")],
+                Some("deepseek-harness"),
+            ),
+            (
+                vec![("user-agent", "codex_cli_rs/0.1.0 (Mac OS)")],
+                Some("codex"),
+            ),
+            (vec![("originator", "codex_exec")], Some("codex")),
+            (vec![("x-codex-turn-metadata", "{}")], Some("codex")),
+        ] {
+            for path in ["/backend-api/codex/responses", "/v1/responses"] {
+                let mut request = Request::builder()
+                    .method("POST")
+                    .uri(path)
+                    .header("host", "chatgpt.com");
+                for (name, value) in &headers {
+                    request = request.header(*name, *value);
+                }
+                let exchange = HttpExchange::new(
+                    flow.clone(),
+                    request.body(CapturedBody::from_bytes("{}".into())).unwrap(),
+                    Response::new(CapturedBody::from_bytes("{}".into())),
+                );
+                let detected = HarnessRegistry::detect_http(&exchange, &config);
+                assert_eq!(
+                    detected
+                        .as_ref()
+                        .map(|detection| detection.harness_id.as_str()),
+                    expected,
+                    "HTTP {path} {headers:?}",
+                );
+
+                let (mut parts, _) = exchange.request.into_parts();
+                parts.method = http::Method::GET;
+                let message = WebSocketMessage::new(
+                    flow.clone(),
+                    Request::from_parts(parts, ()),
+                    WebSocketDirection::ClientToServer,
+                    1,
+                    Some("{}".to_owned()),
+                    None,
+                );
+                let detected = HarnessRegistry::detect_websocket(&message, &config);
+                assert_eq!(
+                    detected
+                        .as_ref()
+                        .map(|detection| detection.harness_id.as_str()),
+                    expected,
+                    "WebSocket {path} {headers:?}",
+                );
+            }
+        }
+    }
 
     #[test]
     fn deepseek_is_builtin_and_requires_its_user_agent_prefix() {
