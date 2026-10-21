@@ -252,6 +252,44 @@ fn client(fail_after: usize) -> Stream {
 }
 
 #[tokio::test]
+async fn diagnostic_message_stop_split_terminator() {
+    let payload = b"event: message_stop\ndata: {\"type\":\"message_stop\"}\n\n";
+    let chunk = [
+        format!("{:x}\r\n", payload.len()).as_bytes(),
+        payload.as_slice(),
+        b"\r\n",
+    ]
+    .concat();
+    for split_terminator in [false, true] {
+        let mut reads = vec![HEAD.to_vec(), chunk.clone()];
+        if split_terminator {
+            reads.extend([b"0\r\n".to_vec(), b"\r\n".to_vec()]);
+        } else {
+            reads.push(b"0\r\n\r\n".to_vec());
+        }
+        let (relay, mut events) = start_relay(client(HEAD.len() + chunk.len()), reads, 1024).await;
+        let outcome = relay.await.unwrap();
+        assert!(matches!(
+            outcome,
+            Err(TransparentFlowError::Io {
+                operation: FlowOperation::WriteAgentResponseBody,
+                ..
+            })
+        ));
+        let captured = tokio::time::timeout(Duration::from_millis(200), events.recv())
+            .await
+            .ok()
+            .flatten();
+        println!(
+            "DIAG: client consumed message_stop; split_http_terminator={split_terminator}; hook_received={}",
+            captured.is_some()
+        );
+        // This diagnostic asserts the current behavior, not the desired fix.
+        assert_eq!(captured.is_some(), !split_terminator);
+    }
+}
+
+#[tokio::test]
 async fn hook_waits_for_final_client_write_before_observing_complete_body() {
     let chunk = [b"e\r\n".as_slice(), PAYLOAD, b"\r\n"].concat();
     let length_head = format!(
