@@ -12,8 +12,8 @@ use http::HeaderMap;
 use crate::config::HarnessUsageConfig;
 
 use super::{
-    AgentDeclaration, BuiltInHarness, DeclarationSource, HarnessDetection, HarnessEvidence,
-    HarnessId, matcher::HarnessMatcher,
+    AgentDeclaration, BuiltInHarness, DeclarationSource, HarnessDetection, HarnessId,
+    matcher::HarnessMatcher,
 };
 
 /// Product-owned Harness recognition over generic flow and request metadata.
@@ -138,24 +138,6 @@ fn header<'a>(headers: &'a HeaderMap, name: &str) -> Option<&'a str> {
         .ok()
         .map(str::trim)
         .filter(|value| !value.is_empty())
-}
-
-// Match only the executable/name basename, never a parent directory or a
-// generic interpreter. Process identity comes from ingress, not HTTP headers.
-fn process_evidence(flow: &FlowContext, names: &[&str]) -> Option<HarnessEvidence> {
-    let source = flow.source_process.as_ref()?;
-    source
-        .name
-        .as_deref()
-        .into_iter()
-        .chain(source.executable_path.as_deref())
-        .find(|value| {
-            let basename = value.trim().rsplit(['/', '\\']).next().unwrap_or_default();
-            let normalized = basename.to_ascii_lowercase();
-            let normalized = normalized.strip_suffix(".exe").unwrap_or(&normalized);
-            names.contains(&normalized)
-        })
-        .map(|value| HarnessEvidence::Process(value.to_owned()))
 }
 
 fn client_version(user_agent: &str, prefixes: &[&str]) -> Option<String> {

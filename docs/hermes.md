@@ -8,16 +8,12 @@ protocol fallback applies; it does not guarantee correlation across user turns.
 
 Hermes is enabled by default, including with older policies. Use
 `abyss config harness disable hermes` to disable it. A Codex backend URL identifies
-a protocol, not the calling harness. Hermes process identity or request markers
-take precedence over Codex/Claude Code compatibility fingerprints, even when
-Hermes observation is disabled.
+a protocol, not the calling harness. Hermes request markers take precedence over
+Codex/Claude Code compatibility fingerprints, even when Hermes observation is disabled.
 
 Hermes' native Codex route sends `session_id`. It identifies itself with
 `HermesAgent/<version>` or `originator: hermes-agent`; its custom-backend
 `codex_cli_rs/... (Hermes Agent)` compatibility identity is also recognized.
-Ingress-supplied process names or executable basenames `hermes` and `hermes-agent`
-are also recognized, including Windows `.exe` names. A generic Python process
-does not identify Hermes. Process identity does not replace the session ID.
 
 Hermes 0.22's ordinary OpenAI API route does not send a session header by default.
 The included [Hermes plugin](../integrations/hermes/abyss) uses Hermes' supported

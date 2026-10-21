@@ -8,8 +8,8 @@ use abyss_agent_hook::{
     HooksRuntimeConfig,
 };
 use abyss_mitm::{
-    CapturedBody, FlowContext, HttpExchange, MitmHook, OriginalDestination, SourceProcess,
-    TransparentProtocol, WebSocketDirection, WebSocketMessage,
+    CapturedBody, FlowContext, HttpExchange, MitmHook, OriginalDestination, TransparentProtocol,
+    WebSocketDirection, WebSocketMessage,
 };
 use abyss_plugin_protocol::event::AgentEvent;
 use http::{Request, Response};
@@ -31,7 +31,6 @@ impl AgentEventSink for RecordingSink {
 struct Scenario {
     sink: Arc<RecordingSink>,
     hook: HarnessUsageHook<Arc<RecordingSink>>,
-    source_process: Option<SourceProcess>,
 }
 
 impl Scenario {
@@ -42,32 +41,17 @@ impl Scenario {
             HooksRuntimeConfig::new(serde_json::from_value::<HooksConfig>(policy).unwrap()),
             Arc::clone(&sink),
         );
-        Self {
-            sink,
-            hook,
-            source_process: None,
-        }
+        Self { sink, hook }
     }
 
-    fn with_process(mut self, name: Option<&str>, executable_path: Option<&str>) -> Self {
-        self.source_process = Some(SourceProcess::new(
-            None,
-            name.map(str::to_owned),
-            executable_path.map(str::to_owned),
-        ));
-        self
-    }
-
-    fn flow(&self) -> FlowContext {
-        let mut flow = FlowContext::from_optional_addrs(
+    fn flow() -> FlowContext {
+        FlowContext::from_optional_addrs(
             None,
             None,
             OriginalDestination::from(SocketAddr::from(([127, 0, 0, 1], 443))),
             TransparentProtocol::PlainHttp,
             None,
-        );
-        flow.source_process.clone_from(&self.source_process);
-        flow
+        )
     }
 
     fn response(id: &str) -> Value {
@@ -103,7 +87,7 @@ impl Scenario {
         }
         self.hook
             .on_http_exchange(&HttpExchange::new(
-                self.flow(),
+                Self::flow(),
                 builder
                     .body(CapturedBody::from_bytes(request.to_string().into()))
                     .unwrap(),
@@ -117,7 +101,7 @@ impl Scenario {
     }
 
     async fn websocket(&self, headers: &[(&str, &str)], requests: &[Value]) {
-        let flow = self.flow();
+        let flow = Self::flow();
         let mut builder = Request::builder()
             .uri("/backend-api/codex/responses")
             .header("host", "chatgpt.com");
@@ -196,54 +180,14 @@ async fn client_sessions_and_optional_user_turns_reach_all_protocol_events() {
 }
 
 #[tokio::test]
-async fn process_identity_attributes_generic_transports_with_native_sessions() {
-    for (harness, name, executable_path) in [
-        ("hermes", Some("hermes"), Some("/usr/bin/python3")),
-        ("hermes", Some("hermes-agent"), None),
-        ("hermes", None, Some("/opt/bin/hermes")),
-        ("hermes", None, Some(r"C:\Apps\Hermes.EXE")),
-    ] {
-        let scenario = Scenario::new(json!({})).with_process(name, executable_path);
-        let headers = [
-            ("user-agent", "pi (darwin; arm64)"),
-            ("originator", "pi"),
-            ("session_id", "native-session"),
-        ];
-        for path in [
-            "/backend-api/codex/responses",
-            "/v1/chat/completions",
-            "/v1/messages",
-        ] {
-            scenario.http(&headers, path, "resp-http").await;
-        }
-        scenario
-            .websocket(
-                &headers,
-                &[
-                    json!({"type": "response.create", "model": "test", "input": "hello"}),
-                    json!({"type": "response.create", "model": "test", "input": "again"}),
-                ],
-            )
-            .await;
-        let events = scenario.sink.0.lock();
-        assert_eq!(events.len(), 10, "{name:?} {executable_path:?}");
-        for event in events.iter() {
-            assert_eq!(event.agent.name, harness);
-            assert_eq!(event.session_id, "native-session");
-            assert!(event.turn_id.is_none());
-            assert!(event.response_id.is_some());
-        }
-    }
-}
-
-#[tokio::test]
-async fn process_detection_uses_protocol_fallback_and_respects_policy() {
+async fn header_detection_uses_protocol_fallback_and_respects_policy() {
     let harness = "hermes";
-    let missing_session = Scenario::new(json!({})).with_process(Some(harness), None);
+    let missing_session = Scenario::new(json!({}));
+    let identity = [("user-agent", "HermesAgent/0.22.0")];
     missing_session
-        .http(&[], "/v1/responses", "resp-http")
+        .http(&identity, "/v1/responses", "resp-http")
         .await;
-    missing_session.websocket(&[], &[
+    missing_session.websocket(&identity, &[
         json!({"type": "response.create", "model": "test", "input": "hello", "prompt_cache_key": "not-session"}),
     ]).await;
     {
@@ -258,11 +202,11 @@ async fn process_detection_uses_protocol_fallback_and_respects_policy() {
     for enabled in [true, false] {
         let scenario = Scenario::new(json!({"harness_usage": {"config": {"harnesses": {
             harness: {"enabled": enabled, "content": {"conversation_text": false}}
-        }}}}))
-        .with_process(Some(harness), None);
-        // Process attribution wins over transport compatibility headers.
+        }}}}));
+        // Hermes request markers win over transport compatibility headers.
         let headers = [
             ("user-agent", "codex_cli_rs/1.0"),
+            ("originator", "hermes-agent"),
             ("session_id", "session"),
         ];
         scenario
@@ -280,37 +224,6 @@ async fn process_detection_uses_protocol_fallback_and_respects_policy() {
             assert_eq!(event.agent.name, harness);
             assert!(event.text.is_none());
         }
-    }
-}
-
-#[tokio::test]
-async fn generic_interpreters_and_similar_process_names_are_not_client_identity() {
-    for (name, executable_path) in [
-        (Some("node"), Some("/opt/hermes-agent/bin/node")),
-        (Some("python3"), Some("/opt/hermes-agent/bin/python3")),
-        (Some("pi"), None),
-        (Some("hermes-helper"), None),
-        (Some("my-hermes"), None),
-        (None, None),
-    ] {
-        let scenario = Scenario::new(json!({})).with_process(name, executable_path);
-        let headers = [
-            ("user-agent", "pi (darwin; arm64)"),
-            ("session_id", "native-session"),
-        ];
-        scenario
-            .http(&headers, "/backend-api/codex/responses", "resp-http")
-            .await;
-        scenario
-            .websocket(
-                &headers,
-                &[json!({"type": "response.create", "model": "test", "input": "hello"})],
-            )
-            .await;
-        assert!(
-            scenario.sink.0.lock().is_empty(),
-            "{name:?} {executable_path:?}"
-        );
     }
 }
 

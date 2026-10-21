@@ -7,7 +7,7 @@ use crate::harness::{
     AgentDeclaration, BuiltInHarness, DeclarationSource, HarnessDetection, HarnessEvidence,
 };
 
-use super::{HarnessDetector, client_version, header, process_evidence};
+use super::{HarnessDetector, client_version, header};
 
 const SESSION_ID: &str = "x-hermes-session-id";
 const TURN_ID: &str = "x-hermes-turn-id";
@@ -23,9 +23,6 @@ impl HarnessDetector for HermesDetector {
     ) -> Option<HarnessDetection> {
         let user_agent = header(headers, "user-agent").unwrap_or_default();
         let normalized = user_agent.to_ascii_lowercase();
-        let mut evidence = process_evidence(flow, &["hermes", "hermes-agent"])
-            .into_iter()
-            .collect::<Vec<_>>();
         let marker = if header(headers, SESSION_ID).is_some() {
             Some(SESSION_ID)
         } else if normalized.starts_with("hermesagent/") || normalized.contains("(hermes agent)") {
@@ -36,16 +33,10 @@ impl HarnessDetector for HermesDetector {
             Some("originator")
         } else {
             None
-        };
-        if let Some(marker) = marker {
-            evidence.push(HarnessEvidence::Header(marker));
-        }
-        if evidence.is_empty() {
-            return None;
-        }
+        }?;
         Some(HarnessDetection {
             harness_id: BuiltInHarness::Hermes.into(),
-            evidence,
+            evidence: vec![HarnessEvidence::Header(marker)],
             // Do not report a compatibility codex_cli_rs version as Hermes'.
             version: client_version(user_agent, &["hermesagent/"]),
             working_directory: flow.source_working_directory().map(str::to_owned),
