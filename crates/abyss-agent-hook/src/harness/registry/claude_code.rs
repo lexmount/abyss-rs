@@ -49,6 +49,7 @@ pub(super) fn declare(source: &DeclarationSource<'_>) -> AgentDeclaration {
         None
     };
     AgentDeclaration {
+        session_id: None,
         turn_id: header(PROMPT_ID).map(str::to_owned),
         stream_id: stream_id.map(str::to_owned),
         naming_thread: false,
@@ -199,6 +200,7 @@ mod tests {
             body: None,
             client_metadata: None,
             response_texts: &[],
+            ..DeclarationSource::default()
         })
     }
 
@@ -273,6 +275,7 @@ mod tests {
             body: Some(body),
             client_metadata: None,
             response_texts: &[reply.to_owned()],
+            ..DeclarationSource::default()
         })
     }
 

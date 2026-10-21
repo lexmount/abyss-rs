@@ -385,7 +385,10 @@ pub fn normalize_exchange<E>(
 where
     E: NormalizableExchange,
 {
-    let parts = parsed.event_parts(content, detection, provider);
+    let mut parts = parsed.event_parts(content, detection, provider);
+    if let Some(session_id) = &declaration.session_id {
+        parts.session_id.clone_from(session_id);
+    }
     let continuation = parsed.continuation();
     // Only the traffic names these; without a declaration the events carry none.
     let declared = Declared {
@@ -1196,6 +1199,7 @@ mod tests {
             response_id: Some("response-1".to_owned()),
             previous_response_id: None,
             client_metadata: None,
+            request_metadata: None,
             request_tool_events: Vec::new(),
             response_tool_events: Vec::new(),
             model: Some("model-test".to_owned()),

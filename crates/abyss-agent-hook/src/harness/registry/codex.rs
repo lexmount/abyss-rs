@@ -1,5 +1,6 @@
 //! Codex detection from product-owned process and request markers, and the
 //! turn context Codex declares in its `x-codex-turn-metadata`.
+//! Backend routes select a protocol, never the identity of its caller.
 
 use abyss_mitm::FlowContext;
 use abyss_plugin_protocol::event::EventPurpose;
@@ -38,6 +39,7 @@ pub(super) fn declare(source: &DeclarationSource<'_>) -> AgentDeclaration {
     };
     let field = |key| string_field(&metadata, key).map(str::to_owned);
     AgentDeclaration {
+        session_id: None,
         // A guardian thread shares `root_turn_id` with the turn it reviews.
         turn_id: field("root_turn_id"),
         // The main thread and a guardian differ in `thread_id`.
@@ -64,8 +66,10 @@ impl HarnessDetector for CodexDetector {
         &self,
         flow: &FlowContext,
         headers: &HeaderMap,
-        path: &str,
+        _path: &str,
     ) -> Option<HarnessDetection> {
+        let user_agent = header(headers, "user-agent").unwrap_or_default();
+        let originator = header(headers, "originator").unwrap_or_default();
         let mut evidence = Vec::new();
         if let Some(process) = flow.source_process.as_ref()
             && process
@@ -83,13 +87,11 @@ impl HarnessDetector for CodexDetector {
         {
             evidence.push(HarnessEvidence::Header("x-codex-*"));
         }
-        let user_agent = header(headers, "user-agent").unwrap_or_default();
-        let originator = header(headers, "originator").unwrap_or_default();
-        if format!("{path} {user_agent} {originator}")
-            .to_ascii_lowercase()
-            .contains("codex")
-        {
-            evidence.push(HarnessEvidence::Path(path.to_owned()));
+        if Self::is_codex_client(user_agent.split('/').next().unwrap_or_default()) {
+            evidence.push(HarnessEvidence::Header("user-agent"));
+        }
+        if Self::is_codex_client(originator) {
+            evidence.push(HarnessEvidence::Header("originator"));
         }
         if evidence.is_empty() {
             return None;
@@ -100,6 +102,22 @@ impl HarnessDetector for CodexDetector {
             version: client_version(user_agent, &["codex/tui/", "codex/desktop/", "codex/"]),
             working_directory: flow.source_working_directory().map(str::to_owned),
         })
+    }
+}
+
+impl CodexDetector {
+    fn is_codex_client(name: &str) -> bool {
+        let name = name.to_ascii_lowercase();
+        matches!(
+            name.as_str(),
+            "codex"
+                | "codex_cli_rs"
+                | "codex-tui"
+                | "codex_vscode"
+                | "codex_exec"
+                | "codex_atlas"
+                | "codex_chatgpt_desktop"
+        ) || name.starts_with("codex ")
     }
 }
 
@@ -114,13 +132,56 @@ fn normalize(value: &str) -> String {
 
 #[cfg(test)]
 mod tests {
+    use std::net::SocketAddr;
+
+    use abyss_mitm::{FlowContext, OriginalDestination, SourceProcess, TransparentProtocol};
     use abyss_plugin_protocol::event::EventPurpose;
     use http::HeaderMap;
     use serde_json::{Value, json};
 
     use crate::harness::{AgentDeclaration, DeclarationSource};
 
-    use super::declare;
+    use super::{CodexDetector, HarnessDetector, declare};
+
+    #[test]
+    fn detection_records_client_headers_and_process_instead_of_backend_path() {
+        let mut flow = FlowContext::from_optional_addrs(
+            None,
+            None,
+            OriginalDestination::from(SocketAddr::from(([127, 0, 0, 1], 443))),
+            TransparentProtocol::PlainHttp,
+            None,
+        );
+        for (name, value) in [
+            ("user-agent", "codex/tui/1.2.3"),
+            ("user-agent", "codex/desktop/1.2.3"),
+            ("user-agent", "codex_cli_rs/1.2.3 (Mac OS)"),
+            ("user-agent", "codex-tui/1.2.3"),
+            ("user-agent", "codex_vscode/1.2.3"),
+            ("user-agent", "Codex Desktop/1.2.3"),
+            ("originator", "codex_cli_rs"),
+            ("originator", "codex_exec"),
+        ] {
+            let mut headers = HeaderMap::new();
+            headers.insert(name, value.parse().unwrap());
+            let detection = CodexDetector
+                .detect(&flow, &headers, "/v1/responses")
+                .unwrap_or_else(|| panic!("{name}: {value}"));
+            assert_eq!(detection.harness_id.as_str(), "codex");
+            assert_eq!(detection.evidence_names(), [format!("header:{name}")]);
+        }
+
+        flow.source_process = Some(SourceProcess::new(
+            None,
+            Some("/usr/local/bin/codex".to_owned()),
+            None,
+        ));
+        let detection = CodexDetector
+            .detect(&flow, &HeaderMap::new(), "/v1/responses")
+            .unwrap();
+        assert_eq!(detection.harness_id.as_str(), "codex");
+        assert_eq!(detection.evidence_names(), ["process:/usr/local/bin/codex"]);
+    }
 
     fn declared(client_metadata: Option<&Value>, headers: Option<&HeaderMap>) -> AgentDeclaration {
         declare(&DeclarationSource {
@@ -128,6 +189,7 @@ mod tests {
             body: None,
             client_metadata,
             response_texts: &[],
+            ..DeclarationSource::default()
         })
     }
 

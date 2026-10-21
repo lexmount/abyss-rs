@@ -114,6 +114,9 @@ pub fn parse_openai_websocket_message(message: &WebSocketMessage) -> OpenAiWebSo
             None
         },
         request_tool_events,
+        request_metadata: is_client_message
+            .then(|| request_payload.get("metadata").cloned())
+            .flatten(),
         response_tool_events: Vec::new(),
         model: first_model(std::slice::from_ref(&payload)),
         event_types: if is_client_message {

@@ -119,6 +119,15 @@ where
     where
         E: NormalizableExchange,
     {
+        if HarnessRegistry::requires_session(&detection.harness_id)
+            && declaration.session_id.is_none()
+        {
+            tracing::debug!(
+                harness = detection.harness_id.as_str(),
+                "skipping request without a client session id"
+            );
+            return Vec::new();
+        }
         normalize_exchange(
             &self.config,
             parsed,
@@ -155,8 +164,10 @@ where
             &detection.harness_id,
             &DeclarationSource {
                 headers: None,
+                upgrade_headers: Some(message.upgrade_request.headers()),
                 body: None,
                 client_metadata: parsed.client_metadata.as_ref(),
+                metadata: parsed.request_metadata.as_ref(),
                 response_texts: &parsed.response_texts,
             },
         );
@@ -208,8 +219,14 @@ fn http_declaration(
         &detection.harness_id,
         &DeclarationSource {
             headers: Some(exchange.request.headers()),
+            upgrade_headers: None,
             body: exchange.request.body().json(),
             client_metadata,
+            metadata: exchange
+                .request
+                .body()
+                .json()
+                .and_then(|body| body.get("metadata")),
             response_texts,
         },
     )
