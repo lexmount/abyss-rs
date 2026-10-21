@@ -505,7 +505,8 @@ validate_codex_pair() {
   jq -e \
     --arg marker "${marker}" \
     '
-      (.request.text | type == "string" and contains($marker))
+      any(.request.metadata.conversation.entries[]?;
+        .role == "user" and (.text | contains($marker)))
       and .request.agent_name == "codex"
       and .response.agent_name == "codex"
       and .request.llm_provider == "openai"
@@ -516,7 +517,8 @@ validate_codex_pair() {
       and .request.output_tokens == 0
       and .request.total_tokens
         == (.request.input_tokens + .request.cache_read_tokens + .request.cache_write_tokens)
-      and (.response.text | type == "string" and length > 0)
+      and any(.response.metadata.conversation.entries[]?;
+        .role == "assistant" and (.text | length > 0))
       and .response.input_tokens == 0
       and .response.output_tokens > 0
       and .response.total_tokens == .response.output_tokens

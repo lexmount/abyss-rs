@@ -112,6 +112,21 @@ def valid_verdict() -> dict[str, object]:
     }
 
 
+def stored_event(event_id: str, session_id: str, text: str) -> dict[str, object]:
+    """A Backend raw event whose content is one user conversation entry."""
+
+    return {
+        "event_id": event_id,
+        "session_id": session_id,
+        "metadata": {
+            "conversation": {
+                "entries": [{"role": "user", "text": text}],
+                "completeness": "complete",
+            }
+        },
+    }
+
+
 def runtime_config(root: Path) -> RuntimeConfig:
     return RuntimeConfig(
         repo_root=Path(__file__).parents[2],
@@ -490,9 +505,31 @@ class CodexObservationTests(unittest.TestCase):
             ),
         )
         events = [
-            {"event_id": "1", "session_id": "thread-1", "text": "MARKER prompt"},
-            {"event_id": "2", "session_id": "thread-1", "text": "tool output"},
-            {"event_id": "3", "session_id": "thread-2", "text": "unrelated"},
+            stored_event("1", "thread-1", "MARKER prompt"),
+            stored_event("2", "thread-1", "tool output"),
+            stored_event("3", "thread-2", "unrelated"),
+        ]
+        selected = BackendEvidenceCollector._events_for(result, events)
+        self.assertEqual([event["event_id"] for event in selected], ["1", "2"])
+
+    def test_backend_correlation_finds_marker_sessions_in_conversation_entries(self) -> None:
+        result = CodexOrchestrator._b_result(
+            "case",
+            "MARKER",
+            CommandResult(
+                args=("codex",),
+                returncode=0,
+                stdout="",
+                stderr="",
+                duration_seconds=0.1,
+                timed_out=False,
+            ),
+        )
+        events = [
+            stored_event("1", "session-1", "MARKER prompt"),
+            stored_event("2", "session-1", "reply"),
+            stored_event("3", "session-2", "unrelated"),
+            {"event_id": "4", "session_id": "session-3", "metadata": {}},
         ]
         selected = BackendEvidenceCollector._events_for(result, events)
         self.assertEqual([event["event_id"] for event in selected], ["1", "2"])

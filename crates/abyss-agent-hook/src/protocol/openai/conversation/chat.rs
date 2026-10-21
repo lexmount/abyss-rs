@@ -15,10 +15,8 @@ use super::{
     output_text, slot_index,
 };
 
-/// Appends the entries of `messages`, returning the event text of the user
-/// messages.
-pub(super) fn push_request(request: &mut OpenAiRequest, payload: &Value) -> Vec<String> {
-    let mut user_texts = Vec::new();
+/// Appends the entries of `messages`.
+pub(super) fn push_request(request: &mut OpenAiRequest, payload: &Value) {
     for message in payload
         .get("messages")
         .and_then(Value::as_array)
@@ -26,17 +24,8 @@ pub(super) fn push_request(request: &mut OpenAiRequest, payload: &Value) -> Vec<
         .flatten()
     {
         request.carries_messages = true;
-        if message
-            .get("role")
-            .and_then(Value::as_str)
-            .map(Projection::role)
-            == Some(EntryRole::User)
-        {
-            user_texts.extend(OpenAiContent::item_text(message));
-        }
         OpenAiContent::item_entries(message, EntryRole::Unknown, &mut request.entries);
     }
-    user_texts
 }
 
 /// The entry of a `tool` message: the result of one call.

@@ -51,6 +51,9 @@ def assert_structured(events):
     assert len({event["event_id"] for event in events}) == len(events), events
     for event in events:
         assert "raw_body" not in event, event
+        # Content is carried only by the conversation entries.
+        for field in ("text", "tool_calls", "tool_results"):
+            assert field not in event, event
         conversation = event["conversation"]
         assert "payloads" not in conversation, event
         assert set(conversation) == {"entries", "completeness"}, event

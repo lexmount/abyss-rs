@@ -15,16 +15,15 @@ use crate::protocol::{
         digest::sha256_hex,
         image::{ParsedImageAttachment, extract_anthropic_request_images},
         text::non_empty_trimmed,
-        tool::ParsedToolEvent,
         usage::{TokenUsage, TokenUsageSource},
     },
     sse::ResponseDocuments,
 };
 
 use super::super::messages::{
-    best_usage, claude_web_file_uuids, estimated_visible_usage, event_types,
-    extract_request_tool_events, extract_response_tool_events, first_model, first_stop_reason,
-    flow_server_name, request_host, string_field, transport_name, turn_message_uuids,
+    best_usage, claude_web_file_uuids, estimated_visible_usage, event_types, first_model,
+    first_stop_reason, flow_server_name, request_host, string_field, transport_name,
+    turn_message_uuids,
 };
 
 /// Source used to derive the Claude Web session id.
@@ -66,18 +65,10 @@ pub struct ParsedClaudeWebExchange {
     pub request_conversation: abyss_plugin_protocol::event::Conversation,
     /// Structured response messages assembled from the response documents.
     pub response_conversation: abyss_plugin_protocol::event::Conversation,
-    /// User-visible prompt fragments derived from the request messages.
-    pub request_texts: Vec<String>,
     /// Validated image attachments embedded in user request content.
     pub request_images: Vec<ParsedImageAttachment>,
     /// File UUIDs referencing images uploaded through the Claude Web file API.
     pub request_file_uuids: Vec<String>,
-    /// Tool results submitted on the request side of this provider call.
-    pub request_tool_events: Vec<ParsedToolEvent>,
-    /// Tool calls and results streamed on the response side.
-    pub response_tool_events: Vec<ParsedToolEvent>,
-    /// Assistant response fragments derived from the response messages.
-    pub response_texts: Vec<String>,
     /// Provider token counters or a visible-content estimate when absent.
     pub usage: TokenUsage,
     /// Whether token counters were provider-reported or estimated.
@@ -108,15 +99,13 @@ pub fn parse_claude_web_exchange(exchange: &HttpExchange) -> Option<ParsedClaude
     let path = exchange.request.uri().path();
     let conversation_id = completion_conversation_id(path)?;
     let request_json = exchange.request.body().json()?;
-    let request = AnthropicRequest::parse(request_json, exchange.request.body().truncated());
-    let request_texts = request.texts();
+    let request_conversation =
+        AnthropicRequest::parse(request_json, exchange.request.body().truncated()).conversation();
     let request_images = extract_anthropic_request_images(request_json);
     let request_file_uuids = claude_web_file_uuids(request_json);
-    let request_tool_events = extract_request_tool_events(request_json);
-    if request_texts.is_empty()
+    if request_conversation.entries.is_empty()
         && request_images.is_empty()
         && request_file_uuids.is_empty()
-        && request_tool_events.is_empty()
     {
         return None;
     }
@@ -124,18 +113,12 @@ pub fn parse_claude_web_exchange(exchange: &HttpExchange) -> Option<ParsedClaude
     let response_documents = ResponseDocuments::decode(exchange.response.body());
     let response_values = response_documents.values;
     let response = AnthropicResponse::assemble(&response_values, response_documents.incomplete);
-    let response_texts = response.texts();
-    let response_tool_events = extract_response_tool_events(&response_values);
+    let response_conversation = response.conversation();
     let (usage, usage_source) = best_usage(&response_values)
         .or_else(|| best_usage(std::slice::from_ref(request_json)))
         .map_or_else(
             || {
-                let usage = estimated_visible_usage(
-                    &request_texts,
-                    &request_tool_events,
-                    &response_texts,
-                    &response_tool_events,
-                );
+                let usage = estimated_visible_usage(&request_conversation, &response_conversation);
                 let source = if usage.is_empty() {
                     TokenUsageSource::Absent
                 } else {
@@ -162,14 +145,10 @@ pub fn parse_claude_web_exchange(exchange: &HttpExchange) -> Option<ParsedClaude
         session_id: conversation_id.to_owned(),
         session_id_source: ClaudeWebSessionIdSource::ConversationPath,
         request_hash,
-        request_conversation: request.conversation(),
-        response_conversation: response.conversation(),
-        request_texts,
+        request_conversation,
+        response_conversation,
         request_images,
         request_file_uuids,
-        request_tool_events,
-        response_tool_events,
-        response_texts,
         usage,
         usage_source,
         message_id: response
@@ -211,10 +190,11 @@ mod tests {
     use abyss_mitm::{
         CapturedBody, FlowContext, HttpExchange, OriginalDestination, TransparentProtocol,
     };
+    use abyss_plugin_protocol::event::EntryRole;
     use http::{Request, Response};
     use serde_json::json;
 
-    use crate::protocol::model::usage::TokenUsageSource;
+    use crate::protocol::model::{conversation::role_texts, usage::TokenUsageSource};
 
     use super::parse_claude_web_exchange;
 
@@ -240,13 +220,42 @@ mod tests {
         let parsed = parse_claude_web_exchange(&exchange).expect("Claude Web exchange");
 
         assert_eq!(parsed.session_id, "conversation-1");
-        assert_eq!(parsed.request_texts, vec!["hello desktop"]);
-        assert_eq!(parsed.response_texts, vec!["hello user"]);
+        assert_eq!(
+            role_texts(&parsed.request_conversation),
+            [(EntryRole::User, "hello desktop")]
+        );
+        assert_eq!(
+            role_texts(&parsed.response_conversation),
+            [(EntryRole::Assistant, "hello user")]
+        );
         assert_eq!(parsed.request_file_uuids, vec!["file-1"]);
         assert!(matches!(
             parsed.usage_source,
             TokenUsageSource::EstimatedVisibleContent
         ));
+        // One token per four bytes of trimmed entry text.
+        assert_eq!(parsed.usage.input_tokens, 4);
+        assert_eq!(parsed.usage.output_tokens, 3);
+    }
+
+    #[test]
+    fn estimates_usage_from_every_entry_and_tool_names() {
+        let exchange = completion_exchange(
+            "POST",
+            &json!({"prompt": "hi"}),
+            concat!(
+                "data: {\"type\":\"content_block_start\",\"index\":0,\"content_block\":",
+                "{\"type\":\"thinking\",\"thinking\":\"plan\"}}\n\n",
+                "data: {\"type\":\"content_block_start\",\"index\":1,\"content_block\":",
+                "{\"type\":\"tool_use\",\"id\":\"t1\",\"name\":\"web\",\"input\":{\"q\":1}}}\n\n"
+            ),
+        );
+
+        let parsed = parse_claude_web_exchange(&exchange).expect("Claude Web exchange");
+
+        assert_eq!(parsed.usage.input_tokens, 1);
+        // `plan` (4) + `web` (3) + `{"q":1}` (7) bytes.
+        assert_eq!(parsed.usage.output_tokens, 4);
     }
 
     #[test]

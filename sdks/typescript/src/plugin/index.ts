@@ -13,8 +13,6 @@ export type {
   ImageMediaType,
   LlmContext,
   TokenUsage,
-  ToolCall,
-  ToolResult,
 } from "../event.js";
 export {
   BrokerPluginError,

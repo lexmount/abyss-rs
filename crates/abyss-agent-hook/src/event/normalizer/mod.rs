@@ -6,12 +6,12 @@ mod openai;
 use abyss_plugin_protocol::event::{
     AgentContext as PluginAgentContext, AgentEvent, AgentEventSide, ContentCategory, Conversation,
     DeviceContext, EntryRole, EventPurpose, HttpHeader, ImageAttachment, ImageMediaType,
-    LlmContext, LlmProvider, TokenUsage as PluginTokenUsage, ToolCall, ToolResult,
+    LlmContext, LlmProvider, TokenUsage as PluginTokenUsage,
 };
 use base64::{Engine as _, engine::general_purpose::STANDARD};
 use chrono::{DateTime, SecondsFormat, TimeDelta, Utc};
 use serde::Serialize;
-use serde_json::{Map, Value, json};
+use serde_json::{Value, json};
 use thiserror::Error;
 
 use crate::{
@@ -20,7 +20,6 @@ use crate::{
     harness::{AgentDeclaration, BuiltInHarness, HarnessDetection},
     protocol::model::digest::sha256_hex,
     protocol::model::image::ParsedImageAttachment,
-    protocol::model::tool::ParsedToolEvent,
     protocol::model::usage::{TokenUsage, TokenUsageSource},
 };
 
@@ -42,9 +41,6 @@ pub enum AgentEventConversionError {
     /// A token counter was negative before public normalization.
     #[error("{name} must be non-negative, got {value}")]
     NegativeTokenCounter { name: &'static str, value: i64 },
-    /// A known structured tool segment omitted a required string field.
-    #[error("structured content segment is missing string field `{field}`")]
-    MissingToolField { field: &'static str },
     /// An attachment media type is outside protocol version 1.
     #[error("unsupported image media type `{value}`")]
     UnsupportedImageMediaType { value: &'static str },
@@ -94,12 +90,10 @@ pub struct NormalizedUsageEvent {
     pub llm: LlmPayload,
     /// Logical event side: currently `request` or `response`.
     pub event_type: &'static str,
-    /// Plaintext request or response content extracted by the hook.
-    pub text: Option<String>,
     /// Content categories the effective policy omitted from this event.
     #[serde(skip_serializing_if = "Vec::is_empty")]
     pub omitted: Vec<ContentCategory>,
-    /// Structured provider content retained independently of the text projection.
+    /// Role-aware request or response entries after content policy.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub conversation: Option<Conversation>,
     /// Captured headers of this event's side, credential values redacted.
@@ -129,12 +123,11 @@ impl TryFrom<NormalizedUsageEvent> for AgentEvent {
             purpose,
             llm,
             event_type,
-            text,
             omitted,
             conversation,
             headers,
             token_usage,
-            metadata,
+            metadata: _,
             attachments,
         } = event;
         let occurred_at = DateTime::parse_from_rfc3339(&observed_at)
@@ -148,7 +141,6 @@ impl TryFrom<NormalizedUsageEvent> for AgentEvent {
             "response" => AgentEventSide::Response,
             value => return Err(AgentEventConversionError::UnsupportedEventSide { value }),
         };
-        let (tool_calls, tool_results) = plugin_tool_activity(metadata)?;
 
         Ok(Self {
             event_id,
@@ -171,13 +163,10 @@ impl TryFrom<NormalizedUsageEvent> for AgentEvent {
                 model: llm.model,
             },
             side,
-            text,
             omitted,
             conversation,
             headers,
             token_usage: token_usage.try_into()?,
-            tool_calls,
-            tool_results,
             attachments: attachments
                 .into_iter()
                 .map(ImageAttachment::try_from)
@@ -207,56 +196,6 @@ impl TryFrom<TokenUsage> for PluginTokenUsage {
 fn non_negative_counter(name: &'static str, value: i64) -> Result<u64, AgentEventConversionError> {
     u64::try_from(value)
         .map_err(|_| AgentEventConversionError::NegativeTokenCounter { name, value })
-}
-
-fn plugin_tool_activity(
-    mut metadata: Value,
-) -> Result<(Vec<ToolCall>, Vec<ToolResult>), AgentEventConversionError> {
-    let segments = metadata
-        .as_object_mut()
-        .and_then(|metadata| metadata.remove("content_segments"))
-        .and_then(|segments| match segments {
-            Value::Array(segments) => Some(segments),
-            _ => None,
-        })
-        .unwrap_or_default();
-
-    segments.into_iter().try_fold(
-        (Vec::new(), Vec::new()),
-        |(mut tool_calls, mut tool_results), segment| {
-            let Value::Object(mut segment) = segment else {
-                return Ok((tool_calls, tool_results));
-            };
-            match take_segment_string(&mut segment, "type").as_deref() {
-                Ok("tool_call") => tool_calls.push(ToolCall {
-                    call_id: take_segment_string(&mut segment, "call_id")?,
-                    name: take_segment_string(&mut segment, "name")?,
-                    input: take_segment_string(&mut segment, "input")?,
-                    input_sha256: take_segment_string(&mut segment, "input_sha256")?,
-                }),
-                Ok("tool_result") => tool_results.push(ToolResult {
-                    call_id: take_segment_string(&mut segment, "call_id")?,
-                    output: take_segment_string(&mut segment, "output")?,
-                    output_sha256: take_segment_string(&mut segment, "output_sha256")?,
-                }),
-                Ok(_) | Err(_) => {}
-            }
-            Ok((tool_calls, tool_results))
-        },
-    )
-}
-
-fn take_segment_string(
-    segment: &mut Map<String, Value>,
-    field: &'static str,
-) -> Result<String, AgentEventConversionError> {
-    segment
-        .remove(field)
-        .and_then(|value| match value {
-            Value::String(value) => Some(value),
-            _ => None,
-        })
-        .ok_or(AgentEventConversionError::MissingToolField { field })
 }
 
 impl TryFrom<NormalizedImageAttachment> for ImageAttachment {
@@ -356,7 +295,6 @@ pub trait NormalizableExchange {
 
     fn event_parts(
         &self,
-        content: &HarnessUsageContentConfig,
         detection: &HarnessDetection,
         provider: &LlmProvider,
     ) -> ParsedEventParts<'_>;
@@ -377,7 +315,7 @@ pub fn normalize_exchange<E>(
 where
     E: NormalizableExchange,
 {
-    let parts = parsed.event_parts(content, detection, provider);
+    let parts = parsed.event_parts(detection, provider);
     let continuation = parsed.continuation();
     // Only the traffic names these; without a declaration the events carry none.
     let declared = Declared {
@@ -407,16 +345,10 @@ pub struct ParsedEventParts<'a> {
     response_identity: String,
     request_conversation: &'a Conversation,
     response_conversation: &'a Conversation,
-    request_text: String,
     request_images: Vec<ParsedImageAttachment>,
-    response_text: String,
     usage: TokenUsage,
     usage_source: TokenUsageSource,
     metadata: Value,
-    request_metadata: Value,
-    response_metadata: Value,
-    request_has_structured_content: bool,
-    response_has_structured_content: bool,
     allow_request_without_response: bool,
 }
 
@@ -441,7 +373,6 @@ struct Declared<'a> {
 struct EventSide<'a> {
     event_type: &'static str,
     conversation: &'a Conversation,
-    text: &'a str,
     token_usage: TokenUsage,
     metadata: Value,
     attachments: &'a [ParsedImageAttachment],
@@ -497,15 +428,14 @@ fn events_for_parsed_exchange(
     // authoritative usage, and compressed/streaming response bodies can be
     // unavailable to the first-pass parser. The prompt itself is still a useful
     // desktop audit event when request-only fallback is enabled.
-    let has_request_only_fallback = parts.allow_request_without_response
-        && (!parts.request_text.is_empty()
-            || !parts.request_images.is_empty()
-            || parts.request_has_structured_content);
-    if parts.response_text.is_empty()
-        && parts.usage.is_empty()
-        && !parts.response_has_structured_content
-        && !has_request_only_fallback
-    {
+    //
+    // A side carries content when its conversation has an entry, before the
+    // content policy empties any text.
+    let request_has_content =
+        !parts.request_conversation.entries.is_empty() || !parts.request_images.is_empty();
+    let response_has_content = !parts.response_conversation.entries.is_empty();
+    let has_request_only_fallback = parts.allow_request_without_response && request_has_content;
+    if !response_has_content && parts.usage.is_empty() && !has_request_only_fallback {
         return Vec::new();
     }
 
@@ -533,21 +463,15 @@ fn events_for_parsed_exchange(
     let mut events = Vec::new();
     let mut timestamps = EventTimestampSequence::new();
     let request_usage = parts.usage.request_side();
-    if !parts.request_text.is_empty()
-        || !parts.request_images.is_empty()
-        || !request_usage.is_empty()
-        || parts.request_has_structured_content
-    {
-        let request_metadata = merge_metadata(metadata.clone(), &parts.request_metadata);
+    if request_has_content || !request_usage.is_empty() {
         events.push(usage_event(
             config,
             parts,
             EventSide {
                 event_type: "request",
                 conversation: parts.request_conversation,
-                text: &parts.request_text,
                 token_usage: retained_token_usage(request_usage, content),
-                metadata: request_metadata,
+                metadata: metadata.clone(),
                 attachments: &parts.request_images,
                 headers: &headers.request,
                 content,
@@ -558,20 +482,15 @@ fn events_for_parsed_exchange(
     }
 
     let response_usage = parts.usage.response_side();
-    if !parts.response_text.is_empty()
-        || !response_usage.is_empty()
-        || parts.response_has_structured_content
-    {
-        let response_metadata = merge_metadata(metadata, &parts.response_metadata);
+    if response_has_content || !response_usage.is_empty() {
         events.push(usage_event(
             config,
             parts,
             EventSide {
                 event_type: "response",
                 conversation: parts.response_conversation,
-                text: &parts.response_text,
                 token_usage: retained_token_usage(response_usage, content),
-                metadata: response_metadata,
+                metadata,
                 attachments: &[],
                 headers: &headers.response,
                 content,
@@ -628,30 +547,6 @@ fn omitted_categories(content: &HarnessUsageContentConfig) -> Vec<ContentCategor
     .collect()
 }
 
-fn content_segments_metadata(
-    tool_events: &[ParsedToolEvent],
-    images: &[ParsedImageAttachment],
-    content: &HarnessUsageContentConfig,
-) -> Value {
-    if (!content.tool_calls || tool_events.is_empty()) && (!content.images || images.is_empty()) {
-        return json!({});
-    }
-
-    let mut content_segments = Vec::new();
-    if content.tool_calls {
-        content_segments.extend(tool_events.iter().map(tool_event_metadata));
-    }
-    if content.images {
-        content_segments.extend(
-            images
-                .iter()
-                .enumerate()
-                .map(|(position, image)| image_event_metadata(position, image)),
-        );
-    }
-    json!({"content_segments": content_segments})
-}
-
 fn projected_provider_metadata(metadata: &Value, content: &HarnessUsageContentConfig) -> Value {
     let mut metadata = metadata.clone();
     let Some(object) = metadata.as_object_mut() else {
@@ -659,9 +554,9 @@ fn projected_provider_metadata(metadata: &Value, content: &HarnessUsageContentCo
     };
 
     // Provider event type lists are a raw structural view and can reveal that
-    // a disabled tool or image category was present even after normalized
-    // content segments are removed. Keep them only when every normalized
-    // event content category is enabled.
+    // a disabled tool or image category was present even after the policy
+    // empties that content. Keep them only when every normalized event
+    // content category is enabled.
     if !content.token_usage || !content.conversation_text || !content.tool_calls || !content.images
     {
         object.remove("provider_event_types");
@@ -673,53 +568,13 @@ fn projected_provider_metadata(metadata: &Value, content: &HarnessUsageContentCo
     metadata
 }
 
-fn image_event_metadata(position: usize, image: &ParsedImageAttachment) -> Value {
-    json!({
-        "type": "image",
-        "position": position,
-        "media_type": image.media_type,
-        "byte_size": image.byte_size(),
-        "sha256": image.sha256,
-        "content_available": true,
-    })
-}
-
-fn tool_event_metadata(event: &ParsedToolEvent) -> Value {
-    match event {
-        ParsedToolEvent::ToolCall {
-            item_id,
-            call_id,
-            name,
-            input,
-        } => {
-            json!({
-                "type": "tool_call",
-                "item_id": item_id,
-                "call_id": call_id,
-                "name": name,
-                "input_sha256": sha256_hex(input),
-                "input": input,
-            })
-        }
-        ParsedToolEvent::ToolResult { call_id, output } => {
-            json!({
-                "type": "tool_result",
-                "call_id": call_id,
-                "output_sha256": sha256_hex(output),
-                "output": output,
-            })
-        }
-    }
-}
-
 fn usage_event(
     config: &HarnessUsageHookConfig,
     parts: &ParsedEventParts<'_>,
     side: EventSide<'_>,
     observed_at: DateTime<Utc>,
 ) -> NormalizedUsageEvent {
-    let text_hash = sha256_hex(side.text);
-    let content_hash = event_content_hash(&text_hash, side.attachments);
+    let content_hash = event_content_hash(side.conversation, side.attachments);
     // Event ids must remain deterministic across repeated observations.
     let device_event_key = config.device.hostname.as_deref().unwrap_or("");
     let event_id = stable_event_id([
@@ -750,7 +605,6 @@ fn usage_event(
                 .unwrap_or_else(|| "unknown".to_owned()),
         },
         event_type: side.event_type,
-        text: side.content.conversation_text.then(|| side.text.to_owned()),
         omitted: omitted_categories(side.content),
         conversation: Some(retained_conversation(side.conversation, side.content)),
         headers: side.headers.to_vec(),
@@ -760,11 +614,34 @@ fn usage_event(
     }
 }
 
-fn event_content_hash(text_hash: &str, attachments: &[ParsedImageAttachment]) -> String {
+/// The content part of an event id: the SHA-256 of the side's conversation
+/// entries before content policy, extended by its attachment digests.
+///
+/// The entries are serialized as a compact JSON array holding one
+/// `[role, text, call_id, name, item_id]` array per entry, in order, with
+/// absent identities as `null`; completeness is not part of the identity.
+fn event_content_hash(
+    conversation: &Conversation,
+    attachments: &[ParsedImageAttachment],
+) -> String {
+    let entries = conversation
+        .entries
+        .iter()
+        .map(|entry| {
+            json!([
+                entry.role,
+                entry.text,
+                entry.call_id,
+                entry.name,
+                entry.item_id
+            ])
+        })
+        .collect::<Vec<_>>();
+    let entries_hash = sha256_hex(&Value::Array(entries).to_string());
     if attachments.is_empty() {
-        return text_hash.to_owned();
+        return entries_hash;
     }
-    let mut identity = String::from(text_hash);
+    let mut identity = entries_hash;
     for attachment in attachments {
         identity.push('\0');
         identity.push_str(&attachment.sha256);
@@ -807,7 +684,8 @@ fn merge_metadata(mut base: Value, extra: &Value) -> Value {
 #[cfg(test)]
 mod tests {
     use abyss_plugin_protocol::event::{
-        AgentEvent, ContentCategory, EntryRole, EventPurpose, LlmProvider,
+        AgentEvent, ContentCategory, ContentCompleteness, Conversation, ConversationEntry,
+        EntryRole, EventPurpose, LlmProvider,
     };
 
     use crate::{
@@ -822,7 +700,6 @@ mod tests {
             model::{
                 conversation::ConversationProjection,
                 image::ParsedImageAttachment,
-                tool::ParsedToolEvent,
                 usage::{TokenUsage, TokenUsageSource},
             },
             openai::ParsedOpenAiExchange,
@@ -969,7 +846,14 @@ mod tests {
         );
 
         assert_eq!(events.len(), 2);
-        assert!(events.iter().all(|event| event.text.is_none()));
+        assert!(events.iter().all(|event| {
+            event.conversation.as_ref().is_some_and(|conversation| {
+                conversation
+                    .entries
+                    .iter()
+                    .all(|entry| entry.text.is_empty())
+            })
+        }));
         assert!(events.iter().all(|event| event.token_usage.is_empty()));
         assert!(
             events
@@ -985,16 +869,21 @@ mod tests {
             ParsedImageAttachment::from_bytes("image/png", b"\x89PNG\r\n\x1a\nprivate-image")
                 .expect("image fixture should be accepted"),
         ];
-        parsed.request_tool_events = vec![ParsedToolEvent::ToolResult {
-            call_id: Some("call-1".to_owned()),
-            output: "private tool output".to_owned(),
-        }];
-        parsed.response_tool_events = vec![ParsedToolEvent::ToolCall {
-            item_id: None,
-            call_id: Some("call-2".to_owned()),
-            name: Some("shell".to_owned()),
-            input: "private tool input".to_owned(),
-        }];
+        parsed
+            .request_conversation
+            .entries
+            .push(ConversationProjection::tool_result(
+                Some("call-1".to_owned()),
+                "private tool output".to_owned(),
+            ));
+        parsed
+            .response_conversation
+            .entries
+            .push(ConversationProjection::tool_call(
+                Some("call-2".to_owned()),
+                Some("shell".to_owned()),
+                "private tool input".to_owned(),
+            ));
 
         // Verify the fixture carries every content category before filtering it.
         for retain_content in [true, false] {
@@ -1026,19 +915,20 @@ mod tests {
             assert_eq!(events[0]["token_usage"]["cache_read_tokens"], 1_u64);
             assert_eq!(events[1]["token_usage"]["output_tokens"], 6_u64);
             assert_eq!(events[1]["token_usage"]["reasoning_tokens"], 2_u64);
-            assert_eq!(events[0].get("tool_results").is_some(), retain_content);
-            assert_eq!(events[1].get("tool_calls").is_some(), retain_content);
             assert_eq!(events[0].get("attachments").is_some(), retain_content);
             for event in &events {
-                assert_eq!(event.get("text").is_some(), retain_content);
+                for entry in event["conversation"]["entries"].as_array().unwrap() {
+                    assert_eq!(entry["text"] != "", retain_content, "{entry}");
+                }
                 assert_eq!(event["session_id"], "session-1");
+                for field in ["text", "tool_calls", "tool_results", "metadata"] {
+                    assert!(
+                        event.get(field).is_none(),
+                        "field outside the contract: {field}"
+                    );
+                }
                 if !retain_content {
-                    for field in ["tool_calls", "tool_results", "attachments", "metadata"] {
-                        assert!(
-                            event.get(field).is_none(),
-                            "unexpected content field: {field}"
-                        );
-                    }
+                    assert!(event.get("attachments").is_none());
                 }
             }
         }
@@ -1053,14 +943,10 @@ mod tests {
             session_id: "session-1".to_owned(),
             session_id_source: AnthropicSessionIdSource::Provider,
             request_hash: "request-hash".to_owned(),
-            request_conversation: ConversationProjection::empty(),
-            response_conversation: ConversationProjection::empty(),
-            request_texts: vec!["hello".to_owned()],
+            request_conversation: conversation(EntryRole::User, "hello"),
+            response_conversation: conversation(EntryRole::Assistant, "hi"),
             request_images: Vec::new(),
             previous_response_id: None,
-            request_tool_events: Vec::new(),
-            response_tool_events: Vec::new(),
-            response_texts: vec!["hi".to_owned()],
             usage: usage(),
             message_id: Some("msg-1".to_owned()),
             model: Some("claude-test".to_owned()),
@@ -1109,14 +995,10 @@ mod tests {
             session_id: "conversation".to_owned(),
             session_id_source: ClaudeWebSessionIdSource::ConversationPath,
             request_hash: "request-hash".to_owned(),
-            request_conversation: ConversationProjection::empty(),
+            request_conversation: conversation(EntryRole::User, "hello"),
             response_conversation: ConversationProjection::empty(),
-            request_texts: vec!["hello".to_owned()],
             request_images: Vec::new(),
             request_file_uuids: Vec::new(),
-            request_tool_events: Vec::new(),
-            response_tool_events: Vec::new(),
-            response_texts: Vec::new(),
             usage: TokenUsage::default(),
             usage_source: TokenUsageSource::Absent,
             message_id: None,
@@ -1144,16 +1026,66 @@ mod tests {
     }
 
     #[test]
-    fn tool_segments_convert_to_typed_plugin_activity() {
+    fn event_ids_hash_every_entry_field_before_content_policy() {
+        let event_id = |parsed: &ParsedOpenAiExchange, content: &HarnessUsageContentConfig| {
+            normalize_exchange(
+                &hook_config(),
+                parsed,
+                content,
+                &detection(BuiltInHarness::Codex, "x-openai-originator"),
+                &LlmProvider::OpenAi,
+                &AgentDeclaration::default(),
+                &ExchangeHeaders::default(),
+            )
+            .pop()
+            .expect("response event")
+            .event_id
+        };
         let mut parsed = openai_exchange();
-        parsed.response_tool_events = vec![ParsedToolEvent::ToolCall {
-            item_id: Some("item-1".to_owned()),
-            call_id: Some("call-1".to_owned()),
-            name: Some("shell".to_owned()),
-            input: "{\"command\":\"pwd\"}".to_owned(),
-        }];
+        parsed.response_conversation.entries = vec![ConversationProjection::tool_call(
+            Some("call-1".to_owned()),
+            Some("shell".to_owned()),
+            "{\"command\":\"pwd\"}".to_owned(),
+        )];
+        let baseline = event_id(&parsed, &HarnessUsageContentConfig::default());
+        let redacted = HarnessUsageContentConfig {
+            token_usage: false,
+            conversation_text: false,
+            tool_calls: false,
+            images: false,
+        };
+        assert_eq!(event_id(&parsed, &redacted), baseline);
 
-        let event = normalize_exchange(
+        let variants: [fn(&mut ConversationEntry); 5] = [
+            |entry| entry.role = EntryRole::Unknown,
+            |entry| entry.text.push(' '),
+            |entry| entry.call_id = None,
+            |entry| entry.name = Some("exec".to_owned()),
+            |entry| entry.item_id = Some("fc-1".to_owned()),
+        ];
+        for change in variants {
+            let mut changed = parsed.clone();
+            change(&mut changed.response_conversation.entries[0]);
+            assert_ne!(
+                event_id(&changed, &HarnessUsageContentConfig::default()),
+                baseline
+            );
+        }
+        let mut partial = parsed;
+        partial.response_conversation.completeness = ContentCompleteness::Partial;
+        assert_eq!(
+            event_id(&partial, &HarnessUsageContentConfig::default()),
+            baseline
+        );
+    }
+
+    #[test]
+    fn a_side_without_entries_or_usage_emits_no_event() {
+        let mut parsed = openai_exchange();
+        parsed.usage = TokenUsage::default();
+        parsed.response_conversation = ConversationProjection::empty();
+
+        let events = normalize_exchange(
             &hook_config(),
             &parsed,
             &HarnessUsageContentConfig::default(),
@@ -1161,13 +1093,27 @@ mod tests {
             &LlmProvider::OpenAi,
             &AgentDeclaration::default(),
             &ExchangeHeaders::default(),
-        )
-        .pop()
-        .expect("response event");
-        let plugin_event = abyss_plugin_protocol::event::AgentEvent::try_from(event).unwrap();
+        );
+        assert!(events.is_empty());
 
-        assert_eq!(plugin_event.tool_calls.len(), 1);
-        assert_eq!(plugin_event.tool_calls[0].name, "shell");
+        // An entry whose text is blank still carries the side.
+        parsed.response_conversation = conversation(EntryRole::Reasoning, "");
+        let events = normalize_exchange(
+            &hook_config(),
+            &parsed,
+            &HarnessUsageContentConfig::default(),
+            &detection(BuiltInHarness::Codex, "x-openai-originator"),
+            &LlmProvider::OpenAi,
+            &AgentDeclaration::default(),
+            &ExchangeHeaders::default(),
+        );
+        assert_eq!(
+            events
+                .iter()
+                .map(|event| event.event_type)
+                .collect::<Vec<_>>(),
+            ["request", "response"]
+        );
     }
 
     fn openai_exchange() -> ParsedOpenAiExchange {
@@ -1179,20 +1125,23 @@ mod tests {
             transport: "https",
             session_id: "session-1".to_owned(),
             request_hash: "request-hash".to_owned(),
-            request_conversation: ConversationProjection::empty(),
-            response_conversation: ConversationProjection::empty(),
-            request_texts: vec!["hello".to_owned()],
+            request_conversation: conversation(EntryRole::User, "hello"),
+            response_conversation: conversation(EntryRole::Assistant, "hi"),
             request_images: Vec::new(),
-            response_texts: vec!["hi".to_owned()],
             usage: usage(),
             response_id: Some("response-1".to_owned()),
             previous_response_id: None,
             client_metadata: None,
-            request_tool_events: Vec::new(),
-            response_tool_events: Vec::new(),
             model: Some("model-test".to_owned()),
             event_types: vec!["response.completed".to_owned()],
         }
+    }
+
+    fn conversation(role: EntryRole, text: &str) -> Conversation {
+        ConversationProjection::from_entries(
+            vec![ConversationProjection::text(role, text)],
+            ContentCompleteness::Complete,
+        )
     }
 
     fn usage() -> TokenUsage {

@@ -123,17 +123,12 @@ class BackendEvidenceCollector:
         if result.thread_id:
             session_ids.add(result.thread_id)
         for event in events:
-            text = event.get("text")
             session_id = event.get("session_id")
-            if isinstance(text, str) and result.marker in text and isinstance(session_id, str):
+            if _mentions(event, result.marker) and isinstance(session_id, str):
                 session_ids.add(session_id)
         if session_ids:
             return [event for event in events if event.get("session_id") in session_ids]
-        return [
-            event
-            for event in events
-            if isinstance(event.get("text"), str) and result.marker in event["text"]
-        ]
+        return [event for event in events if _mentions(event, result.marker)]
 
     def _download_attachments(self, events: list[dict[str, Any]]) -> list[dict[str, Any]]:
         downloaded: list[dict[str, Any]] = []
@@ -178,6 +173,20 @@ class BackendEvidenceCollector:
                     }
                 downloaded.append(record)
         return downloaded
+
+
+def _mentions(event: dict[str, Any], marker: str) -> bool:
+    """Whether a conversation entry of the stored event contains the marker."""
+
+    metadata = event.get("metadata")
+    conversation = metadata.get("conversation") if isinstance(metadata, dict) else None
+    entries = conversation.get("entries") if isinstance(conversation, dict) else None
+    if not isinstance(entries, list):
+        return False
+    return any(
+        isinstance(entry, dict) and isinstance(entry.get("text"), str) and marker in entry["text"]
+        for entry in entries
+    )
 
 
 class EvidenceBuilder:

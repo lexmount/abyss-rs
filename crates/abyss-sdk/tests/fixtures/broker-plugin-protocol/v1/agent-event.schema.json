@@ -53,23 +53,8 @@
         "response"
       ]
     },
-    "text": {
-      "type": "string"
-    },
     "token_usage": {
       "$ref": "#/$defs/tokenUsage"
-    },
-    "tool_calls": {
-      "type": "array",
-      "items": {
-        "$ref": "#/$defs/toolCall"
-      }
-    },
-    "tool_results": {
-      "type": "array",
-      "items": {
-        "$ref": "#/$defs/toolResult"
-      }
     },
     "attachments": {
       "type": "array",
@@ -184,50 +169,6 @@
         "total_tokens": {
           "type": "integer",
           "minimum": 0
-        }
-      }
-    },
-    "toolCall": {
-      "type": "object",
-      "additionalProperties": false,
-      "required": [
-        "call_id",
-        "name",
-        "input",
-        "input_sha256"
-      ],
-      "properties": {
-        "call_id": {
-          "type": "string"
-        },
-        "name": {
-          "type": "string"
-        },
-        "input": {
-          "type": "string"
-        },
-        "input_sha256": {
-          "type": "string"
-        }
-      }
-    },
-    "toolResult": {
-      "type": "object",
-      "additionalProperties": false,
-      "required": [
-        "call_id",
-        "output",
-        "output_sha256"
-      ],
-      "properties": {
-        "call_id": {
-          "type": "string"
-        },
-        "output": {
-          "type": "string"
-        },
-        "output_sha256": {
-          "type": "string"
         }
       }
     },

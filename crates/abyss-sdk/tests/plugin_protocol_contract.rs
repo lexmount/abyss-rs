@@ -267,9 +267,15 @@ fn published_agent_event_fixture_matches_the_public_sdk() {
         "the only version 1 Agent event should be flat and contain no unstructured metadata"
     );
     assert_eq!(
-        event["tool_calls"][0]["name"], "exec",
-        "tool activity should use the public structured contract"
+        event["conversation"]["entries"][2]["name"], "exec",
+        "tool activity should be carried by conversation entries"
     );
+    for field in ["text", "tool_calls", "tool_results"] {
+        assert!(
+            event.get(field).is_none(),
+            "{field} is carried only by conversation entries"
+        );
+    }
     assert!(event.get("turn_index").is_none());
     assert!(event.get("turn_id").is_none());
     contract.assert_fixture_round_trip::<AgentEvent>("agent-event.json");
@@ -311,13 +317,16 @@ fn published_event_schema_defines_the_flat_typed_contract() {
         event_properties.get("metadata").is_none(),
         "the public event schema should not expose an arbitrary metadata object"
     );
-    assert_eq!(
-        event_properties["tool_calls"]["items"]["$ref"], "#/$defs/toolCall",
-        "tool calls should reference their structured public schema"
-    );
-    assert_eq!(
-        event_properties["tool_results"]["items"]["$ref"], "#/$defs/toolResult",
-        "tool results should reference their structured public schema"
+    for field in ["text", "tool_calls", "tool_results"] {
+        assert!(
+            event_properties.get(field).is_none(),
+            "content is carried only by conversation entries, not {field}"
+        );
+    }
+    assert!(
+        event_schema["$defs"].get("toolCall").is_none()
+            && event_schema["$defs"].get("toolResult").is_none(),
+        "the retired tool summaries should have no schema"
     );
     assert_eq!(
         event_schema["additionalProperties"], false,

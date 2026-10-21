@@ -41,14 +41,12 @@ pub struct AgentEvent {
     pub llm: LlmContext,
     /// Request or response side represented by this event.
     pub side: AgentEventSide,
-    /// Policy-retained request or response text.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub text: Option<String>,
     /// Content categories the effective content policy omitted from this
     /// event; empty when everything was retained.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub omitted: Vec<ContentCategory>,
-    /// Role-aware request or response entries, one per protocol block or item.
+    /// Role-aware request or response entries, one per protocol block or
+    /// item; the only carrier of the side's content.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub conversation: Option<Conversation>,
     /// Captured headers of this event's side: request headers on a request
@@ -58,12 +56,6 @@ pub struct AgentEvent {
     pub headers: Vec<HttpHeader>,
     /// Token counters attributed to this event side.
     pub token_usage: TokenUsage,
-    /// Normalized tool calls associated with this event side.
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub tool_calls: Vec<ToolCall>,
-    /// Normalized tool results associated with this event side.
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub tool_results: Vec<ToolResult>,
     /// Policy-retained image attachments.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub attachments: Vec<ImageAttachment>,
@@ -76,12 +68,11 @@ pub struct AgentEvent {
 pub enum ContentCategory {
     /// Token counters; when omitted every counter is zero.
     TokenUsage,
-    /// Text of non-tool conversation entries and the event `text`; when
-    /// omitted those entries keep their role and `item_id` with empty text.
+    /// Text of non-tool conversation entries; when omitted those entries keep
+    /// their role and `item_id` with empty text.
     ConversationText,
     /// Tool arguments and results; when omitted tool entries keep their
-    /// `call_id`, `name`, and `item_id` with empty text, and no tool calls or
-    /// tool results are carried.
+    /// `call_id`, `name`, and `item_id` with empty text.
     ToolContent,
     /// Image attachments; when omitted no attachment is carried.
     Images,
@@ -272,32 +263,6 @@ impl AgentEventSide {
     }
 }
 
-/// One normalized model-requested tool invocation.
-#[derive(Debug, Deserialize, Serialize)]
-#[serde(deny_unknown_fields)]
-pub struct ToolCall {
-    /// Broker-normalized identifier shared with the corresponding tool result.
-    pub call_id: String,
-    /// Broker-normalized tool name, such as `Bash`, `Read`, or `exec`.
-    pub name: String,
-    /// Complete provider-visible tool input normalized as text by the broker.
-    pub input: String,
-    /// Lowercase SHA-256 digest of `input`.
-    pub input_sha256: String,
-}
-
-/// One normalized result submitted back to the model after a tool call.
-#[derive(Debug, Deserialize, Serialize)]
-#[serde(deny_unknown_fields)]
-pub struct ToolResult {
-    /// Broker-normalized identifier shared with the originating tool call.
-    pub call_id: String,
-    /// Provider-visible result normalized as text by the broker.
-    pub output: String,
-    /// Lowercase SHA-256 digest of `output`.
-    pub output_sha256: String,
-}
-
 /// Normalized non-negative token counters.
 ///
 /// Input, cache read, cache write, and output counters are disjoint;
@@ -371,7 +336,7 @@ impl ImageMediaType {
 mod tests {
     use super::{
         AgentContext, AgentEvent, AgentEventSide, ContentCategory, DeviceContext, HttpHeader,
-        HttpHeaderValue, LlmContext, LlmProvider, TokenUsage, ToolCall, ToolResult,
+        HttpHeaderValue, LlmContext, LlmProvider, TokenUsage,
     };
     use chrono::{TimeZone as _, Utc};
 
@@ -396,10 +361,6 @@ mod tests {
             serialized.get("metadata").is_none(),
             "the public event must not expose an unstructured metadata object"
         );
-        assert!(
-            serialized.get("text").is_none(),
-            "absent optional content should be omitted"
-        );
         for field in [
             "response_id",
             "previous_response_id",
@@ -413,29 +374,6 @@ mod tests {
                 "absent {field} should be omitted"
             );
         }
-    }
-
-    #[test]
-    fn tool_activity_serializes_as_named_structures() {
-        let mut event = sample_event(LlmProvider::OpenAi);
-        event.tool_calls.push(ToolCall {
-            call_id: "call-1".to_owned(),
-            name: "exec".to_owned(),
-            input: "pwd".to_owned(),
-            input_sha256: "call-hash".to_owned(),
-        });
-        event.tool_results.push(ToolResult {
-            call_id: "call-1".to_owned(),
-            output: "/workspace".to_owned(),
-            output_sha256: "result-hash".to_owned(),
-        });
-
-        let serialized = serde_json::to_value(event).expect("Agent event should serialize");
-
-        assert_eq!(serialized["tool_calls"][0]["name"], "exec");
-        assert_eq!(serialized["tool_calls"][0]["input"], "pwd");
-        assert_eq!(serialized["tool_results"][0]["call_id"], "call-1");
-        assert_eq!(serialized["tool_results"][0]["output"], "/workspace");
     }
 
     #[test]
@@ -507,6 +445,24 @@ mod tests {
     }
 
     #[test]
+    fn retired_content_projections_are_rejected() {
+        let serialized = serde_json::to_value(sample_event(LlmProvider::OpenAi))
+            .expect("event should serialize");
+        for (field, value) in [
+            ("text", serde_json::json!("hello")),
+            ("tool_calls", serde_json::json!([])),
+            ("tool_results", serde_json::json!([])),
+        ] {
+            let mut event = serialized.clone();
+            event[field] = value;
+            assert!(
+                serde_json::from_value::<AgentEvent>(event).is_err(),
+                "{field} is carried only by conversation entries"
+            );
+        }
+    }
+
+    #[test]
     fn extension_provider_namespace_round_trips() {
         let serialized = serde_json::to_value(sample_event(LlmProvider::Other(
             "customer-private-llm".to_owned(),
@@ -547,7 +503,6 @@ mod tests {
                 model: "gpt-test".to_owned(),
             },
             side: AgentEventSide::Request,
-            text: None,
             omitted: Vec::new(),
             conversation: None,
             headers: Vec::new(),
@@ -559,8 +514,6 @@ mod tests {
                 reasoning_tokens: 0,
                 total_tokens: 10,
             },
-            tool_calls: Vec::new(),
-            tool_results: Vec::new(),
             attachments: Vec::new(),
         }
     }

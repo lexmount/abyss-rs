@@ -73,7 +73,8 @@ blackbox_extract_event_pair() {
               .event_type == "request"
               and .agent_name == $agent_name
               and .llm_provider == $provider
-              and (.text | type == "string" and contains($marker))
+              and any(.metadata.conversation.entries[]?;
+                .role == "user" and (.text | contains($marker)))
             )] as $requests
       | if ($requests | length) == 0 then
           empty

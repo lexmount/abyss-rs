@@ -14,16 +14,10 @@ use super::{
     CallSlot, OpenAiContent, OpenAiRequest, OpenAiResponse, OutputSlot, Projection, SlotBody,
     output_text, response_part_text, slot_index,
 };
-use crate::protocol::model::{
-    text::{MAX_PARSE_DEPTH, json_to_text, non_empty_trimmed},
-    tool::ParsedToolEvent,
-};
 
-/// Appends the entries of `instructions` and `input`, returning the event
-/// text of the input items.
-pub(super) fn push_request(request: &mut OpenAiRequest, payload: &Value) -> Vec<String> {
+/// Appends the entries of `instructions` and `input`.
+pub(super) fn push_request(request: &mut OpenAiRequest, payload: &Value) {
     let entries = &mut request.entries;
-    let mut input_texts = Vec::new();
     match payload.get("instructions") {
         Some(Value::String(text)) => {
             request.carries_messages = true;
@@ -50,23 +44,19 @@ pub(super) fn push_request(request: &mut OpenAiRequest, payload: &Value) -> Vec<
                 } else {
                     EntryRole::Unknown
                 };
-                input_texts.extend(OpenAiContent::item_text(item));
                 item_entries(item, role, entries);
             }
         }
         Some(Value::String(text)) => {
             request.carries_messages = true;
-            input_texts.extend(non_empty_trimmed(text).map(str::to_owned));
             entries.push(Projection::text(EntryRole::User, text));
         }
         Some(item @ Value::Object(_)) => {
             request.carries_messages = true;
-            input_texts.extend(OpenAiContent::item_text(item));
             item_entries(item, EntryRole::Unknown, entries);
         }
         _ => {}
     }
-    input_texts
 }
 
 /// Appends the entries of one Responses item, each carrying the item's `id`
@@ -235,35 +225,6 @@ fn reconcile_output_item(slots: &mut BTreeMap<u64, OutputSlot>, index: u64, item
     slot.item_id = Projection::field(item, "id").or_else(|| slot.item_id.take());
 }
 
-/// The tool call a `function_call` or `custom_tool_call` item requests, once
-/// its input has arrived; earlier snapshots such as `output_item.added` carry
-/// none.
-pub(super) fn tool_call(item: &Value) -> Option<ParsedToolEvent> {
-    if !matches!(
-        item.get("type").and_then(Value::as_str),
-        Some("custom_tool_call" | "function_call")
-    ) {
-        return None;
-    }
-    let input = item
-        .get("input")
-        .or_else(|| item.get("arguments"))
-        .and_then(|input| json_to_text(input, MAX_PARSE_DEPTH))
-        .and_then(|input| non_empty_trimmed(&input).map(str::to_owned))?;
-    let field = |key: &str| {
-        item.get(key)
-            .and_then(Value::as_str)
-            .and_then(non_empty_trimmed)
-            .map(str::to_owned)
-    };
-    Some(ParsedToolEvent::ToolCall {
-        item_id: field("id"),
-        call_id: field("call_id"),
-        name: field("name"),
-        input,
-    })
-}
-
 #[cfg(test)]
 mod tests {
     use abyss_plugin_protocol::event::ContentCompleteness;
@@ -414,8 +375,6 @@ mod tests {
                 (EntryRole::Assistant, "hello", None, None),
             ]
         );
-        // A null `content` leaves the reasoning summary in the event text.
-        assert_eq!(response.texts(), vec!["thinking", "hello"]);
     }
 
     #[test]
@@ -530,7 +489,7 @@ mod tests {
     }
 
     #[test]
-    fn event_text_and_tool_calls_follow_the_output_items() {
+    fn entries_follow_the_output_items() {
         let values = vec![
             json!({"type":"response.output_text.delta","output_index":1_i32,"content_index":0_i32,"delta":"hel"}),
             json!({"type":"response.completed","response":{"output":[
@@ -541,13 +500,18 @@ mod tests {
         ];
         let response = OpenAiResponse::assemble(&values, false);
 
-        assert_eq!(response.texts(), vec!["thinking", "hello"]);
-        let calls = response.tool_calls();
-        assert_eq!(calls.len(), 1);
-        assert!(matches!(
-            &calls[0],
-            ParsedToolEvent::ToolCall { call_id: Some(call_id), name: Some(name), .. }
-                if call_id == "call_1" && name == "exec"
-        ));
+        assert_eq!(
+            summary(&response.conversation()),
+            [
+                (EntryRole::Reasoning, "thinking", None, None),
+                (EntryRole::Assistant, "hello", None, None),
+                (
+                    EntryRole::ToolCall,
+                    "{\"cmd\":\"pwd\"}",
+                    Some("call_1"),
+                    Some("exec")
+                ),
+            ]
+        );
     }
 }

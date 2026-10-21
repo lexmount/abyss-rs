@@ -207,7 +207,6 @@ provider documents, and original content blocks are not part of the contract.
     "model": "gpt-5"
   },
   "side": "response",
-  "text": "I will inspect the repository.",
   "token_usage": {
     "input_tokens": 0,
     "output_tokens": 12,
@@ -216,14 +215,6 @@ provider documents, and original content blocks are not part of the contract.
     "reasoning_tokens": 4,
     "total_tokens": 12
   },
-  "tool_calls": [
-    {
-      "call_id": "call-123",
-      "name": "exec",
-      "input": "pwd",
-      "input_sha256": "0000000000000000000000000000000000000000000000000000000000000000"
-    }
-  ],
   "attachments": [
     {
       "position": 0,
@@ -274,8 +265,9 @@ provider documents, and original content blocks are not part of the contract.
 
 There is no event kind discriminator or nested payload enum. `side` identifies
 whether content and token usage belong to the Agent request or provider response.
-Tool calls and results appear in position as `conversation` entries and are
-also summarized by `tool_calls` and `tool_results`; images use `attachments`.
+`conversation` entries are the only carrier of the side's content: text,
+reasoning, tool calls, and tool results appear in position as entries, with no
+flattened text or tool-call summary beside them; images use `attachments`.
 The event has no arbitrary `metadata` object.
 
 `token_usage` counters are disjoint regardless of how the provider reports
@@ -437,11 +429,17 @@ metadata. The broker forwards it unchanged.
 Event ids are deterministic. The collector derives an id from the device,
 agent, session, event side, provider response identity, and a content digest,
 so observing the same exchange again yields the same id and ingestion stays
-idempotent. Distinct provider calls produce distinct ids. The headers do not
-enter the id.
+idempotent. Distinct provider calls produce distinct ids. The content digest
+covers the side's conversation entries before the content policy applies, so
+the policy does not change an id: every entry's `role`, `text`, `call_id`,
+`name`, and `item_id` in order, followed by the digests of the side's
+attachments. `completeness` and the headers do not enter the id.
 
 The broker emits events only for exchanges its Agent protocol parser accepted.
-An exchange the parser rejects produces no event.
+An exchange the parser rejects produces no event. Within an exchange that
+produces events, a side produces one when its conversation has at least one
+entry, even with empty text, when it carries an image, or when it has token
+usage.
 
 ## Delivery
 

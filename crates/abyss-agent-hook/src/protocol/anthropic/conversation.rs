@@ -7,10 +7,6 @@
 //! identity digested from the signature the provider issued, which the
 //! client sends back unchanged, so replayed history matches the response
 //! that produced it.
-//!
-//! The same pass also yields the event `text` projection: the labeled system
-//! prompt, prompt, input, and user messages of a request, and the assistant
-//! text of a response.
 
 use std::collections::BTreeMap;
 
@@ -23,7 +19,7 @@ use super::messages::tool_result_output;
 use crate::protocol::model::{
     conversation::ConversationProjection,
     digest::sha256_hex,
-    text::{MAX_PARSE_DEPTH, dedupe_texts, non_empty_trimmed, visible_text},
+    text::{MAX_PARSE_DEPTH, non_empty_trimmed, visible_text},
 };
 
 /// Anthropic-specific text and tool-block rules.
@@ -50,12 +46,6 @@ impl AnthropicContent {
             Value::Null => Vec::new(),
             value => vec![ContentBlock::from_value(value)],
         }
-    }
-
-    /// Visible text of blocks for the event `text` projection: tool and
-    /// reasoning blocks excluded, each trimmed and non-empty.
-    fn visible_parts(blocks: &[ContentBlock]) -> impl Iterator<Item = &str> {
-        blocks.iter().filter_map(ContentBlock::visible_text)
     }
 
     /// One entry per block, in order; text blocks take the message role.
@@ -191,15 +181,6 @@ impl ContentBlock {
         }
     }
 
-    /// Visible non-reasoning, non-tool text of the block, trimmed.
-    fn visible_text(&self) -> Option<&str> {
-        match self {
-            Self::Text(text) => non_empty_trimmed(text),
-            Self::Other(text) => text.as_deref().and_then(non_empty_trimmed),
-            Self::Reasoning { .. } | Self::ToolCall { .. } | Self::ToolResult { .. } => None,
-        }
-    }
-
     /// The block's entry; an unrecognized block without text has none.
     fn entry(&self, role: EntryRole) -> Option<ConversationEntry> {
         Some(match self {
@@ -234,8 +215,6 @@ impl ContentBlock {
 pub struct AnthropicRequest {
     /// One entry per block: `system`, `prompt`, `input`, then `messages`.
     entries: Vec<ConversationEntry>,
-    /// Event text projection, in provider order.
-    texts: Vec<String>,
     /// Decoding state of the request body.
     completeness: ContentCompleteness,
 }
@@ -245,23 +224,17 @@ impl AnthropicRequest {
     #[must_use]
     pub fn parse(payload: &Value, truncated: bool) -> Self {
         let mut entries = Vec::new();
-        let mut texts = Vec::new();
         if let Some(system) = payload.get("system") {
-            let blocks = AnthropicContent::blocks(system);
-            let text = AnthropicContent::visible_parts(&blocks)
-                .collect::<Vec<_>>()
-                .join("\n");
-            if !text.is_empty() {
-                texts.push(format!("system: {text}"));
-            }
-            entries.extend(AnthropicContent::entries(&blocks, EntryRole::System));
+            entries.extend(AnthropicContent::entries(
+                &AnthropicContent::blocks(system),
+                EntryRole::System,
+            ));
         }
         if let Some(prompt) = payload
             .get("prompt")
             .and_then(Value::as_str)
             .filter(|prompt| non_empty_trimmed(prompt).is_some())
         {
-            texts.extend(non_empty_trimmed(prompt).map(str::to_owned));
             entries.push(ConversationProjection::text(EntryRole::User, prompt));
         }
         if let Some(input) = payload.get("input") {
@@ -270,7 +243,6 @@ impl AnthropicRequest {
             } else {
                 EntryRole::Unknown
             };
-            texts.extend(AnthropicContent::text(input, MAX_PARSE_DEPTH));
             entries.extend(AnthropicContent::entries(
                 &AnthropicContent::blocks(input),
                 role,
@@ -287,26 +259,12 @@ impl AnthropicRequest {
                 .and_then(Value::as_str)
                 .map_or(EntryRole::Unknown, ConversationProjection::role);
             let blocks = AnthropicContent::blocks(message.get("content").unwrap_or(&Value::Null));
-            if role == EntryRole::User {
-                texts.push(
-                    AnthropicContent::visible_parts(&blocks)
-                        .collect::<Vec<_>>()
-                        .join("\n"),
-                );
-            }
             entries.extend(AnthropicContent::entries(&blocks, role));
         }
         Self {
             entries,
-            texts: dedupe_texts(texts),
             completeness: ConversationProjection::completeness(true, truncated),
         }
-    }
-
-    /// Event text: the labeled system prompt, prompt, input, and user messages.
-    #[must_use]
-    pub fn texts(&self) -> Vec<String> {
-        self.texts.clone()
     }
 
     /// Public request conversation.
@@ -323,8 +281,6 @@ pub struct AnthropicResponse {
     id: Option<String>,
     /// One entry per content block of the assistant message.
     entries: Vec<ConversationEntry>,
-    /// Event text projection: assistant text blocks, excluding reasoning.
-    texts: Vec<String>,
     /// Decoding state of the response body.
     completeness: ContentCompleteness,
 }
@@ -382,11 +338,6 @@ impl AnthropicResponse {
         }
         let blocks = snapshot.unwrap_or_else(|| blocks.into_values().collect());
         Self {
-            texts: dedupe_texts(
-                AnthropicContent::visible_parts(&blocks)
-                    .map(str::to_owned)
-                    .collect(),
-            ),
             entries: AnthropicContent::entries(&blocks, EntryRole::Assistant).collect(),
             id,
             completeness: ConversationProjection::completeness(!values.is_empty(), incomplete),
@@ -397,12 +348,6 @@ impl AnthropicResponse {
     #[must_use]
     pub fn id(&self) -> Option<&str> {
         self.id.as_deref()
-    }
-
-    /// Event text: assistant text blocks, excluding reasoning.
-    #[must_use]
-    pub fn texts(&self) -> Vec<String> {
-        self.texts.clone()
     }
 
     /// Public response conversation.
@@ -472,7 +417,6 @@ mod tests {
             ]
         );
         assert_eq!(response.id(), Some("m1"));
-        assert_eq!(response.texts(), vec!["hello"]);
     }
 
     #[test]
@@ -512,7 +456,6 @@ mod tests {
             ]
         );
         assert_eq!(reply[2].text, "{\"cmd\":\"pwd\"}");
-        assert_eq!(response.texts(), vec!["answer", "more"]);
         assert_eq!(reply[3].text, "");
         assert_eq!(
             reply
@@ -647,22 +590,5 @@ mod tests {
                 ),
             ]
         );
-    }
-
-    #[test]
-    fn request_text_labels_system_and_keeps_only_user_messages() {
-        let request = AnthropicRequest::parse(
-            &json!({
-                "system":[{"type":"text","text":"rules"}],
-                "messages":[
-                    {"role":"user","content":[{"type":"text","text":"a"},{"type":"text","text":"b"}]},
-                    {"role":"assistant","content":"reply"},
-                    {"role":"user","content":[{"type":"tool_result","tool_use_id":"t","content":"secret"}]}
-                ]
-            }),
-            false,
-        );
-
-        assert_eq!(request.texts(), vec!["system: rules", "a\nb"]);
     }
 }

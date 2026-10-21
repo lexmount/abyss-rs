@@ -339,6 +339,7 @@ mod tests {
     use abyss_mitm::{
         CapturedBody, FlowContext, HttpExchange, OriginalDestination, TransparentProtocol,
     };
+    use abyss_plugin_protocol::event::{ContentCompleteness, EntryRole};
     use http::{Request, Response};
     use serde_json::json;
 
@@ -430,14 +431,19 @@ mod tests {
             session_id: session_id.to_owned(),
             session_id_source: ClaudeWebSessionIdSource::ConversationPath,
             request_hash: "request-hash".to_owned(),
-            request_conversation: ConversationProjection::empty(),
-            response_conversation: ConversationProjection::empty(),
-            request_texts: vec!["describe the image".to_owned()],
+            request_conversation: ConversationProjection::from_entries(
+                vec![ConversationProjection::text(
+                    EntryRole::User,
+                    "describe the image",
+                )],
+                ContentCompleteness::Complete,
+            ),
+            response_conversation: ConversationProjection::from_entries(
+                vec![ConversationProjection::text(EntryRole::Assistant, "done")],
+                ContentCompleteness::Complete,
+            ),
             request_images: Vec::new(),
             request_file_uuids: file_uuids.iter().map(|value| (*value).to_owned()).collect(),
-            request_tool_events: Vec::new(),
-            response_tool_events: Vec::new(),
-            response_texts: vec!["done".to_owned()],
             usage: TokenUsage::default(),
             usage_source: TokenUsageSource::Absent,
             message_id: Some("assistant-turn-1".to_owned()),

@@ -14,15 +14,18 @@ async function main() {
   await new BrokerPlugin({ consumerId: "example.codex-telegram" }).run(
     async (event) => {
       if (event.agent.name.toLowerCase() !== "codex") return;
-      const context = [
-        event.text,
-        ...(event.tool_calls ?? []).map(
-          (call) => `Tool: ${call.name}\n${call.input}`,
-        ),
-        ...(event.tool_results ?? []).map(
-          (result) => `Result: ${result.call_id}\n${result.output}`,
-        ),
-      ]
+      const context = (event.conversation?.entries ?? [])
+        .map((entry) => {
+          if (!entry.text) return "";
+          if (entry.role === "tool_call") {
+            return `Tool: ${entry.name ?? "unnamed"}\n${entry.text}`;
+          }
+          if (entry.role === "tool_result") {
+            return `Result: ${entry.call_id ?? "unpaired"}\n${entry.text}`;
+          }
+          // Reasoning entries are not forwarded.
+          return entry.role === "reasoning" ? "" : entry.text;
+        })
         .filter(Boolean)
         .join("\n\n");
       if (!context) return;
