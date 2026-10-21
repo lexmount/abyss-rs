@@ -1,4 +1,4 @@
-//! `OpenClaw` and Hermes attribution exercised through the public MITM hook API.
+//! Hermes attribution exercised through the public MITM hook API.
 //! Synthetic wire documents reproduce the installed clients' identity contracts.
 
 use std::{convert::Infallible, future::Future, net::SocketAddr, sync::Arc};
@@ -128,7 +128,7 @@ impl Scenario {
         for (index, request) in requests.iter().enumerate() {
             let mut response = Self::response(&format!("resp-{index}"));
             // Server metadata must not be accepted as a client declaration.
-            response["metadata"] = json!({"openclaw_session_id": "server-spoof"});
+            response["metadata"] = json!({"session_id": "server-spoof"});
             for (direction, body) in [
                 (WebSocketDirection::ClientToServer, request.clone()),
                 (
@@ -155,14 +155,6 @@ impl Scenario {
 #[tokio::test]
 async fn client_sessions_and_optional_user_turns_reach_all_protocol_events() {
     for (harness, headers, turn) in [
-        (
-            "openclaw",
-            vec![
-                ("x-openclaw-session-id", "client-session"),
-                ("x-openclaw-turn-id", "model-call"),
-            ],
-            None,
-        ),
         (
             "hermes",
             vec![
@@ -206,11 +198,6 @@ async fn client_sessions_and_optional_user_turns_reach_all_protocol_events() {
 #[tokio::test]
 async fn process_identity_attributes_generic_transports_with_native_sessions() {
     for (harness, name, executable_path) in [
-        ("openclaw", Some("openclaw"), Some("/usr/bin/node")),
-        ("openclaw", Some("openclaw-gateway"), None),
-        ("openclaw", None, Some("/opt/bin/openclaw")),
-        ("openclaw", None, Some(r"C:\Apps\OpenClaw.EXE")),
-        ("openclaw", Some("node"), Some("/opt/openclaw/openclaw.mjs")),
         ("hermes", Some("hermes"), Some("/usr/bin/python3")),
         ("hermes", Some("hermes-agent"), None),
         ("hermes", None, Some("/opt/bin/hermes")),
@@ -251,41 +238,40 @@ async fn process_identity_attributes_generic_transports_with_native_sessions() {
 
 #[tokio::test]
 async fn process_detection_still_requires_session_and_respects_policy() {
-    for harness in ["openclaw", "hermes"] {
-        let missing_session = Scenario::new(json!({})).with_process(Some(harness), None);
-        missing_session
-            .http(&[], "/v1/responses", "resp-http")
-            .await;
-        missing_session.websocket(&[], &[
-            json!({"type": "response.create", "model": "test", "input": "hello", "prompt_cache_key": "not-session"}),
-        ]).await;
-        assert!(missing_session.sink.0.lock().is_empty());
+    let harness = "hermes";
+    let missing_session = Scenario::new(json!({})).with_process(Some(harness), None);
+    missing_session
+        .http(&[], "/v1/responses", "resp-http")
+        .await;
+    missing_session.websocket(&[], &[
+        json!({"type": "response.create", "model": "test", "input": "hello", "prompt_cache_key": "not-session"}),
+    ]).await;
+    assert!(missing_session.sink.0.lock().is_empty());
 
-        for enabled in [true, false] {
-            let scenario = Scenario::new(json!({"harness_usage": {"config": {"harnesses": {
-                harness: {"enabled": enabled, "content": {"conversation_text": false}}
-            }}}}))
-            .with_process(Some(harness), None);
-            // Process attribution wins over transport compatibility headers.
-            let headers = [
-                ("user-agent", "codex_cli_rs/1.0"),
-                ("session_id", "session"),
-            ];
-            scenario
-                .http(&headers, "/backend-api/codex/responses", "resp-http")
-                .await;
-            scenario
-                .websocket(
-                    &headers,
-                    &[json!({"type": "response.create", "model": "test", "input": "hello"})],
-                )
-                .await;
-            let events = scenario.sink.0.lock();
-            assert_eq!(events.len(), if enabled { 4 } else { 0 });
-            for event in events.iter() {
-                assert_eq!(event.agent.name, harness);
-                assert!(event.text.is_none());
-            }
+    for enabled in [true, false] {
+        let scenario = Scenario::new(json!({"harness_usage": {"config": {"harnesses": {
+            harness: {"enabled": enabled, "content": {"conversation_text": false}}
+        }}}}))
+        .with_process(Some(harness), None);
+        // Process attribution wins over transport compatibility headers.
+        let headers = [
+            ("user-agent", "codex_cli_rs/1.0"),
+            ("session_id", "session"),
+        ];
+        scenario
+            .http(&headers, "/backend-api/codex/responses", "resp-http")
+            .await;
+        scenario
+            .websocket(
+                &headers,
+                &[json!({"type": "response.create", "model": "test", "input": "hello"})],
+            )
+            .await;
+        let events = scenario.sink.0.lock();
+        assert_eq!(events.len(), if enabled { 4 } else { 0 });
+        for event in events.iter() {
+            assert_eq!(event.agent.name, harness);
+            assert!(event.text.is_none());
         }
     }
 }
@@ -293,10 +279,10 @@ async fn process_detection_still_requires_session_and_respects_policy() {
 #[tokio::test]
 async fn generic_interpreters_and_similar_process_names_are_not_client_identity() {
     for (name, executable_path) in [
-        (Some("node"), Some("/opt/openclaw/bin/node")),
+        (Some("node"), Some("/opt/hermes-agent/bin/node")),
         (Some("python3"), Some("/opt/hermes-agent/bin/python3")),
         (Some("pi"), None),
-        (Some("openclaw-helper"), None),
+        (Some("hermes-helper"), None),
         (Some("my-hermes"), None),
         (None, None),
     ] {
@@ -325,7 +311,6 @@ async fn generic_interpreters_and_similar_process_names_are_not_client_identity(
 async fn missing_session_is_not_replaced_by_response_or_cache_identity() {
     let scenario = Scenario::new(json!({}));
     for headers in [
-        vec![("user-agent", "OpenClaw/2026.5.7")],
         vec![("user-agent", "HermesAgent/0.22.0")],
         vec![
             ("user-agent", "HermesAgent/0.22.0"),
@@ -361,13 +346,6 @@ async fn compatibility_identity_and_policy_cannot_relabel_a_client() {
                 ("x-hermes-session-id", "session-1"),
             ],
         ),
-        (
-            "openclaw",
-            vec![
-                ("user-agent", "codex_cli_rs/1.0"),
-                ("x-openclaw-session-id", "session-1"),
-            ],
-        ),
     ] {
         for enabled in [true, false] {
             let scenario = Scenario::new(json!({"harness_usage": {"config": {"harnesses": {
@@ -387,7 +365,10 @@ async fn compatibility_identity_and_policy_cannot_relabel_a_client() {
     let ambiguous = Scenario::new(json!({}));
     ambiguous
         .http(
-            &[("x-hermes-session-id", "h"), ("x-openclaw-session-id", "o")],
+            &[
+                ("x-hermes-session-id", "h"),
+                ("user-agent", "deepseek-harness/0.2.0"),
+            ],
             "/v1/responses",
             "resp-1",
         )
@@ -396,40 +377,65 @@ async fn compatibility_identity_and_policy_cannot_relabel_a_client() {
 }
 
 #[tokio::test]
-async fn websocket_reads_client_metadata_and_never_reuses_upgrade_turns() {
+async fn websocket_retains_session_and_never_reuses_upgrade_turns() {
     let scenario = Scenario::new(json!({}));
-    scenario.websocket(&[("x-openclaw-session-id", "handshake-session")], &[
-        json!({"type": "response.create", "model": "test", "input": "hello",
-            "metadata": {"openclaw_session_id": "frame-session", "openclaw_turn_id": "model-call-1"}}),
+    scenario.websocket(&[
+        ("x-hermes-session-id", "hermes-session"),
+        ("x-hermes-turn-id", "stale"),
+    ], &[
+        json!({"type": "response.create", "model": "test", "input": "hello"}),
         json!({"type": "response.create", "response": {"model": "test", "input": "again", "previous_response_id": "resp-0"}}),
     ]).await;
     scenario
         .websocket(
-            &[
-                ("x-hermes-session-id", "hermes-session"),
-                ("x-hermes-turn-id", "stale"),
-            ],
-            &[json!({"type": "response.create", "model": "test", "input": "hello"})],
-        )
-        .await;
-    scenario
-        .websocket(
-            &[("user-agent", "OpenClaw/2026.5.7")],
+            &[("user-agent", "HermesAgent/0.22.0")],
             &[json!({"type": "response.create", "model": "test", "input": "no session"})],
         )
         .await;
     let events = scenario.sink.0.lock();
-    assert_eq!(events.len(), 6);
-    for (pair, session) in events.as_chunks::<2>().0.iter().zip([
-        "frame-session",
-        "handshake-session",
-        "hermes-session",
-    ]) {
-        for event in pair {
-            assert_eq!(event.session_id, session);
-            assert!(event.turn_id.is_none());
-            assert!(event.response_id.is_some());
-        }
+    assert_eq!(events.len(), 4);
+    for event in events.iter() {
+        assert_eq!(event.session_id, "hermes-session");
+        assert!(event.turn_id.is_none());
+        assert!(event.response_id.is_some());
     }
     assert_eq!(events[2].previous_response_id.as_deref(), Some("resp-0"));
+}
+
+#[tokio::test]
+async fn successive_user_turns_preserve_native_session_and_turn_ids() {
+    let scenario = Scenario::new(json!({}));
+    for path in ["/v1/responses", "/v1/chat/completions", "/v1/messages"] {
+        for (session, turn) in [
+            ("a", "turn-1"),
+            ("b", "turn-1"),
+            ("a", "turn-2"),
+            ("a", "turn-3"),
+        ] {
+            scenario
+                .http(
+                    &[("x-hermes-session-id", session), ("x-hermes-turn-id", turn)],
+                    path,
+                    turn,
+                )
+                .await;
+        }
+    }
+    let events = scenario.sink.0.lock();
+    assert_eq!(events.len(), 24);
+    for (pair, (session, turn)) in events.as_chunks::<2>().0.iter().zip(
+        [
+            ("a", "turn-1"),
+            ("b", "turn-1"),
+            ("a", "turn-2"),
+            ("a", "turn-3"),
+        ]
+        .into_iter()
+        .cycle(),
+    ) {
+        for event in pair {
+            assert_eq!(event.session_id, session);
+            assert_eq!(event.turn_id.as_deref(), Some(turn));
+        }
+    }
 }

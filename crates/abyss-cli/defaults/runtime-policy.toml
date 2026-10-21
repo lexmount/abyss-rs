@@ -98,8 +98,5 @@ images = true
 [hooks.harness_usage.config.harnesses."deepseek-harness"]
 enabled = true
 
-[hooks.harness_usage.config.harnesses.openclaw]
-enabled = true
-
 [hooks.harness_usage.config.harnesses.hermes]
 enabled = true

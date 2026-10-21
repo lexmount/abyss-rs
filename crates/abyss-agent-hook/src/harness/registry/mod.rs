@@ -5,7 +5,6 @@ mod claude_desktop;
 mod codex;
 mod deepseek_harness;
 mod hermes;
-mod openclaw;
 
 use abyss_mitm::{FlowContext, HttpExchange, WebSocketMessage};
 use http::HeaderMap;
@@ -61,12 +60,11 @@ impl HarnessRegistry {
         path: &str,
         config: &HarnessUsageConfig,
     ) -> Option<HarnessDetection> {
-        let detectors: [&dyn HarnessDetector; 6] = [
+        let detectors: [&dyn HarnessDetector; 5] = [
             &codex::CodexDetector,
             &claude_desktop::ClaudeDesktopDetector,
             &claude_code::ClaudeCodeDetector,
             &deepseek_harness::DeepSeekHarnessDetector,
-            &openclaw::OpenClawDetector,
             &hermes::HermesDetector,
         ];
         let mut detections = detectors
@@ -74,12 +72,12 @@ impl HarnessRegistry {
             .filter_map(|detector| detector.detect(flow, headers, path))
             .collect::<Vec<_>>();
 
-        // These clients can send Codex/Claude compatibility fingerprints.
+        // Hermes can send Codex/Claude compatibility fingerprints.
         // Apply their explicit identity before policy filtering so disabling
         // one cannot relabel its traffic as the impersonated client.
         if detections
             .iter()
-            .any(|detection| matches!(detection.harness_id.as_str(), "openclaw" | "hermes"))
+            .any(|detection| detection.harness_id.as_str() == "hermes")
         {
             detections.retain(|detection| {
                 !matches!(detection.harness_id.as_str(), "codex" | "claude-code")
@@ -123,7 +121,7 @@ impl HarnessRegistry {
     /// Newly integrated clients require an explicit client-owned session.
     #[must_use]
     pub fn requires_session(harness_id: &HarnessId) -> bool {
-        matches!(harness_id.as_str(), "openclaw" | "hermes")
+        harness_id.as_str() == "hermes"
     }
 
     /// Reads what the detected Agent declares about a request. Agents without
@@ -133,7 +131,6 @@ impl HarnessRegistry {
         match harness_id.as_str() {
             id if id == BuiltInHarness::Codex.id() => codex::declare(source),
             id if id == BuiltInHarness::ClaudeCode.id() => claude_code::declare(source),
-            id if id == BuiltInHarness::OpenClaw.id() => openclaw::declare(source),
             id if id == BuiltInHarness::Hermes.id() => hermes::declare(source),
             _ => AgentDeclaration::default(),
         }
@@ -205,14 +202,10 @@ mod tests {
         let config = HarnessUsageConfig::default();
         for (headers, expected) in [
             (vec![], None),
-            // OpenClaw's installed pi-ai transport identifies itself as pi.
+            // A generic Pi client is not identified by the Codex backend.
             (
-                vec![
-                    ("user-agent", "pi (darwin; arm64)"),
-                    ("originator", "pi"),
-                    ("x-openclaw-session-id", "session-1"),
-                ],
-                Some("openclaw"),
+                vec![("user-agent", "pi (darwin; arm64)"), ("originator", "pi")],
+                None,
             ),
             (
                 vec![
@@ -233,9 +226,9 @@ mod tests {
                 vec![
                     ("user-agent", "codex_cli_rs/0.1.0"),
                     ("originator", "codex_cli_rs"),
-                    ("x-openclaw-session-id", "session-1"),
+                    ("x-hermes-session-id", "session-1"),
                 ],
-                Some("openclaw"),
+                Some("hermes"),
             ),
             (vec![("user-agent", "another-codex-client/1.0")], None),
             (vec![("originator", "my-codex-proxy")], None),

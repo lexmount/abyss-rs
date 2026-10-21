@@ -223,9 +223,6 @@ impl PendingTurn {
         if current.client_metadata.is_none() {
             current.client_metadata = next.client_metadata;
         }
-        if current.request_metadata.is_none() {
-            current.request_metadata = next.request_metadata;
-        }
         if current.model.is_none() {
             current.model = next.model;
         }
@@ -541,7 +538,6 @@ mod tests {
             response_id: None,
             previous_response_id: None,
             client_metadata: None,
-            request_metadata: None,
             request_tool_events: Vec::new(),
             response_tool_events: Vec::new(),
             model: Some("model-test".to_owned()),

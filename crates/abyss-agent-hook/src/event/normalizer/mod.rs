@@ -1199,7 +1199,6 @@ mod tests {
             response_id: Some("response-1".to_owned()),
             previous_response_id: None,
             client_metadata: None,
-            request_metadata: None,
             request_tool_events: Vec::new(),
             response_tool_events: Vec::new(),
             model: Some("model-test".to_owned()),

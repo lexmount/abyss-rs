@@ -20,8 +20,6 @@ pub struct DeclarationSource<'a> {
     pub body: Option<&'a Value>,
     /// The OpenAI request `client_metadata` object.
     pub client_metadata: Option<&'a Value>,
-    /// The request's opaque `metadata` object, including per-frame metadata.
-    pub metadata: Option<&'a Value>,
     /// Model-visible response text fragments.
     pub response_texts: &'a [String],
 }

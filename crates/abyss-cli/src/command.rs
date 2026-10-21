@@ -468,7 +468,6 @@ impl StatusCommandRunner {
             BuiltInHarness::Codex.id(),
             BuiltInHarness::ClaudeCode.id(),
             BuiltInHarness::DeepSeekHarness.id(),
-            BuiltInHarness::OpenClaw.id(),
             BuiltInHarness::Hermes.id(),
         ]
         .into_iter()
@@ -609,7 +608,6 @@ fn parse_harness(value: &str, hooks: &HooksConfig) -> Result<HarnessId, CliError
         "codex" => Ok(BuiltInHarness::Codex.into()),
         "claude-code" | "claude-cli" => Ok(BuiltInHarness::ClaudeCode.into()),
         "deepseek-harness" => Ok(BuiltInHarness::DeepSeekHarness.into()),
-        "openclaw" => Ok(BuiltInHarness::OpenClaw.into()),
         "hermes" => Ok(BuiltInHarness::Hermes.into()),
         name => hooks
             .harness_usage
@@ -648,7 +646,7 @@ mod tests {
     #[test]
     fn builtins_can_be_selected_without_a_policy_entry() {
         let hooks = HooksConfig::default();
-        for name in ["deepseek-harness", "openclaw", "hermes"] {
+        for name in ["deepseek-harness", "hermes"] {
             let id = super::parse_harness(name, &hooks).unwrap();
             assert_eq!(id.as_str(), name);
             assert_eq!(super::enabled_label(&hooks, id.as_str()), "enabled");

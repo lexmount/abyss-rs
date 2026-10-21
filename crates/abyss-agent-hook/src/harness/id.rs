@@ -16,8 +16,6 @@ pub enum BuiltInHarness {
     ClaudeDesktop,
     /// DSH headless, TUI, and Web model traffic.
     DeepSeekHarness,
-    /// `OpenClaw` model traffic.
-    OpenClaw,
     /// Hermes Agent model traffic.
     Hermes,
 }
@@ -31,7 +29,6 @@ impl BuiltInHarness {
             Self::ClaudeCode => "claude-code",
             Self::ClaudeDesktop => "claude-desktop",
             Self::DeepSeekHarness => "deepseek-harness",
-            Self::OpenClaw => "openclaw",
             Self::Hermes => "hermes",
         }
     }
@@ -53,7 +50,7 @@ impl HarnessId {
     pub(crate) fn is_reserved(&self) -> bool {
         matches!(
             self.as_str(),
-            "codex" | "claude-code" | "claude-desktop" | "deepseek-harness" | "openclaw" | "hermes"
+            "codex" | "claude-code" | "claude-desktop" | "deepseek-harness" | "hermes"
         )
     }
 }

@@ -167,7 +167,6 @@ where
                 upgrade_headers: Some(message.upgrade_request.headers()),
                 body: None,
                 client_metadata: parsed.client_metadata.as_ref(),
-                metadata: parsed.request_metadata.as_ref(),
                 response_texts: &parsed.response_texts,
             },
         );
@@ -222,11 +221,6 @@ fn http_declaration(
             upgrade_headers: None,
             body: exchange.request.body().json(),
             client_metadata,
-            metadata: exchange
-                .request
-                .body()
-                .json()
-                .and_then(|body| body.get("metadata")),
             response_texts,
         },
     )

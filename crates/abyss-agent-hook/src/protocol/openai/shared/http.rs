@@ -119,12 +119,6 @@ impl<'a> OpenAiHttpExchange<'a> {
                 .body()
                 .json()
                 .and_then(|json| json.get("client_metadata").cloned()),
-            request_metadata: self
-                .exchange
-                .request
-                .body()
-                .json()
-                .and_then(|json| json.get("metadata").cloned()),
             request_tool_events,
             response_tool_events,
             model,

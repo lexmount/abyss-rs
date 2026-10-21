@@ -580,11 +580,7 @@ mod tests {
                 .config
                 .enabled_for_harness(BuiltInHarness::ClaudeCode.id())
         );
-        for harness in [
-            BuiltInHarness::DeepSeekHarness,
-            BuiltInHarness::OpenClaw,
-            BuiltInHarness::Hermes,
-        ] {
+        for harness in [BuiltInHarness::DeepSeekHarness, BuiltInHarness::Hermes] {
             let entry = &policy.hooks.harness_usage.config.harnesses[harness.id()];
             assert_eq!(entry.enabled, Some(true));
             assert!(entry.matchers.is_empty());

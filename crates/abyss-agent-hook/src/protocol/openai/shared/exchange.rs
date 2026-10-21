@@ -46,8 +46,6 @@ pub struct ParsedOpenAiExchange {
     /// The request `client_metadata` object, where a client may declare its
     /// own context; read by the Harness registry.
     pub client_metadata: Option<Value>,
-    /// Opaque request metadata preserved for client-owned declarations.
-    pub request_metadata: Option<Value>,
     /// Tool results carried by the provider request side of this exchange.
     pub request_tool_events: Vec<ParsedToolEvent>,
     /// Tool calls carried by the provider response side of this exchange.
