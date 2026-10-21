@@ -6,6 +6,7 @@ mod codex;
 mod cursor;
 mod deepseek_harness;
 mod hermes;
+mod workbuddy;
 
 use abyss_mitm::{FlowContext, HttpExchange, WebSocketMessage};
 use http::HeaderMap;
@@ -121,7 +122,7 @@ impl HarnessRegistry {
 
 impl HarnessRegistry {
     /// Reads what the detected Agent declares about a request. Agents without
-    /// built-in declarations declare nothing.
+    /// supported declarations declare nothing.
     #[must_use]
     pub fn declare(harness_id: &HarnessId, source: &DeclarationSource<'_>) -> AgentDeclaration {
         match harness_id.as_str() {
@@ -129,6 +130,7 @@ impl HarnessRegistry {
             id if id == BuiltInHarness::ClaudeCode.id() => claude_code::declare(source),
             id if id == BuiltInHarness::Hermes.id() => hermes::declare(source),
             id if id == BuiltInHarness::Cursor.id() => cursor::declare(source),
+            "workbuddy" => workbuddy::declare(source),
             _ => AgentDeclaration::default(),
         }
     }

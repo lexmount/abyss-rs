@@ -385,7 +385,10 @@ pub fn normalize_exchange<E>(
 where
     E: NormalizableExchange,
 {
-    let parts = parsed.event_parts(content, detection, provider);
+    let mut parts = parsed.event_parts(content, detection, provider);
+    if let Some(session_id) = &declaration.session_id {
+        parts.session_id.clone_from(session_id);
+    }
     let continuation = parsed.continuation();
     // Only the traffic names these; without a declaration the events carry none.
     let declared = Declared {
@@ -896,6 +899,7 @@ mod tests {
         let mut parsed = openai_exchange();
         parsed.previous_response_id = Some("response-0".to_owned());
         let declaration = AgentDeclaration {
+            session_id: Some("declared-session".to_owned()),
             turn_id: Some("turn-7".to_owned()),
             stream_id: Some("thread-7".to_owned()),
             naming_thread: true,
@@ -915,6 +919,7 @@ mod tests {
         assert_eq!(events.len(), 2);
         for event in events {
             let event = AgentEvent::try_from(event).expect("event should convert");
+            assert_eq!(event.session_id, "declared-session");
             assert_eq!(event.turn_id.as_deref(), Some("turn-7"));
             assert!(event.naming_thread);
             assert_eq!(event.stream_id.as_deref(), Some("thread-7"));

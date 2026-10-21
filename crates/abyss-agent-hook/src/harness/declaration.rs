@@ -1,6 +1,6 @@
 //! What an Agent declares about one request in its own headers and body.
 //!
-//! Each built-in Harness reads its own declarations in its registry entry, so
+//! Each supported Harness reads its own declarations in its registry entry, so
 //! protocol parsers stay limited to provider-level content.
 
 use abyss_plugin_protocol::event::EventPurpose;
@@ -24,6 +24,8 @@ pub struct DeclarationSource<'a> {
 /// What the Agent declared about a request; empty when it declared nothing.
 #[derive(Clone, Debug, Default, Eq, PartialEq)]
 pub struct AgentDeclaration {
+    /// Session explicitly named by the Harness, overriding provider fallbacks.
+    pub session_id: Option<String>,
     /// The user turn the request works for.
     pub turn_id: Option<String>,
     /// The thread that sent the request.

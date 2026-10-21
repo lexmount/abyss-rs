@@ -49,6 +49,7 @@ pub(super) fn declare(source: &DeclarationSource<'_>) -> AgentDeclaration {
         None
     };
     AgentDeclaration {
+        session_id: None,
         turn_id: header(PROMPT_ID).map(str::to_owned),
         stream_id: stream_id.map(str::to_owned),
         naming_thread: false,
