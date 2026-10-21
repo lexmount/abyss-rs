@@ -20,7 +20,9 @@ class _PortReservation:
     """Keeps one loopback port unavailable until its service is ready to launch."""
 
     def __init__(self) -> None:
-        self._listener: socket.socket | None = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        self._listener: socket.socket | None = socket.socket(
+            socket.AF_INET, socket.SOCK_STREAM
+        )
         self._listener.bind(("127.0.0.1", 0))
         self.port = int(self._listener.getsockname()[1])
 
@@ -40,10 +42,20 @@ class TestStack:
         config: RuntimeConfig,
         commands: CommandRunner,
         http: LoopbackHttpClient,
+        *,
+        harness_id: str = "codex",
+        interception_hosts: tuple[str, ...] = (
+            "openai.com",
+            "*.openai.com",
+            "chatgpt.com",
+            "*.chatgpt.com",
+        ),
     ) -> None:
         self.config = config
         self.commands = commands
         self.http = http
+        self.harness_id = harness_id
+        self.interception_hosts = interception_hosts
         resource_id = config.run_id.lower()[-52:]
         self.network_name = f"abyss-agent-e2e-{resource_id}"
         self.postgres_container = f"abyss-agent-e2e-postgres-{resource_id}"
@@ -209,9 +221,7 @@ class TestStack:
         token_path.write_text(self.native_token, encoding="utf-8")
         token_path.chmod(0o600)
         delivery_auth_path = root / "secrets" / "delivery-authorization"
-        delivery_auth_path.write_text(
-            f"Bearer {self.native_token}\n", encoding="utf-8"
-        )
+        delivery_auth_path.write_text(f"Bearer {self.native_token}\n", encoding="utf-8")
         delivery_auth_path.chmod(0o600)
 
     def _pull_backend(self) -> None:
@@ -360,9 +370,7 @@ class TestStack:
         raise OrchestrationError("PostgreSQL did not become ready")
 
     def _start_backend(self) -> None:
-        database_url = (
-            f"postgres://abyss:abyss@{self.postgres_container}:5432/abyss?sslmode=disable"
-        )
+        database_url = f"postgres://abyss:abyss@{self.postgres_container}:5432/abyss?sslmode=disable"
         self._backend_port_reservation.release()
         self.commands.run(
             [
@@ -398,7 +406,9 @@ class TestStack:
         )
         self.backend_started = True
         self.http.wait_until(
-            lambda: self.http.json(f"{self.backend_base_url}/readyz").get("status") == "ok",
+            lambda: (
+                self.http.json(f"{self.backend_base_url}/readyz").get("status") == "ok"
+            ),
             timeout_seconds=self.config.startup_timeout_seconds,
             description="abyss-backend readiness",
         )
@@ -418,16 +428,16 @@ path = {json.dumps(str(self.ca_directory))}
 mode = "explicit"
 listen_addr = "127.0.0.1:{self.proxy_port}"
 """
-        runtime_policy = """schema_version = 1
+        runtime_policy = f"""schema_version = 1
 
 [mitm.tls_decryption]
 default_action = "passthrough"
 missing_sni_action = "passthrough"
 
 [[mitm.tls_decryption.rules]]
-id = "agent-e2e-openai"
+id = "agent-e2e-provider"
 action = "intercept"
-destination_hosts = ["openai.com", "*.openai.com", "chatgpt.com", "*.chatgpt.com"]
+destination_hosts = {json.dumps(self.interception_hosts)}
 
 [hooks.harness_usage]
 enabled = true
@@ -438,10 +448,10 @@ conversation_text = true
 tool_calls = true
 images = true
 
-[hooks.harness_usage.config.harnesses.codex]
+[hooks.harness_usage.config.harnesses.{json.dumps(self.harness_id)}]
 enabled = true
 
-[hooks.harness_usage.config.harnesses.codex.content]
+[hooks.harness_usage.config.harnesses.{json.dumps(self.harness_id)}.content]
 token_usage = true
 conversation_text = true
 tool_calls = true
@@ -516,7 +526,10 @@ images = true
         )
 
         def broker_ready() -> bool:
-            if self.broker_process is not None and self.broker_process.poll() is not None:
+            if (
+                self.broker_process is not None
+                and self.broker_process.poll() is not None
+            ):
                 raise OrchestrationError("abyss-broker exited before becoming ready")
             if not token_file.is_file() or not self.broker_startup_info_path.is_file():
                 return False
@@ -528,9 +541,13 @@ images = true
                 return False
             host, separator, port = api_addr.rpartition(":")
             if separator != ":" or host != "127.0.0.1" or not port.isdigit():
-                raise OrchestrationError("broker startup info contains an invalid API address")
+                raise OrchestrationError(
+                    "broker startup info contains an invalid API address"
+                )
             if int(port) == 0:
-                raise OrchestrationError("broker startup info contains an unbound API port")
+                raise OrchestrationError(
+                    "broker startup info contains an unbound API port"
+                )
             self.broker_base_url = f"http://{api_addr}"
             health = self.http.json(f"{self.broker_base_url}/healthz")
             return health.get("status") == "ok"
@@ -556,9 +573,13 @@ images = true
             and ingress.get("listen_addr") == listener
             for ingress in ingresses
         )
-        status_matches = status.get("lifecycle") == "running" and status.get("mode") == "explicit"
+        status_matches = (
+            status.get("lifecycle") == "running" and status.get("mode") == "explicit"
+        )
         if not status_matches or not listener_found:
-            raise OrchestrationError("broker did not report the expected explicit proxy listener")
+            raise OrchestrationError(
+                "broker did not report the expected explicit proxy listener"
+            )
 
     def _start_delivery_plugin(self) -> None:
         target_root = Path(os.environ.get("CARGO_TARGET_DIR", "target"))
@@ -607,11 +628,14 @@ images = true
             bearer=self.broker_token,
         )
         tls_decryption = mitm.get("tls_decryption")
-        rules = tls_decryption.get("rules") if isinstance(tls_decryption, dict) else None
+        rules = (
+            tls_decryption.get("rules") if isinstance(tls_decryption, dict) else None
+        )
         mitm_loaded = isinstance(rules, list) and any(
             isinstance(rule, dict)
-            and rule.get("id") == "agent-e2e-openai"
+            and rule.get("id") == "agent-e2e-provider"
             and rule.get("action") == "intercept"
+            and rule.get("destination_hosts") == list(self.interception_hosts)
             for rule in rules
         )
         if not mitm_loaded:
@@ -624,14 +648,20 @@ images = true
             bearer=self.broker_token,
         )
         harness_usage = hooks.get("harness_usage")
-        hook_config = harness_usage.get("config") if isinstance(harness_usage, dict) else None
-        harnesses = hook_config.get("harnesses") if isinstance(hook_config, dict) else None
-        codex = harnesses.get("codex") if isinstance(harnesses, dict) else None
+        hook_config = (
+            harness_usage.get("config") if isinstance(harness_usage, dict) else None
+        )
+        harnesses = (
+            hook_config.get("harnesses") if isinstance(hook_config, dict) else None
+        )
+        harness = (
+            harnesses.get(self.harness_id) if isinstance(harnesses, dict) else None
+        )
         if not (
             isinstance(harness_usage, dict)
             and harness_usage.get("enabled") is True
-            and isinstance(codex, dict)
-            and codex.get("enabled") is True
+            and isinstance(harness, dict)
+            and harness.get("enabled") is True
         ):
             raise OrchestrationError(
                 f"broker did not load Hook policy from {self.runtime_policy_path}"

@@ -1,0 +1,129 @@
+name: Headless Harness Model Matrix
+
+on:
+  pull_request:
+    branches: [main]
+    types: [opened, synchronize, reopened, labeled, unlabeled]
+  workflow_dispatch:
+    inputs:
+      harness:
+        description: Optional harness filter (codex, claude-code, deepseek-harness)
+        type: string
+      provider:
+        description: Optional provider filter (openai, anthropic, deepseek, glm, kimi, qwen)
+        type: string
+      protocol:
+        description: Optional protocol filter (responses, chat, messages)
+        type: string
+      model:
+        description: Optional exact model filter
+        type: string
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+env:
+  ABYSS_E2E_MODELS: ${{ vars.ABYSS_E2E_MODELS }}
+  ABYSS_E2E_ENDPOINTS: ${{ vars.ABYSS_E2E_ENDPOINTS }}
+
+jobs:
+  plan:
+    runs-on: ubuntu-latest
+    outputs:
+      matrix: ${{ steps.plan.outputs.matrix }}
+      enabled: ${{ steps.plan.outputs.enabled }}
+    steps:
+      - uses: actions/checkout@v4
+      - name: Test orchestration contracts
+        run: python3 -m unittest discover -s scripts/tests -p 'test_agent_*py'
+      - name: Plan compatible matrix
+        id: plan
+        env:
+          FORK: ${{ github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name != github.repository }}
+          SKIP: ${{ github.event_name == 'pull_request' && contains(github.event.pull_request.labels.*.name, 'skip-agent-e2e') }}
+          HARNESS: ${{ inputs.harness }}
+          PROVIDER: ${{ inputs.provider }}
+          PROTOCOL: ${{ inputs.protocol }}
+          MODEL: ${{ inputs.model }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [[ "$FORK" == true || "$SKIP" == true ]]; then
+            echo 'enabled=false' >> "$GITHUB_OUTPUT"
+            echo 'matrix={"include":[]}' >> "$GITHUB_OUTPUT"
+            printf 'Matrix SKIPPED: fork=%s, skip-agent-e2e=%s; actor=%s; commit=%s\n' \
+              "$FORK" "$SKIP" "$GITHUB_ACTOR" "$GITHUB_SHA" >> "$GITHUB_STEP_SUMMARY"
+            exit 0
+          fi
+          matrix=$(python3 -m scripts.agent_matrix_ci plan \
+            --harness "$HARNESS" --provider "$PROVIDER" --protocol "$PROTOCOL" --model "$MODEL")
+          echo "matrix=$matrix" >> "$GITHUB_OUTPUT"
+          echo 'enabled=true' >> "$GITHUB_OUTPUT"
+
+  matrix:
+    needs: plan
+    if: needs.plan.outputs.enabled == 'true'
+    name: ${{ matrix.harness }} / ${{ matrix.provider }} / ${{ matrix.model }} / ${{ matrix.protocol }}
+    runs-on: [self-hosted, abyss, Linux, X64]
+    timeout-minutes: 45
+    strategy:
+      fail-fast: false
+      max-parallel: 3
+      matrix: ${{ fromJSON(needs.plan.outputs.matrix) }}
+    env:
+      ABYSS_AGENT_E2E_RUN_ID: matrix-${{ github.run_id }}-${{ github.run_attempt }}-${{ matrix.id }}
+    steps:
+      - uses: actions/checkout@v4
+      - name: Set up client runtime
+        uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+      - name: Install pinned headless client in job directory
+        env:
+          HARNESS: ${{ matrix.harness }}
+          MATRIX_CASE: ${{ matrix.id }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          case "$HARNESS" in
+            codex) package='@openai/codex@0.163.0' ;;
+            claude-code) package='@anthropic-ai/claude-code@2.1.206' ;;
+            deepseek-harness) package='@deepseek-ai/dsh@0.2.0-rc.2' ;;
+            *) echo 'Unknown headless harness' >&2; exit 1 ;;
+          esac
+          tools_dir="$RUNNER_TEMP/abyss-matrix-tools-$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT-$MATRIX_CASE"
+          npm install --prefix "$tools_dir" --no-audit --no-fund "$package"
+          echo "$tools_dir/node_modules/.bin" >> "$GITHUB_PATH"
+      - name: Run real headless client through Abyss
+        env:
+          ABYSS_MATRIX_API_KEY: ${{ secrets[matrix.secret] }}
+          MATRIX_CASE: ${{ matrix.id }}
+          ABYSS_AGENT_E2E_RUNTIME_ROOT: ${{ runner.temp }}/abyss-matrix-${{ github.run_id }}-${{ github.run_attempt }}-${{ matrix.id }}
+        run: python3 -m scripts.agent_matrix_ci run --case "$MATRIX_CASE"
+      - name: Upload sanitized cell evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: matrix-${{ matrix.id }}
+          path: ${{ runner.temp }}/abyss-matrix-${{ github.run_id }}-${{ github.run_attempt }}-${{ matrix.id }}/artifacts
+          if-no-files-found: warn
+          retention-days: 14
+
+  result:
+    needs: [plan, matrix]
+    if: always() && needs.plan.outputs.enabled == 'true'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: matrix-*
+          path: matrix-results
+      - name: Require every planned cell to pass
+        env:
+          ABYSS_E2E_EXPECTED_MATRIX: ${{ needs.plan.outputs.matrix }}
+        run: python3 -m scripts.agent_matrix_ci summarize --results matrix-results

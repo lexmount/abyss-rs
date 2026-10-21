@@ -1,5 +1,12 @@
 # Codex Agent-driven E2E CI
 
+The complementary [headless harness × model matrix](../agent_matrix_ci/README.md)
+covers Codex, Claude Code and DSH across provider protocols. Both GitHub
+workflows use repository API Secrets; this workflow uses
+`ABYSS_E2E_OPENAI_API_KEY` for all three Codex phases. No runner login is needed
+when that key is supplied; local runs can still use an existing login when the
+environment variable is absent.
+
 This package powers `.github/workflows/codex-agent-e2e.yml`. It runs a fresh
 black-box topology for every pull request:
 
@@ -51,7 +58,7 @@ Both `fail` and `inconclusive` return a failing process status. A maintainer can
 add the `skip-agent-e2e` PR label when a human-reviewed exception is appropriate.
 The successful skipped check records the actor, commit, and reason in the GitHub
 Job Summary. Fork pull requests are skipped automatically because they must not
-use a self-hosted Codex login. The workflow deliberately does not use
+use provider API credentials. The workflow deliberately does not use
 `pull_request_target`.
 
 ## Runner prerequisites
@@ -65,7 +72,8 @@ these preinstalled commands:
 - `cargo` and the repository's Rust toolchain/dependency cache;
 - `docker` with permission to use a running broker;
 - `openssl`;
-- `codex`, authenticated for that same service account.
+- `codex`, with `ABYSS_E2E_OPENAI_API_KEY` supplied by GitHub (or an existing
+  service-account login for local runs without that variable).
 
 The installed Codex CLI must support `exec --json`, `--image`, `--ephemeral`,
 `--ignore-user-config`, `--ignore-rules`, `--output-schema`,

@@ -59,8 +59,12 @@ class PromptRenderer:
         )
 
     def judge(self, evidence: dict[str, Any]) -> str:
-        evidence_json = json.dumps(evidence, ensure_ascii=False, indent=2, sort_keys=True)
-        return self._template("judge-evidence.md").substitute(EVIDENCE_JSON=evidence_json)
+        evidence_json = json.dumps(
+            evidence, ensure_ascii=False, indent=2, sort_keys=True
+        )
+        return self._template("judge-evidence.md").substitute(
+            EVIDENCE_JSON=evidence_json
+        )
 
     def _template(self, filename: str) -> Template:
         path = self.prompt_root / filename
@@ -95,7 +99,9 @@ class CodexOrchestrator:
             model=self.config.generator_model,
         )
         log_path.write_text(result.stdout, encoding="utf-8")
-        (coordinator / "generator.stderr.log").write_text(result.stderr, encoding="utf-8")
+        (coordinator / "generator.stderr.log").write_text(
+            result.stderr, encoding="utf-8"
+        )
         if result.returncode != 0:
             raise OrchestrationError(
                 f"Codex A scenario generation failed with exit code {result.returncode}: "
@@ -109,7 +115,9 @@ class CodexOrchestrator:
             max_scenarios=self.config.max_scenarios,
         )
 
-    def run_b(self, scenario: Scenario, workspace: Path, stack: TestStack) -> CodexBResult:
+    def run_b(
+        self, scenario: Scenario, workspace: Path, stack: TestStack
+    ) -> CodexBResult:
         marker = f"ABYSS_AGENT_E2E_{self.config.run_id}_{scenario.scenario_id}"
         prompt = "\n\n".join(
             (
@@ -139,6 +147,7 @@ class CodexOrchestrator:
         ]
         if self.config.b_model:
             arguments.extend(("--model", self.config.b_model))
+        arguments.extend(self._api_provider_arguments())
         # --image accepts one or more values, so an un-delimited positional prompt is
         # consumed as another image path by the Codex CLI. End option parsing and use
         # stdin explicitly; this also keeps generated prompts out of process listings.
@@ -227,6 +236,7 @@ class CodexOrchestrator:
         ]
         if model:
             arguments.extend(("--model", model))
+        arguments.extend(self._api_provider_arguments())
         # Generator and judge prompts contain audit evidence; keep them out of
         # world-readable process argument lists on the shared runner.
         arguments.extend(("--", "-"))
@@ -238,6 +248,21 @@ class CodexOrchestrator:
             timeout=self.config.codex_timeout_seconds,
             check=False,
         )
+
+    @staticmethod
+    def _api_provider_arguments() -> list[str]:
+        if "ABYSS_E2E_OPENAI_API_KEY" not in os.environ:
+            return []
+        if not os.environ["ABYSS_E2E_OPENAI_API_KEY"].strip():
+            raise OrchestrationError(
+                "required GitHub secret ABYSS_E2E_OPENAI_API_KEY is empty"
+            )
+        return [
+            "-c",
+            'model_provider="ci_openai"',
+            "-c",
+            'model_providers.ci_openai={name="OpenAI",base_url="https://api.openai.com/v1",env_key="ABYSS_E2E_OPENAI_API_KEY",wire_api="responses"}',
+        ]
 
     @staticmethod
     def _read_json_object(path: Path, label: str) -> dict[str, Any]:
@@ -322,7 +347,8 @@ class CodexOrchestrator:
         completed_usage = tuple(
             event["usage"]
             for event in events
-            if event.get("type") == "turn.completed" and isinstance(event.get("usage"), dict)
+            if event.get("type") == "turn.completed"
+            and isinstance(event.get("usage"), dict)
         )
         return CodexBResult(
             scenario_id=scenario_id,
