@@ -43,9 +43,6 @@ use super::{
     websocket::{WebSocketRelayOutcome, relay_websocket_messages},
 };
 
-#[cfg(test)]
-mod peer_close_tests;
-
 /// Bounded scratch buffer used while streaming HTTP bodies.
 ///
 /// This is intentionally independent from the configured capture limit:
@@ -233,7 +230,7 @@ where
             head,
             head_buffer,
         } = response;
-        let mut response_capture = Box::pin(forward_response(
+        let response_capture = Box::pin(forward_response(
             &mut stream,
             &mut self.stream,
             &self.first_request,
@@ -250,20 +247,13 @@ where
         // Do not rely on dropping `self.stream` here. A drop can surface as a
         // raw socket EOF on the Swift bridge while it still has a partial frame
         // buffered, which is reported as `unexpectedEOF` and can make Codex
-        // report that the response body could not be decoded. When forwarding
-        // succeeded, this is the earliest point where closing the client side
-        // is both correct and framed-protocol safe.
-        //
-        // Observation is complete once upstream HTTP framing is complete. An
-        // Agent may close after its final SSE event, before the chunk terminator
-        // arrives. Preserve that capture, while still reporting the write error
-        // and counting only bytes actually accepted by the client stream.
-        let close_result = match response_capture.agent_write_error.take() {
-            Some(error) => Err(error),
-            None => shutdown_completed_agent_stream(&mut self.stream).await,
-        };
+        // report that the response body could not be decoded. `forward_response`
+        // only returns after the HTTP/1 response body has been fully relayed, so
+        // this is the earliest point where closing the client side is both
+        // correct and framed-protocol safe.
+        shutdown_completed_agent_stream(&mut self.stream).await?;
 
-        let outcome = submit_captured_exchange(
+        Ok(submit_captured_exchange(
             self.context,
             self.first_request,
             head,
@@ -271,9 +261,7 @@ where
             response_capture,
             hooks,
             log_kind,
-        );
-        close_result?;
-        Ok(outcome)
+        ))
     }
 
     #[tracing::instrument(level = "trace", skip_all)]
@@ -473,14 +461,12 @@ where
     usize_to_u64(request_head.len())
 }
 
-/// Captured representation of one complete observed HTTP message.
+/// Captured representation of one HTTP message as it was forwarded.
 struct MessageCapture {
     /// Decoded body bytes exposed to hooks.
     body: CapturedBody,
     /// Raw wire bytes forwarded for the message, including head and framing.
     forwarded_bytes: u64,
-    /// Peer-close error after the complete upstream body was captured.
-    agent_write_error: Option<TransparentFlowError>,
 }
 
 /// Selects the log message for the first exchange just submitted to hooks.
@@ -522,7 +508,6 @@ fn empty_message_capture(forwarded_bytes: u64) -> MessageCapture {
     MessageCapture {
         body: CapturedBody::from_bytes(Bytes::new()),
         forwarded_bytes,
-        agent_write_error: None,
     }
 }
 
@@ -688,7 +673,6 @@ where
             body_capture.forwarded_bytes,
         )?,
         body: body_capture.body,
-        agent_write_error: body_capture.agent_write_error,
     })
 }
 
@@ -795,7 +779,6 @@ where
             body_capture.forwarded_bytes,
         )?,
         body: body_capture.body,
-        agent_write_error: body_capture.agent_write_error,
     })
 }
 
@@ -803,60 +786,12 @@ where
 struct BodyCapture {
     /// Decoded body bytes retained for hooks.
     ///
-    /// The capture limit can truncate this prefix without truncating forwarding.
-    /// A complete upstream capture may also include bytes a disconnected Agent
-    /// did not accept; `agent_write_error` retains that transport failure.
+    /// This may be shorter than the body represented by `forwarded_bytes`. That
+    /// means hook capture was truncated at `max_body_bytes`; it does not mean
+    /// the network body was truncated.
     body: CapturedBody,
     /// Raw bytes forwarded for the body portion only.
     forwarded_bytes: u64,
-    /// Only a complete response may retain a final Agent write failure.
-    agent_write_error: Option<TransparentFlowError>,
-}
-
-impl BodyCapture {
-    /// Forward the last read after validating the complete HTTP body. Keep a
-    /// complete observation if the Agent closed, but never hide the relay error.
-    async fn forward_last_bytes<W>(
-        mut self,
-        writer: &mut W,
-        mut bytes: &[u8],
-        direction: BodyDirection,
-    ) -> Result<Self, TransparentFlowError>
-    where
-        W: AsyncWrite + Unpin,
-    {
-        self.forwarded_bytes = self
-            .forwarded_bytes
-            .checked_sub(usize_to_u64(bytes.len())?)
-            .ok_or(TransparentFlowError::ByteCountOverflow)?;
-        while !bytes.is_empty() {
-            let result = writer.write(bytes).await.and_then(|written| {
-                if written == 0 {
-                    Err(std::io::ErrorKind::WriteZero.into())
-                } else {
-                    Ok(written)
-                }
-            });
-            match result {
-                Ok(written) => {
-                    self.forwarded_bytes = add_len(self.forwarded_bytes, usize_to_u64(written)?)?;
-                    bytes = &bytes[written..];
-                }
-                Err(source) => {
-                    let error = TransparentFlowError::Io {
-                        operation: body_forward_operation(direction),
-                        source,
-                    };
-                    if !error.is_agent_connection_close() {
-                        return Err(error);
-                    }
-                    self.agent_write_error = Some(error);
-                    break;
-                }
-            }
-        }
-        Ok(self)
-    }
 }
 
 /// Direction-specific context for diagnostics while copying a body.
@@ -954,7 +889,6 @@ where
     Ok(BodyCapture {
         body: CapturedBody::from_bytes(Bytes::new()),
         forwarded_bytes: 0,
-        agent_write_error: None,
     })
 }
 
@@ -1036,7 +970,6 @@ where
     Ok(BodyCapture {
         body: captured_body(body, capture_body, max_body_bytes),
         forwarded_bytes: usize_to_u64(length)?,
-        agent_write_error: None,
     })
 }
 
@@ -1067,11 +1000,6 @@ where
 
     if !buffered_body.is_empty() {
         let capture = chunked.feed(buffered_body, max_body_bytes)?;
-        if let Some(capture) = capture {
-            return capture
-                .forward_last_bytes(writer, buffered_body, direction)
-                .await;
-        }
         writer
             .write_all(buffered_body)
             .await
@@ -1079,6 +1007,9 @@ where
                 operation: body_forward_operation(direction),
                 source,
             })?;
+        if let Some(capture) = capture {
+            return Ok(capture);
+        }
     }
 
     loop {
@@ -1098,11 +1029,6 @@ where
         }
 
         let capture = chunked.feed(&buffer[..read_len], max_body_bytes)?;
-        if let Some(capture) = capture {
-            return capture
-                .forward_last_bytes(writer, &buffer[..read_len], direction)
-                .await;
-        }
         writer
             .write_all(&buffer[..read_len])
             .await
@@ -1110,6 +1036,9 @@ where
                 operation: body_forward_operation(direction),
                 source,
             })?;
+        if let Some(capture) = capture {
+            return Ok(capture);
+        }
     }
 }
 
@@ -1208,9 +1137,9 @@ impl ChunkedBodyCapture {
                         return Ok(None);
                     }
                     let payload_len = remaining.min(self.pending.len());
-                    // Only chunk payload bytes enter hook capture. Framing is
-                    // counted here before the caller attempts forwarding; the
-                    // final write corrects the count if the Agent closes.
+                    // Only chunk payload bytes enter hook capture. Wire framing
+                    // was already forwarded before `feed` was called and is
+                    // counted in `forwarded_bytes`.
                     append_body_for_capture(
                         &mut self.body,
                         &mut self.capture_body,
@@ -1292,7 +1221,6 @@ impl ChunkedBodyCapture {
                 max_body_bytes,
             ),
             forwarded_bytes: self.forwarded_bytes,
-            agent_write_error: None,
         }
     }
 }
@@ -1344,7 +1272,6 @@ where
             return Ok(BodyCapture {
                 body: captured_body(body, capture_body, max_body_bytes),
                 forwarded_bytes,
-                agent_write_error: None,
             });
         }
         writer
@@ -1772,7 +1699,7 @@ mod tests {
         ));
     }
 
-    pub(super) fn test_flow() -> FlowContext {
+    fn test_flow() -> FlowContext {
         FlowContext::new(
             SocketAddr::from(([127, 0, 0, 1], 50000)),
             SocketAddr::from(([127, 0, 0, 1], 18080)),
