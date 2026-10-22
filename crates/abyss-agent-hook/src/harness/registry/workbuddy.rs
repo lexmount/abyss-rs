@@ -14,13 +14,12 @@ use super::{HarnessDetector, header};
 // Never include generic Electron, Node, or standalone CodeBuddy processes.
 const PROCESS_NAMES: &[&str] = &[
     "WorkBuddy",
-    "WorkBuddy.exe",
-    "workbuddy.exe",
     "WorkBuddy Helper",
     "WorkBuddy Helper (GPU)",
     "WorkBuddy Helper (Plugin)",
     "WorkBuddy Helper (Renderer)",
 ];
+const WINDOWS_PROCESS_NAMES: &[&str] = &["WorkBuddy.exe", "WorkBuddyAI.exe"];
 const APPLICATION_IDS: &[&str] = &[
     "com.tencent.workbuddy.mac",
     "com.tencent.workbuddy.mac.helper",
@@ -53,10 +52,12 @@ impl HarnessDetector for WorkBuddyDetector {
                 .chain(source.executable_path.as_deref())
                 .find(|value| {
                     // Platform adapters can provide either a basename or path.
-                    value
-                        .rsplit(['/', '\\'])
-                        .next()
-                        .is_some_and(|name| PROCESS_NAMES.contains(&name))
+                    value.rsplit(['/', '\\']).next().is_some_and(|name| {
+                        PROCESS_NAMES.contains(&name)
+                            || WINDOWS_PROCESS_NAMES
+                                .iter()
+                                .any(|known| name.eq_ignore_ascii_case(known))
+                    })
                 })?;
             HarnessEvidence::Process(process.to_owned())
         };
@@ -142,6 +143,10 @@ mod tests {
             "WorkBuddy",
             "WorkBuddy.exe",
             "workbuddy.exe",
+            "WorkBuddyAI.exe",
+            "workbuddyai.exe",
+            "WORKBUDDYAI.EXE",
+            r"\device\harddiskvolume4\workbuddy\workbuddyai.exe",
             "WorkBuddy Helper (Renderer)",
             "/Applications/WorkBuddy.app/Contents/Frameworks/WorkBuddy Helper.app/Contents/MacOS/WorkBuddy Helper",
             "C:\\Program Files\\WorkBuddy\\WorkBuddy.exe",
@@ -185,6 +190,8 @@ mod tests {
             "codebuddy",
             "OtherWorkBuddy",
             "workbuddy.exe.bak",
+            "WorkBuddyAI.exe.bak",
+            "OtherWorkBuddyAI.exe",
             "/Applications/OtherWorkBuddy.app/Contents/MacOS/Electron",
             "C:\\WorkBuddy.exe\\other.exe",
         ] {

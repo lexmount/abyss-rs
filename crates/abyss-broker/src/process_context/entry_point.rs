@@ -94,6 +94,36 @@ mod tests {
         }
     }
 
+    #[cfg(windows)]
+    #[test]
+    fn windows_packaged_runtime_preserves_absolute_paths_and_ignores_business_arguments() {
+        const EXECUTABLE: &str = r"C:\Program Files\WorkBuddy\WorkBuddyAI.exe";
+        const ENTRY: &str = r"C:\Program Files\WorkBuddy\资源\cli\bin\codebuddy";
+        for (argv, expected) in [
+            (
+                vec![
+                    EXECUTABLE,
+                    "--optimize-for-size",
+                    "--max-semi-space-size=2",
+                    ENTRY,
+                    "--prewarm",
+                    "secret",
+                ],
+                Some(ENTRY),
+            ),
+            (vec![EXECUTABLE, "--type=utility", ENTRY], None),
+            (vec![EXECUTABLE, "relative.js", ENTRY], None),
+            (vec![EXECUTABLE, "-e", ENTRY], None),
+        ] {
+            let resolver = EntryPointResolver::new(Box::new(ArgumentsFixture {
+                executable: EXECUTABLE,
+                argv,
+                calls: Arc::new(AtomicUsize::new(0)),
+            }));
+            assert_eq!(resolver.resolve(Some(42)).as_deref(), expected);
+        }
+    }
+
     struct ChangingArguments(Arc<AtomicUsize>);
 
     impl ProcessArgumentsProvider for ChangingArguments {

@@ -9,6 +9,9 @@ use crate::ingress::{
     Ingress, IngressConnection, IngressError, IngressFactory, IngressRuntimeStatus, PlatformFlow,
     PlatformFlowMetadata, StartedIngress,
 };
+use crate::process_context::{
+    ProcessContextResolver, SharedProcessContextResolver, default_process_context_resolver,
+};
 
 /// Windows redirected TCP endpoint requested at broker startup.
 #[derive(Debug, Clone, PartialEq)]
@@ -63,6 +66,7 @@ impl IngressFactory for RedirectedTcpIngressFactory {
 pub struct RedirectedTcpIngress {
     listener: TcpListener,
     listen_addr: SocketAddr,
+    process_context_resolver: SharedProcessContextResolver,
 }
 
 impl RedirectedTcpIngress {
@@ -83,6 +87,7 @@ impl RedirectedTcpIngress {
         Ok(Self {
             listener,
             listen_addr,
+            process_context_resolver: default_process_context_resolver(),
         })
     }
 
@@ -97,6 +102,7 @@ impl RedirectedTcpIngress {
 pub struct RedirectedTcpConnection {
     stream: TcpStream,
     peer_addr: SocketAddr,
+    process_context_resolver: SharedProcessContextResolver,
 }
 
 impl RedirectedTcpConnection {
@@ -113,6 +119,7 @@ impl RedirectedTcpConnection {
         stream: &TcpStream,
         peer_addr: SocketAddr,
         local_addr: SocketAddr,
+        process_context_resolver: &dyn ProcessContextResolver,
     ) -> Result<
         (
             crate::connection::OriginalDestination,
@@ -123,7 +130,8 @@ impl RedirectedTcpConnection {
         let (original_destination, process_id, application_id) =
             crate::sys::query_redirect_metadata(stream)
                 .map_err(|source| IngressError::redirect_context(peer_addr, local_addr, source))?;
-        let source_process = Self::source_process(process_id, application_id);
+        let source_process =
+            Self::source_process(process_id, application_id, process_context_resolver);
 
         Ok((original_destination, source_process))
     }
@@ -131,13 +139,16 @@ impl RedirectedTcpConnection {
     fn source_process(
         process_id: Option<u32>,
         application_id: Option<String>,
+        process_context_resolver: &dyn ProcessContextResolver,
     ) -> Option<SourceProcess> {
         let process_name = application_id
             .as_deref()
             .and_then(Self::application_file_name)
             .map(str::to_owned);
         (process_id.is_some() || application_id.is_some()).then(|| {
-            SourceProcess::new(process_id, process_name, None).with_application_id(application_id)
+            SourceProcess::new(process_id, process_name, None)
+                .with_application_id(application_id)
+                .with_entry_point(process_context_resolver.entry_point(process_id))
         })
     }
 
@@ -154,16 +165,29 @@ impl Ingress for RedirectedTcpIngress {
     async fn accept(&mut self) -> Result<Self::Accepted, IngressError> {
         let (stream, peer_addr) = self.listener.accept().await.map_err(IngressError::accept)?;
 
-        Ok(RedirectedTcpConnection { stream, peer_addr })
+        Ok(RedirectedTcpConnection {
+            stream,
+            peer_addr,
+            process_context_resolver: self.process_context_resolver.clone(),
+        })
     }
 }
 
 impl IngressConnection for RedirectedTcpConnection {
     async fn into_flow(self) -> Result<PlatformFlow, IngressError> {
-        let Self { stream, peer_addr } = self;
+        let Self {
+            stream,
+            peer_addr,
+            process_context_resolver,
+        } = self;
         let local_addr = Self::accepted_local_addr(&stream, peer_addr)?;
         let (stream, redirect_metadata) = tokio::task::spawn_blocking(move || {
-            let redirect_metadata = Self::query_redirect_metadata(&stream, peer_addr, local_addr);
+            let redirect_metadata = Self::query_redirect_metadata(
+                &stream,
+                peer_addr,
+                local_addr,
+                process_context_resolver.as_ref(),
+            );
             (stream, redirect_metadata)
         })
         .await
@@ -179,6 +203,7 @@ impl IngressConnection for RedirectedTcpConnection {
             source_application_id = ?source_process
                 .as_ref()
                 .and_then(|source| source.application_id.as_deref()),
+            source_entry_point = ?source_process.as_ref().and_then(|source| source.entry_point.as_deref()),
             "broker ingress accepted redirected TCP flow"
         );
         Ok(PlatformFlow::new(
@@ -199,6 +224,8 @@ impl IngressConnection for RedirectedTcpConnection {
 
 #[cfg(test)]
 mod tests {
+    use crate::process_context::ProcessContextResolver;
+    use std::path::PathBuf;
     use tokio::net::TcpStream;
 
     use super::{
@@ -206,19 +233,73 @@ mod tests {
         RedirectedTcpConnection, RedirectedTcpIngress, RedirectedTcpIngressFactory,
     };
 
+    struct FixedProcessContext(Option<&'static str>);
+
+    impl ProcessContextResolver for FixedProcessContext {
+        fn working_directory(
+            &self,
+            _pid: Option<u32>,
+            _pid_version: Option<u32>,
+        ) -> Option<PathBuf> {
+            None
+        }
+        fn entry_point(&self, pid: Option<u32>) -> Option<String> {
+            pid.and(self.0).map(str::to_owned)
+        }
+    }
+
     #[test]
     fn source_process_uses_the_windows_application_filename() {
         let application_id = r"\device\harddiskvolume4\program files\openai\codex.exe";
 
-        let source_process =
-            RedirectedTcpConnection::source_process(Some(17_042), Some(application_id.to_owned()))
-                .expect("platform source metadata should produce a source process");
+        let source_process = RedirectedTcpConnection::source_process(
+            Some(17_042),
+            Some(application_id.to_owned()),
+            &FixedProcessContext(None),
+        )
+        .expect("platform source metadata should produce a source process");
 
         assert_eq!(source_process.pid, Some(17_042));
         assert_eq!(source_process.name.as_deref(), Some("codex.exe"));
         assert_eq!(
             source_process.application_id.as_deref(),
             Some(application_id)
+        );
+        assert_eq!(source_process.entry_point, None);
+    }
+
+    #[test]
+    fn entry_metadata_drives_tls_rules_and_missing_metadata_keeps_fallback() {
+        use abyss_mitm::{TlsDecryptionAction, TlsDecryptionContext, TlsDecryptionPolicy};
+        let daemon = r"C:\WorkBuddy\main\daemon-app-server-entry.js";
+        let cli = r"C:\WorkBuddy\cli\bin\codebuddy";
+        let policy: TlsDecryptionPolicy = serde_json::from_value(serde_json::json!({
+            "default_action": "intercept",
+            "rules": [{"id": "daemon", "action": "passthrough", "process_names": ["WorkBuddyAI.exe"], "process_entry_points": [daemon]}]
+        })).unwrap();
+        policy.validate().unwrap();
+        for (pid, entry, expected) in [
+            (Some(42), Some(daemon), TlsDecryptionAction::Passthrough),
+            (Some(42), Some(cli), TlsDecryptionAction::Intercept),
+            (Some(42), None, TlsDecryptionAction::Intercept),
+            (None, Some(daemon), TlsDecryptionAction::Intercept),
+        ] {
+            let source = RedirectedTcpConnection::source_process(
+                pid,
+                Some(r"\device\harddiskvolume4\workbuddy\workbuddyai.exe".to_owned()),
+                &FixedProcessContext(entry),
+            )
+            .unwrap();
+            assert_eq!(
+                policy
+                    .decide(TlsDecryptionContext::new(None, Some(&source)))
+                    .action(),
+                expected
+            );
+        }
+        assert!(
+            RedirectedTcpConnection::source_process(None, None, &FixedProcessContext(Some(daemon)))
+                .is_none()
         );
     }
 

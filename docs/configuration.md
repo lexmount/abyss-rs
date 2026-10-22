@@ -153,8 +153,9 @@ enabled = true
 ```
 
 WorkBuddy is built in as `workbuddy` and enabled by default. Its detector uses
-exact WorkBuddy executable/helper names (including the Windows `workbuddy.exe`
-basename) or the macOS `com.tencent.workbuddy.mac` application ID and its known
+exact WorkBuddy executable/helper names (including case-insensitive Windows
+`WorkBuddy.exe` and `WorkBuddyAI.exe` basenames) or the macOS
+`com.tencent.workbuddy.mac` application ID and its known
 helper IDs. Generic Electron, Node, standalone CodeBuddy, gateway hostnames, and
 conversation headers alone do not identify WorkBuddy. Explicit-proxy traffic
 without source process metadata therefore cannot be attributed to WorkBuddy.
@@ -261,9 +262,11 @@ An empty `destination_hosts` array applies to every TLS destination of that
 matched process, including connections without SNI. This is process-level
 selection; it does not select individual HTTP paths within that process.
 
-The macOS framed ingress resolves Node/Electron script entries from native
-process arguments and retains the full absolute script path, including any `.app`
-directory. If the application moves, update the configured path accordingly.
+The macOS framed ingress and Windows WFP ingress resolve Node/Electron script
+entries from native process arguments and retain the full absolute script path,
+including any `.app` directory. Windows packaged `WorkBuddy.exe` and
+`WorkBuddyAI.exe` runtimes use the same direct-script parser. If the application
+moves, update the configured path accordingly.
 Selectors must be absolute paths according to the broker's operating system.
 Validation and matching use Rust's `std::path`: Unix uses rooted paths, while
 Windows also requires a drive or UNC prefix. Paths are compared by their components,
@@ -274,7 +277,8 @@ regex, glob, or suffix expansion; characters such as `*` and `?` are literal.
 Extraction is conservative: only absolute script arguments in recognized
 Node/Electron launch forms are supported. Eval/print modes, renderer options,
 unknown runtime options, relative scripts, permissions failures, and exited
-processes leave entry metadata absent.
+processes leave entry metadata absent. Entry scripts need not have an extension:
+WorkBuddy's `cli\bin\codebuddy` is a supported direct entry.
 Recognized pre-script options are `--`, `--optimize-for-size`, `--no-warnings`,
 `--enable-source-maps`, and numeric `--max-semi-space-size=` / `--max-old-space-size=`.
 Arguments following the script and environment variables are not retained in
@@ -285,9 +289,48 @@ or authorization guarantee; combine it with application identity.
 Entry-point lookup uses only the source PID and reads native process arguments
 for each connection. Results are not cached, so a later connection cannot reuse
 an old entry point after PID reuse. PID-only lookup does not verify process
-incarnation between flow creation and lookup. Windows and explicit proxy ingress
-currently provide no entry-point metadata and therefore cannot match a populated
+incarnation between flow creation and lookup. Explicit proxy ingress currently
+provides no entry-point metadata and therefore cannot match a populated
 entry-point selector. Existing source/host rules still apply.
+
+Windows queries the WFP-supplied PID with `PROCESS_QUERY_LIMITED_INFORMATION`,
+reading the executable and command line through one process handle. Command-line
+tokenization preserves Windows quoting and empty arguments. The native query is
+bounded, and unsupported queries, denied access, invalid Unicode, or exited
+processes leave entry metadata absent without failing the connection. Native API
+calls run in the ingress's blocking task. No driver ABI change is required.
+Windows process-name selectors ignore ASCII case; entry paths retain the shared
+case-sensitive component comparison. Use the exact entry shown in diagnostics.
+
+For a Windows installation under `C:\Apps\WorkBuddy`, put the daemon exception
+before the CLI rule and any broader intercept rules:
+
+```toml
+[[mitm.tls_decryption.rules]]
+id = "workbuddy-daemon"
+action = "passthrough"
+process_names = ["WorkBuddyAI.exe"]
+process_entry_points = ['C:\Apps\WorkBuddy\resources\app.asar\main\daemon-app-server-entry.js']
+
+[[mitm.tls_decryption.rules]]
+id = "workbuddy-cli"
+action = "intercept"
+process_names = ["WorkBuddyAI.exe"]
+process_entry_points = ['C:\Apps\WorkBuddy\resources\app.asar.unpacked\cli\bin\codebuddy']
+```
+
+The Host adapter must first redirect the candidate executable's connections to
+the broker. TLS rules only apply after WFP ingress receives a connection.
+
+To verify a running Windows WFP broker, use PowerShell 7 and
+`scripts/tests/windows_process_entry_points.ps1` with `-BrokerStartupInfo`,
+`-WorkBuddyExePath`, `-RootCertificatePath`, and `-OutputPath`. The executable
+must already be redirected to that broker. The test runs controlled scripts
+with the real WorkBuddy runtime, including a path containing spaces and Unicode
+and an extensionless CLI entry. It checks actual TLS certificates and WFP flow
+diagnostics for daemon passthrough, CLI interception, and an unmatched sibling.
+It restores the original TLS policy even on failure. It does not send a model
+prompt or start another WorkBuddy application session.
 
 Internally, `ProcessContextResolver` delegates entry lookup to one shared
 pipeline. A `Box<dyn ProcessArgumentsProvider>` reads the executable and argv;
@@ -296,5 +339,7 @@ the runtime, parses its command and resolves the execution path. Native API
 access stays in `sys/`; runtime-specific parsing stays in
 `process_context/runtime/`. Absolute path normalization is separate from command
 syntax. Adding a runtime does not require changing the pipeline or
-platform reader. The macOS reader uses `KERN_PROCARGS2`; Linux and Windows
-currently select an unavailable reader, without discovering connection owners.
+platform reader. The macOS reader uses `KERN_PROCARGS2`; Windows uses
+`QueryFullProcessImageNameW`, a dynamically resolved `NtQueryInformationProcess`
+command-line query, and `CommandLineToArgvW`. Linux selects an unavailable reader,
+without discovering connection owners.

@@ -5,6 +5,8 @@
 
 #[cfg(target_os = "macos")]
 mod macos;
+#[cfg(windows)]
+mod windows;
 
 use std::io;
 
@@ -28,16 +30,20 @@ pub(super) fn process_arguments_provider() -> Box<dyn ProcessArgumentsProvider> 
     {
         Box::new(macos::MacOsProcessArgumentsProvider)
     }
-    #[cfg(not(target_os = "macos"))]
+    #[cfg(windows)]
+    {
+        Box::new(windows::WindowsProcessArgumentsProvider)
+    }
+    #[cfg(not(any(target_os = "macos", windows)))]
     {
         Box::new(UnavailableProcessArgumentsProvider)
     }
 }
 
-#[cfg(not(target_os = "macos"))]
+#[cfg(not(any(target_os = "macos", windows)))]
 struct UnavailableProcessArgumentsProvider;
 
-#[cfg(not(target_os = "macos"))]
+#[cfg(not(any(target_os = "macos", windows)))]
 impl ProcessArgumentsProvider for UnavailableProcessArgumentsProvider {
     fn read(&self, _pid: u32) -> io::Result<ProcessArguments> {
         Err(io::Error::new(
@@ -47,7 +53,7 @@ impl ProcessArgumentsProvider for UnavailableProcessArgumentsProvider {
     }
 }
 
-#[cfg(all(test, not(target_os = "macos")))]
+#[cfg(all(test, not(any(target_os = "macos", windows))))]
 mod tests {
     use super::process_arguments_provider;
 
