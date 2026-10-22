@@ -152,6 +152,23 @@ capture, following the same format as other built-in Harnesses:
 enabled = true
 ```
 
+WorkBuddy is built in as `workbuddy` and enabled by default. Its detector uses
+exact WorkBuddy executable/helper names (including the Windows `workbuddy.exe`
+basename) or the macOS `com.tencent.workbuddy.mac` application ID and its known
+helper IDs. Generic Electron, Node, standalone CodeBuddy, gateway hostnames, and
+conversation headers alone do not identify WorkBuddy. Explicit-proxy traffic
+without source process metadata therefore cannot be attributed to WorkBuddy.
+
+```toml
+[hooks.harness_usage.config.harnesses.workbuddy]
+enabled = true
+```
+
+WorkBuddy does not accept custom matchers, like other built-in identities.
+`X-Conversation-ID` continues through the shared protocol session resolver;
+`X-Conversation-Request-ID` declares the user turn and is not used as a session
+identifier.
+
 Custom Harnesses can declare `process_names` and `application_ids` matchers in
 `runtime-policy.toml`; these use exact matches against platform-supplied source
 metadata.
@@ -208,3 +225,76 @@ Closed Host packages may apply a different ownership lifecycle, but those
 profiles, installers, platform adapter settings, and product update rules are
 owned by the product distribution and service repositories rather than this
 project.
+
+### TLS rules for processes sharing one executable
+
+`mitm.tls_decryption.rules[].process_entry_points` matches normalized absolute
+runtime entry scripts exactly. Like other selectors, values within the array use OR;
+entry points, application IDs, process names, and destination hosts combine with
+AND. The first enabled matching rule wins. Omitted or empty entry-point arrays
+preserve existing behavior. Unavailable metadata does not match a populated
+entry-point selector; evaluation continues to subsequent rules and defaults.
+
+This configuration field, its validation, persistence, and exact matching are
+shared across Linux, macOS, and Windows. The `GET /v1/mitm/config` and
+`PUT /v1/mitm/config` APIs require absolute paths such as
+`/opt/agent/daemon.js`. Matching requires the flow to
+provide `source_process.entry_point`; configuring the selector does not discover
+the source process or read its arguments. Linux explicit proxy ingress does not
+populate this metadata, so a populated entry-point selector does not match those
+flows.
+
+For example, place a background-service bypass before broader gateway intercept
+rules, while the sibling CLI continues to use those intercept rules:
+
+```toml
+[[mitm.tls_decryption.rules]]
+id = "passthrough-agent-background-service"
+enabled = true
+action = "passthrough"
+application_ids = ["com.example.agent"]
+process_entry_points = ["/Applications/Example.app/Contents/Resources/app.asar/main/daemon.js"]
+destination_hosts = []
+```
+
+An empty `destination_hosts` array applies to every TLS destination of that
+matched process, including connections without SNI. This is process-level
+selection; it does not select individual HTTP paths within that process.
+
+The macOS framed ingress resolves Node/Electron script entries from native
+process arguments and retains the full absolute script path, including any `.app`
+directory. If the application moves, update the configured path accordingly.
+Selectors must be absolute paths according to the broker's operating system.
+Validation and matching use Rust's `std::path`: Unix uses rooted paths, while
+Windows also requires a drive or UNC prefix. Paths are compared by their components,
+so repeated separators and `.` are normalized. No filesystem access, symlink
+resolution, or `..` reduction is performed. Names remain case-sensitive, with no
+regex, glob, or suffix expansion; characters such as `*` and `?` are literal.
+
+Extraction is conservative: only absolute script arguments in recognized
+Node/Electron launch forms are supported. Eval/print modes, renderer options,
+unknown runtime options, relative scripts, permissions failures, and exited
+processes leave entry metadata absent.
+Recognized pre-script options are `--`, `--optimize-for-size`, `--no-warnings`,
+`--enable-source-maps`, and numeric `--max-semi-space-size=` / `--max-old-space-size=`.
+Arguments following the script and environment variables are not retained in
+flow metadata. Entry points appear as `source_process.entry_point` in support
+diagnostics. This metadata describes a process role, not an executable-integrity
+or authorization guarantee; combine it with application identity.
+
+Entry-point lookup uses only the source PID and reads native process arguments
+for each connection. Results are not cached, so a later connection cannot reuse
+an old entry point after PID reuse. PID-only lookup does not verify process
+incarnation between flow creation and lookup. Windows and explicit proxy ingress
+currently provide no entry-point metadata and therefore cannot match a populated
+entry-point selector. Existing source/host rules still apply.
+
+Internally, `ProcessContextResolver` delegates entry lookup to one shared
+pipeline. A `Box<dyn ProcessArgumentsProvider>` reads the executable and argv;
+a registry of `Box<dyn RuntimeEntryPointResolver>` implementations recognizes
+the runtime, parses its command and resolves the execution path. Native API
+access stays in `sys/`; runtime-specific parsing stays in
+`process_context/runtime/`. Absolute path normalization is separate from command
+syntax. Adding a runtime does not require changing the pipeline or
+platform reader. The macOS reader uses `KERN_PROCARGS2`; Linux and Windows
+currently select an unavailable reader, without discovering connection owners.

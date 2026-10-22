@@ -156,6 +156,7 @@ mod tests {
                     action: TlsDecryptionAction::Passthrough,
                     process_names: Vec::new(),
                     application_ids: Vec::new(),
+                    process_entry_points: Vec::new(),
                     destination_hosts: vec!["passthrough.example.test".to_owned()],
                 }],
             })
@@ -1179,6 +1180,7 @@ mod tests {
                     action: TlsDecryptionAction::Passthrough,
                     process_names: vec!["codex".to_owned()],
                     application_ids: vec!["com.openai.codex".to_owned()],
+                    process_entry_points: Vec::new(),
                     destination_hosts: vec!["platform-fallback.example".to_owned()],
                 },
                 TlsDecryptionRule {
@@ -1187,6 +1189,7 @@ mod tests {
                     action: TlsDecryptionAction::Intercept,
                     process_names: vec!["codex".to_owned()],
                     application_ids: vec!["com.openai.codex".to_owned()],
+                    process_entry_points: Vec::new(),
                     destination_hosts: vec!["*.openai.com".to_owned()],
                 },
             ],

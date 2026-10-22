@@ -209,6 +209,7 @@ struct SourceProcessSnapshot {
     executable_path: Option<String>,
     /// Best-effort working directory captured for the source process.
     working_directory: Option<String>,
+    entry_point: Option<String>,
     bundle_id: Option<String>,
     label: String,
 }
@@ -734,6 +735,7 @@ impl SourceProcessSnapshot {
                 name: None,
                 executable_path: None,
                 working_directory: None,
+                entry_point: None,
                 bundle_id: None,
                 label: UNKNOWN_KEY.to_owned(),
             };
@@ -744,6 +746,7 @@ impl SourceProcessSnapshot {
             name: source.name.clone(),
             executable_path: source.executable_path.clone(),
             working_directory: source.working_directory.clone(),
+            entry_point: source.entry_point.clone(),
             bundle_id: source.application_id.clone(),
             label,
         }

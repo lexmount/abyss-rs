@@ -155,5 +155,8 @@ fn websocket_session_id(message: &WebSocketMessage, payload: &Value) -> String {
         .or_else(|| collect_string_field(payload, "conversation_id"))
         .or_else(|| collect_string_field(payload, "response_id"))
         .or_else(|| response_id(std::slice::from_ref(payload)))
+        .or_else(|| {
+            header(message.upgrade_request.headers(), "x-conversation-id").map(str::to_owned)
+        })
         .unwrap_or_else(|| format!("flow-{}", message.flow.flow_id))
 }

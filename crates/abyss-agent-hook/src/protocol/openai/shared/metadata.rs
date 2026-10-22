@@ -43,6 +43,7 @@ pub fn session_id(headers: &HeaderMap) -> Option<String> {
             header(headers, "user-agent")?.strip_prefix("Cursor-CLI/")?;
             header(headers, "x-agent-id").map(str::to_owned)
         })
+        .or_else(|| header(headers, "x-conversation-id").map(str::to_owned))
 }
 
 fn metadata_header_value(headers: &HeaderMap, key: &str) -> Option<String> {

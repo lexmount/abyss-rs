@@ -1,6 +1,6 @@
 //! What an Agent declares about one request in its own headers and body.
 //!
-//! Each built-in Harness reads its own declarations in its registry entry, so
+//! Each supported Harness reads its own declarations in its registry entry, so
 //! protocol parsers stay limited to provider-level content.
 
 use abyss_plugin_protocol::event::EventPurpose;

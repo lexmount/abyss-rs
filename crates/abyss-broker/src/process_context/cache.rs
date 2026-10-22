@@ -1,4 +1,4 @@
-//! Shared process-identity cache for platform working-directory providers.
+//! Cached working directories and uncached PID-based entry-point lookups.
 
 use std::{
     collections::HashMap,
@@ -9,7 +9,7 @@ use std::{
 
 use parking_lot::Mutex;
 
-use super::ProcessContextResolver;
+use super::{ProcessContextResolver, entry_point::EntryPointResolver};
 
 // A flow burst for one session normally completes well within this window. The
 // PID version prevents PID reuse from sharing an entry, while expiry gives a
@@ -33,6 +33,7 @@ pub(super) trait WorkingDirectoryProvider: Send + Sync {
 
 pub(super) struct CachedProcessContextResolver<P> {
     provider: P,
+    entry_points: EntryPointResolver,
     entries: Mutex<HashMap<ProcessIdentity, Arc<CacheEntry>>>,
 }
 
@@ -40,17 +41,17 @@ impl<P> CachedProcessContextResolver<P>
 where
     P: WorkingDirectoryProvider,
 {
-    pub(super) fn new(provider: P) -> Self {
+    pub(super) fn new(provider: P, entry_points: EntryPointResolver) -> Self {
         Self {
             provider,
+            entry_points,
             entries: Mutex::new(HashMap::new()),
         }
     }
 
-    fn resolve(&self, identity: ProcessIdentity) -> Option<PathBuf> {
+    fn entry(&self, identity: ProcessIdentity) -> Arc<CacheEntry> {
         let now = Instant::now();
-        let pid = identity.pid;
-        let entry = {
+        {
             let mut entries = self.entries.lock();
             if let Some(entry) = entries.get(&identity)
                 && entry.expires_at > now
@@ -66,12 +67,7 @@ where
                 entries.insert(identity, Arc::clone(&entry));
                 entry
             }
-        };
-
-        entry
-            .working_directory
-            .get_or_init(|| self.provider.lookup(pid))
-            .clone()
+        }
     }
 }
 
@@ -80,10 +76,16 @@ where
     P: WorkingDirectoryProvider,
 {
     fn working_directory(&self, pid: Option<u32>, pid_version: Option<u32>) -> Option<PathBuf> {
-        self.resolve(ProcessIdentity {
-            pid: pid?,
-            pid_version,
-        })
+        let pid = pid?;
+        self.entry(ProcessIdentity { pid, pid_version })
+            .working_directory
+            .get_or_init(|| self.provider.lookup(pid))
+            .clone()
+    }
+
+    fn entry_point(&self, pid: Option<u32>) -> Option<String> {
+        // A PID may be reused, so entry-point policy must not use a cached script.
+        self.entry_points.resolve(pid)
     }
 }
 
@@ -100,7 +102,17 @@ mod tests {
     };
 
     use super::{CachedProcessContextResolver, WorkingDirectoryProvider};
-    use crate::process_context::ProcessContextResolver;
+    use crate::process_context::{
+        ProcessContextResolver, entry_point::EntryPointResolver,
+        process_arguments::process_arguments_provider,
+    };
+
+    fn resolver<P: WorkingDirectoryProvider>(provider: P) -> CachedProcessContextResolver<P> {
+        CachedProcessContextResolver::new(
+            provider,
+            EntryPointResolver::new(process_arguments_provider()),
+        )
+    }
 
     struct CountingProvider {
         calls: AtomicUsize,
@@ -116,7 +128,7 @@ mod tests {
 
     #[test]
     fn same_process_identity_uses_one_lookup_for_multiple_flows() {
-        let resolver = CachedProcessContextResolver::new(CountingProvider {
+        let resolver = resolver(CountingProvider {
             calls: AtomicUsize::new(0),
             result: Some(PathBuf::from("/tmp/project")),
         });
@@ -134,7 +146,7 @@ mod tests {
 
     #[test]
     fn pid_version_separates_reused_process_ids() {
-        let resolver = CachedProcessContextResolver::new(CountingProvider {
+        let resolver = resolver(CountingProvider {
             calls: AtomicUsize::new(0),
             result: Some(PathBuf::from("/tmp/project")),
         });
@@ -146,7 +158,7 @@ mod tests {
 
     #[test]
     fn failed_lookup_is_cached_for_the_same_process_identity() {
-        let resolver = CachedProcessContextResolver::new(CountingProvider {
+        let resolver = resolver(CountingProvider {
             calls: AtomicUsize::new(0),
             result: None,
         });
@@ -158,7 +170,7 @@ mod tests {
 
     #[test]
     fn missing_pid_does_not_call_the_platform_provider() {
-        let resolver = CachedProcessContextResolver::new(CountingProvider {
+        let resolver = resolver(CountingProvider {
             calls: AtomicUsize::new(0),
             result: Some(PathBuf::from("/tmp/project")),
         });
@@ -181,7 +193,7 @@ mod tests {
 
     #[test]
     fn concurrent_flows_share_the_first_process_lookup() {
-        let resolver = Arc::new(CachedProcessContextResolver::new(SlowCountingProvider {
+        let resolver = Arc::new(resolver(SlowCountingProvider {
             calls: AtomicUsize::new(0),
         }));
         let workers = std::iter::repeat_with(|| {
@@ -217,7 +229,7 @@ mod tests {
 
     #[test]
     fn different_processes_do_not_serialize_native_lookups() {
-        let resolver = Arc::new(CachedProcessContextResolver::new(ConcurrentProvider {
+        let resolver = Arc::new(resolver(ConcurrentProvider {
             active: AtomicUsize::new(0),
             max_active: AtomicUsize::new(0),
         }));

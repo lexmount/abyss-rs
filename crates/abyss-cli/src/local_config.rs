@@ -338,6 +338,7 @@ fn tls_rule(
         action,
         process_names: Vec::new(),
         application_ids: Vec::new(),
+        process_entry_points: Vec::new(),
         destination_hosts: destination_hosts
             .iter()
             .map(|host| (*host).to_owned())
