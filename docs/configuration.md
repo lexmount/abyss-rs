@@ -274,6 +274,30 @@ or authorization guarantee; combine it with application identity.
 Entry-point lookup uses only the source PID and reads native process arguments
 for each connection. Results are not cached, so a later connection cannot reuse
 an old entry point after PID reuse. PID-only lookup does not verify process
-incarnation between flow creation and lookup. Windows and explicit proxy ingress
-currently provide no entry-point metadata and therefore cannot match a populated
-entry-point selector. Existing source/host rules still apply.
+incarnation between flow creation and lookup.
+
+On Linux, the loopback explicit proxy resolves the client TCP socket through
+`/proc/net/tcp` and `/proc/net/tcp6`, then finds its unique visible owner in
+`/proc/<pid>/fd`. It reads the executable from `/proc/<pid>/exe` and arguments
+from `/proc/<pid>/cmdline`; it never accepts client-supplied process headers.
+Node (`node` / `nodejs`) and Electron (`electron` / `Electron`) entries retain
+their normalized absolute script paths on Linux, including directories named
+`.app`. For example:
+
+```toml
+[[mitm.tls_decryption.rules]]
+id = "passthrough-linux-background-service"
+enabled = true
+action = "passthrough"
+process_names = ["node"]
+process_entry_points = ["/opt/example/daemon.js"]
+```
+
+Linux lookup is best effort and requires visibility into the client's procfs
+files in the broker's PID/network namespaces. Permission restrictions, exited
+processes, multiple visible owners, or bounded lookup limits leave source
+metadata unavailable. Lookups run on blocking workers with at most two scans
+in flight, a 250 ms scan budget, and bounded procfs reads. Missing entry metadata
+does not match an entry selector; subsequent rules and the default action apply.
+Windows and macOS explicit proxy ingress currently provide no entry-point
+metadata. Existing source/host rules still apply.

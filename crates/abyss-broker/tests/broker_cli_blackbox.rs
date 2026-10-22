@@ -1328,7 +1328,6 @@ fn request_mitm_config(api_addr: SocketAddr, token: &str) -> serde_json::Value {
     parse_json_response(response)
 }
 
-#[cfg(any(target_os = "macos", target_os = "windows"))]
 fn update_mitm_config(
     api_addr: SocketAddr,
     token: &str,
@@ -1397,7 +1396,6 @@ fn parse_status_response(response: Response) -> ProxyStatus {
     parse_success_response(response)
 }
 
-#[cfg(any(target_os = "macos", target_os = "windows"))]
 fn parse_json_response(response: Response) -> serde_json::Value {
     parse_success_response(response)
 }
@@ -1466,6 +1464,10 @@ mod compatible_providers;
 #[cfg(target_os = "macos")]
 #[path = "scenarios/process_entry_points.rs"]
 mod process_entry_points;
+
+#[cfg(target_os = "linux")]
+#[path = "scenarios/linux_entry_points.rs"]
+mod linux_entry_points;
 
 #[cfg(target_os = "macos")]
 #[path = "scenarios/workbuddy.rs"]

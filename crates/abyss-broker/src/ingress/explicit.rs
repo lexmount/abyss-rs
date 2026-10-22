@@ -175,6 +175,12 @@ impl IngressConnection for ExplicitConnection {
             }
         };
 
+        #[cfg(target_os = "linux")]
+        let source_process =
+            crate::process_context::local_source_process(self.peer_addr, self.listen_addr).await;
+        #[cfg(not(target_os = "linux"))]
+        let source_process = None;
+
         if protocol == ExplicitProxyProtocol::HttpConnect {
             self.write_response(ProxyResponse::ConnectionEstablished)
                 .await?;
@@ -187,7 +193,7 @@ impl IngressConnection for ExplicitConnection {
             Some(self.listen_addr),
             OriginalDestination::from(upstream_addr),
             destination_host,
-            None,
+            source_process,
         );
         Ok(PlatformFlow::new(self.client, metadata)
             .with_ingress(ingress)

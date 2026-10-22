@@ -9,9 +9,10 @@ pub(super) struct RuntimeEntryPoint;
 
 impl RuntimeEntryPoint {
     pub(super) fn resolve(executable: &str, arguments: &[&str]) -> Option<String> {
+        let executable = normalized_absolute_path(executable)?;
         if !matches!(
-            Path::new(executable).file_name()?.to_str()?,
-            "Electron" | "node" | "nodejs"
+            Path::new(&executable).file_name()?.to_str()?,
+            "Electron" | "electron" | "node" | "nodejs"
         ) {
             return None;
         }
@@ -36,19 +37,21 @@ impl RuntimeEntryPoint {
             }
         };
         let script = normalized_absolute_path(script)?;
-        let executable = normalized_absolute_path(executable)?;
-        let executable_path = Path::new(&executable);
-        let bundle = executable_path
-            .ancestors()
-            .find(|path| path.extension().is_some_and(|ext| ext == "app"));
-        if let Some(bundle) = bundle {
-            // Only the same bundle can produce bundle-relative metadata. An
-            // external script must not masquerade as the app's bundled entry.
-            let relative = Path::new(&script).strip_prefix(bundle).ok()?;
-            if !relative.starts_with("Contents") {
-                return None;
+        #[cfg(target_os = "macos")]
+        {
+            let executable_path = Path::new(&executable);
+            let bundle = executable_path
+                .ancestors()
+                .find(|path| path.extension().is_some_and(|ext| ext == "app"));
+            if let Some(bundle) = bundle {
+                // Only the same bundle can produce bundle-relative metadata. An
+                // external script must not masquerade as the app's bundled entry.
+                let relative = Path::new(&script).strip_prefix(bundle).ok()?;
+                if !relative.starts_with("Contents") {
+                    return None;
+                }
+                return relative.to_str().map(str::to_owned);
             }
-            return relative.to_str().map(str::to_owned);
         }
         Some(script)
     }
@@ -76,6 +79,7 @@ mod tests {
     use super::RuntimeEntryPoint;
 
     #[test]
+    #[cfg(target_os = "macos")]
     fn bundled_entries_are_exact_and_independent_of_install_location() {
         for bundle in [
             "/Applications/Example.app",
@@ -106,6 +110,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg(target_os = "macos")]
     fn does_not_mistake_option_values_or_script_arguments_for_entry_points() {
         let exe = "/Applications/Example.app/Contents/MacOS/Electron";
         let script = "/Applications/Example.app/Contents/Resources/daemon.js";
@@ -126,6 +131,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg(target_os = "macos")]
     fn rejects_relative_external_and_parent_traversal_scripts() {
         let exe = "/Applications/Example.app/Contents/MacOS/Electron";
         for script in [
@@ -151,6 +157,44 @@ mod tests {
         assert_eq!(
             RuntimeEntryPoint::resolve("/bin/cat", &["cat", "/tmp/agent.js"]),
             None
+        );
+    }
+
+    #[test]
+    fn node_options_and_script_paths_must_be_unambiguous() {
+        for executable in ["/usr/bin/node", "/opt/agent/electron"] {
+            assert_eq!(
+                RuntimeEntryPoint::resolve(
+                    executable,
+                    &[
+                        executable,
+                        "--no-warnings",
+                        "/opt/agent/daemon.js",
+                        "secret"
+                    ]
+                ),
+                Some("/opt/agent/daemon.js".to_owned())
+            );
+            for args in [
+                vec![executable, "-e", "/opt/agent/daemon.js"],
+                vec![executable, "--type=renderer", "/opt/agent/daemon.js"],
+                vec![executable, "--require", "/opt/agent/daemon.js"],
+                vec![executable, "relative.js"],
+                vec![executable, "/opt/../daemon.js"],
+            ] {
+                assert_eq!(RuntimeEntryPoint::resolve(executable, &args), None);
+            }
+        }
+    }
+
+    #[test]
+    #[cfg(target_os = "linux")]
+    fn linux_paths_are_absolute_even_inside_app_named_directories() {
+        let exe = "/opt/Example.app/Contents/MacOS/electron";
+        let script = "/opt/Example.app/Contents/Resources/daemon.js";
+        assert_eq!(
+            RuntimeEntryPoint::resolve(exe, &[exe, script]),
+            Some(script.to_owned())
         );
     }
 }

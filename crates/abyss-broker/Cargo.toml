@@ -58,7 +58,7 @@ tokio = { version = "1", features = ["test-util"] }
 [target.'cfg(unix)'.dev-dependencies]
 nix = { version = "0.30", default-features = false, features = ["process", "signal"] }
 
-[target.'cfg(target_os = "macos")'.dev-dependencies]
+[target.'cfg(any(target_os = "macos", target_os = "linux"))'.dev-dependencies]
 rustls = { version = "0.23", default-features = false, features = ["aws_lc_rs", "std", "tls12"] }
 
 [[bin]]
