@@ -5,17 +5,16 @@
     reason = "Windows process queries use native handles and buffers."
 )]
 
-mod command_buffer;
-
 use std::{
     ffi::c_void,
     io,
+    mem::{MaybeUninit, size_of},
     os::windows::io::{AsRawHandle as _, FromRawHandle as _, OwnedHandle},
 };
 
 use windows::{
     Win32::{
-        Foundation::{HANDLE, NTSTATUS},
+        Foundation::{HANDLE, NTSTATUS, UNICODE_STRING},
         System::{
             LibraryLoader::{GetModuleHandleW, GetProcAddress},
             Threading::{
@@ -27,12 +26,90 @@ use windows::{
     core::{PWSTR, s, w},
 };
 
-use command_buffer::CommandBuffer;
-
 // ProcessCommandLineInformation returns a local UNICODE_STRING followed by its
 // UTF-16 contents. Resolve the native API at runtime and fail closed if absent.
 const PROCESS_COMMAND_LINE_INFORMATION: u32 = 60;
 type QueryProcess = unsafe extern "system" fn(HANDLE, u32, *mut c_void, u32, *mut u32) -> NTSTATUS;
+
+const COMMAND_BUFFER_CAPACITY: usize = 0x0002_0000;
+
+/// Private output storage for the `ProcessCommandLineInformation` query.
+#[repr(transparent)]
+struct CommandBuffer {
+    // usize supplies UNICODE_STRING alignment. The heap allocation keeps its
+    // embedded string pointer valid when this owner moves into assume_init.
+    inner: Box<MaybeUninit<[usize; COMMAND_BUFFER_CAPACITY.div_ceil(size_of::<usize>())]>>,
+}
+
+impl CommandBuffer {
+    fn maybeuninit() -> Self {
+        Self {
+            inner: Box::new_uninit(),
+        }
+    }
+
+    fn capacity() -> u32 {
+        u32::try_from(COMMAND_BUFFER_CAPACITY).expect("command buffer capacity fits ULONG")
+    }
+
+    fn as_raw_mut(&mut self) -> *mut c_void {
+        self.inner.as_mut_ptr().cast()
+    }
+
+    /// Copies the initialized command line after validating the native layout.
+    ///
+    /// # Safety
+    ///
+    /// If `returned` is within the accepted header-to-capacity range, all fields
+    /// of the `UNICODE_STRING` header must be initialized. Any string range that
+    /// passes the bounds checks must contain initialized UTF-16 units. A successful
+    /// `ProcessCommandLineInformation` query establishes these requirements; unused
+    /// capacity and structure padding may remain uninitialized.
+    unsafe fn assume_init(self, returned: u32) -> io::Result<Vec<u16>> {
+        let returned = usize::try_from(returned).map_err(io::Error::other)?;
+        if returned < size_of::<UNICODE_STRING>() || returned > COMMAND_BUFFER_CAPACITY {
+            return Err(invalid_buffer());
+        }
+        let base = self.inner.as_ptr();
+        // SAFETY: usize storage provides header alignment, the size check proves
+        // the header fits, and the caller guarantees its fields are initialized.
+        let header = unsafe { base.cast::<UNICODE_STRING>().read() };
+        let length = usize::from(header.Length);
+        let maximum = usize::from(header.MaximumLength);
+        let offset = header
+            .Buffer
+            .0
+            .addr()
+            .checked_sub(base.addr())
+            .ok_or_else(invalid_buffer)?;
+        let end = offset.checked_add(length).ok_or_else(invalid_buffer)?;
+        if length == 0
+            || !length.is_multiple_of(size_of::<u16>())
+            || length > maximum
+            || offset < size_of::<UNICODE_STRING>()
+            || !offset.is_multiple_of(size_of::<u16>())
+            || end > returned
+            || offset
+                .checked_add(maximum)
+                .is_none_or(|end| end > COMMAND_BUFFER_CAPACITY)
+        {
+            return Err(invalid_buffer());
+        }
+        let text = base.cast::<u16>().wrapping_byte_add(offset);
+        // SAFETY: The checked range is aligned and within the owned allocation;
+        // the caller guarantees these units are initialized. Only that range is
+        // read, never padding, unused capacity, or the native pointer itself.
+        let text = unsafe { std::slice::from_raw_parts(text, length.div_ceil(size_of::<u16>())) };
+        Ok(text.to_vec())
+    }
+}
+
+fn invalid_buffer() -> io::Error {
+    io::Error::new(
+        io::ErrorKind::InvalidData,
+        "invalid native command-line buffer",
+    )
+}
 
 pub struct NativeProcess(OwnedHandle);
 
@@ -78,7 +155,7 @@ impl NativeProcess {
 
     pub(crate) fn command_line(&self) -> io::Result<Vec<u16>> {
         let query = Self::query_function()?;
-        let mut buffer = CommandBuffer::new();
+        let mut buffer = CommandBuffer::maybeuninit();
         let mut returned = 0_u32;
         // SAFETY: The ABI matches NtQueryInformationProcess. The handle remains
         // owned and the aligned buffer has the advertised writable capacity.
@@ -86,7 +163,7 @@ impl NativeProcess {
             query(
                 HANDLE(self.0.as_raw_handle()),
                 PROCESS_COMMAND_LINE_INFORMATION,
-                buffer.as_mut_ptr(),
+                buffer.as_raw_mut(),
                 CommandBuffer::capacity(),
                 &raw mut returned,
             )
@@ -96,7 +173,9 @@ impl NativeProcess {
                 "query process command line: {status:?}"
             )));
         }
-        buffer.decode(returned)
+        // SAFETY: The successful query initialized the header and its command-line
+        // contents in buffer's stable allocation. assume_init checks their bounds.
+        unsafe { buffer.assume_init(returned) }
     }
 
     fn query_function() -> io::Result<QueryProcess> {
@@ -112,5 +191,86 @@ impl NativeProcess {
         Ok(unsafe {
             std::mem::transmute::<unsafe extern "system" fn() -> isize, QueryProcess>(function)
         })
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{COMMAND_BUFFER_CAPACITY, CommandBuffer, UNICODE_STRING, size_of};
+    use windows::core::PWSTR;
+
+    fn fixture(length: u16, maximum: u16, offset: usize) -> CommandBuffer {
+        let mut buffer = CommandBuffer::maybeuninit();
+        let header = UNICODE_STRING {
+            Length: length,
+            MaximumLength: maximum,
+            Buffer: PWSTR(buffer.as_raw_mut().cast::<u16>().wrapping_byte_add(offset)),
+        };
+        // SAFETY: The allocation has sufficient size and alignment for the header.
+        // Only its fields are initialized; the string pointer is validated later.
+        unsafe { buffer.as_raw_mut().cast::<UNICODE_STRING>().write(header) };
+        buffer
+    }
+
+    #[test]
+    fn rejects_invalid_output_sizes_before_reading_uninitialized_storage() {
+        for returned in [
+            0,
+            u32::try_from(size_of::<UNICODE_STRING>() - 1).unwrap(),
+            CommandBuffer::capacity() + 1,
+        ] {
+            let buffer = CommandBuffer::maybeuninit();
+            // SAFETY: These sizes are outside the accepted header-to-capacity
+            // range, so no initialized header or string is required.
+            assert!(unsafe { buffer.assume_init(returned) }.is_err());
+        }
+    }
+
+    #[test]
+    fn rejects_out_of_bounds_native_strings() {
+        let header = size_of::<UNICODE_STRING>();
+        for (length, maximum, offset, returned) in [
+            (0, 2, header, 32),
+            (3, 4, header, 32),
+            (4, 2, header, 32),
+            (2, 2, 0, 32),
+            (2, 2, header + 1, 32),
+            (4, 4, 32, 32),
+            (2, 2, usize::MAX, 32),
+            (2, 4, COMMAND_BUFFER_CAPACITY - 2, CommandBuffer::capacity()),
+        ] {
+            let buffer = fixture(length, maximum, offset);
+            // SAFETY: The header fields are initialized. Every fixture fails
+            // bounds validation before any uninitialized string units are read.
+            assert!(unsafe { buffer.assume_init(returned) }.is_err());
+        }
+    }
+
+    #[test]
+    fn copies_initialized_text_after_moving_buffer_ownership() {
+        // Leave a gap after the header and all unused string capacity uninitialized.
+        let offset = size_of::<UNICODE_STRING>() + 8;
+        let mut buffer = fixture(4, 16, offset);
+        let pointer = buffer.as_raw_mut();
+        assert!(
+            pointer
+                .addr()
+                .is_multiple_of(std::mem::align_of::<UNICODE_STRING>())
+        );
+        // SAFETY: This writes exactly two UTF-16 units to the aligned string
+        // range inside the allocation; no terminator or spare capacity is written.
+        unsafe {
+            std::ptr::copy_nonoverlapping(
+                [65_u16, 66].as_ptr(),
+                pointer.cast::<u16>().wrapping_byte_add(offset),
+                2,
+            );
+        }
+        let mut moved = std::hint::black_box(buffer);
+        assert_eq!(moved.as_raw_mut(), pointer);
+        // SAFETY: The header and its reported string units are initialized. Moving
+        // the owner preserves the allocation and the embedded string pointer.
+        let text = unsafe { moved.assume_init(u32::try_from(offset + 4).unwrap()) }.unwrap();
+        assert_eq!(text, [65, 66]);
     }
 }
