@@ -10,7 +10,6 @@ use std::{
     io,
     mem::{MaybeUninit, size_of},
     os::windows::io::{AsRawHandle as _, FromRawHandle as _, OwnedHandle},
-    sync::LazyLock,
 };
 
 use dlopen::wrapper::{Container, WrapperApi};
@@ -41,13 +40,6 @@ struct ProcessApi {
         return_length: *mut u32,
     ) -> NTSTATUS,
 }
-
-// Keep the library and its typed API together for all process queries.
-static PROCESS_API: LazyLock<Result<Container<ProcessApi>, dlopen::Error>> = LazyLock::new(|| {
-    // SAFETY: ntdll is the Windows system library, and ProcessApi declares the
-    // exported function's system ABI. Container keeps the library loaded.
-    unsafe { Container::load("ntdll.dll") }
-});
 
 const COMMAND_BUFFER_CAPACITY: usize = 0x0002_0000;
 
@@ -172,9 +164,11 @@ impl NativeProcess {
     }
 
     pub(crate) fn command_line(&self) -> io::Result<Vec<u16>> {
-        let api = PROCESS_API
-            .as_ref()
-            .map_err(|error| io::Error::new(io::ErrorKind::Unsupported, error.to_string()))?;
+        // SAFETY: ntdll is the Windows system library, and ProcessApi declares the
+        // exported function's system ABI. The local container keeps the library
+        // loaded until this query finishes.
+        let api = unsafe { Container::<ProcessApi>::load("ntdll.dll") }
+            .map_err(|error| io::Error::new(io::ErrorKind::Unsupported, error))?;
         let mut buffer = CommandBuffer::maybeuninit();
         let mut returned = 0_u32;
         // SAFETY: The ABI matches NtQueryInformationProcess. The handle remains

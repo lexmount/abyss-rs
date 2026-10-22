@@ -37,11 +37,12 @@ impl Arguments {
     /// Parses a command line into independently owned native argument storage.
     ///
     /// The input excludes the terminal NUL and may contain unpaired UTF-16 surrogates.
+    /// Consumes the input buffer and appends the NUL before calling the native API.
     ///
     /// # Errors
     ///
     /// Returns an error for empty or NUL-containing input or a failed native call.
-    pub fn from_utf16(command: &[u16]) -> io::Result<Self> {
+    pub fn from_utf16(mut command: Vec<u16>) -> io::Result<Self> {
         // An empty command would make the API return this broker's executable.
         if command.is_empty() || command.contains(&0) {
             return Err(io::Error::new(
@@ -49,11 +50,10 @@ impl Arguments {
                 "empty or NUL-containing command line",
             ));
         }
-        let mut terminated = command.to_vec();
-        terminated.push(0);
+        command.push(0);
         let mut count = 0_i32;
         // SAFETY: The command is NUL-terminated and count is a writable integer.
-        let pointer = unsafe { CommandLineToArgvW(PCWSTR(terminated.as_ptr()), &raw mut count) };
+        let pointer = unsafe { CommandLineToArgvW(PCWSTR(command.as_ptr()), &raw mut count) };
         let pointer = NonNull::new(pointer).ok_or_else(io::Error::last_os_error)?;
         #[expect(
             clippy::as_conversions,
@@ -101,7 +101,7 @@ mod tests {
     fn native_storage_outlives_input_and_supports_repeated_borrowed_iteration() {
         let arguments = {
             let command = "node script.js".encode_utf16().collect::<Vec<_>>();
-            Arguments::from_utf16(&command).unwrap()
+            Arguments::from_utf16(command).unwrap()
         };
         let mut iterator = arguments.iter();
         let executable = iterator.next().unwrap();
@@ -115,7 +115,7 @@ mod tests {
 
     #[test]
     fn iteration_preserves_unpaired_utf16_surrogates() {
-        let arguments = Arguments::from_utf16(&[0xd800, 0x20, 0xdc00]).unwrap();
+        let arguments = Arguments::from_utf16(vec![0xd800, 0x20, 0xdc00]).unwrap();
         assert_eq!(
             arguments.iter().collect::<Vec<_>>(),
             [&[0xd800][..], &[0xdc00][..]]
@@ -124,12 +124,9 @@ mod tests {
 
     #[test]
     fn constructor_rejects_invalid_input_and_accepts_large_argument_lists() {
-        assert!(Arguments::from_utf16(&[]).is_err());
-        assert!(Arguments::from_utf16(&[65, 0, 66]).is_err());
+        assert!(Arguments::from_utf16(Vec::new()).is_err());
+        assert!(Arguments::from_utf16(vec![65, 0, 66]).is_err());
         let command = "a ".repeat(4097).encode_utf16().collect::<Vec<_>>();
-        assert_eq!(
-            Arguments::from_utf16(&command).unwrap().iter().count(),
-            4097
-        );
+        assert_eq!(Arguments::from_utf16(command).unwrap().iter().count(), 4097);
     }
 }

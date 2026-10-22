@@ -11,7 +11,7 @@ impl ProcessArgumentsProvider for WindowsProcessArgumentsProvider {
     fn read(&self, pid: u32) -> io::Result<ProcessArguments> {
         let process = NativeProcess::open(pid)?;
         let executable = decode(&process.executable()?)?;
-        let argv = Arguments::from_utf16(&process.command_line()?)?
+        let argv = Arguments::from_utf16(process.command_line()?)?
             .iter()
             .map(decode)
             .collect::<io::Result<Vec<_>>>()?;
@@ -116,7 +116,7 @@ mod tests {
     #[test]
     fn windows_quoting_preserves_paths_empty_arguments_and_backslashes() {
         let command = r#""C:\Program Files\WorkBuddy\WorkBuddyAI.exe" --no-warnings "C:\项目 路径\cli\codebuddy" "" "quoted\"value" "trailing\\""#;
-        let arguments = Arguments::from_utf16(&command.encode_utf16().collect::<Vec<_>>()).unwrap();
+        let arguments = Arguments::from_utf16(command.encode_utf16().collect()).unwrap();
         let argv = arguments
             .iter()
             .map(|arg| decode(arg).unwrap())
