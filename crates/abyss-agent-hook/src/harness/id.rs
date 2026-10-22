@@ -18,6 +18,8 @@ pub enum BuiltInHarness {
     DeepSeekHarness,
     /// Hermes Agent model traffic.
     Hermes,
+    /// Cursor Local provider traffic.
+    Cursor,
 }
 
 impl BuiltInHarness {
@@ -30,6 +32,7 @@ impl BuiltInHarness {
             Self::ClaudeDesktop => "claude-desktop",
             Self::DeepSeekHarness => "deepseek-harness",
             Self::Hermes => "hermes",
+            Self::Cursor => "cursor",
         }
     }
 }
@@ -50,7 +53,7 @@ impl HarnessId {
     pub(crate) fn is_reserved(&self) -> bool {
         matches!(
             self.as_str(),
-            "codex" | "claude-code" | "claude-desktop" | "deepseek-harness" | "hermes"
+            "codex" | "claude-code" | "claude-desktop" | "deepseek-harness" | "hermes" | "cursor"
         )
     }
 }

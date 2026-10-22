@@ -44,6 +44,11 @@ fn provider_session_id(headers: &HeaderMap, payload: &Value) -> Option<String> {
         .or_else(|| header(headers, "thread-id").map(str::to_owned))
         .or_else(|| collect_string_field(payload, "thread_id"))
         .or_else(|| collect_string_field(payload, "conversation_id"))
+        .or_else(|| {
+            // Only Cursor Local defines X-Agent-Id as its conversation ID.
+            header(headers, "user-agent")?.strip_prefix("Cursor-CLI/")?;
+            header(headers, "x-agent-id").map(str::to_owned)
+        })
 }
 
 fn metadata_session_id(payload: &Value) -> Option<String> {

@@ -37,6 +37,12 @@ pub fn session_id(headers: &HeaderMap) -> Option<String> {
         .or_else(|| metadata_header_value(headers, "thread_id"))
         .or_else(|| header(headers, "x-deepseek-harness-session-id").map(str::to_owned))
         .or_else(|| header(headers, "x-hermes-session-id").map(str::to_owned))
+        .or_else(|| {
+            // X-Agent-Id is a conversation ID in Cursor Local's contract.
+            // Other clients may use this generic header for a different scope.
+            header(headers, "user-agent")?.strip_prefix("Cursor-CLI/")?;
+            header(headers, "x-agent-id").map(str::to_owned)
+        })
 }
 
 fn metadata_header_value(headers: &HeaderMap, key: &str) -> Option<String> {
