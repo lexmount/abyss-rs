@@ -3,5 +3,5 @@
 mod command_line;
 mod process;
 
-pub use command_line::command_line_arguments;
+pub use command_line::Arguments;
 pub use process::NativeProcess;

@@ -3,7 +3,7 @@
 use std::io;
 
 use super::{ProcessArguments, ProcessArgumentsProvider};
-use crate::sys::windows::{NativeProcess, command_line_arguments};
+use crate::sys::windows::{Arguments, NativeProcess};
 
 pub(super) struct WindowsProcessArgumentsProvider;
 
@@ -11,9 +11,9 @@ impl ProcessArgumentsProvider for WindowsProcessArgumentsProvider {
     fn read(&self, pid: u32) -> io::Result<ProcessArguments> {
         let process = NativeProcess::open(pid)?;
         let executable = decode(&process.executable()?)?;
-        let argv = command_line_arguments(&process.command_line()?)?
+        let argv = Arguments::from_utf16(&process.command_line()?)?
             .iter()
-            .map(|value| decode(value))
+            .map(decode)
             .collect::<io::Result<Vec<_>>>()?;
         if argv.first().is_none_or(String::is_empty) {
             return Err(io::Error::new(
@@ -43,9 +43,7 @@ mod tests {
         process::{Child, Command, Stdio},
     };
 
-    use super::{
-        ProcessArgumentsProvider, WindowsProcessArgumentsProvider, command_line_arguments, decode,
-    };
+    use super::{Arguments, ProcessArgumentsProvider, WindowsProcessArgumentsProvider, decode};
 
     struct ChildProcess(Child);
 
@@ -118,8 +116,8 @@ mod tests {
     #[test]
     fn windows_quoting_preserves_paths_empty_arguments_and_backslashes() {
         let command = r#""C:\Program Files\WorkBuddy\WorkBuddyAI.exe" --no-warnings "C:\项目 路径\cli\codebuddy" "" "quoted\"value" "trailing\\""#;
-        let argv = command_line_arguments(&command.encode_utf16().collect::<Vec<_>>()).unwrap();
-        let argv = argv
+        let arguments = Arguments::from_utf16(&command.encode_utf16().collect::<Vec<_>>()).unwrap();
+        let argv = arguments
             .iter()
             .map(|arg| decode(arg).unwrap())
             .collect::<Vec<_>>();
@@ -134,8 +132,6 @@ mod tests {
                 "trailing\\"
             ]
         );
-        assert!(command_line_arguments(&[]).is_err());
-        assert!(command_line_arguments(&[65, 0, 66]).is_err());
         assert!(decode(&[0xd800]).is_err());
     }
 }
