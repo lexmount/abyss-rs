@@ -30,7 +30,7 @@ pub trait ProcessContextResolver: Send + Sync {
     fn working_directory(&self, pid: Option<u32>, pid_version: Option<u32>) -> Option<PathBuf>;
 
     /// Returns a normalized runtime entry point when it can be identified reliably.
-    fn entry_point(&self, _pid: Option<u32>, _pid_version: Option<u32>) -> Option<String> {
+    fn entry_point(&self, _pid: Option<u32>) -> Option<String> {
         None
     }
 }

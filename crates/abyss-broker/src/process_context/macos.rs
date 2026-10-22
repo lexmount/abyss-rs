@@ -21,8 +21,8 @@ impl ProcessContextProvider for MacOsProcessContextProvider {
         }
     }
 
-    fn entry_point(&self, pid: u32, pid_version: Option<u32>) -> Option<String> {
-        let arguments = crate::sys::process_arguments(pid, pid_version).ok()??;
+    fn entry_point(&self, pid: u32) -> Option<String> {
+        let arguments = crate::sys::process_arguments(pid).ok()?;
         super::entry_point::RuntimeEntryPoint::resolve(
             &arguments.executable,
             &arguments

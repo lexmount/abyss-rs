@@ -271,8 +271,9 @@ flow metadata. Entry points appear as `source_process.entry_point` in support
 diagnostics. This metadata describes a process role, not an executable-integrity
 or authorization guarantee; combine it with application identity.
 
-PID incarnation is checked around native reads. Lookups, including unavailable
-results, are cached with the existing per-process TTL when a PID version is
-provided. Unversioned PIDs are not cached for entry matching. Windows and explicit
-proxy ingress currently provide no entry-point metadata and therefore cannot
-match a populated entry-point selector. Existing source/host rules still apply.
+Entry-point lookup uses only the source PID and reads native process arguments
+for each connection. Results are not cached, so a later connection cannot reuse
+an old entry point after PID reuse. PID-only lookup does not verify process
+incarnation between flow creation and lookup. Windows and explicit proxy ingress
+currently provide no entry-point metadata and therefore cannot match a populated
+entry-point selector. Existing source/host rules still apply.

@@ -1,4 +1,4 @@
-//! Shared process-identity cache for platform process-context providers.
+//! Cached working directories and uncached PID-based entry-point lookups.
 
 use std::{
     collections::HashMap,
@@ -24,14 +24,13 @@ struct ProcessIdentity {
 
 struct CacheEntry {
     working_directory: OnceLock<Option<PathBuf>>,
-    entry_point: OnceLock<Option<String>>,
     expires_at: Instant,
 }
 
 pub(super) trait ProcessContextProvider: Send + Sync {
     fn lookup(&self, pid: u32) -> Option<PathBuf>;
 
-    fn entry_point(&self, _pid: u32, _pid_version: Option<u32>) -> Option<String> {
+    fn entry_point(&self, _pid: u32) -> Option<String> {
         None
     }
 }
@@ -65,7 +64,6 @@ where
                 let expires_at = now.checked_add(CACHE_TTL).unwrap_or(now);
                 let entry = Arc::new(CacheEntry {
                     working_directory: OnceLock::new(),
-                    entry_point: OnceLock::new(),
                     expires_at,
                 });
                 entries.insert(identity, Arc::clone(&entry));
@@ -87,17 +85,9 @@ where
             .clone()
     }
 
-    fn entry_point(&self, pid: Option<u32>, pid_version: Option<u32>) -> Option<String> {
-        let pid = pid?;
-        // Without an incarnation identifier, never reuse a cached entry script
-        // for a PID that the OS may have reassigned to another process.
-        if pid_version.is_none() {
-            return self.provider.entry_point(pid, None);
-        }
-        self.entry(ProcessIdentity { pid, pid_version })
-            .entry_point
-            .get_or_init(|| self.provider.entry_point(pid, pid_version))
-            .clone()
+    fn entry_point(&self, pid: Option<u32>) -> Option<String> {
+        // A PID may be reused, so entry-point policy must not use a cached script.
+        self.provider.entry_point(pid?)
     }
 }
 
@@ -261,31 +251,36 @@ mod tests {
         fn lookup(&self, _pid: u32) -> Option<PathBuf> {
             None
         }
-        fn entry_point(&self, _pid: u32, version: Option<u32>) -> Option<String> {
-            self.0.fetch_add(1, Ordering::Relaxed);
-            version.map(|version| format!("/tmp/entry-{version}.js"))
+        fn entry_point(&self, pid: u32) -> Option<String> {
+            match self.0.fetch_add(1, Ordering::Relaxed) {
+                0 => Some(format!("/tmp/{pid}/daemon.js")),
+                1 => Some(format!("/tmp/{pid}/cli.js")),
+                _ => None,
+            }
         }
     }
 
     #[test]
-    fn entry_points_cache_by_incarnation_and_do_not_cache_unversioned_pids() {
+    fn entry_points_are_refreshed_when_a_pid_is_reused_or_unavailable() {
         let resolver = CachedProcessContextResolver::new(EntryPointProvider(AtomicUsize::new(0)));
         assert_eq!(
-            resolver.entry_point(Some(42), Some(7)),
-            Some("/tmp/entry-7.js".to_owned())
+            resolver.entry_point(Some(42)),
+            Some("/tmp/42/daemon.js".to_owned())
         );
         assert_eq!(
-            resolver.entry_point(Some(42), Some(7)),
-            Some("/tmp/entry-7.js".to_owned())
-        );
-        assert_eq!(
-            resolver.entry_point(Some(42), Some(8)),
-            Some("/tmp/entry-8.js".to_owned())
+            resolver.entry_point(Some(42)),
+            Some("/tmp/42/cli.js".to_owned())
         );
         assert_eq!(resolver.provider.0.load(Ordering::Relaxed), 2);
-        assert_eq!(resolver.entry_point(None, None), None);
-        assert_eq!(resolver.entry_point(Some(42), None), None);
-        assert_eq!(resolver.entry_point(Some(42), None), None);
+        assert_eq!(resolver.entry_point(Some(42)), None);
+        assert_eq!(resolver.entry_point(Some(42)), None);
         assert_eq!(resolver.provider.0.load(Ordering::Relaxed), 4);
+    }
+
+    #[test]
+    fn missing_pid_does_not_query_entry_point() {
+        let resolver = CachedProcessContextResolver::new(EntryPointProvider(AtomicUsize::new(0)));
+        assert_eq!(resolver.entry_point(None), None);
+        assert_eq!(resolver.provider.0.load(Ordering::Relaxed), 0);
     }
 }

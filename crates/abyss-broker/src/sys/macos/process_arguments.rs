@@ -1,48 +1,21 @@
-//! Bounded macOS argv reads for process entry attribution, with PID-version checks.
+//! Bounded macOS argv reads by PID for process entry attribution.
 //! Native buffers are discarded after extracting the entry; environment and full
 //! command lines are never returned to diagnostics or policy code.
 
 #![expect(
     unsafe_code,
-    reason = "Native sysctl and libproc reads require checked FFI output buffers."
+    reason = "Native sysctl reads require checked FFI output buffers."
 )]
 
-use std::{
-    io,
-    mem::{MaybeUninit, size_of},
-    ptr,
-};
+use std::{io, mem::size_of, ptr};
 
-// macOS ABI documented by Apple in bsd/sys/proc_info_private.h:
-// https://github.com/apple-oss-distributions/xnu/blob/main/bsd/sys/proc_info_private.h
-const PROC_PIDUNIQIDENTIFIERINFO: libc::c_int = 17;
-#[repr(C)]
-struct ProcessIdentity {
-    uuid: [u8; 16],
-    unique_id: u64,
-    parent_unique_id: u64,
-    version: i32,
-    original_parent_version: i32,
-    reserved: [u64; 2],
-}
-const _: () = assert!(
-    size_of::<ProcessIdentity>() == 56,
-    "macOS process identity ABI must be 56 bytes"
-);
 const MAX_ARGUMENT_BYTES: usize = 0x0010_0000;
 
-pub fn process_arguments(
-    pid: u32,
-    expected_version: Option<u32>,
-) -> io::Result<Option<ProcessArguments>> {
+pub fn process_arguments(pid: u32) -> io::Result<ProcessArguments> {
     let pid = libc::pid_t::try_from(pid)
         .ok()
         .filter(|pid| *pid > 0_i32)
         .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidInput, "invalid process id"))?;
-    let before = process_identity(pid)?;
-    if expected_version.is_some_and(|version| version != before.version.cast_unsigned()) {
-        return Ok(None);
-    }
     let mut mib = [libc::CTL_KERN, libc::KERN_PROCARGS2, pid];
     let mut buffer = vec![0_u8; MAX_ARGUMENT_BYTES];
     let mut size = buffer.len();
@@ -64,37 +37,7 @@ pub fn process_arguments(
     let bytes = buffer
         .get(..size)
         .ok_or_else(|| invalid_data("oversized process arguments"))?;
-    let arguments = ProcessArguments::parse(bytes)?;
-    let after = process_identity(pid)?;
-    if before.unique_id != after.unique_id || before.version != after.version {
-        return Ok(None);
-    }
-    Ok(Some(arguments))
-}
-
-fn process_identity(pid: libc::pid_t) -> io::Result<ProcessIdentity> {
-    let mut record = MaybeUninit::<ProcessIdentity>::zeroed();
-    let size = libc::c_int::try_from(size_of::<ProcessIdentity>())
-        .map_err(|_| invalid_data("process identity size overflow"))?;
-    // SAFETY: record is a correctly aligned repr(C) buffer of size bytes. It is
-    // read only after libproc confirms that the complete ABI record was written.
-    let read = unsafe {
-        libc::proc_pidinfo(
-            pid,
-            PROC_PIDUNIQIDENTIFIERINFO,
-            0,
-            record.as_mut_ptr().cast(),
-            size,
-        )
-    };
-    if read <= 0_i32 {
-        return Err(io::Error::last_os_error());
-    }
-    if read != size {
-        return Err(invalid_data("partial process identity"));
-    }
-    // SAFETY: exact-size successful libproc output initialized the entire record.
-    Ok(unsafe { record.assume_init() })
+    ProcessArguments::parse(bytes)
 }
 
 pub struct ProcessArguments {
@@ -148,7 +91,7 @@ fn invalid_data(message: &'static str) -> io::Error {
 
 #[cfg(test)]
 mod tests {
-    use super::{ProcessArguments, process_arguments, process_identity};
+    use super::{ProcessArguments, process_arguments};
 
     #[test]
     fn argv_parser_does_not_include_environment_or_drop_empty_arguments() {
@@ -176,19 +119,11 @@ mod tests {
     }
 
     #[test]
-    fn native_identity_and_argument_reads_work_for_this_process() {
-        let pid = std::process::id();
-        let native_pid = i32::try_from(pid).unwrap();
-        let version = process_identity(native_pid)
-            .unwrap()
-            .version
-            .cast_unsigned();
-        assert!(process_arguments(pid, Some(version)).unwrap().is_some());
-        assert!(
-            process_arguments(pid, Some(version.wrapping_add(1)))
-                .unwrap()
-                .is_none()
-        );
-        assert!(process_arguments(0, None).is_err());
+    fn native_argument_reads_work_for_this_pid() {
+        let arguments = process_arguments(std::process::id()).unwrap();
+        assert!(!arguments.executable.is_empty());
+        assert!(!arguments.argv.is_empty());
+        assert!(process_arguments(0).is_err());
+        assert!(process_arguments(u32::MAX).is_err());
     }
 }
