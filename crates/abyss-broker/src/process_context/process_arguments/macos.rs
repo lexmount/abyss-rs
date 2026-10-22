@@ -1,17 +1,13 @@
-//! Bounded macOS argv reads by PID through the platform argument-provider contract.
-//! Native buffers are discarded after decoding argv; environment variables are
-//! excluded. Runtime interpretation belongs to the process-context pipeline.
+//! macOS startup-argument provider and `KERN_PROCARGS2` format decoding.
+//! The sys adapter owns the native call. This provider discards the native buffer
+//! after decoding argv and excludes environment variables; runtimes interpret argv.
 
-#![expect(
-    unsafe_code,
-    reason = "Native sysctl reads require checked FFI output buffers."
-)]
+use std::{io, mem::size_of};
 
-use std::{io, mem::size_of, ptr};
+use super::{ProcessArguments, ProcessArgumentsProvider};
+use crate::sys::sysctl_read;
 
-use crate::sys::{ProcessArguments, ProcessArgumentsProvider};
-
-pub(in crate::sys) struct MacOsProcessArgumentsProvider;
+pub(super) struct MacOsProcessArgumentsProvider;
 
 const MAX_ARGUMENT_BYTES: usize = 0x0010_0000;
 
@@ -21,28 +17,10 @@ impl ProcessArgumentsProvider for MacOsProcessArgumentsProvider {
             .ok()
             .filter(|pid| *pid > 0_i32)
             .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidInput, "invalid process id"))?;
-        let mut mib = [libc::CTL_KERN, libc::KERN_PROCARGS2, pid];
+        let mib = [libc::CTL_KERN, libc::KERN_PROCARGS2, pid];
         let mut buffer = vec![0_u8; MAX_ARGUMENT_BYTES];
-        let mut size = buffer.len();
-        // SAFETY: mib contains three native integers; buffer is writable for size
-        // bytes. No new value is supplied. Output is bounded by the allocated buffer.
-        let result = unsafe {
-            libc::sysctl(
-                mib.as_mut_ptr(),
-                3,
-                buffer.as_mut_ptr().cast(),
-                &raw mut size,
-                ptr::null_mut(),
-                0,
-            )
-        };
-        if result != 0_i32 {
-            return Err(io::Error::last_os_error());
-        }
-        let bytes = buffer
-            .get(..size)
-            .ok_or_else(|| invalid_data("oversized process arguments"))?;
-        Self::parse(bytes)
+        let size = sysctl_read(&mib, &mut buffer)?;
+        Self::parse(&buffer[..size])
     }
 }
 

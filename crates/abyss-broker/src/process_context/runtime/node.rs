@@ -1,7 +1,7 @@
 //! Node/Electron command syntax for direct script launches; no application-specific rules.
 
 use super::{RuntimeEntryPointResolver, path::ScriptPath};
-use crate::sys::ProcessArguments;
+use crate::process_context::process_arguments::ProcessArguments;
 
 pub(super) struct NodeEntryPoint;
 

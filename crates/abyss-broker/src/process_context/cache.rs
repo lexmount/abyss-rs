@@ -102,8 +102,10 @@ mod tests {
     };
 
     use super::{CachedProcessContextResolver, WorkingDirectoryProvider};
-    use crate::process_context::{ProcessContextResolver, entry_point::EntryPointResolver};
-    use crate::sys::process_arguments_provider;
+    use crate::process_context::{
+        ProcessContextResolver, entry_point::EntryPointResolver,
+        process_arguments::process_arguments_provider,
+    };
 
     fn resolver<P: WorkingDirectoryProvider>(provider: P) -> CachedProcessContextResolver<P> {
         CachedProcessContextResolver::new(

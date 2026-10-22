@@ -6,7 +6,7 @@
 mod node;
 mod path;
 
-use crate::sys::ProcessArguments;
+use super::process_arguments::ProcessArguments;
 
 pub(super) trait RuntimeEntryPointResolver: Send + Sync {
     fn recognizes(&self, executable: &str) -> bool;

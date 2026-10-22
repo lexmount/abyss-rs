@@ -3,16 +3,19 @@
 //! Providers must preserve argument boundaries and exclude environment variables.
 //! These transient values are not diagnostics or policy metadata.
 
+#[cfg(target_os = "macos")]
+mod macos;
+
 use std::io;
 
 /// Native executable identity and decoded argv, including argv[0].
-pub struct ProcessArguments {
+pub(super) struct ProcessArguments {
     pub executable: String,
     pub argv: Vec<String>,
 }
 
 /// Reads only process arguments; it does not identify runtimes or resolve scripts.
-pub trait ProcessArgumentsProvider: Send + Sync {
+pub(super) trait ProcessArgumentsProvider: Send + Sync {
     /// A provider must reject undecodable input rather than changing its contents.
     /// Platforms exposing a command-line string must preserve quoting semantics
     /// when converting it to argv; splitting on whitespace is insufficient.
@@ -20,10 +23,10 @@ pub trait ProcessArgumentsProvider: Send + Sync {
 }
 
 /// Selects the native reader without exposing platform types to the pipeline.
-pub fn process_arguments_provider() -> Box<dyn ProcessArgumentsProvider> {
+pub(super) fn process_arguments_provider() -> Box<dyn ProcessArgumentsProvider> {
     #[cfg(target_os = "macos")]
     {
-        Box::new(super::macos::MacOsProcessArgumentsProvider)
+        Box::new(macos::MacOsProcessArgumentsProvider)
     }
     #[cfg(not(target_os = "macos"))]
     {

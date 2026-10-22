@@ -3,8 +3,10 @@
 //! Platform readers and runtime parsers are injected as trait objects. Full argv
 //! stays transient; only an identified execution path leaves this pipeline.
 
-use super::runtime::{RuntimeEntryPointResolver, runtime_resolvers};
-use crate::sys::ProcessArgumentsProvider;
+use super::{
+    process_arguments::ProcessArgumentsProvider,
+    runtime::{RuntimeEntryPointResolver, runtime_resolvers},
+};
 
 pub(super) struct EntryPointResolver {
     arguments: Box<dyn ProcessArgumentsProvider>,
@@ -42,7 +44,7 @@ mod tests {
     };
 
     use super::{EntryPointResolver, ProcessArgumentsProvider, RuntimeEntryPointResolver};
-    use crate::sys::ProcessArguments;
+    use crate::process_context::process_arguments::ProcessArguments;
 
     #[cfg(not(windows))]
     const NODE: &str = "/usr/bin/node";

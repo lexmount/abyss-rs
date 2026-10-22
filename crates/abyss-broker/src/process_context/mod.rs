@@ -16,15 +16,16 @@ mod cache;
 mod entry_point;
 #[cfg(target_os = "macos")]
 mod macos;
+mod process_arguments;
 mod runtime;
 #[cfg(not(target_os = "macos"))]
 mod unavailable;
 
 use std::{path::PathBuf, sync::Arc};
 
-use crate::sys::process_arguments_provider;
 use cache::CachedProcessContextResolver;
 use entry_point::EntryPointResolver;
+use process_arguments::process_arguments_provider;
 
 /// Resolves best-effort metadata for the process that opened a network flow.
 pub trait ProcessContextResolver: Send + Sync {

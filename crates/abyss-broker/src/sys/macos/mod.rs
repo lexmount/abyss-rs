@@ -1,7 +1,7 @@
 //! Safe macOS system API adapters used by broker business logic.
 
 mod process;
-mod process_arguments;
+mod sysctl;
 
 pub use process::process_working_directory;
-pub(super) use process_arguments::MacOsProcessArgumentsProvider;
+pub use sysctl::sysctl_read;
