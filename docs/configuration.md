@@ -164,14 +164,10 @@ without source process metadata therefore cannot be attributed to WorkBuddy.
 enabled = true
 ```
 
-The complete legacy WorkBuddy configuration with separate process-name and
-application-ID matchers is accepted and normalized to this built-in form on
-load or API update, preserving enablement and content controls. Normalized API
-responses and subsequent saves omit those matchers. Other WorkBuddy matcher
-overrides are rejected, like overrides for other built-in identities, rather
-than silently changing their scope. `X-Conversation-ID` continues through the
-shared protocol session resolver; `X-Conversation-Request-ID` declares the user
-turn and is not used as a session identifier.
+WorkBuddy does not accept custom matchers, like other built-in identities.
+`X-Conversation-ID` continues through the shared protocol session resolver;
+`X-Conversation-Request-ID` declares the user turn and is not used as a session
+identifier.
 
 Custom Harnesses can declare `process_names` and `application_ids` matchers in
 `runtime-policy.toml`; these use exact matches against platform-supplied source

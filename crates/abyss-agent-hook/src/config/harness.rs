@@ -4,7 +4,7 @@ use std::collections::BTreeMap;
 
 use serde::{Deserialize, Deserializer, Serialize, de::Error as _};
 
-use crate::harness::{BuiltInHarness, HarnessId, registry::workbuddy};
+use crate::harness::HarnessId;
 
 use super::HarnessUsageContentConfig;
 
@@ -82,11 +82,8 @@ impl<'de> Deserialize<'de> for HarnessUsageConfig {
     where
         D: Deserializer<'de>,
     {
-        let mut wire = HarnessUsageConfigWire::deserialize(deserializer)?;
-        for (harness_id, harness) in &mut wire.harnesses {
-            if harness_id.as_str() == BuiltInHarness::WorkBuddy.id() {
-                harness.migrate_workbuddy_matchers();
-            }
+        let wire = HarnessUsageConfigWire::deserialize(deserializer)?;
+        for (harness_id, harness) in &wire.harnesses {
             if harness_id.is_reserved() {
                 if !harness.matchers.is_empty() {
                     return Err(D::Error::custom(format!(
@@ -126,109 +123,11 @@ impl<'de> Deserialize<'de> for HarnessUsageConfig {
 }
 
 impl HarnessConfig {
-    /// Upgrade only the complete legacy identity. Arbitrary overrides still fail
-    /// built-in validation instead of silently widening or changing their scope.
-    fn migrate_workbuddy_matchers(&mut self) {
-        if self.matchers.len() == 2
-            && self.matchers.iter().any(|matcher| {
-                matcher.application_ids.is_empty()
-                    && same_selectors(&matcher.process_names, workbuddy::PROCESS_NAMES)
-            })
-            && self.matchers.iter().any(|matcher| {
-                matcher.process_names.is_empty()
-                    && same_selectors(&matcher.application_ids, workbuddy::APPLICATION_IDS)
-            })
-        {
-            self.matchers.clear();
-        }
-    }
-
     const fn enabled(&self) -> Option<bool> {
         self.enabled
     }
 
     const fn content(&self) -> Option<&HarnessUsageContentConfig> {
         self.content.as_ref()
-    }
-}
-
-fn same_selectors(values: &[String], expected: &[&str]) -> bool {
-    values
-        .iter()
-        .all(|value| expected.contains(&value.as_str()))
-        && expected
-            .iter()
-            .all(|value| values.iter().any(|item| item == value))
-}
-
-#[cfg(test)]
-mod tests {
-    use serde_json::{Value, json};
-
-    use crate::config::HooksConfig;
-
-    fn legacy() -> Value {
-        serde_json::from_str(include_str!(
-            "../../tests/fixtures/workbuddy/legacy-hooks.json"
-        ))
-        .unwrap()
-    }
-
-    #[test]
-    fn legacy_workbuddy_migrates_without_losing_enablement_or_content_policy() {
-        for enabled in [true, false] {
-            let mut value = legacy();
-            let harness = &mut value["harness_usage"]["config"]["harnesses"]["workbuddy"];
-            harness["enabled"] = json!(enabled);
-            // Selector and matcher order are not significant.
-            harness["matchers"][0]["process_names"]
-                .as_array_mut()
-                .unwrap()
-                .reverse();
-            harness["matchers"].as_array_mut().unwrap().reverse();
-            let config: HooksConfig = serde_json::from_value(value).unwrap();
-            let usage = &config.harness_usage.config;
-            assert_eq!(usage.enabled_for_harness("workbuddy"), enabled);
-            assert!(!usage.content_for_harness("workbuddy").conversation_text);
-            assert!(usage.content_for_harness("workbuddy").token_usage);
-            assert!(usage.harnesses["workbuddy"].matchers.is_empty());
-            let serialized = serde_json::to_value(config).unwrap();
-            assert!(
-                serialized["harness_usage"]["config"]["harnesses"]["workbuddy"]
-                    .get("matchers")
-                    .is_none()
-            );
-            let again: HooksConfig = serde_json::from_value(serialized.clone()).unwrap();
-            assert_eq!(serde_json::to_value(again).unwrap(), serialized);
-        }
-    }
-
-    #[test]
-    fn arbitrary_workbuddy_overrides_do_not_silently_change_scope() {
-        let legacy_matchers =
-            legacy()["harness_usage"]["config"]["harnesses"]["workbuddy"]["matchers"].clone();
-        let mut extended = legacy_matchers.clone();
-        extended[0]["process_names"]
-            .as_array_mut()
-            .unwrap()
-            .push(json!("node"));
-        let mut restricted = legacy_matchers.clone();
-        restricted[0]["process_names"].as_array_mut().unwrap().pop();
-        let combined = json!([{
-            "process_names": legacy_matchers[0]["process_names"],
-            "application_ids": legacy_matchers[1]["application_ids"]
-        }]);
-        for matchers in [
-            extended,
-            restricted,
-            combined,
-            json!([{}]),
-            json!([{"process_names": ["WorkBuddy"]}]),
-            json!([{"process_names": [""]}]),
-        ] {
-            let mut value = legacy();
-            value["harness_usage"]["config"]["harnesses"]["workbuddy"]["matchers"] = matchers;
-            assert!(serde_json::from_value::<HooksConfig>(value).is_err());
-        }
     }
 }

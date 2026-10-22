@@ -11,9 +11,8 @@ use crate::harness::{
 
 use super::{HarnessDetector, header};
 
-// Shared with the migration of the previous, configuration-defined identity.
 // Never include generic Electron, Node, or standalone CodeBuddy processes.
-pub const PROCESS_NAMES: &[&str] = &[
+const PROCESS_NAMES: &[&str] = &[
     "WorkBuddy",
     "WorkBuddy.exe",
     "workbuddy.exe",
@@ -22,7 +21,7 @@ pub const PROCESS_NAMES: &[&str] = &[
     "WorkBuddy Helper (Plugin)",
     "WorkBuddy Helper (Renderer)",
 ];
-pub const APPLICATION_IDS: &[&str] = &[
+const APPLICATION_IDS: &[&str] = &[
     "com.tencent.workbuddy.mac",
     "com.tencent.workbuddy.mac.helper",
     "com.tencent.workbuddy.mac.helper.GPU",

@@ -1,4 +1,4 @@
-//! `WorkBuddy` identity, legacy policy migration, and correlation across real
+//! `WorkBuddy` identity, built-in policy controls, and correlation across real
 //! broker REST, framed ingress, and plugin boundaries. No live services are used.
 
 use std::{
@@ -21,7 +21,7 @@ use super::{
 };
 
 #[test]
-fn workbuddy_builtin_migrates_legacy_policy_and_publishes_correlated_events() {
+fn workbuddy_builtin_persists_policy_and_publishes_correlated_events() {
     let api_addr = reserve_api_loopback_addr();
     let socket_path = std::env::temp_dir().join(format!("wb-{}.sock", Uuid::new_v4()));
     let startup_path = socket_path.with_extension("json");
@@ -29,25 +29,16 @@ fn workbuddy_builtin_migrates_legacy_policy_and_publishes_correlated_events() {
         BrokerProcess::spawn_framed_unix_with_startup_info(api_addr, &socket_path, &startup_path);
     broker.wait_for_startup_info(&startup_path);
     broker.wait_for_running();
-    broker.shutdown();
-    broker.wait_for_exit();
-
-    // Exercise the on-disk upgrade path before the first request after restart.
-    let legacy: Value = serde_json::from_str(include_str!(
-        "../../../abyss-agent-hook/tests/fixtures/workbuddy/legacy-hooks.json"
-    ))
-    .unwrap();
-    fs::write(
-        broker.runtime_policy_path(),
-        toml::to_string_pretty(&json!({
-            "schema_version": 1_u32, "hooks": legacy
-        }))
-        .unwrap(),
-    )
-    .unwrap();
-    restart(&mut broker, &startup_path);
     let token = read_auth_token(&broker.auth_token_file);
-    let normalized = request_hooks_config(api_addr, &token);
+    let normalized = update_hooks_config(
+        api_addr,
+        &token,
+        &json!({
+            "harness_usage": {"config": {"harnesses": {"workbuddy": {
+                "enabled": true, "content": {"conversation_text": false}
+            }}}}
+        }),
+    );
     assert_eq!(
         normalized["harness_usage"]["config"]["harnesses"]["workbuddy"]["enabled"],
         true
@@ -58,8 +49,6 @@ fn workbuddy_builtin_migrates_legacy_policy_and_publishes_correlated_events() {
             .is_none()
     );
 
-    // Old clients can still submit the original shape; subsequent saves are canonical.
-    assert_eq!(update_hooks_config(api_addr, &token, &legacy), normalized);
     let persisted: Value =
         toml::from_str(&fs::read_to_string(broker.runtime_policy_path()).unwrap()).unwrap();
     assert_eq!(persisted["hooks"], normalized);
@@ -91,9 +80,8 @@ fn workbuddy_builtin_migrates_legacy_policy_and_publishes_correlated_events() {
         }
     }
 
-    let mut invalid = legacy;
-    invalid["harness_usage"]["config"]["harnesses"]["workbuddy"]["matchers"][0]["process_names"] =
-        json!(["node"]);
+    let mut invalid = normalized.clone();
+    invalid["harness_usage"]["config"]["harnesses"]["workbuddy"]["matchers"] = json!([{"process_names": ["WorkBuddy"]}, {"application_ids": ["com.tencent.workbuddy.mac"]}]);
     let rejected = client()
         .put(url(api_addr, "/v1/hooks/config"))
         .bearer_auth(&token)

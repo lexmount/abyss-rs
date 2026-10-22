@@ -6,7 +6,7 @@ mod codex;
 mod cursor;
 mod deepseek_harness;
 mod hermes;
-pub mod workbuddy;
+mod workbuddy;
 
 use abyss_mitm::{FlowContext, HttpExchange, WebSocketMessage};
 use http::HeaderMap;
