@@ -74,11 +74,9 @@ pub struct TlsDecryptionRule {
     /// A populated selector does not match when application identity is absent.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub application_ids: Vec<String>,
-    /// Exact normalized process entry points; no glob or suffix matching.
+    /// Exact normalized absolute process entry points; no glob or suffix matching.
     ///
-    /// macOS Node/Electron app entries are relative to the executable's `.app`
-    /// bundle (for example `Contents/Resources/app.asar/main/daemon.js`). Other
-    /// supported Node entries are absolute paths. Missing metadata never matches.
+    /// Application installation paths are retained. Missing metadata never matches.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub process_entry_points: Vec<String>,
     /// Exact hosts or leading-wildcard suffixes such as `*.openai.com`.
@@ -316,12 +314,12 @@ impl TlsDecryptionRule {
 }
 
 fn valid_entry_point(value: &str) -> bool {
-    let path = value.strip_prefix('/').unwrap_or(value);
-    !value.trim().is_empty()
-        && !value
-            .chars()
-            .any(|c| c.is_control() || matches!(c, '*' | '?' | '\\'))
-        && (value.starts_with('/') || value.starts_with("Contents/"))
+    let Some(path) = value.strip_prefix('/') else {
+        return false;
+    };
+    !value
+        .chars()
+        .any(|c| c.is_control() || matches!(c, '*' | '?' | '\\'))
         && path.split('/').all(|part| !matches!(part, "" | "." | ".."))
 }
 
@@ -767,18 +765,18 @@ mod tests {
             "default_action": "intercept",
             "rules": [{"id":"daemon", "action":"passthrough",
                 "application_ids":["com.example.agent"],
-                "process_entry_points":["Contents/Resources/daemon.js", "Contents/Resources/service.js", "/opt/agent/daemon.js"]}]
+                "process_entry_points":["/Applications/Example.app/Contents/Resources/daemon.js", "/Applications/Example.app/Contents/Resources/service.js", "/opt/agent/daemon.js"]}]
         })).unwrap();
         policy.validate().unwrap();
         for (application, entry, expected) in [
             (
                 "com.example.agent",
-                Some("Contents/Resources/daemon.js"),
+                Some("/Applications/Example.app/Contents/Resources/daemon.js"),
                 TlsDecryptionAction::Passthrough,
             ),
             (
                 "com.example.agent",
-                Some("Contents/Resources/service.js"),
+                Some("/Applications/Example.app/Contents/Resources/service.js"),
                 TlsDecryptionAction::Passthrough,
             ),
             (
@@ -798,17 +796,27 @@ mod tests {
             ),
             (
                 "com.other.agent",
+                Some("/Applications/Example.app/Contents/Resources/daemon.js"),
+                TlsDecryptionAction::Intercept,
+            ),
+            (
+                "com.example.agent",
+                Some("/Applications/Example.app/Contents/Resources/daemon.js.extra"),
+                TlsDecryptionAction::Intercept,
+            ),
+            (
+                "com.example.agent",
+                Some("/Applications/Example.app/Contents/Resources/cli.js"),
+                TlsDecryptionAction::Intercept,
+            ),
+            (
+                "com.example.agent",
+                Some("/Users/test/Applications/Example.app/Contents/Resources/daemon.js"),
+                TlsDecryptionAction::Intercept,
+            ),
+            (
+                "com.example.agent",
                 Some("Contents/Resources/daemon.js"),
-                TlsDecryptionAction::Intercept,
-            ),
-            (
-                "com.example.agent",
-                Some("Contents/Resources/daemon.js.extra"),
-                TlsDecryptionAction::Intercept,
-            ),
-            (
-                "com.example.agent",
-                Some("Contents/Resources/cli.js"),
                 TlsDecryptionAction::Intercept,
             ),
             ("com.example.agent", None, TlsDecryptionAction::Intercept),
@@ -831,8 +839,9 @@ mod tests {
         );
         let mut disabled = policy;
         disabled.rules[0].enabled = false;
-        let source = source_process(Some("Electron"), Some("com.example.agent"))
-            .with_entry_point(Some("Contents/Resources/daemon.js".to_owned()));
+        let source = source_process(Some("Electron"), Some("com.example.agent")).with_entry_point(
+            Some("/Applications/Example.app/Contents/Resources/daemon.js".to_owned()),
+        );
         assert_eq!(
             disabled
                 .decide(TlsDecryptionContext::new(None, Some(&source)))
@@ -843,7 +852,10 @@ mod tests {
 
     #[test]
     fn entry_point_only_selectors_validate_and_round_trip_without_weakening_paths() {
-        for entry in ["Contents/Resources/My Script.js", "/opt/agent/daemon.js"] {
+        for entry in [
+            "/Applications/Example.app/Contents/Resources/My Script.js",
+            "/opt/agent/daemon.js",
+        ] {
             let policy: TlsDecryptionPolicy = serde_json::from_value(serde_json::json!({
                 "rules":[{"id":"entry", "action":"passthrough", "process_entry_points":[entry]}]
             }))
@@ -858,11 +870,15 @@ mod tests {
             "",
             " ",
             "daemon.js",
-            "Contents/../daemon.js",
-            "Contents//daemon.js",
-            "Contents/./daemon.js",
-            "Contents/*.js",
-            "Contents/daemon.js/",
+            "Contents/Resources/daemon.js",
+            "/",
+            "/opt/agent/../daemon.js",
+            "/opt/agent//daemon.js",
+            "/opt/agent/./daemon.js",
+            "/opt/agent/*.js",
+            "/opt/agent/daemon.js/",
+            "/opt/agent/daemon?.js",
+            "/opt/agent\\daemon.js",
             "/tmp/agent\n.js",
         ] {
             let policy: TlsDecryptionPolicy = serde_json::from_value(serde_json::json!({

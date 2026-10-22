@@ -34,6 +34,9 @@ fn real_entry_script_selects_opaque_tls_without_bypassing_sibling_processes() {
     let mut broker = BrokerProcess::spawn_framed_unix(api_addr, &socket_path);
     broker.wait_for_running();
     let token = read_auth_token(&broker.auth_token_file);
+    let fixture_root = broker.runtime_root.join("My Agent.app");
+    let relocated_root = broker.runtime_root.join("Other Installation/My Agent.app");
+    let daemon_entry = fixture_root.join("Contents/Resources/app.asar/main/daemon.js");
     update_mitm_config(
         api_addr,
         &token,
@@ -43,30 +46,38 @@ fn real_entry_script_selects_opaque_tls_without_bypassing_sibling_processes() {
                 "rules":[{
                     "id":"background-entry", "action":"passthrough",
                     "application_ids":["com.example.agent"],
-                    "process_entry_points":["Contents/Resources/app.asar/main/daemon.js"]
+                    "process_entry_points":[daemon_entry]
                 }]
             }
         }),
     );
-    let fixture_root = broker.runtime_root.join("My Agent.app");
-    for (entry, application, bypass) in [
+    for (bundle, entry, application, bypass) in [
         (
+            &fixture_root,
             "Contents/Resources/app.asar/main/daemon.js",
             "com.example.agent",
             true,
         ),
         (
+            &fixture_root,
             "Contents/Resources/app.asar.unpacked/cli/bin/agent",
             "com.example.agent",
             false,
         ),
         (
+            &fixture_root,
             "Contents/Resources/app.asar/main/daemon.js",
             "com.other.agent",
             false,
         ),
+        (
+            &relocated_root,
+            "Contents/Resources/app.asar/main/daemon.js",
+            "com.example.agent",
+            false,
+        ),
     ] {
-        let process = ScriptProcess::spawn(&fixture_root, entry);
+        let process = ScriptProcess::spawn(bundle, entry);
         let flow_id = Uuid::new_v4();
         let succeeded = tls_request(&socket_path, &process, application, flow_id);
         assert_eq!(
@@ -75,7 +86,13 @@ fn real_entry_script_selects_opaque_tls_without_bypassing_sibling_processes() {
             "entry {entry}, app {application}: {}",
             broker.read_log()
         );
-        assert_flow_entry(&broker, &token, &process, entry, bypass);
+        assert_flow_entry(
+            &broker,
+            &token,
+            &process,
+            bundle.join(entry).to_str().unwrap(),
+            bypass,
+        );
     }
     broker.shutdown();
     broker.wait_for_exit();

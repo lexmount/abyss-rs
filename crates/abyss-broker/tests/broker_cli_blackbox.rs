@@ -994,7 +994,7 @@ fn broker_mitm_config_updates_over_rest_without_restart() {
                     "id": "decrypt-openai",
                     "action": "intercept",
                     "process_names": ["codex"],
-                    "process_entry_points": ["Contents/Resources/cli.js", "/opt/agent/cli.js"],
+                    "process_entry_points": ["/Applications/Example.app/Contents/Resources/cli.js", "/opt/agent/cli.js"],
                     "application_ids": ["com.openai.codex"],
                     "destination_hosts": ["api.openai.com"]
                 }
@@ -1037,7 +1037,7 @@ fn broker_mitm_config_updates_over_rest_without_restart() {
         toml::from_str(&fs::read_to_string(broker.runtime_policy_path()).unwrap()).unwrap();
     assert_eq!(
         persisted["mitm"]["tls_decryption"]["rules"][0]["process_entry_points"][0].as_str(),
-        Some("Contents/Resources/cli.js")
+        Some("/Applications/Example.app/Contents/Resources/cli.js")
     );
     assert_eq!(
         persisted["mitm"]["tls_decryption"]["rules"][0]["process_entry_points"][1].as_str(),
@@ -1045,6 +1045,7 @@ fn broker_mitm_config_updates_over_rest_without_restart() {
     );
     for entry in [
         "",
+        "Contents/Resources/cli.js",
         "Contents/../daemon.js",
         "Contents/*.js",
         "/opt/agent/../daemon.js",

@@ -221,8 +221,7 @@ pub struct SourceProcess {
     /// macOS adapters supply the source bundle or signing identifier. Windows
     /// adapters supply the native application identifier.
     pub application_id: Option<String>,
-    /// Normalized runtime entry script, when positively identified by the adapter.
-    /// macOS app entries are bundle-relative; other supported entries are absolute.
+    /// Normalized absolute runtime entry script, when positively identified by the adapter.
     pub entry_point: Option<String>,
     /// Best-effort process working directory captured by the platform adapter.
     pub working_directory: Option<String>,
