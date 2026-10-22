@@ -261,20 +261,28 @@ An empty `destination_hosts` array applies to every TLS destination of that
 matched process, including connections without SNI. This is process-level
 selection; it does not select individual HTTP paths within that process.
 
-The macOS framed ingress resolves Node/Electron script entries from native
-process arguments. Scripts in the executable's own `.app` bundle use a
-bundle-relative path beginning with `Contents/`; standalone Node scripts use
-absolute paths. Installation location therefore does not affect bundled entry
-selectors. Matching is case-sensitive, with no regex, glob, or suffix expansion.
+The macOS framed ingress resolves Node/Electron and Python script entries from
+native process arguments. Node/Electron scripts in the executable's own `.app`
+bundle use a bundle-relative path beginning with `Contents/`; standalone Node
+scripts and Python scripts use absolute paths. Python keeps that representation
+even when the interpreter itself lives in `Python.app`. Installation location
+therefore does not affect bundled Node entry selectors. Matching is case-sensitive,
+with no regex, glob, or suffix expansion.
 Selectors must be normalized paths: empty components, `.`/`..`, backslashes,
 control characters, and wildcard characters are rejected.
 
 Extraction is conservative: only absolute script arguments in recognized
-Node/Electron launch forms are supported. Eval/print modes, renderer options,
-unknown runtime options, external scripts of bundled executables, relative
-scripts, permissions failures, and exited processes leave entry metadata absent.
-Recognized pre-script options are `--`, `--optimize-for-size`, `--no-warnings`,
+Node/Electron or Python launch forms are supported. Eval/print modes, renderer
+options, unknown runtime options, scripts outside a bundled Node/Electron
+executable's app, relative scripts, permissions failures, and exited processes
+leave entry metadata absent.
+Recognized Node pre-script options are `--`, `--optimize-for-size`, `--no-warnings`,
 `--enable-source-maps`, and numeric `--max-semi-space-size=` / `--max-old-space-size=`.
+The Python resolver recognizes `python`, `Python`, and numerically versioned
+names such as `python3.13`. It handles direct script arguments, flag-only options,
+`-W`/`-X` values, `--check-hash-based-pycs`, and `--`. Module mode (`-m`), inline
+code (`-c`), stdin, and unknown options produce no entry path; no import search
+or code execution is used to infer one.
 Arguments following the script and environment variables are not retained in
 flow metadata. Entry points appear as `source_process.entry_point` in support
 diagnostics. This metadata describes a process role, not an executable-integrity
@@ -286,3 +294,13 @@ an old entry point after PID reuse. PID-only lookup does not verify process
 incarnation between flow creation and lookup. Windows and explicit proxy ingress
 currently provide no entry-point metadata and therefore cannot match a populated
 entry-point selector. Existing source/host rules still apply.
+
+Internally, `ProcessContextResolver` delegates entry lookup to one shared
+pipeline. A `Box<dyn ProcessArgumentsProvider>` reads the executable and argv;
+a registry of `Box<dyn RuntimeEntryPointResolver>` implementations recognizes
+the runtime, parses its command and resolves the execution path. Native API
+access stays in `sys/`; runtime-specific parsing stays in
+`process_context/runtime/`. macOS bundle path normalization is separate from
+command syntax. Adding a runtime does not require changing the pipeline or
+platform reader. The macOS reader uses `KERN_PROCARGS2`; Linux and Windows
+currently select an unavailable reader, without discovering connection owners.

@@ -2,11 +2,11 @@
 
 use std::path::PathBuf;
 
-use super::cache::ProcessContextProvider;
+use super::cache::WorkingDirectoryProvider;
 
-pub(super) struct UnavailableProcessContextProvider;
+pub(super) struct UnavailableWorkingDirectoryProvider;
 
-impl ProcessContextProvider for UnavailableProcessContextProvider {
+impl WorkingDirectoryProvider for UnavailableWorkingDirectoryProvider {
     fn lookup(&self, _pid: u32) -> Option<PathBuf> {
         None
     }

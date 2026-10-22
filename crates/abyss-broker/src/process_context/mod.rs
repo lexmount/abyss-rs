@@ -13,16 +13,18 @@
 )]
 
 mod cache;
-#[cfg(target_os = "macos")]
 mod entry_point;
 #[cfg(target_os = "macos")]
 mod macos;
+mod runtime;
 #[cfg(not(target_os = "macos"))]
 mod unavailable;
 
 use std::{path::PathBuf, sync::Arc};
 
+use crate::sys::process_arguments_provider;
 use cache::CachedProcessContextResolver;
+use entry_point::EntryPointResolver;
 
 /// Resolves best-effort metadata for the process that opened a network flow.
 pub trait ProcessContextResolver: Send + Sync {
@@ -43,7 +45,8 @@ pub type SharedProcessContextResolver = Arc<dyn ProcessContextResolver>;
 #[must_use]
 pub fn default_process_context_resolver() -> SharedProcessContextResolver {
     Arc::new(CachedProcessContextResolver::new(
-        macos::MacOsProcessContextProvider,
+        macos::MacOsWorkingDirectoryProvider,
+        EntryPointResolver::new(process_arguments_provider()),
     ))
 }
 
@@ -52,6 +55,7 @@ pub fn default_process_context_resolver() -> SharedProcessContextResolver {
 #[must_use]
 pub fn default_process_context_resolver() -> SharedProcessContextResolver {
     Arc::new(CachedProcessContextResolver::new(
-        unavailable::UnavailableProcessContextProvider,
+        unavailable::UnavailableWorkingDirectoryProvider,
+        EntryPointResolver::new(process_arguments_provider()),
     ))
 }

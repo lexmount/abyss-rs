@@ -1,156 +1,156 @@
-//! Conservative Node/Electron entry-script identification from native argv.
+//! Shared pipeline: read startup arguments, select a runtime, parse and resolve its entry.
 //!
-//! Only a positively identified script is retained. Options, script arguments,
-//! and environment variables never become process metadata or matching inputs.
+//! Platform readers and runtime parsers are injected as trait objects. Full argv
+//! stays transient; only an identified execution path leaves this pipeline.
 
-use std::path::{Component, Path};
+use super::runtime::{RuntimeEntryPointResolver, runtime_resolvers};
+use crate::sys::ProcessArgumentsProvider;
 
-pub(super) struct RuntimeEntryPoint;
-
-impl RuntimeEntryPoint {
-    pub(super) fn resolve(executable: &str, arguments: &[&str]) -> Option<String> {
-        if !matches!(
-            Path::new(executable).file_name()?.to_str()?,
-            "Electron" | "node" | "nodejs"
-        ) {
-            return None;
-        }
-        let mut arguments = arguments.iter().skip(1);
-        let script = loop {
-            let argument = *arguments.next()?;
-            match argument {
-                "--" => break *arguments.next()?,
-                "--optimize-for-size" | "--no-warnings" | "--enable-source-maps" => {}
-                option
-                    if ["--max-semi-space-size=", "--max-old-space-size="]
-                        .iter()
-                        .any(|prefix| {
-                            option.strip_prefix(prefix).is_some_and(|value| {
-                                !value.is_empty() && value.bytes().all(|b| b.is_ascii_digit())
-                            })
-                        }) => {}
-                // Unknown options may consume the next argument or select eval,
-                // print, a renderer, or another execution mode. Do not guess.
-                option if option.starts_with('-') => return None,
-                path => break path,
-            }
-        };
-        let script = normalized_absolute_path(script)?;
-        let executable = normalized_absolute_path(executable)?;
-        let executable_path = Path::new(&executable);
-        let bundle = executable_path
-            .ancestors()
-            .find(|path| path.extension().is_some_and(|ext| ext == "app"));
-        if let Some(bundle) = bundle {
-            // Only the same bundle can produce bundle-relative metadata. An
-            // external script must not masquerade as the app's bundled entry.
-            let relative = Path::new(&script).strip_prefix(bundle).ok()?;
-            if !relative.starts_with("Contents") {
-                return None;
-            }
-            return relative.to_str().map(str::to_owned);
-        }
-        Some(script)
-    }
+pub(super) struct EntryPointResolver {
+    arguments: Box<dyn ProcessArgumentsProvider>,
+    runtimes: Vec<Box<dyn RuntimeEntryPointResolver>>,
 }
 
-fn normalized_absolute_path(value: &str) -> Option<String> {
-    let path = Path::new(value);
-    if !path.is_absolute() || value.chars().any(char::is_control) {
-        return None;
-    }
-    let mut parts = Vec::new();
-    for part in path.components() {
-        match part {
-            Component::RootDir | Component::CurDir => {}
-            Component::Normal(value) => parts.push(value.to_str()?),
-            // Avoid resolving symlinks or a lexical `..` across a bundle boundary.
-            Component::ParentDir | Component::Prefix(_) => return None,
+impl EntryPointResolver {
+    pub(super) fn new(arguments: Box<dyn ProcessArgumentsProvider>) -> Self {
+        Self {
+            arguments,
+            runtimes: runtime_resolvers(),
         }
     }
-    (!parts.is_empty()).then(|| format!("/{}", parts.join("/")))
+
+    pub(super) fn resolve(&self, pid: Option<u32>) -> Option<String> {
+        // Always refresh: a PID can be reused or execute another program.
+        let arguments = self.arguments.read(pid?).ok()?;
+        let runtime = self
+            .runtimes
+            .iter()
+            .find(|runtime| runtime.recognizes(&arguments.executable))?;
+        let target = runtime.parse_command(&arguments)?;
+        runtime.execution_path(&arguments.executable, target)
+    }
 }
 
 #[cfg(test)]
 mod tests {
-    use super::RuntimeEntryPoint;
+    use std::{
+        io,
+        sync::{
+            Arc,
+            atomic::{AtomicUsize, Ordering},
+        },
+    };
 
-    #[test]
-    fn bundled_entries_are_exact_and_independent_of_install_location() {
-        for bundle in [
-            "/Applications/Example.app",
-            "/Users/test/My Apps/Example.app",
-        ] {
-            let exe = format!("{bundle}/Contents/MacOS/Electron");
-            for relative in [
-                "Contents/Resources/app.asar/main/daemon.js",
-                "Contents/Resources/app.asar.unpacked/cli/bin/agent",
-            ] {
-                let script = format!("{bundle}/{relative}");
-                assert_eq!(
-                    RuntimeEntryPoint::resolve(
-                        &exe,
-                        &[
-                            &exe,
-                            "--optimize-for-size",
-                            "--max-semi-space-size=2",
-                            &script,
-                            "--token",
-                            "not-metadata"
-                        ]
-                    ),
-                    Some(relative.to_owned())
-                );
-            }
+    use super::{EntryPointResolver, ProcessArgumentsProvider, RuntimeEntryPointResolver};
+    use crate::sys::ProcessArguments;
+
+    struct ArgumentsFixture {
+        executable: &'static str,
+        argv: Vec<&'static str>,
+        calls: Arc<AtomicUsize>,
+    }
+
+    impl ProcessArgumentsProvider for ArgumentsFixture {
+        fn read(&self, _pid: u32) -> io::Result<ProcessArguments> {
+            self.calls.fetch_add(1, Ordering::Relaxed);
+            Ok(ProcessArguments {
+                executable: self.executable.to_owned(),
+                argv: self.argv.iter().map(|arg| (*arg).to_owned()).collect(),
+            })
         }
     }
 
     #[test]
-    fn does_not_mistake_option_values_or_script_arguments_for_entry_points() {
-        let exe = "/Applications/Example.app/Contents/MacOS/Electron";
-        let script = "/Applications/Example.app/Contents/Resources/daemon.js";
-        for args in [
-            vec![exe],
-            vec![exe, "--type=renderer", script],
-            vec![exe, "-e", script],
-            vec![exe, "--require", script],
-            vec![exe, "--unknown", script],
-            vec![exe, "--max-old-space-size=invalid", script],
-        ] {
-            assert_eq!(RuntimeEntryPoint::resolve(exe, &args), None);
-        }
-        assert_eq!(
-            RuntimeEntryPoint::resolve(exe, &[exe, script, "/another.js"]),
-            Some("Contents/Resources/daemon.js".to_owned())
-        );
-    }
-
-    #[test]
-    fn rejects_relative_external_and_parent_traversal_scripts() {
-        let exe = "/Applications/Example.app/Contents/MacOS/Electron";
-        for script in [
-            "daemon.js",
-            "/tmp/Example.app/Contents/Resources/daemon.js",
-            "/Applications/Example.app.evil/Contents/Resources/daemon.js",
-            "/Applications/Example.app/Contents/../daemon.js",
-            "/Applications/Example.app/daemon.js",
-        ] {
-            assert_eq!(RuntimeEntryPoint::resolve(exe, &[exe, script]), None);
-        }
-    }
-
-    #[test]
-    fn standalone_node_retains_normalized_absolute_entry_only() {
-        assert_eq!(
-            RuntimeEntryPoint::resolve(
+    fn shared_pipeline_selects_runtimes_and_never_uses_business_arguments() {
+        for (executable, argv, expected) in [
+            (
                 "/usr/bin/node",
-                &["node", "--", "/tmp//project/./agent.js", "secret"]
+                vec!["node", "--", "/opt/daemon.js", "secret"],
+                Some("/opt/daemon.js"),
             ),
-            Some("/tmp/project/agent.js".to_owned())
-        );
+            (
+                "/usr/bin/python3",
+                vec!["python3", "-W", "ignore", "/opt/task.py", "secret"],
+                Some("/opt/task.py"),
+            ),
+            (
+                "/usr/bin/python3",
+                vec!["python3", "-m", "package", "/opt/fake.py"],
+                None,
+            ),
+            ("/usr/bin/python3", vec!["python3", "relative.py"], None),
+            (
+                "/usr/bin/node",
+                vec!["node", "--unknown", "/opt/fake.js"],
+                None,
+            ),
+            ("/bin/cat", vec!["node", "/opt/fake.js"], None),
+        ] {
+            let calls = Arc::new(AtomicUsize::new(0));
+            let resolver = EntryPointResolver::new(Box::new(ArgumentsFixture {
+                executable,
+                argv,
+                calls: calls.clone(),
+            }));
+            assert_eq!(resolver.resolve(Some(42)).as_deref(), expected);
+            assert_eq!(calls.load(Ordering::Relaxed), 1);
+        }
+    }
+
+    struct ChangingArguments(Arc<AtomicUsize>);
+
+    impl ProcessArgumentsProvider for ChangingArguments {
+        fn read(&self, _pid: u32) -> io::Result<ProcessArguments> {
+            let entry = match self.0.fetch_add(1, Ordering::Relaxed) {
+                0 => "/opt/daemon.js",
+                1 => "/opt/cli.js",
+                _ => return Err(io::Error::new(io::ErrorKind::NotFound, "process exited")),
+            };
+            Ok(ProcessArguments {
+                executable: "/usr/bin/node".to_owned(),
+                argv: vec!["node".to_owned(), entry.to_owned()],
+            })
+        }
+    }
+
+    #[test]
+    fn missing_pid_is_not_queried_and_reused_pid_does_not_reuse_an_entry() {
+        let calls = Arc::new(AtomicUsize::new(0));
+        let resolver = EntryPointResolver::new(Box::new(ChangingArguments(calls.clone())));
+        assert_eq!(resolver.resolve(None), None);
+        assert_eq!(calls.load(Ordering::Relaxed), 0);
         assert_eq!(
-            RuntimeEntryPoint::resolve("/bin/cat", &["cat", "/tmp/agent.js"]),
-            None
+            resolver.resolve(Some(42)).as_deref(),
+            Some("/opt/daemon.js")
         );
+        assert_eq!(resolver.resolve(Some(42)).as_deref(), Some("/opt/cli.js"));
+        assert_eq!(resolver.resolve(Some(42)), None);
+        assert_eq!(calls.load(Ordering::Relaxed), 3);
+    }
+
+    struct AdditionalRuntime;
+
+    impl RuntimeEntryPointResolver for AdditionalRuntime {
+        fn recognizes(&self, executable: &str) -> bool {
+            executable == "/opt/another-runtime"
+        }
+        fn parse_command<'a>(&self, arguments: &'a ProcessArguments) -> Option<&'a str> {
+            arguments.argv.get(2).map(String::as_str)
+        }
+        fn execution_path(&self, _executable: &str, target: &str) -> Option<String> {
+            Some(format!("/opt/{target}"))
+        }
+    }
+
+    #[test]
+    fn another_runtime_can_be_injected_without_changing_the_pipeline() {
+        let mut resolver = EntryPointResolver::new(Box::new(ArgumentsFixture {
+            executable: "/opt/another-runtime",
+            argv: vec!["runtime", "run", "task"],
+            calls: Arc::new(AtomicUsize::new(0)),
+        }));
+        assert_eq!(resolver.resolve(Some(42)), None);
+        resolver.runtimes.push(Box::new(AdditionalRuntime));
+        assert_eq!(resolver.resolve(Some(42)).as_deref(), Some("/opt/task"));
     }
 }

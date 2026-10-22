@@ -75,38 +75,7 @@ fn real_entry_script_selects_opaque_tls_without_bypassing_sibling_processes() {
             "entry {entry}, app {application}: {}",
             broker.read_log()
         );
-        let deadline = std::time::Instant::now()
-            .checked_add(REST_TIMEOUT)
-            .expect("test deadline should fit Instant");
-        loop {
-            let diagnostics: serde_json::Value = client()
-                .get(url(api_addr, "/v1/support/diagnostics"))
-                .bearer_auth(&token)
-                .send()
-                .unwrap()
-                .json()
-                .unwrap();
-            if let Some(flow) = diagnostics["flow"]["recent_flows"]
-                .as_array()
-                .unwrap()
-                .iter()
-                .find(|flow| flow["source_process"]["pid"] == process.child.id())
-            {
-                assert_eq!(flow["source_process"]["entry_point"], entry);
-                if bypass {
-                    assert_eq!(flow["decision"], "passthrough");
-                } else {
-                    assert_ne!(flow["decision"], "passthrough");
-                }
-                break;
-            }
-            assert!(
-                std::time::Instant::now() < deadline,
-                "flow diagnostics missing: {}",
-                broker.read_log()
-            );
-            thread::sleep(super::POLL_INTERVAL);
-        }
+        assert_flow_entry(&broker, &token, &process, entry, bypass);
     }
     broker.shutdown();
     broker.wait_for_exit();
@@ -117,7 +86,136 @@ struct ScriptProcess {
     executable: PathBuf,
 }
 
+#[test]
+fn python_entry_scripts_share_the_native_argument_and_tls_policy_pipeline() {
+    let api_addr = reserve_api_loopback_addr();
+    let socket_path = std::env::temp_dir().join(format!("python-entry-{}.sock", Uuid::new_v4()));
+    let mut broker = BrokerProcess::spawn_framed_unix(api_addr, &socket_path);
+    broker.wait_for_running();
+    let token = read_auth_token(&broker.auth_token_file);
+    let scripts = broker.runtime_root.join("Python Scripts");
+    let daemon_entry = scripts.join("daemon.py");
+    update_mitm_config(
+        api_addr,
+        &token,
+        &json!({
+            "tls_decryption": {
+                "default_action": "intercept",
+                "rules": [{ "id": "python-background", "action": "passthrough", "process_entry_points": [daemon_entry] }]
+            }
+        }),
+    );
+
+    for (name, bypass) in [("daemon.py", true), ("task.py", false)] {
+        let process = ScriptProcess::spawn_python(&scripts, name);
+        assert_eq!(
+            tls_request(&socket_path, &process, "com.example.python", Uuid::new_v4()),
+            bypass,
+            "Python entry {name}: {}",
+            broker.read_log()
+        );
+        assert_flow_entry(
+            &broker,
+            &token,
+            &process,
+            scripts.join(name).to_str().unwrap(),
+            bypass,
+        );
+    }
+    broker.shutdown();
+    broker.wait_for_exit();
+}
+
+fn assert_flow_entry(
+    broker: &BrokerProcess,
+    token: &str,
+    process: &ScriptProcess,
+    entry: &str,
+    bypass: bool,
+) {
+    let deadline = std::time::Instant::now()
+        .checked_add(REST_TIMEOUT)
+        .expect("test deadline should fit Instant");
+    loop {
+        let diagnostics: serde_json::Value = client()
+            .get(url(broker.api_addr, "/v1/support/diagnostics"))
+            .bearer_auth(token)
+            .send()
+            .unwrap()
+            .json()
+            .unwrap();
+        if let Some(flow) = diagnostics["flow"]["recent_flows"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|flow| flow["source_process"]["pid"] == process.child.id())
+        {
+            assert_eq!(
+                flow["source_process"]["entry_point"], entry,
+                "native process arguments must produce the expected entry metadata"
+            );
+            if bypass {
+                assert_eq!(
+                    flow["decision"], "passthrough",
+                    "the selected entry must bypass MITM"
+                );
+            } else {
+                assert_ne!(
+                    flow["decision"], "passthrough",
+                    "other entries must retain interception"
+                );
+            }
+            break;
+        }
+        assert!(
+            std::time::Instant::now() < deadline,
+            "flow diagnostics missing: {}",
+            broker.read_log()
+        );
+        thread::sleep(super::POLL_INTERVAL);
+    }
+}
+
 impl ScriptProcess {
+    fn spawn_python(root: &Path, name: &str) -> Self {
+        let interpreter = Command::new("python3")
+            .args(["-c", "import sys; print(sys.executable)"])
+            .output()
+            .expect("Python is required by the repository test suite");
+        assert!(
+            interpreter.status.success(),
+            "Python executable lookup failed"
+        );
+        let executable = PathBuf::from(String::from_utf8(interpreter.stdout).unwrap().trim());
+        fs::create_dir_all(root).unwrap();
+        let script = root.join(name);
+        let ready = root.join(format!("{name}.ready"));
+        fs::write(&script, "import pathlib, sys\npathlib.Path(sys.argv[1]).write_text('ready')\nsys.stdin.read()\n").unwrap();
+        let child = Command::new(&executable)
+            .args(["-I", "-B", "-W", "ignore"])
+            .arg(&script)
+            .arg(&ready)
+            .stdin(Stdio::piped())
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .spawn()
+            .unwrap();
+        let mut process = Self { child, executable };
+        let deadline = std::time::Instant::now().checked_add(REST_TIMEOUT).unwrap();
+        while !ready.exists() {
+            assert!(
+                process.child.try_wait().unwrap().is_none(),
+                "Python fixture exited early"
+            );
+            assert!(
+                std::time::Instant::now() < deadline,
+                "Python fixture did not start"
+            );
+            thread::sleep(super::POLL_INTERVAL);
+        }
+        process
+    }
+
     fn spawn(bundle: &Path, entry: &str) -> Self {
         let executable = bundle.join("Contents/MacOS/Electron");
         fs::create_dir_all(executable.parent().unwrap()).unwrap();

@@ -2,11 +2,11 @@
 
 use std::path::PathBuf;
 
-use super::cache::ProcessContextProvider;
+use super::cache::WorkingDirectoryProvider;
 
-pub(super) struct MacOsProcessContextProvider;
+pub(super) struct MacOsWorkingDirectoryProvider;
 
-impl ProcessContextProvider for MacOsProcessContextProvider {
+impl WorkingDirectoryProvider for MacOsWorkingDirectoryProvider {
     fn lookup(&self, pid: u32) -> Option<PathBuf> {
         match crate::sys::process_working_directory(pid) {
             Ok(working_directory) => working_directory,
@@ -19,17 +19,5 @@ impl ProcessContextProvider for MacOsProcessContextProvider {
                 None
             }
         }
-    }
-
-    fn entry_point(&self, pid: u32) -> Option<String> {
-        let arguments = crate::sys::process_arguments(pid).ok()?;
-        super::entry_point::RuntimeEntryPoint::resolve(
-            &arguments.executable,
-            &arguments
-                .argv
-                .iter()
-                .map(String::as_str)
-                .collect::<Vec<_>>(),
-        )
     }
 }
