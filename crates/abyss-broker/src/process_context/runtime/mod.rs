@@ -4,7 +4,6 @@
 //! are emitted; module names, inline code and arbitrary arguments are not paths.
 
 mod node;
-mod packaged_electron;
 mod path;
 
 use super::process_arguments::ProcessArguments;
@@ -20,8 +19,5 @@ pub(super) trait RuntimeEntryPointResolver: Send + Sync {
 }
 
 pub(super) fn runtime_resolvers() -> Vec<Box<dyn RuntimeEntryPointResolver>> {
-    vec![
-        Box::new(node::NodeEntryPoint),
-        Box::new(packaged_electron::PackagedElectronEntryPoint),
-    ]
+    vec![Box::new(node::NodeEntryPoint)]
 }

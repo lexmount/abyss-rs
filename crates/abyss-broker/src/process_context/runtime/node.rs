@@ -1,4 +1,4 @@
-//! Node/Electron command syntax for direct script launches; no application-specific rules.
+//! Node/Electron runtime identities and command syntax for direct script launches.
 
 use super::{RuntimeEntryPointResolver, path::ScriptPath};
 use crate::process_context::process_arguments::ProcessArguments;
@@ -7,10 +7,17 @@ pub(super) struct NodeEntryPoint;
 
 impl RuntimeEntryPointResolver for NodeEntryPoint {
     fn recognizes(&self, executable: &str) -> bool {
-        matches!(
-            executable.rsplit(['/', '\\']).next(),
-            Some("Electron" | "electron" | "electron.exe" | "node" | "nodejs" | "node.exe")
-        )
+        executable.rsplit(['/', '\\']).next().is_some_and(|name| {
+            // WorkBuddy ships a renamed Electron executable on Windows. Its daemon
+            // and CLI run scripts in Node mode, so these explicit executable aliases
+            // use the same parser. Windows aliases accept ASCII case differences.
+            matches!(
+                name,
+                "Electron" | "electron" | "electron.exe" | "node" | "nodejs" | "node.exe"
+            ) || ["WorkBuddy.exe", "WorkBuddyAI.exe"]
+                .iter()
+                .any(|known| name.eq_ignore_ascii_case(known))
+        })
     }
 
     fn parse_command<'a>(&self, arguments: &'a ProcessArguments) -> Option<&'a str> {
@@ -56,6 +63,69 @@ mod tests {
         }
         for executable in ["/bin/cat", "/usr/bin/python3", "/usr/bin/node-helper"] {
             assert!(!NodeEntryPoint.recognizes(executable));
+        }
+    }
+
+    #[test]
+    fn workbuddy_identity_is_exact_and_accepts_windows_casing() {
+        for name in [
+            r"C:\WorkBuddy\WorkBuddyAI.exe",
+            r"C:\Apps\workbuddyai.exe",
+            "WORKBUDDY.EXE",
+        ] {
+            assert!(NodeEntryPoint.recognizes(name));
+        }
+        for name in [
+            "Unknown.exe",
+            "OtherWorkBuddyAI.exe",
+            "WorkBuddyAI.exe.bak",
+            r"C:\WorkBuddyAI.exe\other.exe",
+        ] {
+            assert!(!NodeEntryPoint.recognizes(name));
+        }
+    }
+
+    #[test]
+    fn workbuddy_daemon_and_extensionless_cli_share_direct_script_parsing() {
+        for (argv, expected) in [
+            (
+                vec![
+                    "WorkBuddyAI.exe",
+                    r"C:\WorkBuddy\main\daemon-app-server-entry.js",
+                ],
+                Some(r"C:\WorkBuddy\main\daemon-app-server-entry.js"),
+            ),
+            (
+                vec![
+                    "WorkBuddyAI.exe",
+                    "--optimize-for-size",
+                    "--max-semi-space-size=2",
+                    r"C:\WorkBuddy\cli\bin\codebuddy",
+                    "--prewarm",
+                    "private-value",
+                ],
+                Some(r"C:\WorkBuddy\cli\bin\codebuddy"),
+            ),
+            (
+                vec![
+                    "WorkBuddyAI.exe",
+                    "--type=renderer",
+                    r"C:\WorkBuddy\main.js",
+                ],
+                None,
+            ),
+            (
+                vec!["WorkBuddyAI.exe", "--type=utility", r"C:\WorkBuddy\main.js"],
+                None,
+            ),
+            (vec!["WorkBuddyAI.exe", "-e", r"C:\WorkBuddy\main.js"], None),
+            (vec!["WorkBuddyAI.exe"], None),
+        ] {
+            let arguments = ProcessArguments {
+                executable: r"C:\WorkBuddy\WorkBuddyAI.exe".to_owned(),
+                argv: argv.into_iter().map(str::to_owned).collect(),
+            };
+            assert_eq!(NodeEntryPoint.parse_command(&arguments), expected);
         }
     }
 
