@@ -1,32 +1,28 @@
 //! Platform-neutral process-context resolution and caching boundaries.
 //!
 //! Ingress adapters depend on the `ProcessContextResolver` trait. Conditional
-//! compilation selects a native provider. Working directories are cached;
-//! PID-based entry points are refreshed for each connection.
+//! compilation selects a native provider, while the shared cache keeps
+//! per-process lookups out of the flow hot path.
 
 #![cfg_attr(
-    not(any(target_os = "macos", target_os = "linux")),
+    not(target_os = "macos"),
     expect(
         dead_code,
-        reason = "process context is currently populated only on macOS and Linux"
+        reason = "process context is currently populated only by the macOS platform ingress"
     )
 )]
 
 mod cache;
-#[cfg(any(target_os = "macos", target_os = "linux"))]
+#[cfg(target_os = "macos")]
 mod entry_point;
-#[cfg(target_os = "linux")]
-mod linux;
 #[cfg(target_os = "macos")]
 mod macos;
-#[cfg(not(any(target_os = "macos", target_os = "linux")))]
+#[cfg(not(target_os = "macos"))]
 mod unavailable;
 
 use std::{path::PathBuf, sync::Arc};
 
 use cache::CachedProcessContextResolver;
-#[cfg(target_os = "linux")]
-pub use linux::local_source_process;
 
 /// Resolves best-effort metadata for the process that opened a network flow.
 pub trait ProcessContextResolver: Send + Sync {
@@ -52,19 +48,10 @@ pub fn default_process_context_resolver() -> SharedProcessContextResolver {
 }
 
 /// Builds a cached resolver that reports unavailable metadata on other targets.
-#[cfg(not(any(target_os = "macos", target_os = "linux")))]
+#[cfg(not(target_os = "macos"))]
 #[must_use]
 pub fn default_process_context_resolver() -> SharedProcessContextResolver {
     Arc::new(CachedProcessContextResolver::new(
         unavailable::UnavailableProcessContextProvider,
-    ))
-}
-
-/// Builds the native Linux resolver for local explicit-proxy connections.
-#[cfg(target_os = "linux")]
-#[must_use]
-pub fn default_process_context_resolver() -> SharedProcessContextResolver {
-    Arc::new(CachedProcessContextResolver::new(
-        linux::LinuxProcessContextProvider,
     ))
 }

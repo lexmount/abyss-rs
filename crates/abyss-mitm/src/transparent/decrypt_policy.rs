@@ -767,7 +767,7 @@ mod tests {
             "default_action": "intercept",
             "rules": [{"id":"daemon", "action":"passthrough",
                 "application_ids":["com.example.agent"],
-                "process_entry_points":["Contents/Resources/daemon.js", "Contents/Resources/service.js"]}]
+                "process_entry_points":["Contents/Resources/daemon.js", "Contents/Resources/service.js", "/opt/agent/daemon.js"]}]
         })).unwrap();
         policy.validate().unwrap();
         for (application, entry, expected) in [
@@ -780,6 +780,21 @@ mod tests {
                 "com.example.agent",
                 Some("Contents/Resources/service.js"),
                 TlsDecryptionAction::Passthrough,
+            ),
+            (
+                "com.example.agent",
+                Some("/opt/agent/daemon.js"),
+                TlsDecryptionAction::Passthrough,
+            ),
+            (
+                "com.example.agent",
+                Some("/opt/agent/daemon.js.extra"),
+                TlsDecryptionAction::Intercept,
+            ),
+            (
+                "com.example.agent",
+                Some("/opt/agent/Daemon.js"),
+                TlsDecryptionAction::Intercept,
             ),
             (
                 "com.other.agent",

@@ -950,7 +950,6 @@ fn lifecycle_lock_open_options(create: bool) -> fs::OpenOptions {
     options
 }
 
-#[cfg(any(target_os = "macos", target_os = "windows"))]
 #[test]
 fn broker_mitm_config_updates_over_rest_without_restart() {
     let api_addr = reserve_api_loopback_addr();
@@ -995,7 +994,7 @@ fn broker_mitm_config_updates_over_rest_without_restart() {
                     "id": "decrypt-openai",
                     "action": "intercept",
                     "process_names": ["codex"],
-                    "process_entry_points": ["Contents/Resources/cli.js"],
+                    "process_entry_points": ["Contents/Resources/cli.js", "/opt/agent/cli.js"],
                     "application_ids": ["com.openai.codex"],
                     "destination_hosts": ["api.openai.com"]
                 }
@@ -1022,9 +1021,13 @@ fn broker_mitm_config_updates_over_rest_without_restart() {
 
     assert_eq!(
         updated["tls_decryption"]["rules"][0]["process_entry_points"],
-        json!(["Contents/Resources/cli.js"])
+        requested["tls_decryption"]["rules"][0]["process_entry_points"]
     );
     let read_back = request_mitm_config(api_addr, &token);
+    assert_eq!(
+        read_back, updated,
+        "GET should retain entry-point selectors"
+    );
     assert_eq!(
         read_back["tls_decryption"]["rules"][0]["id"], "decrypt-openai",
         "GET should read the current runtime MITM config"
@@ -1036,7 +1039,17 @@ fn broker_mitm_config_updates_over_rest_without_restart() {
         persisted["mitm"]["tls_decryption"]["rules"][0]["process_entry_points"][0].as_str(),
         Some("Contents/Resources/cli.js")
     );
-    for entry in ["", "Contents/../daemon.js", "Contents/*.js"] {
+    assert_eq!(
+        persisted["mitm"]["tls_decryption"]["rules"][0]["process_entry_points"][1].as_str(),
+        Some("/opt/agent/cli.js")
+    );
+    for entry in [
+        "",
+        "Contents/../daemon.js",
+        "Contents/*.js",
+        "/opt/agent/../daemon.js",
+        "/opt/agent/*.js",
+    ] {
         let mut invalid_entry = requested.clone();
         invalid_entry["tls_decryption"]["rules"][0]["process_entry_points"] = json!([entry]);
         let response = client()
@@ -1047,6 +1060,9 @@ fn broker_mitm_config_updates_over_rest_without_restart() {
             .unwrap();
         assert_eq!(response.status().as_u16(), 400);
         assert_eq!(request_mitm_config(api_addr, &token), read_back);
+        let after_invalid: toml::Value =
+            toml::from_str(&fs::read_to_string(broker.runtime_policy_path()).unwrap()).unwrap();
+        assert_eq!(after_invalid, persisted, "invalid entries must not persist");
     }
 
     let invalid = json!({
@@ -1239,7 +1255,6 @@ fn harness_usage_hooks_update_request() -> Value {
     })
 }
 
-#[cfg(any(target_os = "macos", target_os = "windows"))]
 fn assert_runtime_mitm_policy_persisted(broker: &BrokerProcess, application_id: &str) {
     let persisted = toml::from_str::<toml::Value>(
         &fs::read_to_string(broker.runtime_policy_path())
@@ -1318,7 +1333,6 @@ fn shutdown_broker(api_addr: SocketAddr, auth_token_file: &Path) -> ProxyStatus 
     parse_status_response(response)
 }
 
-#[cfg(any(target_os = "macos", target_os = "windows"))]
 fn request_mitm_config(api_addr: SocketAddr, token: &str) -> serde_json::Value {
     let response = client()
         .get(url(api_addr, "/v1/mitm/config"))
@@ -1465,10 +1479,6 @@ mod compatible_providers;
 #[path = "scenarios/process_entry_points.rs"]
 mod process_entry_points;
 
-#[cfg(target_os = "linux")]
-#[path = "scenarios/linux_entry_points.rs"]
-mod linux_entry_points;
-
 #[cfg(target_os = "macos")]
 #[path = "scenarios/workbuddy.rs"]
 mod workbuddy;
@@ -1484,7 +1494,6 @@ struct BrokerProcess {
 }
 
 impl BrokerProcess {
-    #[cfg(any(target_os = "macos", target_os = "windows"))]
     fn runtime_policy_path(&self) -> PathBuf {
         self.runtime_root.join("runtime-policy.toml")
     }
@@ -1661,8 +1670,11 @@ impl BrokerProcess {
         }
     }
 
-    #[cfg(any(target_os = "macos", target_os = "windows"))]
     fn spawn_platform_default(api_addr: SocketAddr) -> Self {
+        #[cfg(target_os = "linux")]
+        {
+            Self::spawn_explicit(api_addr, loopback_ephemeral_addr())
+        }
         #[cfg(target_os = "macos")]
         {
             let socket_path = std::env::temp_dir().join(format!(
