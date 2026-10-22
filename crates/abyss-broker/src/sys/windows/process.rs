@@ -10,26 +10,44 @@ use std::{
     io,
     mem::{MaybeUninit, size_of},
     os::windows::io::{AsRawHandle as _, FromRawHandle as _, OwnedHandle},
+    sync::LazyLock,
 };
 
+use dlopen::wrapper::{Container, WrapperApi};
+use dlopen_derive::WrapperApi;
 use windows::{
     Win32::{
         Foundation::{HANDLE, NTSTATUS, UNICODE_STRING},
-        System::{
-            LibraryLoader::{GetModuleHandleW, GetProcAddress},
-            Threading::{
-                OpenProcess, PROCESS_NAME_FORMAT, PROCESS_QUERY_LIMITED_INFORMATION,
-                QueryFullProcessImageNameW,
-            },
+        System::Threading::{
+            OpenProcess, PROCESS_NAME_FORMAT, PROCESS_QUERY_LIMITED_INFORMATION,
+            QueryFullProcessImageNameW,
         },
     },
-    core::{PWSTR, s, w},
+    core::PWSTR,
 };
 
 // ProcessCommandLineInformation returns a local UNICODE_STRING followed by its
 // UTF-16 contents. Resolve the native API at runtime and fail closed if absent.
 const PROCESS_COMMAND_LINE_INFORMATION: u32 = 60;
-type QueryProcess = unsafe extern "system" fn(HANDLE, u32, *mut c_void, u32, *mut u32) -> NTSTATUS;
+
+#[derive(WrapperApi)]
+struct ProcessApi {
+    #[dlopen_name = "NtQueryInformationProcess"]
+    query_information: unsafe extern "system" fn(
+        process: HANDLE,
+        information_class: u32,
+        information: *mut c_void,
+        information_length: u32,
+        return_length: *mut u32,
+    ) -> NTSTATUS,
+}
+
+// Keep the library and its typed API together for all process queries.
+static PROCESS_API: LazyLock<Result<Container<ProcessApi>, dlopen::Error>> = LazyLock::new(|| {
+    // SAFETY: ntdll is the Windows system library, and ProcessApi declares the
+    // exported function's system ABI. Container keeps the library loaded.
+    unsafe { Container::load("ntdll.dll") }
+});
 
 const COMMAND_BUFFER_CAPACITY: usize = 0x0002_0000;
 
@@ -154,13 +172,15 @@ impl NativeProcess {
     }
 
     pub(crate) fn command_line(&self) -> io::Result<Vec<u16>> {
-        let query = Self::query_function()?;
+        let api = PROCESS_API
+            .as_ref()
+            .map_err(|error| io::Error::new(io::ErrorKind::Unsupported, error.to_string()))?;
         let mut buffer = CommandBuffer::maybeuninit();
         let mut returned = 0_u32;
         // SAFETY: The ABI matches NtQueryInformationProcess. The handle remains
         // owned and the aligned buffer has the advertised writable capacity.
         let status = unsafe {
-            query(
+            api.query_information(
                 HANDLE(self.0.as_raw_handle()),
                 PROCESS_COMMAND_LINE_INFORMATION,
                 buffer.as_raw_mut(),
@@ -176,21 +196,6 @@ impl NativeProcess {
         // SAFETY: The successful query initialized the header and its command-line
         // contents in buffer's stable allocation. assume_init checks their bounds.
         unsafe { buffer.assume_init(returned) }
-    }
-
-    fn query_function() -> io::Result<QueryProcess> {
-        // SAFETY: ntdll is a process-lifetime module; the name is NUL-terminated.
-        let module = unsafe { GetModuleHandleW(w!("ntdll.dll")) }.map_err(io::Error::other)?;
-        // SAFETY: The module remains loaded and the export name is NUL-terminated.
-        let function = unsafe { GetProcAddress(module, s!("NtQueryInformationProcess")) }
-            .ok_or_else(|| {
-                io::Error::new(io::ErrorKind::Unsupported, "process query API unavailable")
-            })?;
-        // SAFETY: This export has the documented NtQueryInformationProcess ABI;
-        // both values are system-ABI function pointers of the same size.
-        Ok(unsafe {
-            std::mem::transmute::<unsafe extern "system" fn() -> isize, QueryProcess>(function)
-        })
     }
 }
 
