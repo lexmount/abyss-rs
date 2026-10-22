@@ -4,6 +4,19 @@ on:
   pull_request:
     branches: [main]
     types: [opened, synchronize, reopened, labeled, unlabeled]
+    # Broker and its transitive workspace dependencies.
+    # Keep these filters aligned across the four harness entry workflows.
+    paths:
+      - 'crates/abyss-broker/**'
+      - 'crates/abyss-agent-hook/**'
+      - 'crates/abyss-mitm/**'
+      - 'crates/abyss-plugin-protocol/**'
+      - 'crates/abyss-storage/**'
+      - 'Cargo.toml'
+      - 'Cargo.lock'
+      - '.cargo/**'
+      - 'rust-toolchain'
+      - 'rust-toolchain.toml'
   workflow_dispatch:
     inputs:
       provider:
