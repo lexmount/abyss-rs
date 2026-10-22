@@ -40,8 +40,7 @@ impl Arguments {
     ///
     /// # Errors
     ///
-    /// Returns an error for empty or NUL-containing input, a failed native call,
-    /// or an argument count outside the supported range of 1 through 4096.
+    /// Returns an error for empty or NUL-containing input or a failed native call.
     pub fn from_utf16(command: &[u16]) -> io::Result<Self> {
         // An empty command would make the API return this broker's executable.
         if command.is_empty() || command.contains(&0) {
@@ -56,17 +55,15 @@ impl Arguments {
         // SAFETY: The command is NUL-terminated and count is a writable integer.
         let pointer = unsafe { CommandLineToArgvW(PCWSTR(terminated.as_ptr()), &raw mut count) };
         let pointer = NonNull::new(pointer).ok_or_else(io::Error::last_os_error)?;
-        // Take ownership before validating the count so an error still frees the
-        // allocation. A zero-length view needs no access to the returned elements.
-        let mut arguments = Self {
-            inner: NonNull::slice_from_raw_parts(pointer, 0),
-        };
-        let count = usize::try_from(count)
-            .ok()
-            .filter(|count| (1..=4096).contains(count))
-            .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidData, "invalid argument count"))?;
-        arguments.inner = NonNull::slice_from_raw_parts(pointer, count);
-        Ok(arguments)
+        #[expect(
+            clippy::as_conversions,
+            clippy::cast_sign_loss,
+            reason = "A successful CommandLineToArgvW call returns a nonnegative array length."
+        )]
+        let count = count as usize;
+        Ok(Self {
+            inner: NonNull::slice_from_raw_parts(pointer, count),
+        })
     }
 
     /// Borrows argument code units without their terminal NULs or Unicode decoding.
@@ -126,15 +123,13 @@ mod tests {
     }
 
     #[test]
-    fn constructor_rejects_invalid_input_and_enforces_the_argument_limit() {
+    fn constructor_rejects_invalid_input_and_accepts_large_argument_lists() {
         assert!(Arguments::from_utf16(&[]).is_err());
         assert!(Arguments::from_utf16(&[65, 0, 66]).is_err());
-        let command = "a ".repeat(4096).encode_utf16().collect::<Vec<_>>();
+        let command = "a ".repeat(4097).encode_utf16().collect::<Vec<_>>();
         assert_eq!(
             Arguments::from_utf16(&command).unwrap().iter().count(),
-            4096
+            4097
         );
-        let command = "a ".repeat(4097).encode_utf16().collect::<Vec<_>>();
-        assert!(Arguments::from_utf16(&command).is_err());
     }
 }
