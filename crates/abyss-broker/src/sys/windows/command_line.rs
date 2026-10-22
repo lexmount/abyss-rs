@@ -129,4 +129,28 @@ mod tests {
         let command = "a ".repeat(4097).encode_utf16().collect::<Vec<_>>();
         assert_eq!(Arguments::from_utf16(command).unwrap().iter().count(), 4097);
     }
+
+    #[test]
+    fn input_capacity_does_not_change_parsing_or_native_storage_lifetime() {
+        let command = r#"node "C:\项目 路径\cli" """#
+            .encode_utf16()
+            .collect::<Vec<_>>()
+            .into_boxed_slice()
+            .into_vec();
+        assert_eq!(command.len(), command.capacity());
+        let mut spare = Vec::with_capacity(command.len() + 1);
+        spare.extend_from_slice(&command);
+        assert!(spare.len() < spare.capacity());
+
+        for input in [command, spare] {
+            // The constructor consumes and drops the input; moving the native
+            // owner must still leave every argument available for borrowing.
+            let arguments = std::hint::black_box(Arguments::from_utf16(input).unwrap());
+            let argv = arguments
+                .iter()
+                .map(|argument| String::from_utf16(argument).unwrap())
+                .collect::<Vec<_>>();
+            assert_eq!(argv, ["node", r"C:\项目 路径\cli", ""]);
+        }
+    }
 }

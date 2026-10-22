@@ -195,7 +195,7 @@ impl NativeProcess {
 
 #[cfg(test)]
 mod tests {
-    use super::{COMMAND_BUFFER_CAPACITY, CommandBuffer, UNICODE_STRING, size_of};
+    use super::{COMMAND_BUFFER_CAPACITY, CommandBuffer, NativeProcess, UNICODE_STRING, size_of};
     use windows::core::PWSTR;
 
     fn fixture(length: u16, maximum: u16, offset: usize) -> CommandBuffer {
@@ -271,5 +271,61 @@ mod tests {
         // the owner preserves the allocation and the embedded string pointer.
         let text = unsafe { moved.assume_init(u32::try_from(offset + 4).unwrap()) }.unwrap();
         assert_eq!(text, [65, 66]);
+    }
+
+    #[test]
+    fn copies_text_at_allocation_boundaries_and_maximum_utf16_length() {
+        for (offset, length) in [
+            (size_of::<UNICODE_STRING>(), 2_u16),
+            (COMMAND_BUFFER_CAPACITY - 2, 2),
+            (size_of::<UNICODE_STRING>(), u16::MAX - 1),
+        ] {
+            let text = vec![0xd800_u16; usize::from(length).div_ceil(size_of::<u16>())];
+            let mut buffer = fixture(length, length, offset);
+            // SAFETY: These fixtures place the entire text in an aligned range
+            // within the allocation. No terminator or unused capacity is read.
+            unsafe {
+                std::ptr::copy_nonoverlapping(
+                    text.as_ptr(),
+                    buffer.as_raw_mut().cast::<u16>().wrapping_byte_add(offset),
+                    text.len(),
+                );
+            }
+            let returned = u32::try_from(offset + usize::from(length)).unwrap();
+            // SAFETY: Both the header and its complete reported text are initialized.
+            assert_eq!(unsafe { buffer.assume_init(returned) }.unwrap(), text);
+        }
+    }
+
+    #[test]
+    fn native_queries_survive_repeated_concurrent_library_and_handle_drops() {
+        let pid = std::process::id();
+        let (expected_image, expected_command) = {
+            let process = NativeProcess::open(pid).unwrap();
+            (
+                process.executable().unwrap(),
+                process.command_line().unwrap(),
+            )
+        };
+
+        std::thread::scope(|scope| {
+            for _ in 0_u32..8 {
+                scope.spawn(|| {
+                    for _ in 0_u32..64 {
+                        let (image, command) = {
+                            let process = NativeProcess::open(pid).unwrap();
+                            (
+                                process.executable().unwrap(),
+                                process.command_line().unwrap(),
+                            )
+                        };
+                        // Neither result borrows the process handle, query buffer,
+                        // or the local dlopen container, all of which are dropped.
+                        assert_eq!(image, expected_image);
+                        assert_eq!(command, expected_command);
+                    }
+                });
+            }
+        });
     }
 }
