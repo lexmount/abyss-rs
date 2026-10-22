@@ -68,17 +68,7 @@ mod tests {
                 vec!["node", "--", "/opt/daemon.js", "secret"],
                 Some("/opt/daemon.js"),
             ),
-            (
-                "/usr/bin/python3",
-                vec!["python3", "-W", "ignore", "/opt/task.py", "secret"],
-                Some("/opt/task.py"),
-            ),
-            (
-                "/usr/bin/python3",
-                vec!["python3", "-m", "package", "/opt/fake.py"],
-                None,
-            ),
-            ("/usr/bin/python3", vec!["python3", "relative.py"], None),
+            ("/usr/bin/python3", vec!["python3", "/opt/task.py"], None),
             (
                 "/usr/bin/node",
                 vec!["node", "--unknown", "/opt/fake.js"],

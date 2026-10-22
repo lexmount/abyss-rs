@@ -5,7 +5,6 @@
 
 mod node;
 mod path;
-mod python;
 
 use crate::sys::ProcessArguments;
 
@@ -20,8 +19,5 @@ pub(super) trait RuntimeEntryPointResolver: Send + Sync {
 }
 
 pub(super) fn runtime_resolvers() -> Vec<Box<dyn RuntimeEntryPointResolver>> {
-    vec![
-        Box::new(node::NodeEntryPoint),
-        Box::new(python::PythonEntryPoint),
-    ]
+    vec![Box::new(node::NodeEntryPoint)]
 }

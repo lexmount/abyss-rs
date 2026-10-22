@@ -20,7 +20,7 @@ impl ScriptPath {
         }
     }
 
-    pub(super) fn absolute(value: &str) -> Option<String> {
+    fn absolute(value: &str) -> Option<String> {
         // Current policy paths are normalized POSIX paths or Contents/... paths.
         // Keep this lexical representation independent of the host's Path parser.
         if !value.starts_with('/')
