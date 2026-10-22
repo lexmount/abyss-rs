@@ -264,10 +264,12 @@ selection; it does not select individual HTTP paths within that process.
 The macOS framed ingress resolves Node/Electron script entries from native
 process arguments and retains the full absolute script path, including any `.app`
 directory. If the application moves, update the configured path accordingly.
-Matching is case-sensitive, with no regex, glob, or suffix expansion. Selectors
-must be normalized absolute POSIX paths: relative paths (including `Contents/...`),
-empty components, `.`/`..`, backslashes, control characters, and wildcard characters
-are rejected. Windows drive-letter and UNC paths are not currently supported.
+Selectors must be absolute paths according to the broker's operating system.
+Validation and matching use Rust's `std::path`: Unix uses rooted paths, while
+Windows also requires a drive or UNC prefix. Paths are compared by their components,
+so repeated separators and `.` are normalized. No filesystem access, symlink
+resolution, or `..` reduction is performed. Names remain case-sensitive, with no
+regex, glob, or suffix expansion; characters such as `*` and `?` are literal.
 
 Extraction is conservative: only absolute script arguments in recognized
 Node/Electron launch forms are supported. Eval/print modes, renderer options,

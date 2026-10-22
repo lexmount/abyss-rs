@@ -4,6 +4,8 @@
 //! the client `ClientHello` exposes SNI, but before Abyss generates a leaf
 //! certificate or accepts client TLS.
 
+use std::path::Path;
+
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
 
@@ -133,7 +135,7 @@ pub enum TlsDecryptionPolicyError {
         /// Rule id that failed validation.
         rule_id: String,
     },
-    /// An entry point was empty or was not a normalized exact path.
+    /// An entry point was not an absolute path on this platform.
     #[error("TLS decryption rule `{rule_id}` contains invalid process entry point `{entry_point}`")]
     InvalidProcessEntryPoint {
         /// Rule containing the invalid selector.
@@ -230,7 +232,7 @@ impl TlsDecryptionPolicy {
                 });
             }
             for entry_point in &rule.process_entry_points {
-                if !valid_entry_point(entry_point) {
+                if !Path::new(entry_point).is_absolute() {
                     return Err(TlsDecryptionPolicyError::InvalidProcessEntryPoint {
                         rule_id: rule.id.clone(),
                         entry_point: entry_point.clone(),
@@ -306,21 +308,11 @@ impl TlsDecryptionRule {
         ) && selector_matches(
             &self.application_ids,
             source_process.and_then(|source| source.application_id.as_deref()),
-        ) && selector_matches(
+        ) && entry_point_selector_matches(
             &self.process_entry_points,
             source_process.and_then(|source| source.entry_point.as_deref()),
         ) && destination_selector_matches(&self.destination_hosts, destination_domain)
     }
-}
-
-fn valid_entry_point(value: &str) -> bool {
-    let Some(path) = value.strip_prefix('/') else {
-        return false;
-    };
-    !value
-        .chars()
-        .any(|c| c.is_control() || matches!(c, '*' | '?' | '\\'))
-        && path.split('/').all(|part| !matches!(part, "" | "." | ".."))
 }
 
 impl TlsDecryptionDecision {
@@ -401,6 +393,15 @@ fn selector_matches(selectors: &[String], candidate: Option<&str>) -> bool {
             selectors
                 .iter()
                 .any(|value| selector_value_matches(value, candidate))
+        })
+}
+
+fn entry_point_selector_matches(selectors: &[String], candidate: Option<&str>) -> bool {
+    selectors.is_empty()
+        || candidate.is_some_and(|candidate| {
+            selectors
+                .iter()
+                .any(|selector| Path::new(selector) == Path::new(candidate))
         })
 }
 
@@ -759,70 +760,83 @@ mod tests {
             .with_application_id(application_id.map(str::to_owned))
     }
 
+    fn entry_path(relative: &str) -> String {
+        std::env::temp_dir()
+            .join(relative)
+            .to_str()
+            .unwrap()
+            .to_owned()
+    }
+
     #[test]
     fn entry_point_rules_are_exact_ordered_and_require_all_dimensions() {
         let policy: TlsDecryptionPolicy = serde_json::from_value(serde_json::json!({
             "default_action": "intercept",
             "rules": [{"id":"daemon", "action":"passthrough",
                 "application_ids":["com.example.agent"],
-                "process_entry_points":["/Applications/Example.app/Contents/Resources/daemon.js", "/Applications/Example.app/Contents/Resources/service.js", "/opt/agent/daemon.js"]}]
-        })).unwrap();
+                "process_entry_points":[
+                    entry_path("Example.app/Contents/Resources/daemon.js"),
+                    entry_path("Example.app/Contents/Resources/service.js"),
+                    entry_path("standalone/daemon.js")
+                ]}]
+        }))
+        .unwrap();
         policy.validate().unwrap();
         for (application, entry, expected) in [
             (
                 "com.example.agent",
-                Some("/Applications/Example.app/Contents/Resources/daemon.js"),
+                Some("Example.app/Contents/Resources/daemon.js"),
                 TlsDecryptionAction::Passthrough,
             ),
             (
                 "com.example.agent",
-                Some("/Applications/Example.app/Contents/Resources/service.js"),
+                Some("Example.app/Contents/Resources/service.js"),
                 TlsDecryptionAction::Passthrough,
             ),
             (
                 "com.example.agent",
-                Some("/opt/agent/daemon.js"),
+                Some("standalone/daemon.js"),
                 TlsDecryptionAction::Passthrough,
             ),
             (
                 "com.example.agent",
-                Some("/opt/agent/daemon.js.extra"),
+                Some("standalone//./daemon.js"),
+                TlsDecryptionAction::Passthrough,
+            ),
+            (
+                "com.example.agent",
+                Some("standalone/daemon.js.extra"),
                 TlsDecryptionAction::Intercept,
             ),
             (
                 "com.example.agent",
-                Some("/opt/agent/Daemon.js"),
+                Some("standalone/Daemon.js"),
                 TlsDecryptionAction::Intercept,
             ),
             (
                 "com.other.agent",
-                Some("/Applications/Example.app/Contents/Resources/daemon.js"),
+                Some("Example.app/Contents/Resources/daemon.js"),
                 TlsDecryptionAction::Intercept,
             ),
             (
                 "com.example.agent",
-                Some("/Applications/Example.app/Contents/Resources/daemon.js.extra"),
+                Some("Example.app/Contents/Resources/cli.js"),
                 TlsDecryptionAction::Intercept,
             ),
             (
                 "com.example.agent",
-                Some("/Applications/Example.app/Contents/Resources/cli.js"),
+                Some("Other Installation/Example.app/Contents/Resources/daemon.js"),
                 TlsDecryptionAction::Intercept,
             ),
             (
                 "com.example.agent",
-                Some("/Users/test/Applications/Example.app/Contents/Resources/daemon.js"),
-                TlsDecryptionAction::Intercept,
-            ),
-            (
-                "com.example.agent",
-                Some("Contents/Resources/daemon.js"),
+                Some("standalone/../standalone/daemon.js"),
                 TlsDecryptionAction::Intercept,
             ),
             ("com.example.agent", None, TlsDecryptionAction::Intercept),
         ] {
             let source = source_process(Some("Electron"), Some(application))
-                .with_entry_point(entry.map(str::to_owned));
+                .with_entry_point(entry.map(entry_path));
             assert_eq!(
                 policy
                     .decide(TlsDecryptionContext::new(
@@ -839,9 +853,8 @@ mod tests {
         );
         let mut disabled = policy;
         disabled.rules[0].enabled = false;
-        let source = source_process(Some("Electron"), Some("com.example.agent")).with_entry_point(
-            Some("/Applications/Example.app/Contents/Resources/daemon.js".to_owned()),
-        );
+        let source = source_process(Some("Electron"), Some("com.example.agent"))
+            .with_entry_point(Some(entry_path("Example.app/Contents/Resources/daemon.js")));
         assert_eq!(
             disabled
                 .decide(TlsDecryptionContext::new(None, Some(&source)))
@@ -851,10 +864,11 @@ mod tests {
     }
 
     #[test]
-    fn entry_point_only_selectors_validate_and_round_trip_without_weakening_paths() {
+    fn entry_point_selectors_round_trip_absolute_paths_and_reject_relative_paths() {
         for entry in [
-            "/Applications/Example.app/Contents/Resources/My Script.js",
-            "/opt/agent/daemon.js",
+            entry_path("Example.app/Contents/Resources/My Script.js"),
+            entry_path("agent//./daemon.js"),
+            entry_path("agent/literal*?.js"),
         ] {
             let policy: TlsDecryptionPolicy = serde_json::from_value(serde_json::json!({
                 "rules":[{"id":"entry", "action":"passthrough", "process_entry_points":[entry]}]
@@ -866,21 +880,7 @@ mod tests {
                 entry
             );
         }
-        for entry in [
-            "",
-            " ",
-            "daemon.js",
-            "Contents/Resources/daemon.js",
-            "/",
-            "/opt/agent/../daemon.js",
-            "/opt/agent//daemon.js",
-            "/opt/agent/./daemon.js",
-            "/opt/agent/*.js",
-            "/opt/agent/daemon.js/",
-            "/opt/agent/daemon?.js",
-            "/opt/agent\\daemon.js",
-            "/tmp/agent\n.js",
-        ] {
+        for entry in ["", " ", "daemon.js", "Contents/Resources/daemon.js"] {
             let policy: TlsDecryptionPolicy = serde_json::from_value(serde_json::json!({
                 "rules":[{"id":"entry", "action":"passthrough", "process_entry_points":[entry]}]
             }))
@@ -891,6 +891,27 @@ mod tests {
                     Err(TlsDecryptionPolicyError::InvalidProcessEntryPoint { .. })
                 ),
                 "invalid entry: {entry:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn entry_point_selectors_treat_wildcard_characters_literally() {
+        let policy: TlsDecryptionPolicy = serde_json::from_value(serde_json::json!({
+            "default_action": "intercept",
+            "rules":[{"id":"entry", "action":"passthrough", "process_entry_points":[entry_path("agent/literal*?.js")]}]
+        })).unwrap();
+        policy.validate().unwrap();
+        for (entry, expected) in [
+            ("agent/literal*?.js", TlsDecryptionAction::Passthrough),
+            ("agent/literal12.js", TlsDecryptionAction::Intercept),
+        ] {
+            let source = source_process(None, None).with_entry_point(Some(entry_path(entry)));
+            assert_eq!(
+                policy
+                    .decide(TlsDecryptionContext::new(None, Some(&source)))
+                    .action(),
+                expected
             );
         }
     }

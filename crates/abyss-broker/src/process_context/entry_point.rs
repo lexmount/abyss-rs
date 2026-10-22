@@ -44,6 +44,19 @@ mod tests {
     use super::{EntryPointResolver, ProcessArgumentsProvider, RuntimeEntryPointResolver};
     use crate::sys::ProcessArguments;
 
+    #[cfg(not(windows))]
+    const NODE: &str = "/usr/bin/node";
+    #[cfg(windows)]
+    const NODE: &str = r"C:\Node\node.exe";
+    #[cfg(not(windows))]
+    const DAEMON: &str = "/opt/daemon.js";
+    #[cfg(windows)]
+    const DAEMON: &str = r"C:\Agent\daemon.js";
+    #[cfg(not(windows))]
+    const CLI: &str = "/opt/cli.js";
+    #[cfg(windows)]
+    const CLI: &str = r"C:\Agent\cli.js";
+
     struct ArgumentsFixture {
         executable: &'static str,
         argv: Vec<&'static str>,
@@ -63,17 +76,9 @@ mod tests {
     #[test]
     fn shared_pipeline_selects_runtimes_and_never_uses_business_arguments() {
         for (executable, argv, expected) in [
-            (
-                "/usr/bin/node",
-                vec!["node", "--", "/opt/daemon.js", "secret"],
-                Some("/opt/daemon.js"),
-            ),
+            (NODE, vec!["node", "--", DAEMON, "secret"], Some(DAEMON)),
             ("/usr/bin/python3", vec!["python3", "/opt/task.py"], None),
-            (
-                "/usr/bin/node",
-                vec!["node", "--unknown", "/opt/fake.js"],
-                None,
-            ),
+            (NODE, vec!["node", "--unknown", "/opt/fake.js"], None),
             ("/bin/cat", vec!["node", "/opt/fake.js"], None),
         ] {
             let calls = Arc::new(AtomicUsize::new(0));
@@ -92,12 +97,12 @@ mod tests {
     impl ProcessArgumentsProvider for ChangingArguments {
         fn read(&self, _pid: u32) -> io::Result<ProcessArguments> {
             let entry = match self.0.fetch_add(1, Ordering::Relaxed) {
-                0 => "/opt/daemon.js",
-                1 => "/opt/cli.js",
+                0 => DAEMON,
+                1 => CLI,
                 _ => return Err(io::Error::new(io::ErrorKind::NotFound, "process exited")),
             };
             Ok(ProcessArguments {
-                executable: "/usr/bin/node".to_owned(),
+                executable: NODE.to_owned(),
                 argv: vec!["node".to_owned(), entry.to_owned()],
             })
         }
@@ -109,11 +114,8 @@ mod tests {
         let resolver = EntryPointResolver::new(Box::new(ChangingArguments(calls.clone())));
         assert_eq!(resolver.resolve(None), None);
         assert_eq!(calls.load(Ordering::Relaxed), 0);
-        assert_eq!(
-            resolver.resolve(Some(42)).as_deref(),
-            Some("/opt/daemon.js")
-        );
-        assert_eq!(resolver.resolve(Some(42)).as_deref(), Some("/opt/cli.js"));
+        assert_eq!(resolver.resolve(Some(42)).as_deref(), Some(DAEMON));
+        assert_eq!(resolver.resolve(Some(42)).as_deref(), Some(CLI));
         assert_eq!(resolver.resolve(Some(42)), None);
         assert_eq!(calls.load(Ordering::Relaxed), 3);
     }

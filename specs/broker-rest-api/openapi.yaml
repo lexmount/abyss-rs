@@ -289,7 +289,7 @@ components:
             type: string
             minLength: 1
         process_entry_points:
-          description: Exact normalized absolute entry-script paths, including the application installation directory. Missing metadata does not match. No globs.
+          description: Absolute entry-script paths using native std::path component matching, including the application installation directory. Missing metadata does not match. No globs or filesystem resolution.
           type: array
           items:
             type: string

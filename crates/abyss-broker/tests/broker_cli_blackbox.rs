@@ -985,6 +985,10 @@ fn broker_mitm_config_updates_over_rest_without_restart() {
         "default runtime MITM config should pass TLS through"
     );
 
+    let app_entry = broker
+        .runtime_root
+        .join("Example.app/Contents/Resources/cli.js");
+    let cli_entry = broker.runtime_root.join("agent/cli.js");
     let requested = json!({
         "tls_decryption": {
             "default_action": "passthrough",
@@ -994,7 +998,7 @@ fn broker_mitm_config_updates_over_rest_without_restart() {
                     "id": "decrypt-openai",
                     "action": "intercept",
                     "process_names": ["codex"],
-                    "process_entry_points": ["/Applications/Example.app/Contents/Resources/cli.js", "/opt/agent/cli.js"],
+                    "process_entry_points": [app_entry, cli_entry],
                     "application_ids": ["com.openai.codex"],
                     "destination_hosts": ["api.openai.com"]
                 }
@@ -1037,19 +1041,17 @@ fn broker_mitm_config_updates_over_rest_without_restart() {
         toml::from_str(&fs::read_to_string(broker.runtime_policy_path()).unwrap()).unwrap();
     assert_eq!(
         persisted["mitm"]["tls_decryption"]["rules"][0]["process_entry_points"][0].as_str(),
-        Some("/Applications/Example.app/Contents/Resources/cli.js")
+        app_entry.to_str()
     );
     assert_eq!(
         persisted["mitm"]["tls_decryption"]["rules"][0]["process_entry_points"][1].as_str(),
-        Some("/opt/agent/cli.js")
+        cli_entry.to_str()
     );
     for entry in [
         "",
         "Contents/Resources/cli.js",
         "Contents/../daemon.js",
         "Contents/*.js",
-        "/opt/agent/../daemon.js",
-        "/opt/agent/*.js",
     ] {
         let mut invalid_entry = requested.clone();
         invalid_entry["tls_decryption"]["rules"][0]["process_entry_points"] = json!([entry]);
