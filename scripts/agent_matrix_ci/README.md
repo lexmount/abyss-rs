@@ -17,6 +17,18 @@ Select the harness's workflow in Actions to inspect or rerun only that group.
 All four call [the shared execution workflow](../../.github/workflows/agent-model-matrix.yml)
 so client installation, assertions and credential handling stay consistent.
 
+Automatic PR runs are limited to `abyss-broker` and its transitive workspace
+dependencies: `abyss-agent-hook`, `abyss-mitm`, `abyss-plugin-protocol`, and
+`abyss-storage`.
+Changes anywhere in those crate directories, the root `Cargo.toml`/`Cargo.lock`,
+`.cargo/`, or `rust-toolchain`/`rust-toolchain.toml` trigger all four groups.
+Keep the four entry workflows' path filters aligned when the dependency graph
+changes. Unrelated changes (including CLI-only crates, top-level docs,
+TypeScript/Python SDKs, integrations, and CI scripts/workflows alone) do not start
+the matrix. Use manual dispatch to validate matrix or integration changes
+outside these paths. [PR path filters](https://docs.github.com/en/actions/reference/workflows-and-actions/workflow-syntax#git-diff-comparisons)
+evaluate the entire PR diff, not just its latest commit.
+
 **Only one live CI job per provider runs at a time across the repository.**
 All matrix cells share `abyss-e2e-provider-<provider>` concurrency groups across
 harnesses, protocols, models, PRs and manual runs. The existing Codex black-box
@@ -170,16 +182,16 @@ that also works for text-only models, without requiring an extra judge API call
 for each cell. Both workflows use API keys in GitHub, not a runner subscription
 login. Local legacy Codex runs without the key environment retain login support.
 
-All four workflows run on same-repository PRs and manual dispatch. Select the
-harness's workflow, then optionally filter provider, protocol or exact model;
-unmatched filters fail. `fail-fast: false` preserves remaining results. The
+All four workflows run on matching same-repository PRs and manual dispatch.
+Select the harness's workflow, then optionally filter provider, protocol or
+exact model; unmatched filters fail. `fail-fast: false` preserves remaining results. The
 repository-wide limit is one job per provider. With six configured providers,
 at most six live provider jobs can execute simultaneously.
 Each group's final aggregation requires an artifact and PASS from **every planned cell**;
 missing artifacts, failed clients, 429s, unavailable models, and mismatches all
-fail. The `skip-agent-e2e` label records a deliberate whole-matrix skip. Forks
-run credential-free contracts on GitHub-hosted runners and never start the
-live matrix jobs.
+fail. The `skip-agent-e2e` label records a deliberate whole-matrix skip. Matching
+forks run credential-free contracts on GitHub-hosted runners and never start
+the live matrix jobs.
 
 ## Runner and local use
 
