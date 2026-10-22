@@ -4,7 +4,7 @@ version = 4
 
 [[package]]
 name = "abyss-agent-hook"
-version = "1.1.1"
+version = "1.1.2"
 dependencies = [
  "abyss-mitm",
  "abyss-plugin-protocol",
@@ -26,7 +26,7 @@ dependencies = [
 
 [[package]]
 name = "abyss-broker"
-version = "1.1.1"
+version = "1.1.2"
 dependencies = [
  "abyss-agent-hook",
  "abyss-mitm",
@@ -63,7 +63,7 @@ dependencies = [
 
 [[package]]
 name = "abyss-cli"
-version = "1.1.1"
+version = "1.1.2"
 dependencies = [
  "abyss-agent-hook",
  "abyss-delivery-plugin",
@@ -86,7 +86,7 @@ dependencies = [
 
 [[package]]
 name = "abyss-delivery-plugin"
-version = "1.1.1"
+version = "1.1.2"
 dependencies = [
  "abyss-sdk",
  "axum",
@@ -105,7 +105,7 @@ dependencies = [
 
 [[package]]
 name = "abyss-mitm"
-version = "1.1.1"
+version = "1.1.2"
 dependencies = [
  "arc-swap",
  "base64",
@@ -136,7 +136,7 @@ dependencies = [
 
 [[package]]
 name = "abyss-plugin-protocol"
-version = "1.1.1"
+version = "1.1.2"
 dependencies = [
  "chrono",
  "serde",
@@ -146,7 +146,7 @@ dependencies = [
 
 [[package]]
 name = "abyss-sdk"
-version = "1.1.1"
+version = "1.1.2"
 dependencies = [
  "abyss-plugin-protocol",
  "futures-core",
@@ -160,7 +160,7 @@ dependencies = [
 
 [[package]]
 name = "abyss-storage"
-version = "1.1.1"
+version = "1.1.2"
 dependencies = [
  "diesel",
  "libsqlite3-sys",
@@ -170,7 +170,7 @@ dependencies = [
 
 [[package]]
 name = "abyss-terminal-auth"
-version = "1.1.1"
+version = "1.1.2"
 dependencies = [
  "base64",
  "chrono",

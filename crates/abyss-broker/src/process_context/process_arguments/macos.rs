@@ -102,8 +102,8 @@ mod tests {
         let arguments = MacOsProcessArgumentsProvider
             .read(std::process::id())
             .unwrap();
-        assert!(!arguments.executable.is_empty());
-        assert!(!arguments.argv.is_empty());
+        assert_ne!(arguments.executable, "");
+        assert_ne!(arguments.argv, Vec::<String>::new());
         assert!(MacOsProcessArgumentsProvider.read(0).is_err());
         assert!(MacOsProcessArgumentsProvider.read(u32::MAX).is_err());
     }
