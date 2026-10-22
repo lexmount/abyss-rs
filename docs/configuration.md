@@ -161,6 +161,10 @@ Hermes is also built in; see [client setup and session handling](hermes.md).
 Its explicit identity takes precedence over Codex/Claude Code compatibility
 fingerprints, including when capture for that client is disabled. Other ambiguous
 matches are skipped. Request headers provide attribution, not authenticated process identity.
+
+Cursor Local is built in as `cursor`; see [supported clients and native session
+headers](cursor.md). The ordinary Cursor cloud CLI uses a separate, unsupported
+RPC protocol.
 TLS traffic must also be selected for interception by the MITM policy.
 HTTP compression negotiation and forwarded bytes are preserved. The background
 MITM hook worker decodes request/response `Content-Encoding` before Agent parsing

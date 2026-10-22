@@ -100,3 +100,6 @@ enabled = true
 
 [hooks.harness_usage.config.harnesses.hermes]
 enabled = true
+
+[hooks.harness_usage.config.harnesses.cursor]
+enabled = true

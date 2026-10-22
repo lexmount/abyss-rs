@@ -3,6 +3,7 @@
 mod claude_code;
 mod claude_desktop;
 mod codex;
+mod cursor;
 mod deepseek_harness;
 mod hermes;
 
@@ -60,12 +61,13 @@ impl HarnessRegistry {
         path: &str,
         config: &HarnessUsageConfig,
     ) -> Option<HarnessDetection> {
-        let detectors: [&dyn HarnessDetector; 5] = [
+        let detectors: [&dyn HarnessDetector; 6] = [
             &codex::CodexDetector,
             &claude_desktop::ClaudeDesktopDetector,
             &claude_code::ClaudeCodeDetector,
             &deepseek_harness::DeepSeekHarnessDetector,
             &hermes::HermesDetector,
+            &cursor::CursorDetector,
         ];
         let mut detections = detectors
             .into_iter()
@@ -126,6 +128,7 @@ impl HarnessRegistry {
             id if id == BuiltInHarness::Codex.id() => codex::declare(source),
             id if id == BuiltInHarness::ClaudeCode.id() => claude_code::declare(source),
             id if id == BuiltInHarness::Hermes.id() => hermes::declare(source),
+            id if id == BuiltInHarness::Cursor.id() => cursor::declare(source),
             _ => AgentDeclaration::default(),
         }
     }

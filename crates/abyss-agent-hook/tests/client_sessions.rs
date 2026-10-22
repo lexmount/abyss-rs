@@ -1,4 +1,4 @@
-//! Hermes attribution exercised through the public MITM hook API.
+//! Client attribution exercised through the public MITM hook API.
 //! Synthetic wire documents reproduce the installed clients' identity contracts.
 
 use std::{convert::Infallible, future::Future, net::SocketAddr, sync::Arc};
@@ -140,6 +140,15 @@ impl Scenario {
 async fn client_sessions_and_optional_user_turns_reach_all_protocol_events() {
     for (harness, headers, turn) in [
         (
+            "cursor",
+            vec![
+                ("user-agent", "Cursor-CLI/2026.10.19-6bbf2c4 (darwin arm64)"),
+                ("x-agent-id", "client-session"),
+                ("x-request-id", "user-turn"),
+            ],
+            Some("user-turn"),
+        ),
+        (
             "hermes",
             vec![
                 ("x-hermes-session-id", "client-session"),
@@ -177,6 +186,130 @@ async fn client_sessions_and_optional_user_turns_reach_all_protocol_events() {
             assert_eq!(event.response_id.as_deref(), Some(response_id));
         }
     }
+}
+
+#[tokio::test]
+async fn cursor_local_correlates_tool_followups_user_turns_and_separate_sessions() {
+    let scenario = Scenario::new(json!({}));
+    let calls = [
+        ("session-a", "turn-1", "response-1"),
+        ("session-a", "turn-1", "response-2"),
+        ("session-a", "turn-2", "response-3"),
+        ("session-b", "turn-3", "response-4"),
+    ];
+    for (session, turn, response) in calls {
+        scenario
+            .http(
+                &[
+                    ("user-agent", "Cursor-CLI/2026.10.19-6bbf2c4 (darwin arm64)"),
+                    ("x-agent-id", session),
+                    ("x-request-id", turn),
+                ],
+                "/v1/chat/completions",
+                response,
+            )
+            .await;
+    }
+    let events = scenario.sink.0.lock();
+    assert_eq!(events.len(), 8);
+    for (pair, (session, turn, response)) in events.as_chunks::<2>().0.iter().zip(calls) {
+        for event in pair {
+            assert_eq!(event.agent.name, "cursor");
+            assert_eq!(event.session_id, session);
+            assert_eq!(event.turn_id.as_deref(), Some(turn));
+            assert_eq!(event.response_id.as_deref(), Some(response));
+        }
+    }
+}
+
+#[tokio::test]
+async fn cursor_headers_are_scoped_to_local_identity_and_follow_existing_session_rules() {
+    for path in ["/v1/chat/completions", "/v1/responses", "/v1/messages"] {
+        let scenario = Scenario::new(json!({}));
+        // These generic headers must not identify an arbitrary client as Cursor.
+        scenario
+            .http(
+                &[("x-agent-id", "agent"), ("x-request-id", "request")],
+                path,
+                "ignored",
+            )
+            .await;
+        assert!(scenario.sink.0.lock().is_empty());
+
+        // X-Agent-Id has no session semantics for a different harness.
+        scenario
+            .http(
+                &[
+                    ("user-agent", "HermesAgent/0.22.0"),
+                    ("x-agent-id", "agent"),
+                    ("x-request-id", "request"),
+                ],
+                path,
+                "hermes",
+            )
+            .await;
+        {
+            let events = scenario.sink.0.lock();
+            assert_eq!(events.len(), 2);
+            for event in events.iter() {
+                assert_ne!(event.session_id, "agent");
+                assert!(event.turn_id.is_none());
+            }
+        }
+
+        // Existing canonical session headers retain precedence; turn is optional.
+        scenario
+            .http(
+                &[
+                    ("user-agent", "Cursor-CLI/2026.10.19-6bbf2c4"),
+                    ("x-agent-id", "cursor-session"),
+                    ("session-id", "canonical"),
+                    ("x-request-id", " "),
+                ],
+                path,
+                "cursor",
+            )
+            .await;
+        let events = scenario.sink.0.lock();
+        assert_eq!(events.len(), 4);
+        for event in &events[2..] {
+            assert_eq!(event.agent.name, "cursor");
+            assert_eq!(event.session_id, "canonical");
+            assert!(event.turn_id.is_none());
+        }
+    }
+}
+
+#[tokio::test]
+async fn cursor_observation_can_be_disabled_and_cloud_headers_are_not_local_identity() {
+    let scenario = Scenario::new(json!({"harness_usage": {"config": {"harnesses": {
+        "cursor": {"enabled": false}
+    }}}}));
+    scenario
+        .http(
+            &[
+                ("user-agent", "Cursor-CLI/2026.10.19-6bbf2c4"),
+                ("x-agent-id", "session"),
+            ],
+            "/v1/chat/completions",
+            "ignored",
+        )
+        .await;
+    assert!(scenario.sink.0.lock().is_empty());
+
+    let scenario = Scenario::new(json!({}));
+    scenario
+        .http(
+            &[
+                ("user-agent", "connect-es/1.6.1"),
+                ("x-cursor-client-type", "cli"),
+                ("x-cursor-client-version", "cli-2026.10.19-6bbf2c4"),
+            ],
+            "/v1/chat/completions",
+            "ignored",
+        )
+        .await;
+    assert!(scenario.sink.0.lock().is_empty());
 }
 
 #[tokio::test]
