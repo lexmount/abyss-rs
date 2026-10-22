@@ -20,6 +20,8 @@ pub enum BuiltInHarness {
     Hermes,
     /// Cursor Local provider traffic.
     Cursor,
+    /// Tencent `WorkBuddy` application traffic.
+    WorkBuddy,
 }
 
 impl BuiltInHarness {
@@ -33,6 +35,7 @@ impl BuiltInHarness {
             Self::DeepSeekHarness => "deepseek-harness",
             Self::Hermes => "hermes",
             Self::Cursor => "cursor",
+            Self::WorkBuddy => "workbuddy",
         }
     }
 }
@@ -53,7 +56,13 @@ impl HarnessId {
     pub(crate) fn is_reserved(&self) -> bool {
         matches!(
             self.as_str(),
-            "codex" | "claude-code" | "claude-desktop" | "deepseek-harness" | "hermes" | "cursor"
+            "codex"
+                | "claude-code"
+                | "claude-desktop"
+                | "deepseek-harness"
+                | "hermes"
+                | "cursor"
+                | "workbuddy"
         )
     }
 }

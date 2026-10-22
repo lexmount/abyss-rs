@@ -152,6 +152,27 @@ capture, following the same format as other built-in Harnesses:
 enabled = true
 ```
 
+WorkBuddy is built in as `workbuddy` and enabled by default. Its detector uses
+exact WorkBuddy executable/helper names (including the Windows `workbuddy.exe`
+basename) or the macOS `com.tencent.workbuddy.mac` application ID and its known
+helper IDs. Generic Electron, Node, standalone CodeBuddy, gateway hostnames, and
+conversation headers alone do not identify WorkBuddy. Explicit-proxy traffic
+without source process metadata therefore cannot be attributed to WorkBuddy.
+
+```toml
+[hooks.harness_usage.config.harnesses.workbuddy]
+enabled = true
+```
+
+The complete legacy WorkBuddy configuration with separate process-name and
+application-ID matchers is accepted and normalized to this built-in form on
+load or API update, preserving enablement and content controls. Normalized API
+responses and subsequent saves omit those matchers. Other WorkBuddy matcher
+overrides are rejected, like overrides for other built-in identities, rather
+than silently changing their scope. `X-Conversation-ID` continues through the
+shared protocol session resolver; `X-Conversation-Request-ID` declares the user
+turn and is not used as a session identifier.
+
 Custom Harnesses can declare `process_names` and `application_ids` matchers in
 `runtime-policy.toml`; these use exact matches against platform-supplied source
 metadata.

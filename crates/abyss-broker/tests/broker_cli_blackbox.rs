@@ -1467,6 +1467,10 @@ mod compatible_providers;
 #[path = "scenarios/process_entry_points.rs"]
 mod process_entry_points;
 
+#[cfg(target_os = "macos")]
+#[path = "scenarios/workbuddy.rs"]
+mod workbuddy;
+
 struct BrokerProcess {
     api_addr: SocketAddr,
     auth_token_file: PathBuf,

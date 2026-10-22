@@ -41,7 +41,6 @@ impl WorkBuddyScenario {
             "harness_usage": {"enabled": true, "config": {"harnesses": {
                 "workbuddy": {
                     "enabled": enabled,
-                    "matchers": [{"process_names": ["WorkBuddy"]}],
                     "content": {"conversation_text": conversation_text}
                 }
             }}}

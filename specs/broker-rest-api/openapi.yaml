@@ -336,6 +336,10 @@ components:
           $ref: "#/components/schemas/HarnessUsageContentConfig"
         matchers:
           type: array
+          description: >-
+            Custom Harness identity selectors. Built-in Harnesses do not accept
+            overrides. The complete legacy WorkBuddy process/application matcher
+            pair is accepted for migration and omitted from normalized responses.
           items:
             $ref: "#/components/schemas/HarnessMatcherConfig"
     HarnessMatcherConfig:
