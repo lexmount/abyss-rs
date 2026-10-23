@@ -14,7 +14,7 @@ use sha2::{Digest as _, Sha256};
 
 use crate::{error::CliError, filesystem, paths::CliPaths};
 
-pub(super) const BACKEND_VERSION: &str = "1.0.1";
+pub(super) const BACKEND_VERSION: &str = "1.1.0";
 pub(super) const DASHBOARD_PACKAGE: &str = "@lexmount.com/abyss-dashboard@0.2.0";
 pub(super) const DASHBOARD_VERSION: &str = "0.2.0";
 const STATE_SCHEMA_VERSION: u32 = 1;
