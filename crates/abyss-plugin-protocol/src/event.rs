@@ -47,11 +47,12 @@ pub struct AgentEvent {
     /// `subagent_id`; absent when the main agent spawned it.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub parent_subagent_id: Option<String>,
-    /// Id of the turn this exchange ultimately works for, the turn opened by
-    /// input from outside the agent loop, declared like `subagent_id`. A
-    /// subagent's exchanges carry the id of the turn that spawned it.
+    /// Root turn the client declares, like `subagent_id`: the user input this
+    /// exchange ultimately works for. A subagent's exchanges carry the value
+    /// of the turn that spawned it; an exchange the client makes for no turn
+    /// carries none.
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub root_turn_id: Option<String>,
+    pub turn_id: Option<String>,
     /// What the Agent made this provider call for, when its traffic says so.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub purpose: Option<EventPurpose>,
@@ -384,7 +385,7 @@ mod tests {
             "previous_response_id",
             "subagent_id",
             "parent_subagent_id",
-            "root_turn_id",
+            "turn_id",
             "purpose",
             "omitted",
             "conversation",
@@ -402,15 +403,15 @@ mod tests {
         let mut event = sample_event(LlmProvider::Anthropic);
         event.subagent_id = Some("agent-2".to_owned());
         event.parent_subagent_id = Some("agent-1".to_owned());
-        event.root_turn_id = Some(" turn {1} ".to_owned());
+        event.turn_id = Some(" turn {1} ".to_owned());
         let serialized = serde_json::to_value(event).expect("Agent event should serialize");
 
         assert_eq!(serialized["subagent_id"], "agent-2");
         assert_eq!(serialized["parent_subagent_id"], "agent-1");
-        assert_eq!(serialized["root_turn_id"], " turn {1} ");
+        assert_eq!(serialized["turn_id"], " turn {1} ");
         let decoded: AgentEvent =
             serde_json::from_value(serialized).expect("declared ids should round-trip");
-        assert_eq!(decoded.root_turn_id.as_deref(), Some(" turn {1} "));
+        assert_eq!(decoded.turn_id.as_deref(), Some(" turn {1} "));
     }
 
     #[test]
@@ -536,7 +537,7 @@ mod tests {
             previous_response_id: None,
             subagent_id: None,
             parent_subagent_id: None,
-            root_turn_id: None,
+            turn_id: None,
             purpose: None,
             llm: LlmContext {
                 provider,

@@ -34,7 +34,7 @@ class AgentEventContractTests(unittest.TestCase):
         self.assertEqual(event.previous_response_id, "resp-122")
         self.assertEqual(event.subagent_id, "agent-2")
         self.assertEqual(event.parent_subagent_id, "agent-1")
-        self.assertEqual(event.root_turn_id, "turn-1")
+        self.assertEqual(event.turn_id, "turn-1")
         self.assertEqual(event.purpose, "session_title")
         self.assertIsNotNone(event.conversation)
         self.assertEqual(
@@ -60,7 +60,7 @@ class AgentEventContractTests(unittest.TestCase):
             "previous_response_id",
             "subagent_id",
             "parent_subagent_id",
-            "root_turn_id",
+            "turn_id",
             "purpose",
             "conversation",
             "headers",
@@ -89,7 +89,6 @@ class AgentEventContractTests(unittest.TestCase):
             (("text",), "hello"),
             (("tool_calls",), []),
             (("tool_results",), []),
-            (("turn_id",), "turn-1"),
             (("naming_thread",), True),
             (("stream_id",), "thread-1"),
             (("session_title",), "title"),

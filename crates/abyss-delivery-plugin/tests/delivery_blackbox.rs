@@ -84,7 +84,7 @@ fn real_plugin_process_delivers_a_broker_event_to_the_configured_destination() {
     assert!(payload["events"][0].get("text").is_none());
     assert_eq!(payload["events"][0]["subagent_id"], "agent-2");
     assert_eq!(payload["events"][0]["parent_subagent_id"], "agent-1");
-    assert_eq!(payload["events"][0]["root_turn_id"], "turn-1");
+    assert_eq!(payload["events"][0]["turn_id"], "turn-1");
     assert!(
         payload["events"][0]["metadata"]
             .get("content_segments")

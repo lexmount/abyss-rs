@@ -57,7 +57,7 @@ pub(super) fn declare(source: &DeclarationSource<'_>) -> AgentDeclaration {
         parent_subagent_id: parent
             .filter(|parent| thread(SESSION_ID) != Some(*parent))
             .map(str::to_owned),
-        root_turn_id: metadata
+        turn_id: metadata
             .as_ref()
             .and_then(|metadata| string_field(metadata, "root_turn_id"))
             .map(str::to_owned),
@@ -199,12 +199,12 @@ mod tests {
         headers
     }
 
-    /// `(subagent_id, parent_subagent_id, root_turn_id)` of a declaration.
+    /// `(subagent_id, parent_subagent_id, turn_id)` of a declaration.
     fn lineage(declaration: AgentDeclaration) -> [Option<String>; 3] {
         [
             declaration.subagent_id,
             declaration.parent_subagent_id,
-            declaration.root_turn_id,
+            declaration.turn_id,
         ]
     }
 

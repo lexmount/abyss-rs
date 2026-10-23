@@ -175,7 +175,7 @@ pub mod tests {
             previous_response_id: None,
             subagent_id: None,
             parent_subagent_id: None,
-            root_turn_id: None,
+            turn_id: None,
             purpose: None,
             llm: LlmPayload {
                 provider: "openai".to_owned(),

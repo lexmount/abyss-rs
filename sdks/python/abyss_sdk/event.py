@@ -114,7 +114,7 @@ class AgentEvent:
     previous_response_id: Optional[str]
     subagent_id: Optional[str]
     parent_subagent_id: Optional[str]
-    root_turn_id: Optional[str]
+    turn_id: Optional[str]
     purpose: Optional[EventPurpose]
     llm: LlmContext
     side: str
@@ -141,7 +141,7 @@ class AgentEvent:
                 "previous_response_id",
                 "subagent_id",
                 "parent_subagent_id",
-                "root_turn_id",
+                "turn_id",
                 "purpose",
                 "llm",
                 "side",
@@ -170,7 +170,7 @@ class AgentEvent:
             previous_response_id=_optional_string(event, "previous_response_id"),
             subagent_id=_optional_string(event, "subagent_id"),
             parent_subagent_id=_optional_string(event, "parent_subagent_id"),
-            root_turn_id=_optional_string(event, "root_turn_id"),
+            turn_id=_optional_string(event, "turn_id"),
             purpose=cast(Optional[EventPurpose], purpose),
             llm=_llm(_mapping(event.get("llm"), "AgentEvent.llm")),
             side=side,

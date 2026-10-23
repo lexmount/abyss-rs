@@ -37,8 +37,8 @@ fn structured_conversation_and_handshakes_round_trip() {
         serde_json::to_value(abyss_sdk::event::EventPurpose::Compaction).unwrap(),
         "compaction"
     );
-    // The collector infers no turn, thread, naming thread, or session title.
-    for field in ["turn_id", "naming_thread", "stream_id", "session_title"] {
+    // The collector infers no thread, naming thread, or session title.
+    for field in ["naming_thread", "stream_id", "session_title"] {
         assert!(schema["properties"].get(field).is_none(), "{field}");
         let mut inferred = fixture.clone();
         inferred[field] = "x".into();
@@ -60,7 +60,7 @@ fn structured_conversation_and_handshakes_round_trip() {
         "previous_response_id",
         "subagent_id",
         "parent_subagent_id",
-        "root_turn_id",
+        "turn_id",
     ] {
         assert_eq!(schema["properties"][field]["type"], "string", "{field}");
         assert!(fixture[field].is_string(), "{field}");
@@ -68,7 +68,7 @@ fn structured_conversation_and_handshakes_round_trip() {
     let event: AgentEvent = serde_json::from_value(fixture.clone()).unwrap();
     assert_eq!(event.subagent_id.as_deref(), Some("agent-2"));
     assert_eq!(event.parent_subagent_id.as_deref(), Some("agent-1"));
-    assert_eq!(event.root_turn_id.as_deref(), Some("turn-1"));
+    assert_eq!(event.turn_id.as_deref(), Some("turn-1"));
     let messages = contract.json("messages.schema.json");
     for name in ["pluginHello", "brokerHello"] {
         assert_eq!(
@@ -287,7 +287,6 @@ fn published_agent_event_fixture_matches_the_public_sdk() {
         );
     }
     assert!(event.get("turn_index").is_none());
-    assert!(event.get("turn_id").is_none());
     contract.assert_fixture_round_trip::<AgentEvent>("agent-event.json");
 }
 

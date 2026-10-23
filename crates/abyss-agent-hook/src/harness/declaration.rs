@@ -32,9 +32,10 @@ pub struct AgentDeclaration {
     pub subagent_id: Option<String>,
     /// Subagent that spawned this one; absent when the main agent did.
     pub parent_subagent_id: Option<String>,
-    /// Turn the request ultimately works for; a subagent's requests carry the
-    /// turn that spawned it.
-    pub root_turn_id: Option<String>,
+    /// Root turn the client declares: the user input this request ultimately
+    /// works for. A subagent's requests carry the value of the turn that
+    /// spawned it; a request the client makes for no turn carries none.
+    pub turn_id: Option<String>,
 }
 
 impl DeclarationSource<'_> {

@@ -464,7 +464,7 @@ mod tests {
         for event in events.iter() {
             assert_eq!(event.subagent_id.as_deref(), Some("ws-thread"));
             assert_eq!(event.parent_subagent_id.as_deref(), Some("ws-parent"));
-            assert_eq!(event.root_turn_id.as_deref(), Some("ws-turn"));
+            assert_eq!(event.turn_id.as_deref(), Some("ws-turn"));
         }
         assert_eq!(
             serde_json::to_value(&events[0].headers).unwrap(),
@@ -702,7 +702,7 @@ mod tests {
                 // The declared ids are carried verbatim on both events.
                 assert_eq!(event.subagent_id.as_deref(), subagent);
                 assert_eq!(event.parent_subagent_id, None);
-                assert_eq!(event.root_turn_id.as_deref(), root_turn);
+                assert_eq!(event.turn_id.as_deref(), root_turn);
             }
         }
         // The request event carries the request headers in capture order, the

@@ -91,7 +91,7 @@ pub struct NormalizedUsageEvent {
     pub parent_subagent_id: Option<String>,
     /// Root turn the client declared in its request headers.
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub root_turn_id: Option<String>,
+    pub turn_id: Option<String>,
     /// Purpose the Agent declared for this provider call.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub purpose: Option<EventPurpose>,
@@ -131,7 +131,7 @@ impl TryFrom<NormalizedUsageEvent> for AgentEvent {
             previous_response_id,
             subagent_id,
             parent_subagent_id,
-            root_turn_id,
+            turn_id,
             purpose,
             llm,
             event_type,
@@ -171,7 +171,7 @@ impl TryFrom<NormalizedUsageEvent> for AgentEvent {
             previous_response_id,
             subagent_id,
             parent_subagent_id,
-            root_turn_id,
+            turn_id,
             purpose,
             llm: LlmContext {
                 provider: LlmProvider::from_wire_name(llm.provider),
@@ -339,7 +339,7 @@ where
         previous_response_id: continuation.previous_response_id,
         subagent_id: declaration.subagent_id.as_deref(),
         parent_subagent_id: declaration.parent_subagent_id.as_deref(),
-        root_turn_id: declaration.root_turn_id.as_deref(),
+        turn_id: declaration.turn_id.as_deref(),
     };
     events_for_parsed_exchange(config, &parts, content, declared, headers)
 }
@@ -388,7 +388,7 @@ struct Declared<'a> {
     previous_response_id: Option<&'a str>,
     subagent_id: Option<&'a str>,
     parent_subagent_id: Option<&'a str>,
-    root_turn_id: Option<&'a str>,
+    turn_id: Option<&'a str>,
 }
 
 struct EventSide<'a> {
@@ -619,7 +619,7 @@ fn usage_event(
         previous_response_id: side.declared.previous_response_id.map(str::to_owned),
         subagent_id: side.declared.subagent_id.map(str::to_owned),
         parent_subagent_id: side.declared.parent_subagent_id.map(str::to_owned),
-        root_turn_id: side.declared.root_turn_id.map(str::to_owned),
+        turn_id: side.declared.turn_id.map(str::to_owned),
         purpose: side.declared.purpose,
         llm: LlmPayload {
             provider: parts.llm_provider.clone(),
@@ -1161,7 +1161,7 @@ mod tests {
         let events = normalize(&AgentDeclaration {
             subagent_id: Some("a-2".to_owned()),
             parent_subagent_id: Some("a-1".to_owned()),
-            root_turn_id: Some("p-1".to_owned()),
+            turn_id: Some("p-1".to_owned()),
             ..AgentDeclaration::default()
         });
         let undeclared = normalize(&AgentDeclaration::default());
@@ -1170,7 +1170,7 @@ mod tests {
         for (event, plain) in events.iter().zip(&undeclared) {
             assert_eq!(event.subagent_id.as_deref(), Some("a-2"));
             assert_eq!(event.parent_subagent_id.as_deref(), Some("a-1"));
-            assert_eq!(event.root_turn_id.as_deref(), Some("p-1"));
+            assert_eq!(event.turn_id.as_deref(), Some("p-1"));
             // The declared ids never enter the event id.
             assert_eq!(event.event_id, plain.event_id);
             assert_eq!(plain.subagent_id, None);
@@ -1182,7 +1182,7 @@ mod tests {
         let (request, reply) = (events.next().unwrap(), events.next().unwrap());
         assert_eq!(request["subagent_id"], "a-2");
         assert_eq!(request["parent_subagent_id"], "a-1");
-        assert_eq!(reply["root_turn_id"], "p-1");
+        assert_eq!(reply["turn_id"], "p-1");
         assert_eq!(
             reply["headers"],
             serde_json::json!([{"name": "request-id", "value": "req_1"}])
@@ -1192,7 +1192,7 @@ mod tests {
                 .unwrap()
         });
         let plain = undeclared.next().unwrap();
-        for field in ["subagent_id", "parent_subagent_id", "root_turn_id"] {
+        for field in ["subagent_id", "parent_subagent_id", "turn_id"] {
             assert!(
                 plain.get(field).is_none(),
                 "an undeclared {field} is omitted"
