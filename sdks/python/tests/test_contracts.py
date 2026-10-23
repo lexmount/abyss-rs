@@ -32,6 +32,9 @@ class AgentEventContractTests(unittest.TestCase):
         self.assertEqual(event.llm.provider, "openai")
         self.assertEqual(event.response_id, "resp-123")
         self.assertEqual(event.previous_response_id, "resp-122")
+        self.assertEqual(event.subagent_id, "agent-2")
+        self.assertEqual(event.parent_subagent_id, "agent-1")
+        self.assertEqual(event.root_turn_id, "turn-1")
         self.assertEqual(event.purpose, "session_title")
         self.assertIsNotNone(event.conversation)
         self.assertEqual(
@@ -55,6 +58,9 @@ class AgentEventContractTests(unittest.TestCase):
         for field in (
             "response_id",
             "previous_response_id",
+            "subagent_id",
+            "parent_subagent_id",
+            "root_turn_id",
             "purpose",
             "conversation",
             "headers",
@@ -62,6 +68,7 @@ class AgentEventContractTests(unittest.TestCase):
             fixture.pop(field)
         event = AgentEvent.from_dict(fixture)
         self.assertIsNone(event.response_id)
+        self.assertIsNone(event.subagent_id)
         self.assertEqual(event.headers, ())
         self.assertIsNone(event.conversation)
         fixture["purpose"] = "compaction"

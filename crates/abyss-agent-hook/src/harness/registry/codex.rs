@@ -1,5 +1,6 @@
-//! Codex detection from product-owned process and request markers, and the
-//! request kind Codex declares in its `x-codex-turn-metadata`.
+//! Codex detection from product-owned process and request markers, and what
+//! Codex declares about a request: the request kind and root turn in its
+//! `x-codex-turn-metadata`, and the subagent thread in its thread headers.
 
 use abyss_mitm::FlowContext;
 use abyss_plugin_protocol::event::EventPurpose;
@@ -17,11 +18,18 @@ use super::{HarnessDetector, client_version, header};
 const TURN_METADATA: &str = "x-codex-turn-metadata";
 /// `request_kind` of a request that summarizes the conversation.
 const COMPACTION_REQUEST_KIND: &str = "compaction";
+/// Thread the request belongs to.
+const THREAD_ID: &str = "thread-id";
+/// Thread that spawned the request's thread; only a subagent thread names one.
+const PARENT_THREAD_ID: &str = "x-codex-parent-thread-id";
+/// Codex session, whose id is also its main thread's.
+const SESSION_ID: &str = "session-id";
 
 /// Reads the turn metadata a request carries in its `client_metadata`, or for
-/// HTTP requests in the header of the same name.
+/// HTTP requests in the header of the same name, and the subagent thread its
+/// headers name, or for a WebSocket turn its connection's.
 pub(super) fn declare(source: &DeclarationSource<'_>) -> AgentDeclaration {
-    let Some(metadata) = source
+    let metadata = source
         .client_metadata
         .and_then(|client| string_field(client, TURN_METADATA))
         .or_else(|| {
@@ -30,13 +38,29 @@ pub(super) fn declare(source: &DeclarationSource<'_>) -> AgentDeclaration {
                 .and_then(|headers| header(headers, TURN_METADATA))
         })
         .and_then(|text| serde_json::from_str::<Value>(text).ok())
-        .filter(Value::is_object)
-    else {
-        return AgentDeclaration::default();
+        .filter(Value::is_object);
+    let thread = |name: &str| {
+        source
+            .request_or_connection_headers()
+            .and_then(|headers| header(headers, name))
     };
+    // Only a subagent thread names a parent; a parent that is the session is
+    // the main thread.
+    let parent = thread(PARENT_THREAD_ID);
     AgentDeclaration {
-        purpose: (string_field(&metadata, "request_kind") == Some(COMPACTION_REQUEST_KIND))
-            .then_some(EventPurpose::Compaction),
+        purpose: metadata
+            .as_ref()
+            .and_then(|metadata| string_field(metadata, "request_kind"))
+            .filter(|kind| *kind == COMPACTION_REQUEST_KIND)
+            .map(|_| EventPurpose::Compaction),
+        subagent_id: parent.and_then(|_| thread(THREAD_ID)).map(str::to_owned),
+        parent_subagent_id: parent
+            .filter(|parent| thread(SESSION_ID) != Some(*parent))
+            .map(str::to_owned),
+        root_turn_id: metadata
+            .as_ref()
+            .and_then(|metadata| string_field(metadata, "root_turn_id"))
+            .map(str::to_owned),
     }
 }
 
@@ -116,6 +140,7 @@ mod tests {
     fn declared(client_metadata: Option<&Value>, headers: Option<&HeaderMap>) -> AgentDeclaration {
         declare(&DeclarationSource {
             headers,
+            connection_headers: None,
             body: None,
             client_metadata,
         })
@@ -164,6 +189,111 @@ mod tests {
         let declaration = declared(None, Some(&headers));
 
         assert_eq!(declaration.purpose, Some(EventPurpose::Compaction));
+    }
+
+    fn header_map(pairs: &[(&'static str, &str)]) -> HeaderMap {
+        let mut headers = HeaderMap::new();
+        for (name, value) in pairs {
+            headers.insert(*name, value.parse().unwrap());
+        }
+        headers
+    }
+
+    /// `(subagent_id, parent_subagent_id, root_turn_id)` of a declaration.
+    fn lineage(declaration: AgentDeclaration) -> [Option<String>; 3] {
+        [
+            declaration.subagent_id,
+            declaration.parent_subagent_id,
+            declaration.root_turn_id,
+        ]
+    }
+
+    fn ids(values: [Option<&str>; 3]) -> [Option<String>; 3] {
+        values.map(|value| value.map(str::to_owned))
+    }
+
+    #[test]
+    fn a_parent_thread_declares_a_subagent_thread() {
+        let metadata =
+            json!({"session_id": "s-1", "turn_id": "turn-2", "root_turn_id": "turn-1"}).to_string();
+        // The main thread is the session and names no parent.
+        let main = header_map(&[
+            ("session-id", "s-1"),
+            ("thread-id", "s-1"),
+            ("x-codex-turn-metadata", &metadata),
+        ]);
+        assert_eq!(
+            lineage(declared(None, Some(&main))),
+            ids([None, None, Some("turn-1")])
+        );
+        // Spawned by the main thread: the parent is the session.
+        let spawned = header_map(&[
+            ("session-id", "s-1"),
+            ("thread-id", "t-2"),
+            ("x-codex-parent-thread-id", "s-1"),
+            ("x-codex-turn-metadata", &metadata),
+        ]);
+        assert_eq!(
+            lineage(declared(None, Some(&spawned))),
+            ids([Some("t-2"), None, Some("turn-1")])
+        );
+        // Spawned by another subagent thread.
+        let nested = header_map(&[
+            ("session-id", "s-1"),
+            ("thread-id", "t-3"),
+            ("x-codex-parent-thread-id", "t-2"),
+        ]);
+        assert_eq!(
+            lineage(declared(None, Some(&nested))),
+            ids([Some("t-3"), Some("t-2"), None])
+        );
+    }
+
+    #[test]
+    fn a_websocket_turn_takes_its_thread_from_the_upgrade_and_its_turn_from_the_frame() {
+        let upgrade = header_map(&[
+            ("session-id", "s-1"),
+            ("thread-id", "t-2"),
+            ("x-codex-parent-thread-id", "s-1"),
+            // The upgrade's own turn metadata is not the frame's turn.
+            ("x-codex-turn-metadata", r#"{"root_turn_id":"turn-0"}"#),
+        ]);
+        let frame = client_metadata(&json!({"turn_id": "turn-3", "root_turn_id": "turn-1"}));
+        let declaration = declare(&DeclarationSource {
+            headers: None,
+            connection_headers: Some(&upgrade),
+            body: None,
+            client_metadata: Some(&frame),
+        });
+        assert_eq!(
+            lineage(declaration),
+            ids([Some("t-2"), None, Some("turn-1")])
+        );
+        let without_frame = declare(&DeclarationSource {
+            headers: None,
+            connection_headers: Some(&upgrade),
+            body: None,
+            client_metadata: None,
+        });
+        assert_eq!(lineage(without_frame), ids([Some("t-2"), None, None]));
+    }
+
+    #[test]
+    fn a_root_turn_needs_a_string_in_a_json_object() {
+        for metadata in [
+            "not json",
+            r#"["turn-1"]"#,
+            r#"{"turn_id":"turn-1"}"#,
+            r#"{"root_turn_id":7}"#,
+            r#"{"root_turn_id":""}"#,
+        ] {
+            let headers = header_map(&[("x-codex-turn-metadata", metadata)]);
+            assert_eq!(
+                lineage(declared(None, Some(&headers))),
+                ids([None, None, None]),
+                "{metadata}"
+            );
+        }
     }
 
     #[test]

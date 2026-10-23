@@ -168,11 +168,13 @@ where
         let provider = ProviderResolver::resolve(&websocket_host(message), protocol);
         // Frames after the upgrade carry no headers of their own; every turn
         // of the connection carries those of its upgrade request and `101`
-        // response.
+        // response, and declares what its upgrade request names for the whole
+        // connection.
         let declaration = HarnessRegistry::declare(
             &detection.harness_id,
             &DeclarationSource {
                 headers: None,
+                connection_headers: Some(message.upgrade_request.headers()),
                 body: None,
                 client_metadata: parsed.client_metadata.as_ref(),
             },
@@ -235,6 +237,7 @@ fn http_declaration(
         &detection.harness_id,
         &DeclarationSource {
             headers: Some(exchange.request.headers()),
+            connection_headers: None,
             body: exchange.request.body().json(),
             client_metadata,
         },
@@ -393,18 +396,32 @@ mod tests {
         use abyss_mitm::{WebSocketDirection, WebSocketMessage};
         let sink = Arc::new(RecordingSink::default());
         let hook = hook(Arc::clone(&sink));
-        let exchange = openai_exchange("acme-agent");
+        // Codex, whose `x-codex-*` upgrade headers identify it.
+        let exchange = openai_exchange("codex");
         let (parts, _) = exchange.request.into_parts();
         let mut upgrade = Request::from_parts(parts, ());
         upgrade
             .headers_mut()
             .insert("authorization", "Bearer secret".parse().unwrap());
+        for (name, value) in [
+            ("session-id", "ws-session"),
+            ("thread-id", "ws-thread"),
+            ("x-codex-parent-thread-id", "ws-parent"),
+            // The connection's first turn, not the turn of a later frame.
+            (
+                "x-codex-turn-metadata",
+                r#"{"root_turn_id":"ws-first-turn"}"#,
+            ),
+        ] {
+            upgrade.headers_mut().insert(name, value.parse().unwrap());
+        }
         let upgrade_response = Response::builder()
             .status(101)
             .header("x-request-id", "req-ws")
             .body(())
             .unwrap();
-        let request = " {\"type\":\"response.create\",\"response\":{\"model\":\"test\",\"input\":[{\"role\":\"user\",\"content\":\"hello\"}]}}\n";
+        // The frame declares its own turn in `client_metadata`.
+        let request = " {\"type\":\"response.create\",\"response\":{\"model\":\"test\",\"client_metadata\":{\"x-codex-turn-metadata\":\"{\\\"root_turn_id\\\":\\\"ws-turn\\\"}\"},\"input\":[{\"role\":\"user\",\"content\":\"hello\"}]}}\n";
         let created = "{\"type\":\"response.created\",\"response\":{\"id\":\"resp-1\"}}";
         let delta = "{\"type\":\"response.output_text.delta\",\"output_index\":0,\"content_index\":0,\"delta\":\"hi\"}";
         let terminal = "{\"type\":\"response.completed\",\"response\":{\"id\":\"resp-1\",\"output\":[{\"id\":\"msg-1\",\"role\":\"assistant\",\"content\":[{\"type\":\"output_text\",\"text\":\"hi there\"}]}],\"usage\":{\"input_tokens\":1,\"output_tokens\":2,\"total_tokens\":3}}}";
@@ -442,13 +459,23 @@ mod tests {
         assert_eq!(response_content.entries[0].text, "hi there");
         assert_eq!(response_content.completeness, ContentCompleteness::Partial);
         // Every turn of the connection carries the upgrade request's headers
-        // and the `101` response's headers.
+        // and the `101` response's headers, and the ids the upgrade request
+        // declares.
+        for event in events.iter() {
+            assert_eq!(event.subagent_id.as_deref(), Some("ws-thread"));
+            assert_eq!(event.parent_subagent_id.as_deref(), Some("ws-parent"));
+            assert_eq!(event.root_turn_id.as_deref(), Some("ws-turn"));
+        }
         assert_eq!(
             serde_json::to_value(&events[0].headers).unwrap(),
             serde_json::json!([
                 {"name": "host", "value": "gateway.example"},
                 {"name": "content-type", "value": "application/json"},
-                {"name": "authorization", "value": "<redacted>"}
+                {"name": "authorization", "value": "<redacted>"},
+                {"name": "session-id", "value": "ws-session"},
+                {"name": "thread-id", "value": "ws-thread"},
+                {"name": "x-codex-parent-thread-id", "value": "ws-parent"},
+                {"name": "x-codex-turn-metadata", "value": "{\"root_turn_id\":\"ws-first-turn\"}"}
             ])
         );
         assert_eq!(
@@ -655,20 +682,27 @@ mod tests {
         let events = sink.events.lock().unwrap();
         assert_eq!(events.len(), requests.len() * 2);
         let expected = [
-            (None, None),
-            (Some("msg_1"), None),
-            (None, None),
-            (Some("msg_b"), None),
-            (None, None),
-            (None, Some(EventPurpose::Compaction)),
-            (None, None),
+            (None, None, None, Some("p1")),
+            (Some("msg_1"), None, None, Some("p1")),
+            (None, None, Some("agent-a"), Some("p1")),
+            (Some("msg_b"), None, Some("agent-b"), Some("p1")),
+            (None, None, None, None),
+            (None, Some(EventPurpose::Compaction), None, None),
+            // The billing header in the body is not a declaration.
+            (None, None, None, None),
         ];
-        for (exchange_events, (previous, purpose)) in events.chunks(2).zip(expected) {
+        for (exchange_events, (previous, purpose, subagent, root_turn)) in
+            events.chunks(2).zip(expected)
+        {
             for event in exchange_events {
                 assert_eq!(event.agent.name, "claude-code");
                 assert_eq!(event.previous_response_id.as_deref(), previous);
                 assert_eq!(event.purpose, purpose);
                 assert_eq!(event.response_id.as_deref(), Some("msg_test"));
+                // The declared ids are carried verbatim on both events.
+                assert_eq!(event.subagent_id.as_deref(), subagent);
+                assert_eq!(event.parent_subagent_id, None);
+                assert_eq!(event.root_turn_id.as_deref(), root_turn);
             }
         }
         // The request event carries the request headers in capture order, the

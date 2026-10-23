@@ -1,6 +1,6 @@
 //! Claude Code detection from process identity and product request markers,
-//! and the request class Claude Code declares in its `x-claude-code-*`
-//! headers.
+//! and what Claude Code declares in its `x-claude-code-*` headers: the
+//! request class, and the subagent and user prompt a request works for.
 
 use abyss_mitm::FlowContext;
 use abyss_plugin_protocol::event::EventPurpose;
@@ -16,14 +16,26 @@ use super::{HarnessDetector, client_version, header};
 
 /// Kind of request: `main`, `subagent`, `compaction`, `auxiliary`, and others.
 const REQUEST_CLASS: &str = "x-claude-code-request-class";
+/// Subagent the request belongs to.
+const AGENT_ID: &str = "x-claude-code-agent-id";
+/// Subagent that spawned the request's subagent.
+const PARENT_AGENT_ID: &str = "x-claude-code-parent-agent-id";
+/// User prompt the request ultimately works for.
+const PROMPT_ID: &str = "x-claude-code-prompt-id";
 /// Line prefix Claude Code writes at the start of its first system block.
 const BILLING_HEADER: &str = "x-anthropic-billing-header:";
 /// System instruction Claude Code sends when naming the session it runs in.
 const NAMING_INSTRUCTION: &str = "You are naming a coding session";
 
-/// Reads the request class Claude Code declares in its headers, and
-/// recognizes the call that names its session.
+/// Reads the request class, subagent, and prompt Claude Code declares in its
+/// headers, and recognizes the call that names its session.
 pub(super) fn declare(source: &DeclarationSource<'_>) -> AgentDeclaration {
+    let declared = |name: &str| {
+        source
+            .request_or_connection_headers()
+            .and_then(|headers| header(headers, name))
+            .map(str::to_owned)
+    };
     let class = source
         .headers
         .and_then(|headers| header(headers, REQUEST_CLASS));
@@ -34,7 +46,12 @@ pub(super) fn declare(source: &DeclarationSource<'_>) -> AgentDeclaration {
     } else {
         None
     };
-    AgentDeclaration { purpose }
+    AgentDeclaration {
+        purpose,
+        subagent_id: declared(AGENT_ID),
+        parent_subagent_id: declared(PARENT_AGENT_ID),
+        root_turn_id: declared(PROMPT_ID),
+    }
 }
 
 /// Claude Code names its session from a dedicated call: the billing header
@@ -158,6 +175,7 @@ mod tests {
     fn declared(pairs: &[(&'static str, &str)]) -> AgentDeclaration {
         declare(&DeclarationSource {
             headers: Some(&headers(pairs)),
+            connection_headers: None,
             body: None,
             client_metadata: None,
         })
@@ -179,11 +197,43 @@ mod tests {
             let declaration = declared(&[
                 ("x-claude-code-session-id", "session-1"),
                 ("x-claude-code-request-class", class),
-                ("x-claude-code-prompt-id", "prompt-1"),
             ]);
             assert_eq!(declaration, AgentDeclaration::default(), "{class}");
         }
         assert_eq!(declared(&[]), AgentDeclaration::default());
+    }
+
+    #[test]
+    fn agent_headers_declare_the_subagent_and_the_prompt() {
+        let main = declared(&[
+            ("x-claude-code-session-id", "session-1"),
+            ("x-claude-code-prompt-id", "prompt-1"),
+        ]);
+        assert_eq!(
+            (main.subagent_id, main.parent_subagent_id, main.root_turn_id),
+            (None, None, Some("prompt-1".to_owned()))
+        );
+        let nested = declared(&[
+            ("x-claude-code-session-id", "session-1"),
+            ("x-claude-code-agent-id", "a-2"),
+            ("x-claude-code-parent-agent-id", "a-1"),
+            ("x-claude-code-prompt-id", "prompt-1"),
+        ]);
+        assert_eq!(
+            (
+                nested.subagent_id.as_deref(),
+                nested.parent_subagent_id.as_deref(),
+                nested.root_turn_id.as_deref()
+            ),
+            (Some("a-2"), Some("a-1"), Some("prompt-1"))
+        );
+        // Codex's thread headers mean nothing to Claude Code.
+        let codex = declared(&[
+            ("session-id", "session-1"),
+            ("thread-id", "t-2"),
+            ("x-codex-parent-thread-id", "session-1"),
+        ]);
+        assert_eq!(codex, AgentDeclaration::default());
     }
 
     fn naming_body(system: &Value) -> Value {
@@ -205,6 +255,7 @@ mod tests {
     fn naming(body: &Value) -> AgentDeclaration {
         declare(&DeclarationSource {
             headers: Some(&headers(&[("x-claude-code-request-class", "auxiliary")])),
+            connection_headers: None,
             body: Some(body),
             client_metadata: None,
         })

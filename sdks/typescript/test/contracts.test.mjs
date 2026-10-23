@@ -18,6 +18,9 @@ test("shared AgentEvent fixture decodes through the TypeScript SDK", async () =>
   assert.equal(event.llm.provider, "openai");
   assert.equal(event.response_id, "resp-123");
   assert.equal(event.previous_response_id, "resp-122");
+  assert.equal(event.subagent_id, "agent-2");
+  assert.equal(event.parent_subagent_id, "agent-1");
+  assert.equal(event.root_turn_id, "turn-1");
   assert.equal(event.purpose, "session_title");
   assert.deepEqual(event.conversation, fixture.conversation);
   assert.deepEqual(event.headers, fixture.headers);
@@ -29,6 +32,9 @@ test("undeclared context and entry identities may be omitted", async () => {
   for (const field of [
     "response_id",
     "previous_response_id",
+    "subagent_id",
+    "parent_subagent_id",
+    "root_turn_id",
     "purpose",
     "conversation",
     "headers",
@@ -36,6 +42,7 @@ test("undeclared context and entry identities may be omitted", async () => {
     delete fixture[field];
   }
   assert.equal(decodeAgentEvent(fixture).response_id, undefined);
+  assert.equal(decodeAgentEvent(fixture).subagent_id, undefined);
   assert.equal(decodeAgentEvent(fixture).headers, undefined);
   fixture.purpose = "compaction";
   fixture.omitted = ["conversation_text"];
