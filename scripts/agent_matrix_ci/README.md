@@ -24,16 +24,16 @@ skip. The local catalog and GLM integrations remain available for diagnostics.
 To restore CI coverage, remove the GLM `jq` filter and temporary notice from
 the shared workflow, and update the counts here.
 
-Automatic PR runs are limited to `abyss-broker` and its transitive workspace
-dependencies: `abyss-agent-hook`, `abyss-mitm`, `abyss-plugin-protocol`, and
-`abyss-storage`.
-Changes anywhere in those crate directories, the root `Cargo.toml`/`Cargo.lock`,
-`.cargo/`, or `rust-toolchain`/`rust-toolchain.toml` trigger all four groups.
-Keep the four entry workflows' path filters aligned when the dependency graph
-changes. Unrelated changes (including CLI-only crates, top-level docs,
-TypeScript/Python SDKs, integrations, and CI scripts/workflows alone) do not start
-the matrix. Use manual dispatch to validate matrix or integration changes
-outside these paths. [PR path filters](https://docs.github.com/en/actions/reference/workflows-and-actions/workflow-syntax#git-diff-comparisons)
+Automatic PR runs are limited to changes under `crates/abyss-broker/`,
+`crates/abyss-agent-hook/`, and `crates/abyss-mitm/`. A matching PR targeting
+`main` triggers all four groups. Keep the four entry workflows' path filters
+aligned.
+Changes confined to other crates (including `abyss-plugin-protocol` and
+`abyss-storage`), root `Cargo.toml`/`Cargo.lock`, `.cargo/`, Rust toolchain files,
+top-level docs, SDKs, integrations, or CI scripts/workflows do not start the
+matrix automatically. Use manual dispatch to validate changes outside the
+three selected directories.
+[PR path filters](https://docs.github.com/en/actions/reference/workflows-and-actions/workflow-syntax#git-diff-comparisons)
 evaluate the entire PR diff, not just its latest commit.
 
 **Only one live CI job per provider runs at a time across the repository.**
