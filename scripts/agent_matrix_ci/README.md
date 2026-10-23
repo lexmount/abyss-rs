@@ -5,17 +5,24 @@ DSH headless, and Hermes CLI clients through the current checkout's broker and
 delivery plugin into a fresh, digest-pinned Backend and PostgreSQL. They share
 `scripts.agent_e2e_ci`'s stack lifecycle and subprocess handling.
 
-| Workflow | Default cells |
+| Workflow | Current CI cells |
 | --- | ---: |
-| [Codex Model Matrix](../../.github/workflows/codex-model-matrix.yml) | 7 |
-| [Claude Code Model Matrix](../../.github/workflows/claude-code-model-matrix.yml) | 6 |
-| [DSH Model Matrix](../../.github/workflows/dsh-model-matrix.yml) | 19 |
-| [Hermes Model Matrix](../../.github/workflows/hermes-model-matrix.yml) | 19 |
+| [Codex Model Matrix](../../.github/workflows/codex-model-matrix.yml) | 6 |
+| [Claude Code Model Matrix](../../.github/workflows/claude-code-model-matrix.yml) | 5 |
+| [DSH Model Matrix](../../.github/workflows/dsh-model-matrix.yml) | 16 |
+| [Hermes Model Matrix](../../.github/workflows/hermes-model-matrix.yml) | 16 |
 
 Each group has its own run, per-cell checks, artifacts and required aggregation.
 Select the harness's workflow in Actions to inspect or rerun only that group.
 All four call [the shared execution workflow](../../.github/workflows/agent-model-matrix.yml)
 so client installation, assertions and credential handling stay consistent.
+
+**GLM is temporarily disabled in CI across all four harnesses.** The shared
+workflow removes its eight cells before scheduling and aggregation, leaving
+43 default CI cells. A manual dispatch selecting only GLM records an explicit
+skip. The local catalog and GLM integrations remain available for diagnostics.
+To restore CI coverage, remove the GLM `jq` filter and temporary notice from
+the shared workflow, and update the counts here.
 
 Automatic PR runs are limited to `abyss-broker` and its transitive workspace
 dependencies: `abyss-agent-hook`, `abyss-mitm`, `abyss-plugin-protocol`, and
@@ -46,7 +53,7 @@ existing workflow-level cancellation still supersedes older commits on the
 same PR. Serialization controls CI job overlap; it does not retry or hide
 provider errors, or coordinate callers outside this repository's workflows.
 
-The default matrix has **51 cells, 22 harness/provider combinations, and 40
+The full local catalog has **51 cells, 22 harness/provider combinations, and 40
 harness/provider/protocol routes**. Each model in a route is tested separately.
 
 | Provider | Default models | Codex CLI | Claude Code | DSH headless / Hermes CLI |
@@ -58,7 +65,8 @@ harness/provider/protocol routes**. Each model in a route is tested separately.
 | Kimi | `kimi-k3` | Responses | Messages | All three protocols |
 | Qwen | `qwen3.8-flash` | Responses | Messages | All three protocols |
 
-There are 7 Codex, 6 Claude Code, 19 DSH, and 19 Hermes cells. Desktop, TUI and Web UI
+Before the temporary CI exclusion, there are 7 Codex, 6 Claude Code, 19 DSH, and
+19 Hermes cells. Desktop, TUI and Web UI
 clients are excluded. This tests the actual clients, not hand-written API
 requests bearing spoofed harness headers. Incompatible direct combinations are
 not scheduled; the matrix does not install a protocol-converting gateway.
@@ -184,9 +192,10 @@ login. Local legacy Codex runs without the key environment retain login support.
 
 All four workflows run on matching same-repository PRs and manual dispatch.
 Select the harness's workflow, then optionally filter provider, protocol or
-exact model; unmatched filters fail. `fail-fast: false` preserves remaining results. The
-repository-wide limit is one job per provider. With six configured providers,
-at most six live provider jobs can execute simultaneously.
+exact model; unmatched filters fail, while GLM-only selections explicitly skip
+during the temporary pause. `fail-fast: false` preserves remaining results. The
+repository-wide limit is one job per provider. With GLM paused, at most five
+live provider jobs can execute simultaneously.
 Each group's final aggregation requires an artifact and PASS from **every planned cell**;
 missing artifacts, failed clients, 429s, unavailable models, and mismatches all
 fail. The `skip-agent-e2e` label records a deliberate whole-matrix skip. Matching
