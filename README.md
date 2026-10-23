@@ -85,6 +85,14 @@ The broker provides a live event stream; plugins own remote authentication,
 persistence, and retries. See the [plugin mechanism](https://abyss.lexmount.cn/docs/development/basics/abyss-broker-mechanism#plugins)
 for the integration model and protocol details.
 
+## Data query CLI
+
+`abyss-query` reads sessions, events, trajectories, search results and usage from
+SaaS or self-hosted HTTP backends on Windows, Linux and macOS. It provides named
+profiles, optional bearer or terminal login, bounded pagination and versioned
+JSON/JSONL output for Agents. See the [query CLI guide](crates/abyss-query-cli/README.md)
+and [Rust data client](crates/abyss-data-client/README.md).
+
 ## SDK
 
 The SDKs provide clients for the broker REST API and plugin event stream, making

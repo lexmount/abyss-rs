@@ -5,7 +5,9 @@ edition.workspace = true
 authors.workspace = true
 license-file.workspace = true
 repository.workspace = true
-publish = false
+publish = ["crates-io"]
+readme = "README.md"
+description = "Reusable terminal PKCE authentication contracts and credential helpers"
 
 [dependencies]
 base64 = "0.22"
