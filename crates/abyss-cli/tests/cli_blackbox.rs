@@ -344,7 +344,7 @@ fn deploy_local_reports_redirect_safe_stages_and_preserves_endpoint_output() {
         "[1/5] Checking local dependencies...",
         "[1/5] Checking local dependencies... done",
         "[2/5] Preparing abyss-backend v1.1.0... configured",
-        "[3/5] Preparing abyss-dashboard v0.2.0... configured",
+        "[3/5] Preparing abyss-dashboard v0.3.0... configured",
         "[4/5] Starting local services...",
         "Starting backend; waiting for health check",
         "Backend ready: http://127.0.0.1:",
