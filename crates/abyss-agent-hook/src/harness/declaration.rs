@@ -13,6 +13,10 @@ pub struct DeclarationSource<'a> {
     /// Request headers; `None` where no header describes the request, such as
     /// a WebSocket frame after the upgrade.
     pub headers: Option<&'a HeaderMap>,
+    /// Headers that describe every request of the connection: a WebSocket
+    /// upgrade request's. Agents read only connection-wide declarations, such
+    /// as their thread, from them; a request's own headers come first.
+    pub connection_headers: Option<&'a HeaderMap>,
     /// Decoded request body, when the protocol sends one per request.
     pub body: Option<&'a Value>,
     /// The OpenAI request `client_metadata` object.
@@ -24,4 +28,19 @@ pub struct DeclarationSource<'a> {
 pub struct AgentDeclaration {
     /// What the Agent made the call for.
     pub purpose: Option<EventPurpose>,
+    /// Subagent the request belongs to; absent on the main agent's requests.
+    pub subagent_id: Option<String>,
+    /// Subagent that spawned this one; absent when the main agent did.
+    pub parent_subagent_id: Option<String>,
+    /// Turn the request ultimately works for; a subagent's requests carry the
+    /// turn that spawned it.
+    pub root_turn_id: Option<String>,
+}
+
+impl DeclarationSource<'_> {
+    /// The request's own headers, else the connection's.
+    #[must_use]
+    pub fn request_or_connection_headers(&self) -> Option<&HeaderMap> {
+        self.headers.or(self.connection_headers)
+    }
 }

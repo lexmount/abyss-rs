@@ -8,6 +8,12 @@ export interface AgentEvent {
   session_id: string;
   response_id?: string;
   previous_response_id?: string;
+  /** Subagent the client declared in its request headers, verbatim. */
+  subagent_id?: string;
+  /** Subagent that spawned it; absent when the main agent spawned it. */
+  parent_subagent_id?: string;
+  /** Turn opened by input from outside the agent loop that this works for. */
+  root_turn_id?: string;
   purpose?: EventPurpose;
   llm: LlmContext;
   side: AgentEventSide;
@@ -115,6 +121,9 @@ export function decodeAgentEvent(value: unknown): AgentEvent {
       "session_id",
       "response_id",
       "previous_response_id",
+      "subagent_id",
+      "parent_subagent_id",
+      "root_turn_id",
       "purpose",
       "llm",
       "side",
@@ -134,7 +143,13 @@ export function decodeAgentEvent(value: unknown): AgentEvent {
   decodeDevice(event.device);
   decodeAgent(event.agent);
   stringField(event, "session_id");
-  for (const field of ["response_id", "previous_response_id"]) {
+  for (const field of [
+    "response_id",
+    "previous_response_id",
+    "subagent_id",
+    "parent_subagent_id",
+    "root_turn_id",
+  ]) {
     optionalStringField(event, field);
   }
   if (event.purpose !== undefined) {

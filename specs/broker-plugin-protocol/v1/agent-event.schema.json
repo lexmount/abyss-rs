@@ -37,6 +37,15 @@
     "previous_response_id": {
       "type": "string"
     },
+    "subagent_id": {
+      "type": "string"
+    },
+    "parent_subagent_id": {
+      "type": "string"
+    },
+    "root_turn_id": {
+      "type": "string"
+    },
     "purpose": {
       "enum": [
         "session_title",

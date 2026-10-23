@@ -201,6 +201,9 @@ provider documents, and original content blocks are not part of the contract.
   "session_id": "session-123",
   "response_id": "resp-123",
   "previous_response_id": "resp-122",
+  "subagent_id": "agent-2",
+  "parent_subagent_id": "agent-1",
+  "root_turn_id": "turn-1",
   "purpose": "session_title",
   "llm": {
     "provider": "openai",
@@ -373,6 +376,26 @@ declares none:
   - Anthropic: `previous_message_id` of a `thread` `continue` request.
   - OpenAI: the request's `previous_response_id`.
 
+## Declared subagent and root turn
+
+Three optional fields carry what a client declares about its subagents and
+turns. Each is read only from the request headers (the upgrade request for a
+WebSocket connection), taken verbatim, and omitted when the request declares
+none; the collector never substitutes a value. Both events of an exchange
+carry the same values, and none enters the event id.
+
+| Field | Meaning | Claude Code | Codex |
+| --- | --- | --- | --- |
+| `subagent_id` | The subagent the exchange belongs to; absent for the main agent and for side requests. | `x-claude-code-agent-id` | `thread-id`, only when the request carries `x-codex-parent-thread-id` |
+| `parent_subagent_id` | The subagent that spawned it; absent when the main agent spawned it. | `x-claude-code-parent-agent-id` | `x-codex-parent-thread-id`, unless it equals the `session-id` header, which names the main thread |
+| `root_turn_id` | The turn the exchange ultimately works for, opened by input from outside the agent loop. A subagent carries the id of the turn that spawned it. | `x-claude-code-prompt-id` | the `root_turn_id` string of the `x-codex-turn-metadata` JSON object |
+
+A header counts when its value is non-empty and valid UTF-8. A Codex
+`root_turn_id` is read only when `x-codex-turn-metadata` is a JSON object
+whose `root_turn_id` is a non-empty string. Other clients send none of these
+headers, so their events carry none of the fields. The headers themselves
+remain in `headers`.
+
 ## Headers
 
 `headers` lists the captured headers of the event's side: the request headers
@@ -433,7 +456,8 @@ idempotent. Distinct provider calls produce distinct ids. The content digest
 covers the side's conversation entries before the content policy applies, so
 the policy does not change an id: every entry's `role`, `text`, `call_id`,
 `name`, and `item_id` in order, followed by the digests of the side's
-attachments. `completeness` and the headers do not enter the id.
+attachments. `completeness`, the declared subagent and root turn ids, and the
+headers do not enter the id.
 
 The broker emits events only for exchanges its Agent protocol parser accepted.
 An exchange the parser rejects produces no event. Within an exchange that
@@ -444,8 +468,9 @@ usage.
 ## Delivery
 
 The official delivery plugin stores the conversation as `metadata.conversation`,
-the purpose as `metadata.purpose`, and the headers as `metadata.headers`. It sends `response_id` and
-`previous_response_id` as top-level fields of the backend usage event. Backend
+the purpose as `metadata.purpose`, and the headers as `metadata.headers`. It sends `response_id`,
+`previous_response_id`, `subagent_id`, `parent_subagent_id`, and
+`root_turn_id` as top-level fields of the backend usage event. Backend
 trajectories consume these fields without decoding provider bodies. Other plugins may translate the event for their own destinations.
 
 Rust, Python, and TypeScript SDKs all request protocol version 1 and consume this

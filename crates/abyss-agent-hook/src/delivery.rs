@@ -173,6 +173,9 @@ pub mod tests {
             session_id: "session-1".to_owned(),
             response_id: None,
             previous_response_id: None,
+            subagent_id: None,
+            parent_subagent_id: None,
+            root_turn_id: None,
             purpose: None,
             llm: LlmPayload {
                 provider: "openai".to_owned(),

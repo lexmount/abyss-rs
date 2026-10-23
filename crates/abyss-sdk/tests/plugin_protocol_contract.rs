@@ -55,10 +55,20 @@ fn structured_conversation_and_handshakes_round_trip() {
         Some(abyss_sdk::plugin::EventPurpose::Prewarm)
     );
     assert_eq!(serde_json::to_value(decoded).unwrap(), prewarm);
-    for field in ["response_id", "previous_response_id"] {
+    for field in [
+        "response_id",
+        "previous_response_id",
+        "subagent_id",
+        "parent_subagent_id",
+        "root_turn_id",
+    ] {
         assert_eq!(schema["properties"][field]["type"], "string", "{field}");
         assert!(fixture[field].is_string(), "{field}");
     }
+    let event: AgentEvent = serde_json::from_value(fixture.clone()).unwrap();
+    assert_eq!(event.subagent_id.as_deref(), Some("agent-2"));
+    assert_eq!(event.parent_subagent_id.as_deref(), Some("agent-1"));
+    assert_eq!(event.root_turn_id.as_deref(), Some("turn-1"));
     let messages = contract.json("messages.schema.json");
     for name in ["pluginHello", "brokerHello"] {
         assert_eq!(
