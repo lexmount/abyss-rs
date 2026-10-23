@@ -123,21 +123,19 @@ fn retries_transient_gets_but_not_auth_posts() {
 
 #[test]
 fn request_deadline_includes_waiting_for_response() {
+    // Native certificate discovery happens while building the client and can
+    // be slow on a shared macOS runner. It is outside the HTTP request deadline.
+    let client = transport(Duration::from_millis(100), 0);
     let server = Fixture::plain(vec![(
         "HTTP/1.1 200 OK\r\nContent-Length: 2\r\n\r\n{}".into(),
         Duration::from_millis(400),
     )]);
-    let started = Instant::now();
     assert!(
         matches!(
-            transport(Duration::from_millis(100), 0).get::<Value>(&server.url, None),
-            Err(DataClientError::Transport(_))
+            client.get::<Value>(&server.url, None),
+            Err(DataClientError::Transport(error)) if error.is_timeout()
         ),
-        "request deadline enforced"
-    );
-    assert!(
-        started.elapsed() < Duration::from_secs(2),
-        "bounded execution"
+        "the delayed HTTP response must trigger the configured request timeout"
     );
     server.finish();
 }
