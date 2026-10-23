@@ -1,4 +1,4 @@
-name: Publish broker, SDK and query CLI to crates.io
+name: Crates.io validation and release
 
 on:
   push:
