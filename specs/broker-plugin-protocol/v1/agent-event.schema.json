@@ -43,7 +43,7 @@
     "parent_subagent_id": {
       "type": "string"
     },
-    "root_turn_id": {
+    "turn_id": {
       "type": "string"
     },
     "purpose": {

@@ -62,8 +62,8 @@ def assert_structured(events):
             assert entry["role"] in ROLES, entry
         assert conversation["completeness"] == "complete", event
         assert "omitted" not in event, event
-        # The collector infers no turn, thread, naming thread, or title.
-        for field in ("turn_id", "naming_thread", "stream_id", "session_title"):
+        # The collector infers no thread, naming thread, or title.
+        for field in ("naming_thread", "stream_id", "session_title"):
             assert field not in event, (field, event)
     first_request, first_reply, second_request, second_reply = events[:4]
     for turn, (request, reply) in enumerate(

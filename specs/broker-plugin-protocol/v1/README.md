@@ -203,7 +203,7 @@ provider documents, and original content blocks are not part of the contract.
   "previous_response_id": "resp-122",
   "subagent_id": "agent-2",
   "parent_subagent_id": "agent-1",
-  "root_turn_id": "turn-1",
+  "turn_id": "turn-1",
   "purpose": "session_title",
   "llm": {
     "provider": "openai",
@@ -388,11 +388,11 @@ carry the same values, and none enters the event id.
 | --- | --- | --- | --- |
 | `subagent_id` | The subagent the exchange belongs to; absent for the main agent and for side requests. | `x-claude-code-agent-id` | `thread-id`, only when the request carries `x-codex-parent-thread-id` |
 | `parent_subagent_id` | The subagent that spawned it; absent when the main agent spawned it. | `x-claude-code-parent-agent-id` | `x-codex-parent-thread-id`, unless it equals the `session-id` header, which names the main thread |
-| `root_turn_id` | The turn the exchange ultimately works for, opened by input from outside the agent loop. A subagent carries the id of the turn that spawned it. | `x-claude-code-prompt-id` | the `root_turn_id` string of the `x-codex-turn-metadata` JSON object |
+| `turn_id` | The root turn the client declares: the user input the exchange ultimately works for. A subagent's exchanges carry the value of the turn that spawned it; an exchange the client makes for no turn carries none. | `x-claude-code-prompt-id` | the `root_turn_id` string of the `x-codex-turn-metadata` JSON object |
 
 A header counts when its value is non-empty and valid UTF-8. A Codex
-`root_turn_id` is read only when `x-codex-turn-metadata` is a JSON object
-whose `root_turn_id` is a non-empty string. Other clients send none of these
+`turn_id` is read only when `x-codex-turn-metadata` is a JSON object whose
+`root_turn_id` is a non-empty string. Other clients send none of these
 headers, so their events carry none of the fields. The headers themselves
 remain in `headers`.
 
@@ -470,7 +470,7 @@ usage.
 The official delivery plugin stores the conversation as `metadata.conversation`,
 the purpose as `metadata.purpose`, and the headers as `metadata.headers`. It sends `response_id`,
 `previous_response_id`, `subagent_id`, `parent_subagent_id`, and
-`root_turn_id` as top-level fields of the backend usage event. Backend
+`turn_id` as top-level fields of the backend usage event. Backend
 trajectories consume these fields without decoding provider bodies. Other plugins may translate the event for their own destinations.
 
 Rust, Python, and TypeScript SDKs all request protocol version 1 and consume this

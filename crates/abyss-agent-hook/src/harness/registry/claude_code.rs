@@ -50,7 +50,7 @@ pub(super) fn declare(source: &DeclarationSource<'_>) -> AgentDeclaration {
         purpose,
         subagent_id: declared(AGENT_ID),
         parent_subagent_id: declared(PARENT_AGENT_ID),
-        root_turn_id: declared(PROMPT_ID),
+        turn_id: declared(PROMPT_ID),
     }
 }
 
@@ -210,7 +210,7 @@ mod tests {
             ("x-claude-code-prompt-id", "prompt-1"),
         ]);
         assert_eq!(
-            (main.subagent_id, main.parent_subagent_id, main.root_turn_id),
+            (main.subagent_id, main.parent_subagent_id, main.turn_id),
             (None, None, Some("prompt-1".to_owned()))
         );
         let nested = declared(&[
@@ -223,7 +223,7 @@ mod tests {
             (
                 nested.subagent_id.as_deref(),
                 nested.parent_subagent_id.as_deref(),
-                nested.root_turn_id.as_deref()
+                nested.turn_id.as_deref()
             ),
             (Some("a-2"), Some("a-1"), Some("prompt-1"))
         );

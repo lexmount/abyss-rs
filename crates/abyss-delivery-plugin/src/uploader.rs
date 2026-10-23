@@ -361,7 +361,7 @@ struct IngestUsageEvent {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     parent_subagent_id: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    root_turn_id: Option<String>,
+    turn_id: Option<String>,
     llm: LlmPayload,
     event_type: String,
     token_usage: BackendTokenUsage,
@@ -409,7 +409,7 @@ impl TryFrom<AgentEvent> for IngestUsageEvent {
             previous_response_id: event.previous_response_id,
             subagent_id: event.subagent_id,
             parent_subagent_id: event.parent_subagent_id,
-            root_turn_id: event.root_turn_id,
+            turn_id: event.turn_id,
             llm: LlmPayload {
                 provider: event.llm.provider.wire_name().to_owned(),
                 model: event.llm.model,
@@ -562,8 +562,8 @@ mod tests {
 
         assert_eq!(ingest_event["subagent_id"], "agent-2");
         assert_eq!(ingest_event["parent_subagent_id"], "agent-1");
-        assert_eq!(ingest_event["root_turn_id"], "turn-1");
-        for field in ["subagent_id", "parent_subagent_id", "root_turn_id"] {
+        assert_eq!(ingest_event["turn_id"], "turn-1");
+        for field in ["subagent_id", "parent_subagent_id", "turn_id"] {
             assert!(ingest_event["metadata"].get(field).is_none(), "{field}");
         }
     }
@@ -660,7 +660,7 @@ mod tests {
             previous_response_id: None,
             subagent_id: None,
             parent_subagent_id: None,
-            root_turn_id: None,
+            turn_id: None,
             purpose: None,
             llm: LlmContext {
                 provider: LlmProvider::OpenAi,
@@ -699,7 +699,7 @@ mod tests {
                 .get("previous_response_id")
                 .is_none()
         );
-        for field in ["subagent_id", "parent_subagent_id", "root_turn_id"] {
+        for field in ["subagent_id", "parent_subagent_id", "turn_id"] {
             assert!(
                 serialized["events"][0].get(field).is_none(),
                 "an undeclared {field} is omitted"
@@ -726,7 +726,7 @@ mod tests {
         let ingest_event = &serialized["events"][0];
         let metadata = &ingest_event["metadata"];
 
-        assert!(ingest_event.get("turn_id").is_none());
+        assert_eq!(ingest_event["turn_id"], "turn-1");
         assert!(ingest_event.get("stream_id").is_none());
         assert_eq!(ingest_event["response_id"], "resp-123");
         assert_eq!(ingest_event["previous_response_id"], "resp-122");

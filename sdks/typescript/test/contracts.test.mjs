@@ -20,7 +20,7 @@ test("shared AgentEvent fixture decodes through the TypeScript SDK", async () =>
   assert.equal(event.previous_response_id, "resp-122");
   assert.equal(event.subagent_id, "agent-2");
   assert.equal(event.parent_subagent_id, "agent-1");
-  assert.equal(event.root_turn_id, "turn-1");
+  assert.equal(event.turn_id, "turn-1");
   assert.equal(event.purpose, "session_title");
   assert.deepEqual(event.conversation, fixture.conversation);
   assert.deepEqual(event.headers, fixture.headers);
@@ -34,7 +34,7 @@ test("undeclared context and entry identities may be omitted", async () => {
     "previous_response_id",
     "subagent_id",
     "parent_subagent_id",
-    "root_turn_id",
+    "turn_id",
     "purpose",
     "conversation",
     "headers",
@@ -77,9 +77,6 @@ test("structured events reject obsolete fields and malformed content", async () 
     },
     (e) => {
       e.tool_results = [];
-    },
-    (e) => {
-      e.turn_id = "turn-1";
     },
     (e) => {
       e.naming_thread = true;

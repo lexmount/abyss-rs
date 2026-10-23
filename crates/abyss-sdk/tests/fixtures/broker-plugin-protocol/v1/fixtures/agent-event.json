@@ -15,7 +15,7 @@
   "previous_response_id": "resp-122",
   "subagent_id": "agent-2",
   "parent_subagent_id": "agent-1",
-  "root_turn_id": "turn-1",
+  "turn_id": "turn-1",
   "purpose": "session_title",
   "llm": {
     "provider": "openai",

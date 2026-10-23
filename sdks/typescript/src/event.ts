@@ -13,7 +13,7 @@ export interface AgentEvent {
   /** Subagent that spawned it; absent when the main agent spawned it. */
   parent_subagent_id?: string;
   /** Turn opened by input from outside the agent loop that this works for. */
-  root_turn_id?: string;
+  turn_id?: string;
   purpose?: EventPurpose;
   llm: LlmContext;
   side: AgentEventSide;
@@ -123,7 +123,7 @@ export function decodeAgentEvent(value: unknown): AgentEvent {
       "previous_response_id",
       "subagent_id",
       "parent_subagent_id",
-      "root_turn_id",
+      "turn_id",
       "purpose",
       "llm",
       "side",
@@ -148,7 +148,7 @@ export function decodeAgentEvent(value: unknown): AgentEvent {
     "previous_response_id",
     "subagent_id",
     "parent_subagent_id",
-    "root_turn_id",
+    "turn_id",
   ]) {
     optionalStringField(event, field);
   }
