@@ -142,6 +142,21 @@ These rules target Model Studio API endpoints, not the entire `aliyuncs.com`
 domain. See [Qwen with DSH](qwen.md) for the three compatible APIs, client
 configuration, and session attribution.
 
+For MiniMax, add its current domestic and international API hosts and the
+legacy domestic API hostname:
+
+```toml
+[[mitm.tls_decryption.rules]]
+id = "decrypt-minimax-api"
+enabled = true
+action = "intercept"
+destination_hosts = ["api.minimax.cn", "api.minimax.io", "api.minimaxi.com"]
+```
+
+New CLI policies include this rule. Existing policies need the explicit update;
+custom gateways need their own host rule. See [MiniMax with DSH](minimax.md)
+for Messages, Chat Completions, and Responses configuration and live validation.
+
 The built-in DSH detector recognizes the literal, case-sensitive
 `deepseek-harness/` prefix in the model request's User-Agent without source
 process metadata. Its optional policy entry controls enablement and content

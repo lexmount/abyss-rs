@@ -50,6 +50,7 @@ abyss run -- codex
 - [GLM](docs/glm.md)
 - [Kimi](docs/kimi.md)
 - [Qwen](docs/qwen.md)
+- [MiniMax](docs/minimax.md)
 
 Open the dashboard to review captured activity, or inspect the runtime from your terminal:
 

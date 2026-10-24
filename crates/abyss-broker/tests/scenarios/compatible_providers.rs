@@ -120,6 +120,40 @@ fn qwen_streams_preserve_tool_identity_and_corrected_messages_usage() {
     }
 }
 
+#[test]
+fn minimax_streams_preserve_reasoning_tools_and_cache_accounting() {
+    for (fixture, response) in [
+        (
+            include_str!("../../../abyss-agent-hook/tests/fixtures/minimax/chat-completions.json"),
+            include_str!("../../../abyss-agent-hook/tests/fixtures/minimax/chat-completions.sse"),
+        ),
+        (
+            include_str!("../../../abyss-agent-hook/tests/fixtures/minimax/responses.json"),
+            include_str!("../../../abyss-agent-hook/tests/fixtures/minimax/responses.sse"),
+        ),
+        (
+            include_str!("../../../abyss-agent-hook/tests/fixtures/minimax/messages.json"),
+            include_str!("../../../abyss-agent-hook/tests/fixtures/minimax/messages.sse"),
+        ),
+    ] {
+        let fixture: serde_json::Value = serde_json::from_str(fixture).unwrap();
+        StreamScenario {
+            path: fixture["path"].as_str().unwrap(),
+            request: &fixture["request"].to_string(),
+            response,
+            model: "MiniMax-M3.1-Flash",
+            call_id: "minimax-call-1",
+            input_tokens: 40,
+            cache_read_tokens: 60,
+            cache_write_tokens: 0,
+            reasoning_tokens: 5,
+            thinking: "Read the file.",
+            tool_name: "read",
+        }
+        .verify();
+    }
+}
+
 impl StreamScenario<'_> {
     fn verify(&self) {
         let api_addr = reserve_api_loopback_addr();
