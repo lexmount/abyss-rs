@@ -18,6 +18,10 @@ const PROCESS_NAMES: &[&str] = &[
     "WorkBuddy Helper (GPU)",
     "WorkBuddy Helper (Plugin)",
     "WorkBuddy Helper (Renderer)",
+    "WorkBuddy AI Helper",
+    "WorkBuddy AI Helper (GPU)",
+    "WorkBuddy AI Helper (Plugin)",
+    "WorkBuddy AI Helper (Renderer)",
 ];
 const WINDOWS_PROCESS_NAMES: &[&str] = &["WorkBuddy.exe", "WorkBuddyAI.exe"];
 const APPLICATION_IDS: &[&str] = &[
@@ -26,6 +30,11 @@ const APPLICATION_IDS: &[&str] = &[
     "com.tencent.workbuddy.mac.helper.GPU",
     "com.tencent.workbuddy.mac.helper.Plugin",
     "com.tencent.workbuddy.mac.helper.Renderer",
+    "com.workbuddy.workbuddy-ai",
+    "com.workbuddy.workbuddy-ai.helper",
+    "com.workbuddy.workbuddy-ai.helper.GPU",
+    "com.workbuddy.workbuddy-ai.helper.Plugin",
+    "com.workbuddy.workbuddy-ai.helper.Renderer",
 ];
 
 pub(super) struct WorkBuddyDetector;
@@ -148,6 +157,11 @@ mod tests {
             "WORKBUDDYAI.EXE",
             r"\device\harddiskvolume4\workbuddy\workbuddyai.exe",
             "WorkBuddy Helper (Renderer)",
+            "WorkBuddy AI Helper",
+            "WorkBuddy AI Helper (GPU)",
+            "WorkBuddy AI Helper (Plugin)",
+            "WorkBuddy AI Helper (Renderer)",
+            "/Applications/WorkBuddy AI.app/Contents/Frameworks/WorkBuddy AI Helper.app/Contents/MacOS/WorkBuddy AI Helper",
             "/Applications/WorkBuddy.app/Contents/Frameworks/WorkBuddy Helper.app/Contents/MacOS/WorkBuddy Helper",
             "C:\\Program Files\\WorkBuddy\\WorkBuddy.exe",
         ] {
@@ -168,6 +182,11 @@ mod tests {
             "com.tencent.workbuddy.mac.helper.GPU",
             "com.tencent.workbuddy.mac.helper.Plugin",
             "com.tencent.workbuddy.mac.helper.Renderer",
+            "com.workbuddy.workbuddy-ai",
+            "com.workbuddy.workbuddy-ai.helper",
+            "com.workbuddy.workbuddy-ai.helper.GPU",
+            "com.workbuddy.workbuddy-ai.helper.Plugin",
+            "com.workbuddy.workbuddy-ai.helper.Renderer",
         ] {
             assert_identity(
                 Some(
@@ -189,6 +208,8 @@ mod tests {
             "node",
             "codebuddy",
             "OtherWorkBuddy",
+            "OtherWorkBuddy AI Helper",
+            "WorkBuddy AI Helper.bak",
             "workbuddy.exe.bak",
             "WorkBuddyAI.exe.bak",
             "OtherWorkBuddyAI.exe",
@@ -204,6 +225,8 @@ mod tests {
         for application_id in [
             "com.tencent.workbuddy.mac.unrelated",
             "com.tencent.workbuddy.mac.helper.Other",
+            "com.workbuddy.workbuddy-ai.unrelated",
+            "com.workbuddy.workbuddy-ai.helper.Other",
         ] {
             assert_identity(
                 Some(
