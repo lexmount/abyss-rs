@@ -1483,6 +1483,14 @@ mod compatible_providers;
 mod process_entry_points;
 
 #[cfg(target_os = "macos")]
+#[path = "scenarios/framed.rs"]
+mod framed;
+
+#[cfg(target_os = "macos")]
+#[path = "scenarios/hermes.rs"]
+mod hermes;
+
+#[cfg(target_os = "macos")]
 #[path = "scenarios/workbuddy.rs"]
 mod workbuddy;
 

@@ -16,6 +16,7 @@ use uuid::Uuid;
 
 use super::{
     BrokerProcess, HTTP_TIMEOUT, REST_TIMEOUT, broker_binary, client, complete_http_request_len,
+    framed::{assert_no_event, read_response},
     loopback_ephemeral_addr, read_auth_token, read_plugin_frame, request_hooks_config,
     reserve_api_loopback_addr, update_hooks_config, url, write_flow_frame, write_plugin_frame,
 };
@@ -143,21 +144,6 @@ fn restart(broker: &mut BrokerProcess, startup_path: &Path) {
     broker.wait_for_running();
 }
 
-fn assert_no_event(plugin: &mut UnixStream) {
-    plugin
-        .set_read_timeout(Some(std::time::Duration::from_millis(500)))
-        .unwrap();
-    let error = plugin.read(&mut [0_u8; 4]).unwrap_err();
-    assert!(
-        matches!(
-            error.kind(),
-            std::io::ErrorKind::TimedOut | std::io::ErrorKind::WouldBlock
-        ),
-        "no event should arrive for disabled or unidentified traffic: {error}"
-    );
-    plugin.set_read_timeout(Some(REST_TIMEOUT)).unwrap();
-}
-
 fn send_model_request(socket_path: &Path, process: &str, application_id: Option<&str>) {
     let body = br#"{"model":"fixture-model","messages":[{"role":"user","content":"hello"}]}"#;
     let response_body = br#"{"id":"reply-1","model":"fixture-model","choices":[{"index":0,"message":{"role":"assistant","content":"hello back"},"finish_reason":"stop"}],"usage":{"prompt_tokens":2,"completion_tokens":3,"total_tokens":5}}"#;
@@ -218,35 +204,4 @@ fn send_model_request(socket_path: &Path, process: &str, application_id: Option<
         "response body must be forwarded unchanged"
     );
     server.join().unwrap();
-}
-
-#[expect(
-    clippy::big_endian_bytes,
-    reason = "Ingress frame lengths are network byte order."
-)]
-fn read_response(stream: &mut UnixStream) -> Vec<u8> {
-    let mut response = Vec::new();
-    loop {
-        let mut header = [0_u8; 28];
-        stream.read_exact(&mut header).unwrap();
-        assert_eq!(
-            &header[..4],
-            b"ABY1",
-            "response must use the framed ingress protocol"
-        );
-        let len = u32::from_be_bytes([header[24], header[25], header[26], header[27]]);
-        assert!(
-            len < 0x0100_0000,
-            "response frame must stay within the protocol size limit"
-        );
-        let mut payload = vec![0_u8; usize::try_from(len).unwrap()];
-        stream.read_exact(&mut payload).unwrap();
-        if header[4..6] == [2, 2] {
-            response.extend_from_slice(&payload);
-        }
-        if header[4..6] == [3, 2] {
-            return response;
-        }
-        assert_ne!(header[4], 4, "broker returned flow error: {payload:?}");
-    }
 }

@@ -12,6 +12,10 @@ use super::{HarnessDetector, client_version, header};
 const SESSION_ID: &str = "x-hermes-session-id";
 const TURN_ID: &str = "x-hermes-turn-id";
 
+// Hermes signs its managed interpreter with this identity on macOS. Generic
+// Python names and installation paths do not identify the calling Harness.
+const APPLICATION_ID: &str = "com.nousresearch.hermes.managed-python";
+
 pub(super) struct HermesDetector;
 
 impl HarnessDetector for HermesDetector {
@@ -33,10 +37,25 @@ impl HarnessDetector for HermesDetector {
             Some("originator")
         } else {
             None
-        }?;
+        };
+        let mut evidence = Vec::new();
+        if flow
+            .source_process
+            .as_ref()
+            .and_then(|source| source.application_id.as_deref())
+            == Some(APPLICATION_ID)
+        {
+            evidence.push(HarnessEvidence::ApplicationId(APPLICATION_ID.to_owned()));
+        }
+        if let Some(marker) = marker {
+            evidence.push(HarnessEvidence::Header(marker));
+        }
+        if evidence.is_empty() {
+            return None;
+        }
         Some(HarnessDetection {
             harness_id: BuiltInHarness::Hermes.into(),
-            evidence: vec![HarnessEvidence::Header(marker)],
+            evidence,
             // Do not report a compatibility codex_cli_rs version as Hermes'.
             version: client_version(user_agent, &["hermesagent/"]),
             working_directory: flow.source_working_directory().map(str::to_owned),

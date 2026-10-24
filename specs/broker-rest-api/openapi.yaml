@@ -491,6 +491,9 @@ components:
         pid:
           type: integer
           minimum: 1
+        application_id:
+          type: string
+          description: Application or code-signing identifier supplied by the platform adapter.
         upload_bytes:
           type: integer
           minimum: 0
