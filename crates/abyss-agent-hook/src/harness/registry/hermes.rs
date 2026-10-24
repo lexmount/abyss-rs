@@ -1,14 +1,10 @@
 //! Hermes identity and user-turn declarations; protocol parsers resolve sessions.
 
-use std::sync::LazyLock;
-
 use abyss_mitm::FlowContext;
 use http::HeaderMap;
 
-use crate::config::HarnessMatcherConfig;
 use crate::harness::{
     AgentDeclaration, BuiltInHarness, DeclarationSource, HarnessDetection, HarnessEvidence,
-    matcher::HarnessMatcher,
 };
 
 use super::{HarnessDetector, client_version, header};
@@ -18,10 +14,7 @@ const TURN_ID: &str = "x-hermes-turn-id";
 
 // Hermes signs its managed interpreter with this identity on macOS. Generic
 // Python names and installation paths do not identify the calling Harness.
-static SOURCE_MATCHER: LazyLock<HarnessMatcherConfig> = LazyLock::new(|| HarnessMatcherConfig {
-    application_ids: vec!["com.nousresearch.hermes.managed-python".to_owned()],
-    ..HarnessMatcherConfig::default()
-});
+const APPLICATION_ID: &str = "com.nousresearch.hermes.managed-python";
 
 pub(super) struct HermesDetector;
 
@@ -45,9 +38,15 @@ impl HarnessDetector for HermesDetector {
         } else {
             None
         };
-        let mut evidence = HarnessMatcher::new(&SOURCE_MATCHER)
-            .matches(flow)
-            .unwrap_or_default();
+        let mut evidence = Vec::new();
+        if flow
+            .source_process
+            .as_ref()
+            .and_then(|source| source.application_id.as_deref())
+            == Some(APPLICATION_ID)
+        {
+            evidence.push(HarnessEvidence::ApplicationId(APPLICATION_ID.to_owned()));
+        }
         if let Some(marker) = marker {
             evidence.push(HarnessEvidence::Header(marker));
         }
