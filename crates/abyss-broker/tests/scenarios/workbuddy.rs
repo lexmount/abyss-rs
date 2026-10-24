@@ -67,16 +67,24 @@ fn workbuddy_builtin_persists_policy_and_publishes_correlated_events() {
     );
     assert_eq!(read_plugin_frame(&mut plugin)["protocol_version"], 1_u16);
 
-    send_model_request(&socket_path, "Electron", Some("com.tencent.workbuddy.mac"));
-    for side in ["request", "response"] {
-        let event = read_plugin_frame(&mut plugin);
-        assert_eq!(event["side"], side);
-        assert_eq!(event["agent"]["name"], "workbuddy");
-        assert_eq!(event["session_id"], "workbuddy-session");
-        assert_eq!(event["turn_id"], "workbuddy-turn");
-        assert!(event.get("text").is_none_or(Value::is_null));
-        if side == "response" {
-            assert_eq!(event["token_usage"]["output_tokens"], 3_u64);
+    let identities = [
+        ("Electron", Some("com.tencent.workbuddy.mac")),
+        ("Electron", Some("com.workbuddy.workbuddy-ai")),
+        ("WorkBuddy AI Helper", None),
+        ("WorkBuddy AI Helper (Renderer)", None),
+    ];
+    for (process, application) in identities {
+        send_model_request(&socket_path, process, application);
+        for side in ["request", "response"] {
+            let event = read_plugin_frame(&mut plugin);
+            assert_eq!(event["side"], side);
+            assert_eq!(event["agent"]["name"], "workbuddy");
+            assert_eq!(event["session_id"], "workbuddy-session");
+            assert_eq!(event["turn_id"], "workbuddy-turn");
+            assert!(event.get("text").is_none_or(Value::is_null));
+            if side == "response" {
+                assert_eq!(event["token_usage"]["output_tokens"], 3_u64);
+            }
         }
     }
 
@@ -93,11 +101,19 @@ fn workbuddy_builtin_persists_policy_and_publishes_correlated_events() {
 
     send_model_request(&socket_path, "node", None);
     assert_no_event(&mut plugin);
+    send_model_request(
+        &socket_path,
+        "Electron",
+        Some("com.workbuddy.workbuddy-ai.unrelated"),
+    );
+    assert_no_event(&mut plugin);
     let mut disabled = normalized;
     disabled["harness_usage"]["config"]["harnesses"]["workbuddy"]["enabled"] = json!(false);
     update_hooks_config(api_addr, &token, &disabled);
-    send_model_request(&socket_path, "Electron", Some("com.tencent.workbuddy.mac"));
-    assert_no_event(&mut plugin);
+    for (process, application) in identities {
+        send_model_request(&socket_path, process, application);
+        assert_no_event(&mut plugin);
+    }
     broker.shutdown();
     broker.wait_for_exit();
     fs::remove_file(startup_path).unwrap();
