@@ -41,6 +41,12 @@ action = "intercept"
 destination_hosts = ["api.moonshot.cn", "api.moonshot.ai"]
 
 [[mitm.tls_decryption.rules]]
+id = "decrypt-minimax-api"
+enabled = true
+action = "intercept"
+destination_hosts = ["api.minimax.cn", "api.minimax.io", "api.minimaxi.com"]
+
+[[mitm.tls_decryption.rules]]
 id = "decrypt-qwen-api"
 enabled = true
 action = "intercept"

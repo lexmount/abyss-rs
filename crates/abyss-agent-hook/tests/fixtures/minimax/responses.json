@@ -1,0 +1,110 @@
+{
+  "path": "/v1/responses",
+  "request": {
+    "model": "MiniMax-M3.1-Flash",
+    "stream": true,
+    "input": [
+      {
+        "role": "user",
+        "content": "Read probe.txt."
+      }
+    ]
+  },
+  "followup": {
+    "model": "MiniMax-M3.1-Flash",
+    "stream": true,
+    "input": [
+      {
+        "role": "user",
+        "content": "Read probe.txt."
+      },
+      {
+        "id": "rs_minimax",
+        "type": "reasoning",
+        "summary": [],
+        "content": [
+          {
+            "type": "reasoning_text",
+            "text": "Read the file."
+          }
+        ]
+      },
+      {
+        "id": "fc_minimax",
+        "type": "function_call",
+        "call_id": "minimax-call-1",
+        "name": "read",
+        "arguments": "{\"path\":\"probe.txt\"}"
+      },
+      {
+        "type": "function_call_output",
+        "call_id": "minimax-call-1",
+        "output": "MINIMAX_PROBE_OK"
+      }
+    ]
+  },
+  "response": {
+    "id": "resp_minimax_1",
+    "model": "MiniMax-M3.1-Flash",
+    "status": "completed",
+    "output": [
+      {
+        "id": "rs_minimax",
+        "type": "reasoning",
+        "summary": [],
+        "content": [
+          {
+            "type": "reasoning_text",
+            "text": "Read the file."
+          }
+        ]
+      },
+      {
+        "id": "fc_minimax",
+        "type": "function_call",
+        "call_id": "minimax-call-1",
+        "name": "read",
+        "arguments": "{\"path\":\"probe.txt\"}"
+      }
+    ],
+    "usage": {
+      "input_tokens": 100,
+      "input_tokens_details": {
+        "cached_tokens": 60
+      },
+      "output_tokens": 12,
+      "output_tokens_details": {
+        "reasoning_tokens": 5
+      },
+      "total_tokens": 112
+    }
+  },
+  "reply": {
+    "id": "resp_minimax_2",
+    "model": "MiniMax-M3.1-Flash",
+    "status": "completed",
+    "output": [
+      {
+        "type": "message",
+        "role": "assistant",
+        "content": [
+          {
+            "type": "output_text",
+            "text": "MINIMAX_PROBE_OK"
+          }
+        ]
+      }
+    ],
+    "usage": {
+      "input_tokens": 120,
+      "input_tokens_details": {
+        "cached_tokens": 60
+      },
+      "output_tokens": 12,
+      "output_tokens_details": {
+        "reasoning_tokens": 5
+      },
+      "total_tokens": 132
+    }
+  }
+}
