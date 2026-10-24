@@ -21,6 +21,11 @@ native adapter supplies it. This reuses the built-in source matcher and works
 with ordinary OpenAI SDK headers; generic Python names and installation paths
 do not identify Hermes. Source identity does not supply a session or turn ID.
 
+For live connection display, `/v1/traffic/snapshot` preserves the adapter's
+application ID as `active_flows[].application_id`. Completed network observations
+already expose the same captured value as `source_bundle_id`. These metadata
+fields are independent of Agent event parsing and Harness enablement.
+
 Hermes 0.22's ordinary OpenAI API route does not send a session header by default.
 The included [Hermes plugin](../integrations/hermes/abyss) uses Hermes' supported
 `llm_request` middleware to add:

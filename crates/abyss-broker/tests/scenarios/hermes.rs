@@ -64,6 +64,7 @@ fn hermes_sdk_requests_are_identified_from_native_source_metadata() {
             let flows = snapshot["active_flows"].as_array().unwrap();
             assert_eq!(flows.len(), 1, "in-flight request must be visible");
             assert_eq!(flows[0]["process"], "python3.14");
+            assert_eq!(flows[0]["application_id"].as_str(), application);
             Uuid::parse_str(flows[0]["id"].as_str().unwrap()).unwrap()
         });
         if expected.is_some() {
