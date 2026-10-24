@@ -301,7 +301,7 @@ struct NetworkObservationQuery {
 struct NetworkObservationsResponse {
     schema_version: u8,
     broker_started_at_unix_ms: u64,
-    observations: Vec<crate::network_diagnostics::NetworkObservation>,
+    observations: Vec<crate::network_diagnostics::NetworkObservationView>,
 }
 
 async fn network_observations(
@@ -320,6 +320,16 @@ async fn network_observations(
     let observations = tokio::task::spawn_blocking(move || store.latest(limit))
         .await
         .map_err(|source| BrokerError::task("query network observations", source))??;
+    let hooks = state.runtime_config.hooks_config();
+    let observations = observations
+        .into_iter()
+        .map(|observation| {
+            crate::network_diagnostics::NetworkObservationView::new(
+                observation,
+                &hooks.harness_usage.config,
+            )
+        })
+        .collect();
     Ok(Json(NetworkObservationsResponse {
         schema_version: 1,
         broker_started_at_unix_ms: state.diagnostics.started_at_unix_ms(),
@@ -328,7 +338,11 @@ async fn network_observations(
 }
 
 async fn traffic_snapshot(State(state): State<AppState>) -> Json<crate::traffic::TrafficSnapshot> {
-    Json(state.traffic.snapshot())
+    Json(
+        state
+            .traffic
+            .snapshot(&state.runtime_config.hooks_config().harness_usage.config),
+    )
 }
 
 async fn shutdown_broker(State(state): State<AppState>) -> Result<Json<ProxyStatus>, BrokerError> {

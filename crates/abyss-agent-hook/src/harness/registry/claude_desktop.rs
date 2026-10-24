@@ -1,6 +1,6 @@
 //! Claude Desktop detection from application identity and private request markers.
 
-use abyss_mitm::FlowContext;
+use abyss_mitm::SourceProcess;
 use http::HeaderMap;
 
 use crate::harness::{BuiltInHarness, HarnessDetection, HarnessEvidence, HarnessId};
@@ -12,12 +12,12 @@ pub(super) struct ClaudeDesktopDetector;
 impl HarnessDetector for ClaudeDesktopDetector {
     fn detect(
         &self,
-        flow: &FlowContext,
+        source: Option<&SourceProcess>,
         headers: &HeaderMap,
         path: &str,
     ) -> Option<HarnessDetection> {
         let mut evidence = Vec::new();
-        if let Some(source) = &flow.source_process {
+        if let Some(source) = source {
             if let Some(application_id) = source
                 .application_id
                 .as_deref()
@@ -56,7 +56,7 @@ impl HarnessDetector for ClaudeDesktopDetector {
             evidence,
             version: header(headers, "user-agent")
                 .and_then(|user_agent| client_version(user_agent, &["claude/"])),
-            working_directory: flow.source_working_directory().map(str::to_owned),
+            working_directory: source.and_then(|source| source.working_directory.clone()),
         })
     }
 }

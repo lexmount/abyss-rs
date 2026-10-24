@@ -13,6 +13,7 @@ use std::{
     time::{SystemTime, UNIX_EPOCH},
 };
 
+use abyss_agent_hook::{HarnessId, HarnessRegistry, HarnessUsageConfig};
 use abyss_mitm::{SourceProcess, TrafficDirection, TrafficObserver};
 use parking_lot::Mutex;
 use serde::Serialize;
@@ -35,8 +36,7 @@ pub struct TrafficMonitor {
 #[derive(Debug, Clone)]
 pub struct TrafficFlowMetadata {
     host: String,
-    process: Option<String>,
-    pid: Option<u32>,
+    source_process: Option<SourceProcess>,
 }
 
 #[derive(Default)]
@@ -98,6 +98,8 @@ pub struct ActiveFlowSnapshot {
     /// Source process ID when the platform adapter supplied it.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub pid: Option<u32>,
+    /// Harness identified by the shared registry from captured source metadata.
+    pub agent_name: Option<HarnessId>,
     /// Bytes read from the local client for this flow.
     pub upload_bytes: u64,
     /// Bytes read from the upstream service for this flow.
@@ -136,7 +138,7 @@ impl TrafficMonitor {
 
     /// Builds the current live snapshot and prunes expired rate buckets.
     #[must_use]
-    pub fn snapshot(&self) -> TrafficSnapshot {
+    pub fn snapshot(&self, config: &HarnessUsageConfig) -> TrafficSnapshot {
         let now = current_unix_ms();
         let mut state = self.inner.lock();
         state.prune_buckets(now);
@@ -148,8 +150,20 @@ impl TrafficMonitor {
             .map(|(id, flow)| ActiveFlowSnapshot {
                 id: id.to_string(),
                 host: flow.metadata.host.clone(),
-                process: flow.metadata.process.clone(),
-                pid: flow.metadata.pid,
+                process: flow
+                    .metadata
+                    .source_process
+                    .as_ref()
+                    .and_then(process_label),
+                pid: flow
+                    .metadata
+                    .source_process
+                    .as_ref()
+                    .and_then(|source| source.pid),
+                agent_name: HarnessRegistry::identify_source(
+                    flow.metadata.source_process.as_ref(),
+                    config,
+                ),
                 upload_bytes: flow.upload_bytes,
                 download_bytes: flow.download_bytes,
             })
@@ -217,14 +231,11 @@ impl TrafficFlowMetadata {
     /// Converts normalized broker flow metadata into dashboard-safe labels.
     #[must_use]
     pub fn from_platform_flow(flow: &PlatformFlow) -> Self {
-        let process = flow.source_process().and_then(process_label);
-        let pid = flow.source_process().and_then(|source| source.pid);
         Self {
             host: flow
                 .destination_host()
                 .map_or_else(|| flow.original_destination().to_string(), str::to_owned),
-            process,
-            pid,
+            source_process: flow.source_process().cloned(),
         }
     }
 }
@@ -350,6 +361,7 @@ fn current_unix_ms() -> u64 {
 
 #[cfg(test)]
 mod tests {
+    use abyss_agent_hook::HarnessUsageConfig;
     use abyss_mitm::{SourceProcess, TrafficDirection, TrafficObserver};
 
     use super::{TrafficFlowMetadata, TrafficMonitor};
@@ -359,13 +371,12 @@ mod tests {
         let monitor = TrafficMonitor::new();
         let flow = monitor.start_flow(TrafficFlowMetadata {
             host: "api.openai.com".to_owned(),
-            process: Some("codex".to_owned()),
-            pid: Some(42),
+            source_process: Some(SourceProcess::new(Some(42), Some("codex".to_owned()), None)),
         });
         flow.record_bytes(TrafficDirection::ClientToUpstream, 2_048);
         flow.record_bytes(TrafficDirection::UpstreamToClient, 4_096);
 
-        let snapshot = monitor.snapshot();
+        let snapshot = monitor.snapshot(&HarnessUsageConfig::default());
         assert_eq!(snapshot.total_upload_bytes, 2_048);
         assert_eq!(snapshot.total_download_bytes, 4_096);
         assert_eq!(snapshot.active_flows.len(), 1);
@@ -376,7 +387,12 @@ mod tests {
         assert!(snapshot.download_bytes_per_second > 0);
 
         flow.finish();
-        assert!(monitor.snapshot().active_flows.is_empty());
+        assert!(
+            monitor
+                .snapshot(&HarnessUsageConfig::default())
+                .active_flows
+                .is_empty()
+        );
     }
 
     #[test]
@@ -384,15 +400,14 @@ mod tests {
         let monitor = TrafficMonitor::new();
         let flow = monitor.start_flow(TrafficFlowMetadata {
             host: "example.test".to_owned(),
-            process: None,
-            pid: None,
+            source_process: None,
         });
         let observer = flow.observer();
         observer.record_bytes(TrafficDirection::ClientToUpstream, 10);
         flow.finish();
         observer.record_bytes(TrafficDirection::ClientToUpstream, 10);
 
-        let snapshot = monitor.snapshot();
+        let snapshot = monitor.snapshot(&HarnessUsageConfig::default());
         assert_eq!(snapshot.total_upload_bytes, 10);
         assert!(snapshot.active_flows.is_empty());
     }

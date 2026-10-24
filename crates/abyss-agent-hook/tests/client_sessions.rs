@@ -4,12 +4,12 @@
 use std::{convert::Infallible, future::Future, net::SocketAddr, sync::Arc};
 
 use abyss_agent_hook::{
-    AgentEventSink, DeviceIdentity, HarnessUsageHook, HarnessUsageHookConfig, HooksConfig,
-    HooksRuntimeConfig,
+    AgentEventSink, DeviceIdentity, HarnessRegistry, HarnessUsageConfig, HarnessUsageHook,
+    HarnessUsageHookConfig, HooksConfig, HooksRuntimeConfig,
 };
 use abyss_mitm::{
-    CapturedBody, FlowContext, HttpExchange, MitmHook, OriginalDestination, TransparentProtocol,
-    WebSocketDirection, WebSocketMessage,
+    CapturedBody, FlowContext, HttpExchange, MitmHook, OriginalDestination, SourceProcess,
+    TransparentProtocol, WebSocketDirection, WebSocketMessage,
 };
 use abyss_plugin_protocol::event::AgentEvent;
 use http::{Request, Response};
@@ -61,6 +61,18 @@ impl Scenario {
     }
 
     async fn http(&self, headers: &[(&str, &str)], path: &str, id: &str) {
+        self.http_from_source(headers, path, id, None).await;
+    }
+
+    async fn http_from_source(
+        &self,
+        headers: &[(&str, &str)],
+        path: &str,
+        id: &str,
+        source: Option<SourceProcess>,
+    ) {
+        let mut flow = Self::flow();
+        flow.source_process = source;
         let messages = json!([{"role": "user", "content": "hello"}]);
         let (request, response) = match path {
             "/v1/messages" => (
@@ -87,7 +99,7 @@ impl Scenario {
         }
         self.hook
             .on_http_exchange(&HttpExchange::new(
-                Self::flow(),
+                flow,
                 builder
                     .body(CapturedBody::from_bytes(request.to_string().into()))
                     .unwrap(),
@@ -507,5 +519,86 @@ async fn successive_user_turns_preserve_native_session_and_turn_ids() {
             assert_eq!(event.session_id, session);
             assert_eq!(event.turn_id.as_deref(), Some(turn));
         }
+    }
+}
+
+#[tokio::test]
+async fn hermes_managed_python_uses_shared_identity_without_product_headers() {
+    let source = SourceProcess::new(
+        Some(42),
+        Some("python3.14".to_owned()),
+        Some("/Users/test/.hermes/tools/python/bin/python3.14".to_owned()),
+    )
+    .with_application_id(Some("com.nousresearch.hermes.managed-python".to_owned()));
+    let config = HarnessUsageConfig::default();
+    assert_eq!(
+        HarnessRegistry::identify_source(Some(&source), &config)
+            .unwrap()
+            .as_str(),
+        "hermes"
+    );
+    let scenario = Scenario::new(json!({}));
+    for path in ["/v1/responses", "/v1/chat/completions", "/v1/messages"] {
+        scenario
+            .http_from_source(
+                &[("user-agent", "OpenAI/Python 2.24.0")],
+                path,
+                "response-1",
+                Some(source.clone()),
+            )
+            .await;
+    }
+    let events = scenario.sink.0.lock();
+    assert_eq!(events.len(), 6);
+    assert!(events.iter().all(|event| event.agent.name == "hermes"));
+    drop(events);
+}
+
+#[tokio::test]
+async fn hermes_source_matching_remains_exact_and_respects_policy() {
+    for identity in [
+        None,
+        Some("com.nousresearch.hermes.managed-python.other"),
+        Some("other.com.nousresearch.hermes.managed-python"),
+    ] {
+        let source = SourceProcess::new(
+            None,
+            Some("python3.14".to_owned()),
+            Some("/Users/test/.hermes/tools/python/bin/python3.14".to_owned()),
+        )
+        .with_application_id(identity.map(str::to_owned));
+        assert!(
+            HarnessRegistry::identify_source(Some(&source), &HarnessUsageConfig::default())
+                .is_none()
+        );
+        let scenario = Scenario::new(json!({}));
+        scenario
+            .http_from_source(
+                &[("user-agent", "OpenAI/Python 2.24.0")],
+                "/v1/responses",
+                "response-1",
+                Some(source),
+            )
+            .await;
+        assert!(scenario.sink.0.lock().is_empty());
+    }
+    let source = SourceProcess::new(None, Some("python3.14".to_owned()), None)
+        .with_application_id(Some("com.nousresearch.hermes.managed-python".to_owned()));
+    for policy in [
+        json!({"harnesses": {"hermes": {"enabled": false}}}),
+        json!({"harnesses": {"another-agent": {"matchers": [{"application_ids": ["com.nousresearch.hermes.managed-python"]}]}}}),
+    ] {
+        let config: HarnessUsageConfig = serde_json::from_value(policy.clone()).unwrap();
+        assert!(HarnessRegistry::identify_source(Some(&source), &config).is_none());
+        let scenario = Scenario::new(json!({"harness_usage": {"config": policy}}));
+        scenario
+            .http_from_source(
+                &[("user-agent", "codex_cli_rs/1.0")],
+                "/v1/responses",
+                "response-1",
+                Some(source.clone()),
+            )
+            .await;
+        assert!(scenario.sink.0.lock().is_empty());
     }
 }

@@ -1,10 +1,14 @@
 //! Hermes identity and user-turn declarations; protocol parsers resolve sessions.
 
-use abyss_mitm::FlowContext;
+use std::sync::LazyLock;
+
+use abyss_mitm::SourceProcess;
 use http::HeaderMap;
 
+use crate::config::HarnessMatcherConfig;
 use crate::harness::{
     AgentDeclaration, BuiltInHarness, DeclarationSource, HarnessDetection, HarnessEvidence,
+    matcher::HarnessMatcher,
 };
 
 use super::{HarnessDetector, client_version, header};
@@ -12,12 +16,19 @@ use super::{HarnessDetector, client_version, header};
 const SESSION_ID: &str = "x-hermes-session-id";
 const TURN_ID: &str = "x-hermes-turn-id";
 
+// Hermes signs its managed interpreter with this identity on macOS. Generic
+// Python names and installation paths do not identify the calling Harness.
+static SOURCE_MATCHER: LazyLock<HarnessMatcherConfig> = LazyLock::new(|| HarnessMatcherConfig {
+    application_ids: vec!["com.nousresearch.hermes.managed-python".to_owned()],
+    ..HarnessMatcherConfig::default()
+});
+
 pub(super) struct HermesDetector;
 
 impl HarnessDetector for HermesDetector {
     fn detect(
         &self,
-        flow: &FlowContext,
+        source: Option<&SourceProcess>,
         headers: &HeaderMap,
         _path: &str,
     ) -> Option<HarnessDetection> {
@@ -33,13 +44,22 @@ impl HarnessDetector for HermesDetector {
             Some("originator")
         } else {
             None
-        }?;
+        };
+        let mut evidence = HarnessMatcher::new(&SOURCE_MATCHER)
+            .matches(source)
+            .unwrap_or_default();
+        if let Some(marker) = marker {
+            evidence.push(HarnessEvidence::Header(marker));
+        }
+        if evidence.is_empty() {
+            return None;
+        }
         Some(HarnessDetection {
             harness_id: BuiltInHarness::Hermes.into(),
-            evidence: vec![HarnessEvidence::Header(marker)],
+            evidence,
             // Do not report a compatibility codex_cli_rs version as Hermes'.
             version: client_version(user_agent, &["hermesagent/"]),
-            working_directory: flow.source_working_directory().map(str::to_owned),
+            working_directory: source.and_then(|source| source.working_directory.clone()),
         })
     }
 }

@@ -1,6 +1,6 @@
 //! Configured Harness identity matching over source process and application metadata.
 
-use abyss_mitm::FlowContext;
+use abyss_mitm::SourceProcess;
 
 use crate::config::HarnessMatcherConfig;
 
@@ -15,11 +15,11 @@ impl<'a> HarnessMatcher<'a> {
         Self { config }
     }
 
-    pub fn matches(&self, flow: &FlowContext) -> Option<Vec<HarnessEvidence>> {
+    pub fn matches(&self, source: Option<&SourceProcess>) -> Option<Vec<HarnessEvidence>> {
         let mut evidence = Vec::new();
 
         if !self.config.process_names.is_empty() {
-            let process_name = flow.source_process.as_ref()?.name.as_deref()?;
+            let process_name = source?.name.as_deref()?;
             let matched = self
                 .config
                 .process_names
@@ -32,7 +32,7 @@ impl<'a> HarnessMatcher<'a> {
         }
 
         if !self.config.application_ids.is_empty() {
-            let application_id = flow.source_process.as_ref()?.application_id.as_deref()?;
+            let application_id = source?.application_id.as_deref()?;
             let matched = self
                 .config
                 .application_ids
@@ -67,7 +67,10 @@ mod tests {
         };
 
         assert_eq!(
-            HarnessMatcher::new(&matcher).matches(&flow).unwrap().len(),
+            HarnessMatcher::new(&matcher)
+                .matches(flow.source_process.as_ref())
+                .unwrap()
+                .len(),
             2
         );
     }
@@ -80,7 +83,11 @@ mod tests {
             application_ids: vec!["com.acme.agent".to_owned()],
         };
 
-        assert!(HarnessMatcher::new(&matcher).matches(&flow).is_none());
+        assert!(
+            HarnessMatcher::new(&matcher)
+                .matches(flow.source_process.as_ref())
+                .is_none()
+        );
     }
 
     fn flow(name: Option<&str>, application_id: Option<&str>) -> FlowContext {

@@ -2,7 +2,7 @@
 //! and what Claude Code declares about each request in its
 //! `x-claude-code-*` headers.
 
-use abyss_mitm::FlowContext;
+use abyss_mitm::SourceProcess;
 use abyss_plugin_protocol::event::EventPurpose;
 use http::HeaderMap;
 use serde::Deserialize;
@@ -105,7 +105,7 @@ pub(super) struct ClaudeCodeDetector;
 impl HarnessDetector for ClaudeCodeDetector {
     fn detect(
         &self,
-        flow: &FlowContext,
+        source: Option<&SourceProcess>,
         headers: &HeaderMap,
         path: &str,
     ) -> Option<HarnessDetection> {
@@ -113,7 +113,7 @@ impl HarnessDetector for ClaudeCodeDetector {
             return None;
         }
         let mut evidence = Vec::new();
-        if let Some(source) = &flow.source_process
+        if let Some(source) = source
             && source
                 .name
                 .as_deref()
@@ -160,7 +160,7 @@ impl HarnessDetector for ClaudeCodeDetector {
                     "claude/",
                 ],
             ),
-            working_directory: flow.source_working_directory().map(str::to_owned),
+            working_directory: source.and_then(|source| source.working_directory.clone()),
         })
     }
 }
