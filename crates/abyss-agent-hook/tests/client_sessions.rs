@@ -4,8 +4,8 @@
 use std::{convert::Infallible, future::Future, net::SocketAddr, sync::Arc};
 
 use abyss_agent_hook::{
-    AgentEventSink, DeviceIdentity, HarnessRegistry, HarnessUsageConfig, HarnessUsageHook,
-    HarnessUsageHookConfig, HooksConfig, HooksRuntimeConfig,
+    AgentEventSink, DeviceIdentity, HarnessUsageHook, HarnessUsageHookConfig, HooksConfig,
+    HooksRuntimeConfig,
 };
 use abyss_mitm::{
     CapturedBody, FlowContext, HttpExchange, MitmHook, OriginalDestination, SourceProcess,
@@ -523,20 +523,13 @@ async fn successive_user_turns_preserve_native_session_and_turn_ids() {
 }
 
 #[tokio::test]
-async fn hermes_managed_python_uses_shared_identity_without_product_headers() {
+async fn hermes_managed_python_is_identified_without_product_headers() {
     let source = SourceProcess::new(
         Some(42),
         Some("python3.14".to_owned()),
         Some("/Users/test/.hermes/tools/python/bin/python3.14".to_owned()),
     )
     .with_application_id(Some("com.nousresearch.hermes.managed-python".to_owned()));
-    let config = HarnessUsageConfig::default();
-    assert_eq!(
-        HarnessRegistry::identify_source(Some(&source), &config)
-            .unwrap()
-            .as_str(),
-        "hermes"
-    );
     let scenario = Scenario::new(json!({}));
     for path in ["/v1/responses", "/v1/chat/completions", "/v1/messages"] {
         scenario
@@ -567,10 +560,6 @@ async fn hermes_source_matching_remains_exact_and_respects_policy() {
             Some("/Users/test/.hermes/tools/python/bin/python3.14".to_owned()),
         )
         .with_application_id(identity.map(str::to_owned));
-        assert!(
-            HarnessRegistry::identify_source(Some(&source), &HarnessUsageConfig::default())
-                .is_none()
-        );
         let scenario = Scenario::new(json!({}));
         scenario
             .http_from_source(
@@ -588,8 +577,6 @@ async fn hermes_source_matching_remains_exact_and_respects_policy() {
         json!({"harnesses": {"hermes": {"enabled": false}}}),
         json!({"harnesses": {"another-agent": {"matchers": [{"application_ids": ["com.nousresearch.hermes.managed-python"]}]}}}),
     ] {
-        let config: HarnessUsageConfig = serde_json::from_value(policy.clone()).unwrap();
-        assert!(HarnessRegistry::identify_source(Some(&source), &config).is_none());
         let scenario = Scenario::new(json!({"harness_usage": {"config": policy}}));
         scenario
             .http_from_source(

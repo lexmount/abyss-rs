@@ -2,7 +2,7 @@
 //! declarations. Protocol parsers resolve sessions; correlation headers and
 //! provider hosts alone never identify `WorkBuddy`.
 
-use abyss_mitm::SourceProcess;
+use abyss_mitm::FlowContext;
 use http::HeaderMap;
 
 use crate::harness::{
@@ -42,11 +42,11 @@ pub(super) struct WorkBuddyDetector;
 impl HarnessDetector for WorkBuddyDetector {
     fn detect(
         &self,
-        source: Option<&SourceProcess>,
+        flow: &FlowContext,
         _headers: &HeaderMap,
         _path: &str,
     ) -> Option<HarnessDetection> {
-        let source = source?;
+        let source = flow.source_process.as_ref()?;
         let evidence = if let Some(application_id) = source
             .application_id
             .as_deref()
@@ -74,7 +74,7 @@ impl HarnessDetector for WorkBuddyDetector {
             harness_id: BuiltInHarness::WorkBuddy.into(),
             evidence: vec![evidence],
             version: None,
-            working_directory: source.working_directory.clone(),
+            working_directory: flow.source_working_directory().map(str::to_owned),
         })
     }
 }

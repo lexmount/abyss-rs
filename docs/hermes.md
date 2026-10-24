@@ -19,9 +19,7 @@ On macOS, Hermes' managed Python interpreter is also identified by its exact
 code-signing application ID, `com.nousresearch.hermes.managed-python`, when the
 native adapter supplies it. This reuses the built-in source matcher and works
 with ordinary OpenAI SDK headers; generic Python names and installation paths
-do not identify Hermes. The traffic snapshot and recent network observation
-APIs expose this source identity as `agent_name` using the same registry and
-current Harness policy. Source identity does not supply a session or turn ID.
+do not identify Hermes. Source identity does not supply a session or turn ID.
 
 Hermes 0.22's ordinary OpenAI API route does not send a session header by default.
 The included [Hermes plugin](../integrations/hermes/abyss) uses Hermes' supported

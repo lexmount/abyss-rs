@@ -1,7 +1,7 @@
 //! Cursor Local identity and user-turn declarations from native provider headers.
 //! Cursor cloud RPC parsing is outside this detector's boundary.
 
-use abyss_mitm::SourceProcess;
+use abyss_mitm::FlowContext;
 use http::HeaderMap;
 
 use crate::harness::{
@@ -15,7 +15,7 @@ pub(super) struct CursorDetector;
 impl HarnessDetector for CursorDetector {
     fn detect(
         &self,
-        source: Option<&SourceProcess>,
+        flow: &FlowContext,
         headers: &HeaderMap,
         _path: &str,
     ) -> Option<HarnessDetection> {
@@ -27,7 +27,7 @@ impl HarnessDetector for CursorDetector {
             harness_id: BuiltInHarness::Cursor.into(),
             evidence: vec![HarnessEvidence::Header("user-agent")],
             version: client_version(user_agent, &["cursor-cli/"]),
-            working_directory: source.and_then(|source| source.working_directory.clone()),
+            working_directory: flow.source_working_directory().map(str::to_owned),
         })
     }
 }

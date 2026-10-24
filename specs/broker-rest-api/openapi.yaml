@@ -447,13 +447,6 @@ components:
           items:
             type: object
             description: Metadata-only technical observation.
-            properties:
-              agent_name:
-                type: [string, "null"]
-                description: >-
-                  Harness identity derived from captured source metadata by the
-                  shared registry and current Harness policy. Null when source
-                  metadata alone cannot identify one enabled Harness.
     TrafficSnapshot:
       type: object
       additionalProperties: false
@@ -498,12 +491,6 @@ components:
         pid:
           type: integer
           minimum: 1
-        agent_name:
-          type: [string, "null"]
-          description: >-
-            Harness identity derived from captured source metadata by the shared
-            registry and current Harness policy, before HTTP headers are available.
-            Null when source metadata alone cannot identify one enabled Harness.
         upload_bytes:
           type: integer
           minimum: 0

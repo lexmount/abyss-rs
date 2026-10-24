@@ -2,7 +2,7 @@
 
 use std::sync::LazyLock;
 
-use abyss_mitm::SourceProcess;
+use abyss_mitm::FlowContext;
 use http::HeaderMap;
 
 use crate::config::HarnessMatcherConfig;
@@ -28,7 +28,7 @@ pub(super) struct HermesDetector;
 impl HarnessDetector for HermesDetector {
     fn detect(
         &self,
-        source: Option<&SourceProcess>,
+        flow: &FlowContext,
         headers: &HeaderMap,
         _path: &str,
     ) -> Option<HarnessDetection> {
@@ -46,7 +46,7 @@ impl HarnessDetector for HermesDetector {
             None
         };
         let mut evidence = HarnessMatcher::new(&SOURCE_MATCHER)
-            .matches(source)
+            .matches(flow)
             .unwrap_or_default();
         if let Some(marker) = marker {
             evidence.push(HarnessEvidence::Header(marker));
@@ -59,7 +59,7 @@ impl HarnessDetector for HermesDetector {
             evidence,
             // Do not report a compatibility codex_cli_rs version as Hermes'.
             version: client_version(user_agent, &["hermesagent/"]),
-            working_directory: source.and_then(|source| source.working_directory.clone()),
+            working_directory: flow.source_working_directory().map(str::to_owned),
         })
     }
 }

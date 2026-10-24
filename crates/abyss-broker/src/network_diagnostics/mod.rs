@@ -6,10 +6,8 @@
 //! observations without changing their meaning.
 
 mod store;
-mod view;
 
 pub use store::{NetworkObservationStore, NetworkObservationStoreError, database_path};
-pub use view::NetworkObservationView;
 
 use std::io::ErrorKind;
 

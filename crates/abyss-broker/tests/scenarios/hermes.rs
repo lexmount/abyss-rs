@@ -1,4 +1,4 @@
-//! Hermes identity across native ingress, Agent events, and dashboard REST data.
+//! Hermes identity across native ingress and Agent events.
 //! Fixtures use ordinary SDK headers and a local upstream, without live services.
 
 use std::{
@@ -25,7 +25,7 @@ use super::{
 const HERMES_ID: &str = "com.nousresearch.hermes.managed-python";
 
 #[test]
-fn hermes_sdk_requests_share_identity_with_live_and_recent_traffic() {
+fn hermes_sdk_requests_are_identified_from_native_source_metadata() {
     let api_addr = reserve_api_loopback_addr();
     let socket_path = std::env::temp_dir().join(format!("hm-{}.sock", Uuid::new_v4()));
     let startup_path = socket_path.with_extension("json");
@@ -64,7 +64,6 @@ fn hermes_sdk_requests_share_identity_with_live_and_recent_traffic() {
             let flows = snapshot["active_flows"].as_array().unwrap();
             assert_eq!(flows.len(), 1, "in-flight request must be visible");
             assert_eq!(flows[0]["process"], "python3.14");
-            assert_eq!(flows[0]["agent_name"].as_str(), expected);
             Uuid::parse_str(flows[0]["id"].as_str().unwrap()).unwrap()
         });
         if expected.is_some() {
@@ -85,7 +84,7 @@ fn hermes_sdk_requests_share_identity_with_live_and_recent_traffic() {
                 .iter()
                 .find(|observation| observation["flow_id"] == flow_id.to_string())
             {
-                assert_eq!(observation["agent_name"].as_str(), expected);
+                assert_eq!(observation["source_bundle_id"].as_str(), application);
                 break;
             }
             assert!(Instant::now() < deadline, "completed flow must be recorded");

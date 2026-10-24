@@ -1,7 +1,7 @@
 //! DSH identity from the shared headless, TUI, and Web request marker.
 //! Protocol selection and parsing remain independent of this detector.
 
-use abyss_mitm::SourceProcess;
+use abyss_mitm::FlowContext;
 use http::HeaderMap;
 
 use crate::harness::{BuiltInHarness, HarnessDetection, HarnessEvidence, HarnessId};
@@ -15,7 +15,7 @@ pub(super) struct DeepSeekHarnessDetector;
 impl HarnessDetector for DeepSeekHarnessDetector {
     fn detect(
         &self,
-        source: Option<&SourceProcess>,
+        flow: &FlowContext,
         headers: &HeaderMap,
         _path: &str,
     ) -> Option<HarnessDetection> {
@@ -27,7 +27,7 @@ impl HarnessDetector for DeepSeekHarnessDetector {
             harness_id: HarnessId::from(BuiltInHarness::DeepSeekHarness),
             evidence: vec![HarnessEvidence::Header("user-agent")],
             version: client_version(user_agent, &[USER_AGENT_PREFIX]),
-            working_directory: source.and_then(|source| source.working_directory.clone()),
+            working_directory: flow.source_working_directory().map(str::to_owned),
         })
     }
 }

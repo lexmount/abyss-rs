@@ -23,5 +23,5 @@ pub use config::{
     platform_device_identity,
 };
 pub use delivery::AgentEventSink;
-pub use harness::{BuiltInHarness, HarnessId, HarnessRegistry};
+pub use harness::{BuiltInHarness, HarnessId};
 pub use hook::HarnessUsageHook;

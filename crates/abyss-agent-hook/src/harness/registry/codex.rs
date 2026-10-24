@@ -2,7 +2,7 @@
 //! turn context Codex declares in its `x-codex-turn-metadata`.
 //! Backend routes select a protocol, never the identity of its caller.
 
-use abyss_mitm::SourceProcess;
+use abyss_mitm::FlowContext;
 use abyss_plugin_protocol::event::EventPurpose;
 use http::HeaderMap;
 use serde_json::Value;
@@ -63,14 +63,14 @@ pub(super) struct CodexDetector;
 impl HarnessDetector for CodexDetector {
     fn detect(
         &self,
-        source: Option<&SourceProcess>,
+        flow: &FlowContext,
         headers: &HeaderMap,
         _path: &str,
     ) -> Option<HarnessDetection> {
         let user_agent = header(headers, "user-agent").unwrap_or_default();
         let originator = header(headers, "originator").unwrap_or_default();
         let mut evidence = Vec::new();
-        if let Some(process) = source
+        if let Some(process) = flow.source_process.as_ref()
             && process
                 .name
                 .as_deref()
@@ -99,7 +99,7 @@ impl HarnessDetector for CodexDetector {
             harness_id: HarnessId::from(BuiltInHarness::Codex),
             evidence,
             version: client_version(user_agent, &["codex/tui/", "codex/desktop/", "codex/"]),
-            working_directory: source.and_then(|source| source.working_directory.clone()),
+            working_directory: flow.source_working_directory().map(str::to_owned),
         })
     }
 }
@@ -164,7 +164,7 @@ mod tests {
             let mut headers = HeaderMap::new();
             headers.insert(name, value.parse().unwrap());
             let detection = CodexDetector
-                .detect(flow.source_process.as_ref(), &headers, "/v1/responses")
+                .detect(&flow, &headers, "/v1/responses")
                 .unwrap_or_else(|| panic!("{name}: {value}"));
             assert_eq!(detection.harness_id.as_str(), "codex");
             assert_eq!(detection.evidence_names(), [format!("header:{name}")]);
@@ -176,11 +176,7 @@ mod tests {
             None,
         ));
         let detection = CodexDetector
-            .detect(
-                flow.source_process.as_ref(),
-                &HeaderMap::new(),
-                "/v1/responses",
-            )
+            .detect(&flow, &HeaderMap::new(), "/v1/responses")
             .unwrap();
         assert_eq!(detection.harness_id.as_str(), "codex");
         assert_eq!(detection.evidence_names(), ["process:/usr/local/bin/codex"]);

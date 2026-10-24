@@ -8,7 +8,7 @@ mod deepseek_harness;
 mod hermes;
 mod workbuddy;
 
-use abyss_mitm::{HttpExchange, SourceProcess, WebSocketMessage};
+use abyss_mitm::{FlowContext, HttpExchange, WebSocketMessage};
 use http::HeaderMap;
 
 use crate::config::HarnessUsageConfig;
@@ -22,7 +22,7 @@ use super::{
 pub(super) trait HarnessDetector {
     fn detect(
         &self,
-        source: Option<&SourceProcess>,
+        flow: &FlowContext,
         headers: &HeaderMap,
         path: &str,
     ) -> Option<HarnessDetection>;
@@ -32,22 +32,12 @@ pub(super) trait HarnessDetector {
 pub struct HarnessRegistry;
 
 impl HarnessRegistry {
-    /// Identifies a source before HTTP headers are available, using the same
-    /// detectors, custom matchers, policy, and ambiguity rules as Agent events.
-    #[must_use]
-    pub fn identify_source(
-        source: Option<&SourceProcess>,
-        config: &HarnessUsageConfig,
-    ) -> Option<HarnessId> {
-        Self::detect(source, &HeaderMap::new(), "", config).map(|detection| detection.harness_id)
-    }
-
     pub fn detect_http(
         exchange: &HttpExchange,
         config: &HarnessUsageConfig,
     ) -> Option<HarnessDetection> {
         Self::detect(
-            exchange.flow.source_process.as_ref(),
+            &exchange.flow,
             exchange.request.headers(),
             exchange.request.uri().path(),
             config,
@@ -59,7 +49,7 @@ impl HarnessRegistry {
         config: &HarnessUsageConfig,
     ) -> Option<HarnessDetection> {
         Self::detect(
-            message.flow.source_process.as_ref(),
+            &message.flow,
             message.upgrade_request.headers(),
             message.upgrade_request.uri().path(),
             config,
@@ -67,7 +57,7 @@ impl HarnessRegistry {
     }
 
     fn detect(
-        source: Option<&SourceProcess>,
+        flow: &FlowContext,
         headers: &HeaderMap,
         path: &str,
         config: &HarnessUsageConfig,
@@ -83,7 +73,7 @@ impl HarnessRegistry {
         ];
         let mut detections = detectors
             .into_iter()
-            .filter_map(|detector| detector.detect(source, headers, path))
+            .filter_map(|detector| detector.detect(flow, headers, path))
             .collect::<Vec<_>>();
 
         // Hermes can send Codex/Claude compatibility fingerprints.
@@ -106,13 +96,13 @@ impl HarnessRegistry {
             if let Some(evidence) = harness
                 .matchers
                 .iter()
-                .find_map(|matcher| HarnessMatcher::new(matcher).matches(source))
+                .find_map(|matcher| HarnessMatcher::new(matcher).matches(flow))
             {
                 detections.push(HarnessDetection {
                     harness_id: harness_id.clone(),
                     evidence,
                     version: None,
-                    working_directory: source.and_then(|source| source.working_directory.clone()),
+                    working_directory: flow.source_working_directory().map(str::to_owned),
                 });
             }
         }
@@ -301,12 +291,7 @@ mod tests {
             if let Some(value) = user_agent {
                 headers.insert("user-agent", value.parse().unwrap());
             }
-            let detected = HarnessRegistry::detect(
-                flow.source_process.as_ref(),
-                &headers,
-                "/responses",
-                &config,
-            );
+            let detected = HarnessRegistry::detect(&flow, &headers, "/responses", &config);
             assert_eq!(detected.is_some(), expected, "{user_agent:?}");
             if let Some(detected) = detected {
                 assert_eq!(detected.harness_id.as_str(), "deepseek-harness");
@@ -320,27 +305,11 @@ mod tests {
             "harnesses": {"deepseek-harness": {"enabled": false}}
         }))
         .unwrap();
-        assert!(
-            HarnessRegistry::detect(
-                flow.source_process.as_ref(),
-                &headers,
-                "/responses",
-                &disabled
-            )
-            .is_none()
-        );
+        assert!(HarnessRegistry::detect(&flow, &headers, "/responses", &disabled).is_none());
 
         // Preserve the registry's rejection of conflicting Harness identities.
         headers.insert("x-codex-turn-metadata", "{}".parse().unwrap());
-        assert!(
-            HarnessRegistry::detect(
-                flow.source_process.as_ref(),
-                &headers,
-                "/responses",
-                &config
-            )
-            .is_none()
-        );
+        assert!(HarnessRegistry::detect(&flow, &headers, "/responses", &config).is_none());
     }
 
     #[test]
@@ -355,7 +324,7 @@ mod tests {
 
         assert!(
             HarnessRegistry::detect(
-                flow.source_process.as_ref(),
+                &flow,
                 &HeaderMap::new(),
                 "/api/organizations/org-id/chat_conversations/conversation-id/completion",
                 &HarnessUsageConfig::default(),
