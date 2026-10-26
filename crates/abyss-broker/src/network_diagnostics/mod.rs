@@ -6,6 +6,7 @@
 //! observations without changing their meaning.
 
 mod store;
+mod upstream;
 
 pub use store::{NetworkObservationStore, NetworkObservationStoreError, database_path};
 
@@ -27,6 +28,8 @@ const MAX_ERROR_DETAIL_CHARS: usize = 1_024;
 pub enum NetworkHop {
     /// Communication between the Agent and the locally accepted Abyss flow.
     AgentToAbyss,
+    /// Communication from Abyss to the configured next-hop proxy.
+    AbyssToUpstreamProxy,
     /// Communication from Abyss to the model provider.
     AbyssToProvider,
     /// An operation spans both network boundaries and cannot be assigned to one.
@@ -39,6 +42,7 @@ impl NetworkHop {
     pub const fn as_str(self) -> &'static str {
         match self {
             Self::AgentToAbyss => "agent_to_abyss",
+            Self::AbyssToUpstreamProxy => "abyss_to_upstream_proxy",
             Self::AbyssToProvider => "abyss_to_provider",
             Self::CrossBoundary => "cross_boundary",
         }
@@ -48,6 +52,7 @@ impl NetworkHop {
     pub fn parse(value: &str) -> Option<Self> {
         match value {
             "agent_to_abyss" => Some(Self::AgentToAbyss),
+            "abyss_to_upstream_proxy" => Some(Self::AbyssToUpstreamProxy),
             "abyss_to_provider" => Some(Self::AbyssToProvider),
             "cross_boundary" => Some(Self::CrossBoundary),
             _ => None,
@@ -291,6 +296,18 @@ impl NetworkFailureClass {
 #[derive(Debug, Clone, Copy, PartialEq, Serialize)]
 #[serde(rename_all = "snake_case")]
 pub enum NetworkErrorCode {
+    /// The configured proxy hostname could not be resolved.
+    #[serde(rename = "upstream_proxy_dns_error")]
+    UpstreamProxyDns,
+    /// TCP establishment to the next hop failed.
+    #[serde(rename = "upstream_proxy_tcp_error")]
+    UpstreamProxyTcp,
+    /// CONNECT negotiation failed or was rejected.
+    #[serde(rename = "upstream_proxy_connect_error")]
+    UpstreamProxyConnect,
+    /// The next hop requires authentication unsupported by this configuration.
+    #[serde(rename = "upstream_proxy_auth_required")]
+    UpstreamProxyAuthRequired,
     /// The Agent bytes did not match a protocol accepted by Abyss.
     #[serde(rename = "agent_protocol_error")]
     AgentProtocol,
@@ -343,6 +360,10 @@ impl NetworkErrorCode {
     #[must_use]
     pub const fn as_str(self) -> &'static str {
         match self {
+            Self::UpstreamProxyDns => "upstream_proxy_dns_error",
+            Self::UpstreamProxyTcp => "upstream_proxy_tcp_error",
+            Self::UpstreamProxyConnect => "upstream_proxy_connect_error",
+            Self::UpstreamProxyAuthRequired => "upstream_proxy_auth_required",
             Self::AgentProtocol => "agent_protocol_error",
             Self::AgentTls => "agent_tls_error",
             Self::AgentRequest => "agent_request_error",
@@ -364,6 +385,10 @@ impl NetworkErrorCode {
     /// Parses a stable storage and IPC label.
     pub fn parse(value: &str) -> Option<Self> {
         match value {
+            "upstream_proxy_dns_error" => Some(Self::UpstreamProxyDns),
+            "upstream_proxy_tcp_error" => Some(Self::UpstreamProxyTcp),
+            "upstream_proxy_connect_error" => Some(Self::UpstreamProxyConnect),
+            "upstream_proxy_auth_required" => Some(Self::UpstreamProxyAuthRequired),
             "agent_protocol_error" => Some(Self::AgentProtocol),
             "agent_tls_error" => Some(Self::AgentTls),
             "agent_request_error" => Some(Self::AgentRequest),
@@ -393,6 +418,16 @@ impl NetworkErrorCode {
         http_status: Option<u16>,
     ) -> Option<Self> {
         match hop {
+            NetworkHop::AbyssToUpstreamProxy => {
+                if matches!(outcome, NetworkOutcome::Succeeded | NetworkOutcome::Skipped) {
+                    return None;
+                }
+                Some(match stage {
+                    NetworkStage::DnsResolution => Self::UpstreamProxyDns,
+                    NetworkStage::TcpConnect => Self::UpstreamProxyTcp,
+                    _ => Self::UpstreamProxyConnect,
+                })
+            }
             NetworkHop::AgentToAbyss => {
                 if matches!(outcome, NetworkOutcome::Succeeded | NetworkOutcome::Skipped) {
                     return None;
@@ -516,6 +551,16 @@ pub struct NetworkObservation {
     pub ingress_source: String,
     /// Normalized destination host when available.
     pub destination_host: Option<String>,
+    /// Actual target address when known; never the proxy transport peer.
+    pub destination_addr: Option<String>,
+    /// Explicit target authority, including its port, before any resolution.
+    pub target_authority: Option<String>,
+    /// Configured next-hop authority, without URL credentials or parameters.
+    pub proxy_endpoint: Option<String>,
+    /// Actual connected proxy peer when establishment succeeded.
+    pub proxy_peer: Option<String>,
+    /// Rejected CONNECT status, separate from provider HTTP status.
+    pub proxy_status: Option<u16>,
     /// Operating-system process identifier when the ingress supplied one.
     pub source_pid: Option<u32>,
     /// Process name reported by the platform ingress, such as `claude` or `codex`.
@@ -624,6 +669,13 @@ impl NetworkObservation {
             observed_at_unix_ms: ended_at_unix_ms,
             ingress_source: ingress.source_label().to_owned(),
             destination_host: normalized_optional_string(destination_host),
+            destination_addr: None,
+            target_authority: ingress
+                .proxy_target()
+                .map(abyss_mitm::TargetAuthority::authority),
+            proxy_endpoint: ingress.proxy_endpoint().map(str::to_owned),
+            proxy_peer: ingress.upstream_proxy().map(|address| address.to_string()),
+            proxy_status: None,
             source_pid: source_process.and_then(|source| source.pid),
             source_process_name: source_process
                 .and_then(|source| normalized_optional_string(source.name.as_deref())),
@@ -674,6 +726,13 @@ impl NetworkObservation {
             observed_at_unix_ms: ended_at_unix_ms,
             ingress_source: ingress.source_label().to_owned(),
             destination_host: normalized_optional_string(destination_host),
+            destination_addr: None,
+            target_authority: ingress
+                .proxy_target()
+                .map(abyss_mitm::TargetAuthority::authority),
+            proxy_endpoint: ingress.proxy_endpoint().map(str::to_owned),
+            proxy_peer: ingress.upstream_proxy().map(|address| address.to_string()),
+            proxy_status: None,
             source_pid: source_process.and_then(|source| source.pid),
             source_process_name: source_process
                 .and_then(|source| normalized_optional_string(source.name.as_deref())),
@@ -804,6 +863,17 @@ impl From<&TransparentFlowError> for NetworkLocation {
 impl From<FlowOperation> for NetworkLocation {
     fn from(operation: FlowOperation) -> Self {
         let (hop, direction, stage) = match operation {
+            FlowOperation::ResolveProxy
+            | FlowOperation::ConnectProxyTcp
+            | FlowOperation::ProxyConnectHandshake => (
+                NetworkHop::AbyssToUpstreamProxy,
+                NetworkDirection::Bidirectional,
+                match operation {
+                    FlowOperation::ResolveProxy => NetworkStage::DnsResolution,
+                    FlowOperation::ConnectProxyTcp => NetworkStage::TcpConnect,
+                    _ => NetworkStage::ResponseHeaders,
+                },
+            ),
             FlowOperation::ReadAgentProtocol => (
                 NetworkHop::AgentToAbyss,
                 NetworkDirection::AgentToAbyss,

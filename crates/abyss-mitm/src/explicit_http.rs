@@ -203,6 +203,15 @@ impl fmt::Display for TargetHost {
 }
 
 impl TargetAuthority {
+    /// Parses an authority with an explicit nonzero port without resolving DNS.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error for invalid hosts, ports, or userinfo.
+    pub fn parse(authority: &str) -> Result<Self, ExplicitRequestError> {
+        parse_target_authority(authority, None)
+    }
+
     /// Returns the normalized target host.
     #[must_use]
     pub const fn host(&self) -> &TargetHost {

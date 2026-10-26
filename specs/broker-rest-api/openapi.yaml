@@ -447,6 +447,22 @@ components:
           items:
             type: object
             description: Metadata-only technical observation.
+            properties:
+              target_authority:
+                type: [string, "null"]
+                description: Explicit target hostname or IP and port before resolution.
+              destination_addr:
+                type: [string, "null"]
+                description: Known target socket address; null when resolution belongs to the proxy.
+              proxy_endpoint:
+                type: [string, "null"]
+                description: Configured upstream proxy authority, without credentials.
+              proxy_peer:
+                type: [string, "null"]
+                description: Connected upstream proxy socket address, separate from the target.
+              proxy_status:
+                type: [integer, "null"]
+                description: Rejected CONNECT status; never a provider HTTP status.
     TrafficSnapshot:
       type: object
       additionalProperties: false

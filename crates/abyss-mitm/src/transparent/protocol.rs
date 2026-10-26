@@ -154,7 +154,7 @@ impl DetectedFlow {
     }
 
     #[must_use]
-    pub(super) const fn original_destination(&self) -> &super::OriginalDestination {
+    pub(super) const fn original_destination(&self) -> &super::DestinationAddress {
         &self.flow.original_destination
     }
 

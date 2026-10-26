@@ -11,6 +11,7 @@ mod body;
 mod client_hello;
 mod content_encoding;
 mod decrypt_policy;
+mod destination;
 mod display;
 mod engine;
 mod flow_id;
@@ -34,6 +35,7 @@ pub use self::decrypt_policy::{
     TlsDecryptionAction, TlsDecryptionContext, TlsDecryptionDecision, TlsDecryptionPolicy,
     TlsDecryptionPolicyError, TlsDecryptionRule, ValidatedTlsDecryptionPolicy,
 };
+pub use self::destination::DestinationAddress;
 pub use self::display::{
     CapturedBodyPlaintextDisplay, HttpHeadersDisplay, HttpRequestHeadDisplay,
     HttpResponseHeadDisplay,
@@ -44,6 +46,7 @@ pub use self::hook::{
     CapturedBody, FlowContext, HookError, HookFuture, HookResult, HttpExchange, MitmHook,
     SourceProcess, WebSocketDirection, WebSocketMessage,
 };
+pub use self::io::PrefixedDuplexStream;
 pub use self::io::{BoxedDuplexStream, DuplexStream, TrafficDirection, TrafficObserver};
 pub use self::types::{
     FlowIngress, FlowOperation, InterceptedHttpOutcome, OriginalDestination, TlsErrorSide,
@@ -53,6 +56,7 @@ pub use self::types::{
 
 #[cfg(test)]
 mod tests {
+    mod proxy_chain;
     use std::{
         future,
         net::{Ipv4Addr, SocketAddr},
@@ -1325,6 +1329,7 @@ mod tests {
                 .local_addr()
                 .expect("test upstream should expose listen address"),
         );
+        let original_destination = original_destination.into();
         let accept = listener.accept();
         let connect = connect_upstream_with_observer(
             UpstreamConnection::Deferred,
@@ -1375,7 +1380,11 @@ mod tests {
                     .json()
                     .and_then(|json| json.get("ok"))
                     .and_then(serde_json::Value::as_bool),
-                original_destination: exchange.flow.original_destination.socket_addr(),
+                original_destination: exchange
+                    .flow
+                    .original_destination
+                    .socket_addr()
+                    .expect("direct target address"),
             });
             Box::pin(future::ready(Ok(())))
         }
