@@ -5,9 +5,11 @@ mod callout;
 #[cfg(target_os = "macos")]
 mod macos;
 #[cfg(target_os = "windows")]
+pub mod windows;
+#[cfg(target_os = "windows")]
 mod winsock;
 
 #[cfg(target_os = "windows")]
 pub use callout::query_redirect_metadata;
 #[cfg(target_os = "macos")]
-pub use macos::process_working_directory;
+pub use macos::{process_working_directory, sysctl_read};

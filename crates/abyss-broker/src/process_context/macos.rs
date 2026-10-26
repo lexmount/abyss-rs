@@ -1,4 +1,4 @@
-//! macOS process working-directory provider backed by the safe sys adapter.
+//! macOS process-context provider backed by the safe sys adapter.
 
 use std::path::PathBuf;
 

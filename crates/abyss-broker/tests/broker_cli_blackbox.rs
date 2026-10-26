@@ -950,7 +950,6 @@ fn lifecycle_lock_open_options(create: bool) -> fs::OpenOptions {
     options
 }
 
-#[cfg(any(target_os = "macos", target_os = "windows"))]
 #[test]
 fn broker_mitm_config_updates_over_rest_without_restart() {
     let api_addr = reserve_api_loopback_addr();
@@ -986,6 +985,10 @@ fn broker_mitm_config_updates_over_rest_without_restart() {
         "default runtime MITM config should pass TLS through"
     );
 
+    let app_entry = broker
+        .runtime_root
+        .join("Example.app/Contents/Resources/cli.js");
+    let cli_entry = broker.runtime_root.join("agent/cli.js");
     let requested = json!({
         "tls_decryption": {
             "default_action": "passthrough",
@@ -995,6 +998,7 @@ fn broker_mitm_config_updates_over_rest_without_restart() {
                     "id": "decrypt-openai",
                     "action": "intercept",
                     "process_names": ["codex"],
+                    "process_entry_points": [app_entry, cli_entry],
                     "application_ids": ["com.openai.codex"],
                     "destination_hosts": ["api.openai.com"]
                 }
@@ -1019,12 +1023,50 @@ fn broker_mitm_config_updates_over_rest_without_restart() {
         "REST config should expose one platform-neutral application identity"
     );
 
+    assert_eq!(
+        updated["tls_decryption"]["rules"][0]["process_entry_points"],
+        requested["tls_decryption"]["rules"][0]["process_entry_points"]
+    );
     let read_back = request_mitm_config(api_addr, &token);
+    assert_eq!(
+        read_back, updated,
+        "GET should retain entry-point selectors"
+    );
     assert_eq!(
         read_back["tls_decryption"]["rules"][0]["id"], "decrypt-openai",
         "GET should read the current runtime MITM config"
     );
     assert_runtime_mitm_policy_persisted(&broker, "com.openai.codex");
+    let persisted: toml::Value =
+        toml::from_str(&fs::read_to_string(broker.runtime_policy_path()).unwrap()).unwrap();
+    assert_eq!(
+        persisted["mitm"]["tls_decryption"]["rules"][0]["process_entry_points"][0].as_str(),
+        app_entry.to_str()
+    );
+    assert_eq!(
+        persisted["mitm"]["tls_decryption"]["rules"][0]["process_entry_points"][1].as_str(),
+        cli_entry.to_str()
+    );
+    for entry in [
+        "",
+        "Contents/Resources/cli.js",
+        "Contents/../daemon.js",
+        "Contents/*.js",
+    ] {
+        let mut invalid_entry = requested.clone();
+        invalid_entry["tls_decryption"]["rules"][0]["process_entry_points"] = json!([entry]);
+        let response = client()
+            .put(url(api_addr, "/v1/mitm/config"))
+            .bearer_auth(&token)
+            .json(&invalid_entry)
+            .send()
+            .unwrap();
+        assert_eq!(response.status().as_u16(), 400);
+        assert_eq!(request_mitm_config(api_addr, &token), read_back);
+        let after_invalid: toml::Value =
+            toml::from_str(&fs::read_to_string(broker.runtime_policy_path()).unwrap()).unwrap();
+        assert_eq!(after_invalid, persisted, "invalid entries must not persist");
+    }
 
     let invalid = json!({
         "tls_decryption": {
@@ -1216,7 +1258,6 @@ fn harness_usage_hooks_update_request() -> Value {
     })
 }
 
-#[cfg(any(target_os = "macos", target_os = "windows"))]
 fn assert_runtime_mitm_policy_persisted(broker: &BrokerProcess, application_id: &str) {
     let persisted = toml::from_str::<toml::Value>(
         &fs::read_to_string(broker.runtime_policy_path())
@@ -1295,7 +1336,6 @@ fn shutdown_broker(api_addr: SocketAddr, auth_token_file: &Path) -> ProxyStatus 
     parse_status_response(response)
 }
 
-#[cfg(any(target_os = "macos", target_os = "windows"))]
 fn request_mitm_config(api_addr: SocketAddr, token: &str) -> serde_json::Value {
     let response = client()
         .get(url(api_addr, "/v1/mitm/config"))
@@ -1305,7 +1345,6 @@ fn request_mitm_config(api_addr: SocketAddr, token: &str) -> serde_json::Value {
     parse_json_response(response)
 }
 
-#[cfg(any(target_os = "macos", target_os = "windows"))]
 fn update_mitm_config(
     api_addr: SocketAddr,
     token: &str,
@@ -1374,7 +1413,6 @@ fn parse_status_response(response: Response) -> ProxyStatus {
     parse_success_response(response)
 }
 
-#[cfg(any(target_os = "macos", target_os = "windows"))]
 fn parse_json_response(response: Response) -> serde_json::Value {
     parse_success_response(response)
 }
@@ -1436,6 +1474,30 @@ const fn broker_binary() -> &'static str {
     env!("CARGO_BIN_EXE_abyss-broker")
 }
 
+#[cfg(unix)]
+#[path = "scenarios/compatible_providers.rs"]
+mod compatible_providers;
+
+#[cfg(unix)]
+#[path = "scenarios/opencode.rs"]
+mod opencode;
+
+#[cfg(target_os = "macos")]
+#[path = "scenarios/process_entry_points.rs"]
+mod process_entry_points;
+
+#[cfg(target_os = "macos")]
+#[path = "scenarios/framed.rs"]
+mod framed;
+
+#[cfg(target_os = "macos")]
+#[path = "scenarios/hermes.rs"]
+mod hermes;
+
+#[cfg(target_os = "macos")]
+#[path = "scenarios/workbuddy.rs"]
+mod workbuddy;
+
 struct BrokerProcess {
     api_addr: SocketAddr,
     auth_token_file: PathBuf,
@@ -1447,7 +1509,6 @@ struct BrokerProcess {
 }
 
 impl BrokerProcess {
-    #[cfg(any(target_os = "macos", target_os = "windows"))]
     fn runtime_policy_path(&self) -> PathBuf {
         self.runtime_root.join("runtime-policy.toml")
     }
@@ -1624,8 +1685,11 @@ impl BrokerProcess {
         }
     }
 
-    #[cfg(any(target_os = "macos", target_os = "windows"))]
     fn spawn_platform_default(api_addr: SocketAddr) -> Self {
+        #[cfg(target_os = "linux")]
+        {
+            Self::spawn_explicit(api_addr, loopback_ephemeral_addr())
+        }
         #[cfg(target_os = "macos")]
         {
             let socket_path = std::env::temp_dir().join(format!(

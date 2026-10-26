@@ -35,6 +35,24 @@ abyss deploy-local start
 abyss run -- codex
 ```
 
+**Supported Harnesses**
+
+- OpenAI Codex
+- Claude Code
+- Claude Desktop
+- [OpenCode](docs/opencode.md)
+- DeepSeek Harness: Headless, [dsh-tui](https://github.com/ccch1mneyyy/dsh-TUI), and Web UI
+
+**Supported Model Families**
+
+- OpenAI GPT / o-series
+- Anthropic Claude
+- DeepSeek
+- [GLM](docs/glm.md)
+- [Kimi](docs/kimi.md)
+- [Qwen](docs/qwen.md)
+- [MiniMax](docs/minimax.md)
+
 Open the dashboard to review captured activity, or inspect the runtime from your terminal:
 
 ```bash
@@ -68,6 +86,14 @@ persist failed uploads for later replay.
 The broker provides a live event stream; plugins own remote authentication,
 persistence, and retries. See the [plugin mechanism](https://abyss.lexmount.cn/docs/development/basics/abyss-broker-mechanism#plugins)
 for the integration model and protocol details.
+
+## Data query CLI
+
+`abyss-query` reads sessions, events, trajectories, search results and usage from
+SaaS or self-hosted HTTP backends on Windows, Linux and macOS. It provides named
+profiles, optional bearer or terminal login, bounded pagination and versioned
+JSON/JSONL output for Agents. See the [query CLI guide](crates/abyss-query-cli/README.md)
+and [Rust data client](crates/abyss-data-client/README.md).
 
 ## SDK
 

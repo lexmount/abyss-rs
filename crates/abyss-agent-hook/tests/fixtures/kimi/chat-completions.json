@@ -1,0 +1,109 @@
+{
+  "path": "/v1/chat/completions",
+  "request": {
+    "model": "kimi-k3",
+    "stream": true,
+    "stream_options": {
+      "include_usage": true
+    },
+    "messages": [
+      {
+        "role": "user",
+        "content": "Read probe.txt."
+      }
+    ]
+  },
+  "followup": {
+    "model": "kimi-k3",
+    "stream": true,
+    "stream_options": {
+      "include_usage": true
+    },
+    "messages": [
+      {
+        "role": "user",
+        "content": "Read probe.txt."
+      },
+      {
+        "role": "assistant",
+        "content": null,
+        "reasoning_content": "Read the file.",
+        "tool_calls": [
+          {
+            "id": "kimi-call-1",
+            "type": "function",
+            "function": {
+              "name": "read",
+              "arguments": "{\"path\":\"probe.txt\"}"
+            }
+          }
+        ]
+      },
+      {
+        "role": "tool",
+        "tool_call_id": "kimi-call-1",
+        "content": "KIMI_PROBE_OK"
+      }
+    ]
+  },
+  "response": {
+    "id": "kimi-chat-1",
+    "model": "kimi-k3",
+    "choices": [
+      {
+        "index": 0,
+        "message": {
+          "role": "assistant",
+          "content": null,
+          "reasoning_content": "Read the file.",
+          "tool_calls": [
+            {
+              "id": "kimi-call-1",
+              "type": "function",
+              "function": {
+                "name": "read",
+                "arguments": "{\"path\":\"probe.txt\"}"
+              }
+            }
+          ]
+        },
+        "finish_reason": "tool_calls"
+      }
+    ],
+    "usage": {
+      "prompt_tokens": 100,
+      "completion_tokens": 12,
+      "total_tokens": 112,
+      "cached_tokens": 60,
+      "prompt_tokens_details": {
+        "cached_tokens": 60,
+        "cache_write_tokens": 30
+      }
+    }
+  },
+  "reply": {
+    "id": "kimi-chat-2",
+    "model": "kimi-k3",
+    "choices": [
+      {
+        "index": 0,
+        "message": {
+          "role": "assistant",
+          "reasoning_content": "The file was read.",
+          "content": "KIMI_PROBE_OK"
+        },
+        "finish_reason": "stop"
+      }
+    ],
+    "usage": {
+      "prompt_tokens": 120,
+      "completion_tokens": 12,
+      "total_tokens": 132,
+      "cached_tokens": 60,
+      "prompt_tokens_details": {
+        "cached_tokens": 60,
+        "cache_write_tokens": 30
+      }
+    }
+  }
+}

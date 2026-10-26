@@ -1,0 +1,24 @@
+event: response.output_item.added
+data: {"type":"response.output_item.added","output_index":0,"item":{"id":"rs_glm","type":"reasoning","summary":[],"content":[]}}
+
+event: response.reasoning_text.delta
+data: {"type":"response.reasoning_text.delta","output_index":0,"content_index":0,"delta":"Read "}
+
+event: response.reasoning_text.delta
+data: {"type":"response.reasoning_text.delta","output_index":0,"content_index":0,"delta":"the file."}
+
+event: response.reasoning_text.done
+data: {"type":"response.reasoning_text.done","output_index":0,"content_index":0,"text":"Read the file."}
+
+event: response.content_part.done
+data: {"type":"response.content_part.done","output_index":0,"content_index":0,"part":{"type":"reasoning_text","text":"Read the file."}}
+
+event: response.output_item.done
+data: {"type":"response.output_item.done","output_index":0,"item":{"id":"rs_glm","type":"reasoning","summary":[],"content":[{"type":"reasoning_text","text":"Read the file."}]}}
+
+event: response.output_item.done
+data: {"type":"response.output_item.done","output_index":1,"item":{"id":"fc_glm","type":"function_call","call_id":"call_glm","name":"read_file","arguments":"{\"path\":\"probe.txt\"}"}}
+
+event: response.completed
+data: {"type":"response.completed","response":{"id":"resp_glm","model":"glm-4.7","status":"completed","output":[{"id":"rs_glm","type":"reasoning","summary":[],"content":[{"type":"reasoning_text","text":"Read the file."}]},{"id":"fc_glm","type":"function_call","call_id":"call_glm","name":"read_file","arguments":"{\"path\":\"probe.txt\"}"}],"usage":{"input_tokens":100,"input_tokens_details":{"cached_tokens":80},"output_tokens":12,"output_tokens_details":{"reasoning_tokens":5},"total_tokens":112}}}
+

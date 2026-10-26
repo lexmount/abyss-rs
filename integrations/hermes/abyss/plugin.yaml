@@ -1,0 +1,6 @@
+name: abyss
+version: "0.1.0"
+description: "Attach Hermes session and user-turn identity to model requests observed by Abyss."
+author: "Lexmount"
+provides_middleware:
+  - llm_request

@@ -1,0 +1,30 @@
+event: response.output_item.added
+data: {"type":"response.output_item.added","output_index":0,"item":{"id":"rs_minimax","type":"reasoning","summary":[]}}
+
+event: response.reasoning_text.delta
+data: {"type":"response.reasoning_text.delta","output_index":0,"summary_index":0,"delta":"Read "}
+
+event: response.reasoning_text.delta
+data: {"type":"response.reasoning_text.delta","output_index":0,"summary_index":0,"delta":"the file."}
+
+event: response.reasoning_text.done
+data: {"type":"response.reasoning_text.done","output_index":0,"summary_index":0,"text":"Read the file."}
+
+event: response.output_item.done
+data: {"type":"response.output_item.done","output_index":0,"item":{"id":"rs_minimax","type":"reasoning","summary":[],"content":[{"type":"reasoning_text","text":"Read the file."}]}}
+
+event: response.output_item.added
+data: {"type":"response.output_item.added","output_index":1,"item":{"id":"fc_minimax","type":"function_call","call_id":"minimax-call-1","name":"read","arguments":""}}
+
+event: response.function_call_arguments.delta
+data: {"type":"response.function_call_arguments.delta","output_index":1,"delta":"{\"path\":"}
+
+event: response.function_call_arguments.delta
+data: {"type":"response.function_call_arguments.delta","output_index":1,"delta":"\"probe.txt\"}"}
+
+event: response.output_item.done
+data: {"type":"response.output_item.done","output_index":1,"item":{"id":"fc_minimax","type":"function_call","call_id":"minimax-call-1","name":"read","arguments":"{\"path\":\"probe.txt\"}"}}
+
+event: response.completed
+data: {"type":"response.completed","response":{"id":"resp_minimax_1","model":"MiniMax-M3.1-Flash","status":"completed","output":[{"id":"rs_minimax","type":"reasoning","summary":[],"content":[{"type":"reasoning_text","text":"Read the file."}]},{"id":"fc_minimax","type":"function_call","call_id":"minimax-call-1","name":"read","arguments":"{\"path\":\"probe.txt\"}"}],"usage":{"input_tokens":100,"input_tokens_details":{"cached_tokens":60},"output_tokens":12,"output_tokens_details":{"reasoning_tokens":5},"total_tokens":112}}}
+

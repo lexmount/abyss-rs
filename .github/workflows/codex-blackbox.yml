@@ -21,6 +21,10 @@ jobs:
     name: Real Codex context upload
     if: github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository
     runs-on: ubuntu-latest
+    concurrency:
+      group: abyss-e2e-provider-openai
+      queue: max
+      cancel-in-progress: false
     steps:
       - name: Checkout
         uses: actions/checkout@v4

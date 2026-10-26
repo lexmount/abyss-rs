@@ -1,0 +1,158 @@
+name: Shared Headless Model Matrix
+
+on:
+  workflow_call:
+    inputs:
+      harness:
+        description: Harness selected by the calling workflow
+        required: true
+        type: string
+      provider:
+        description: Optional provider filter (openai, anthropic, deepseek, glm, kimi, qwen)
+        type: string
+      protocol:
+        description: Optional protocol filter (responses, chat, messages)
+        type: string
+      model:
+        description: Optional exact model filter
+        type: string
+
+permissions:
+  contents: read
+
+env:
+  ABYSS_E2E_MODELS: ${{ vars.ABYSS_E2E_MODELS }}
+  ABYSS_E2E_ENDPOINTS: ${{ vars.ABYSS_E2E_ENDPOINTS }}
+
+jobs:
+  plan:
+    name: Plan ${{ inputs.harness }}
+    runs-on: ubuntu-latest
+    outputs:
+      matrix: ${{ steps.plan.outputs.matrix }}
+      enabled: ${{ steps.plan.outputs.enabled }}
+    steps:
+      - uses: actions/checkout@v4
+      - name: Test orchestration contracts
+        run: python3 -m unittest discover -s scripts/tests -p 'test_agent_*py'
+      - name: Plan compatible matrix
+        id: plan
+        env:
+          FORK: ${{ github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name != github.repository }}
+          SKIP: ${{ github.event_name == 'pull_request' && contains(github.event.pull_request.labels.*.name, 'skip-agent-e2e') }}
+          HARNESS: ${{ inputs.harness }}
+          PROVIDER: ${{ inputs.provider }}
+          PROTOCOL: ${{ inputs.protocol }}
+          MODEL: ${{ inputs.model }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [[ "$FORK" == true || "$SKIP" == true ]]; then
+            echo 'enabled=false' >> "$GITHUB_OUTPUT"
+            echo 'matrix={"include":[]}' >> "$GITHUB_OUTPUT"
+            printf 'Matrix SKIPPED: fork=%s, skip-agent-e2e=%s; actor=%s; commit=%s\n' \
+              "$FORK" "$SKIP" "$GITHUB_ACTOR" "$GITHUB_SHA" >> "$GITHUB_STEP_SUMMARY"
+            exit 0
+          fi
+          # Temporary CI pause across every harness; remove the GLM filter to restore.
+          matrix=$(python3 -m scripts.agent_matrix_ci plan \
+            --harness "$HARNESS" --provider "$PROVIDER" --protocol "$PROTOCOL" --model "$MODEL" \
+            | jq -c '{include: [.include[] | select(.provider != "glm")]}')
+          echo 'GLM matrix tests are temporarily disabled.' >> "$GITHUB_STEP_SUMMARY"
+          echo "matrix=$matrix" >> "$GITHUB_OUTPUT"
+          if [[ "$matrix" == '{"include":[]}' ]]; then
+            echo 'enabled=false' >> "$GITHUB_OUTPUT"
+            echo 'Matrix SKIPPED: the selected provider is temporarily disabled.' >> "$GITHUB_STEP_SUMMARY"
+            exit 0
+          fi
+          echo 'enabled=true' >> "$GITHUB_OUTPUT"
+
+  matrix:
+    needs: plan
+    if: needs.plan.outputs.enabled == 'true'
+    name: ${{ matrix.harness }} / ${{ matrix.provider }} / ${{ matrix.model }} / ${{ matrix.protocol }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    # Share one provider slot across harness workflows, PRs and legacy E2E jobs.
+    # The default single pending slot would cancel other waiting matrix cells.
+    concurrency:
+      group: abyss-e2e-provider-${{ matrix.provider }}
+      queue: max
+      cancel-in-progress: false
+    strategy:
+      fail-fast: false
+      matrix: ${{ fromJSON(needs.plan.outputs.matrix) }}
+    env:
+      ABYSS_AGENT_E2E_RUN_ID: matrix-${{ github.run_id }}-${{ github.run_attempt }}-${{ matrix.id }}
+    steps:
+      - uses: actions/checkout@v4
+      - name: Set up Rust and build cache
+        uses: ./.github/actions/setup-rust
+        with:
+          cache-shared-key: agent-e2e
+      - name: Set up client runtime
+        uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+      - name: Install pinned headless client in job directory
+        if: matrix.harness != 'hermes'
+        env:
+          HARNESS: ${{ matrix.harness }}
+          MATRIX_CASE: ${{ matrix.id }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          case "$HARNESS" in
+            codex) package='@openai/codex@0.163.0' ;;
+            claude-code) package='@anthropic-ai/claude-code@2.1.206' ;;
+            deepseek-harness) package='@deepseek-ai/dsh@0.2.0-rc.2' ;;
+            *) echo 'Unknown headless harness' >&2; exit 1 ;;
+          esac
+          tools_dir="$RUNNER_TEMP/abyss-matrix-tools-$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT-$MATRIX_CASE"
+          npm install --prefix "$tools_dir" --no-audit --no-fund "$package"
+          echo "$tools_dir/node_modules/.bin" >> "$GITHUB_PATH"
+      - name: Set up Hermes Python installer
+        if: matrix.harness == 'hermes'
+        uses: astral-sh/setup-uv@fac544c07dec837d0ccb6301d7b5580bf5edae39 # v8.2.0
+        with:
+          version: '0.12.13'
+          enable-cache: false
+      - name: Install pinned Hermes with locked dependencies
+        if: matrix.harness == 'hermes'
+        env:
+          MATRIX_CASE: ${{ matrix.id }}
+        run: bash scripts/ci/install_hermes.sh "$RUNNER_TEMP/abyss-hermes-$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT-$MATRIX_CASE"
+      - name: Set up Codex Linux sandbox
+        if: matrix.harness == 'codex'
+        uses: ./.github/actions/setup-codex-sandbox
+      - name: Run real headless client through Abyss
+        env:
+          ABYSS_MATRIX_API_KEY: ${{ secrets[matrix.secret] }}
+          CLAUDE_CODE_BASE_URL: ${{ matrix.provider == 'anthropic' && secrets.CLAUDE_CODE_BASE_URL || '' }}
+          MATRIX_CASE: ${{ matrix.id }}
+          ABYSS_AGENT_E2E_RUNTIME_ROOT: ${{ runner.temp }}/abyss-matrix-${{ github.run_id }}-${{ github.run_attempt }}-${{ matrix.id }}
+        run: python3 -m scripts.agent_matrix_ci run --case "$MATRIX_CASE"
+      - name: Upload sanitized cell evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: matrix-${{ matrix.id }}
+          path: ${{ runner.temp }}/abyss-matrix-${{ github.run_id }}-${{ github.run_attempt }}-${{ matrix.id }}/artifacts
+          if-no-files-found: warn
+          retention-days: 14
+
+  result:
+    name: Result ${{ inputs.harness }}
+    needs: [plan, matrix]
+    if: always() && needs.plan.outputs.enabled == 'true'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: matrix-*
+          path: matrix-results
+      - name: Require every planned cell to pass
+        env:
+          ABYSS_E2E_EXPECTED_MATRIX: ${{ needs.plan.outputs.matrix }}
+        run: python3 -m scripts.agent_matrix_ci summarize --results matrix-results

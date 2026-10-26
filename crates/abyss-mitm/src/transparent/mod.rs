@@ -7,7 +7,9 @@
 //! bytes.
 
 mod accepted_flow;
+mod body;
 mod client_hello;
+mod content_encoding;
 mod decrypt_policy;
 mod display;
 mod engine;
@@ -27,6 +29,7 @@ mod utils;
 mod websocket;
 
 pub use self::accepted_flow::AcceptedTcpFlow;
+pub use self::body::BodyDecodingStatus;
 pub use self::decrypt_policy::{
     TlsDecryptionAction, TlsDecryptionContext, TlsDecryptionDecision, TlsDecryptionPolicy,
     TlsDecryptionPolicyError, TlsDecryptionRule, ValidatedTlsDecryptionPolicy,
@@ -153,6 +156,7 @@ mod tests {
                     action: TlsDecryptionAction::Passthrough,
                     process_names: Vec::new(),
                     application_ids: Vec::new(),
+                    process_entry_points: Vec::new(),
                     destination_hosts: vec!["passthrough.example.test".to_owned()],
                 }],
             })
@@ -323,6 +327,109 @@ mod tests {
                 .and_then(|json| json.get("n"))
                 .and_then(serde_json::Value::as_i64),
             Some(123)
+        );
+    }
+
+    #[tokio::test]
+    async fn relay_preserves_compression_negotiation_and_encoded_bodies() {
+        // All hosts and routes retain the client's compression negotiation.
+        for (host, path) in [
+            ("api.deepseek.com", "/chat/completions"),
+            ("api.openai.com", "/v1/responses"),
+            ("api.anthropic.com", "/v1/messages"),
+            (
+                "claude.ai",
+                "/api/organizations/o/chat_conversations/c/completion",
+            ),
+            ("www.dmxapi.cn", "/other"),
+            ("gateway.example", "/gateway/responses"),
+            ("gateway.example", "/v1/messages?beta=true"),
+            ("api.openai.com", "/v1/files"),
+            ("gateway.example", "/upload"),
+        ] {
+            assert_compression_policy_roundtrip(host, path).await;
+        }
+    }
+
+    async fn assert_compression_policy_roundtrip(host: &'static str, path: &'static str) {
+        // gzip-encoded {"ok":true}; content decoding belongs outside forwarding.
+        const BODY: &[u8] = &[
+            31, 139, 8, 0, 0, 0, 0, 0, 2, 255, 171, 86, 202, 207, 86, 178, 42, 41, 42, 77, 173, 5,
+            0, 144, 95, 212, 167, 11, 0, 0, 0,
+        ];
+        let mut request = format!(
+            "POST {path} HTTP/1.1\r\nHost: {host}\r\naCcEpT-EnCoDiNg: br, gzip\r\nAccept-Encoding: zstd\r\nContent-Encoding: gzip\r\nContent-Length: {}\r\n\r\n",
+            BODY.len()
+        ).into_bytes();
+        request.extend_from_slice(BODY);
+        let mut response = format!(
+            "HTTP/1.1 200 OK\r\nContent-Encoding: gzip\r\nContent-Length: {}\r\n\r\n",
+            BODY.len()
+        )
+        .into_bytes();
+        response.extend_from_slice(BODY);
+        let upstream_listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let upstream_addr = upstream_listener.local_addr().unwrap();
+        let expected_request = request.clone();
+        let upstream_response = response.clone();
+        let upstream = tokio::spawn(async move {
+            let (mut stream, _) = upstream_listener.accept().await.unwrap();
+            let head = timeout(Duration::from_secs(2), async {
+                let mut bytes = Vec::new();
+                while !bytes.ends_with(b"\r\n\r\n") {
+                    bytes.push(stream.read_u8().await.unwrap());
+                }
+                String::from_utf8(bytes).unwrap()
+            })
+            .await
+            .expect("upstream must receive the request head");
+            let mut body = vec![0; BODY.len()];
+            timeout(Duration::from_secs(2), stream.read_exact(&mut body))
+                .await
+                .expect("upstream must receive the whole request")
+                .unwrap();
+            let mut received = head.as_bytes().to_vec();
+            received.extend_from_slice(&body);
+            assert_eq!(
+                received, expected_request,
+                "request wire bytes changed for {host}{path}"
+            );
+            stream.write_all(&upstream_response).await.unwrap();
+            received.len()
+        });
+        let (mut client, server) = connected_pair().await;
+        let flow = AcceptedTcpFlow::new(
+            server,
+            SocketAddr::from((Ipv4Addr::LOCALHOST, 50000)),
+            SocketAddr::from((Ipv4Addr::LOCALHOST, 18090)),
+            OriginalDestination::from(upstream_addr),
+        );
+        let mitm = MitmEngine::from_ca(&test_ca()).unwrap();
+        let worker = tokio::spawn(async move { Box::pin(mitm.handle_flow(flow)).await });
+        client.write_all(&request).await.unwrap();
+        let mut received = vec![0; response.len()];
+        timeout(Duration::from_secs(2), client.read_exact(&mut received))
+            .await
+            .expect("client must receive the whole response")
+            .unwrap();
+        let outcome = expect_intercepted_outcome(worker.await.unwrap().unwrap());
+        let forwarded_request_len = upstream.await.unwrap();
+
+        assert_eq!(
+            received, response,
+            "response wire bytes changed for {host}{path}"
+        );
+        assert_eq!(outcome.first_request.headers()["content-encoding"], "gzip");
+        assert_eq!(outcome.first_response.headers()["content-encoding"], "gzip");
+        assert_eq!(outcome.first_request.body().raw_bytes(), BODY);
+        assert_eq!(outcome.first_response.body().raw_bytes(), BODY);
+        assert_eq!(
+            outcome.client_to_upstream_bytes,
+            u64::try_from(forwarded_request_len).unwrap()
+        );
+        assert_eq!(
+            outcome.upstream_to_client_bytes,
+            u64::try_from(response.len()).unwrap()
         );
     }
 
@@ -1080,6 +1187,7 @@ mod tests {
                     action: TlsDecryptionAction::Passthrough,
                     process_names: vec!["codex".to_owned()],
                     application_ids: vec!["com.openai.codex".to_owned()],
+                    process_entry_points: Vec::new(),
                     destination_hosts: vec!["platform-fallback.example".to_owned()],
                 },
                 TlsDecryptionRule {
@@ -1088,6 +1196,7 @@ mod tests {
                     action: TlsDecryptionAction::Intercept,
                     process_names: vec!["codex".to_owned()],
                     application_ids: vec!["com.openai.codex".to_owned()],
+                    process_entry_points: Vec::new(),
                     destination_hosts: vec!["*.openai.com".to_owned()],
                 },
             ],

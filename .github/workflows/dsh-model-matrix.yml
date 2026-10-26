@@ -1,0 +1,41 @@
+name: DSH Model Matrix
+
+on:
+  pull_request:
+    branches: [main]
+    types: [opened, synchronize, reopened, labeled, unlabeled]
+    # Limit automatic model runs to broker, Agent Hook, and MITM changes.
+    # Keep these filters aligned across the four harness entry workflows.
+    paths:
+      - 'crates/abyss-broker/**'
+      - 'crates/abyss-agent-hook/**'
+      - 'crates/abyss-mitm/**'
+  workflow_dispatch:
+    inputs:
+      provider:
+        description: Optional provider filter (openai, anthropic, deepseek, glm, kimi, qwen)
+        type: string
+      protocol:
+        description: Optional protocol filter (responses, chat, messages)
+        type: string
+      model:
+        description: Optional exact model filter
+        type: string
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  models:
+    name: DSH
+    uses: ./.github/workflows/agent-model-matrix.yml
+    with:
+      harness: deepseek-harness
+      provider: ${{ inputs.provider || '' }}
+      protocol: ${{ inputs.protocol || '' }}
+      model: ${{ inputs.model || '' }}
+    secrets: inherit
