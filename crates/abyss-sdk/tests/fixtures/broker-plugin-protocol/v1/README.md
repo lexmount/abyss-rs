@@ -396,9 +396,11 @@ carry the same values, and none enters the event id.
 
 A header counts when its value is non-empty and valid UTF-8. A Codex
 `turn_id` is read only when `x-codex-turn-metadata` is a JSON object whose
-`root_turn_id` is a non-empty string. Other clients send none of these
-headers, so their events carry none of the fields. The headers themselves
-remain in `headers`.
+`root_turn_id` is a non-empty string. Cursor, Hermes, WorkBuddy, and OpenCode
+declare only `turn_id`, each from one header of the request itself: Cursor
+`x-request-id`, Hermes `x-hermes-turn-id`, WorkBuddy
+`x-conversation-request-id`, and OpenCode `x-opencode-request`. Other clients
+declare none of the fields. The headers themselves remain in `headers`.
 
 ## Headers
 
