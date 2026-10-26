@@ -23,6 +23,7 @@ use std::path::PathBuf;
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
 
+#[cfg(any(target_os = "macos", target_os = "windows", test))]
 use crate::connection::OriginalDestination;
 
 /// Target-specific transparent ingress types available to the broker.
@@ -312,6 +313,7 @@ pub struct PlatformFlowMetadata {
 
 impl PlatformFlowMetadata {
     /// Creates platform flow metadata from normalized optional fields.
+    #[cfg(any(target_os = "macos", target_os = "windows", test))]
     #[must_use]
     pub fn from_parts(
         peer_addr: Option<SocketAddr>,

@@ -438,8 +438,11 @@ async fn connection_refusal_remains_a_proxy_tcp_failure() {
     let listener = TcpListener::bind("127.0.0.1:0")
         .await
         .expect("reserve port");
-    let proxy =
-        HttpConnectProxy::new(&config(listener.local_addr().expect("address"))).expect("config");
+    let mut settings = config(listener.local_addr().expect("address"));
+    // Windows can take longer than one second to report a refused connection.
+    // This test checks OS error attribution, not the connector's deadline.
+    settings.connect_timeout_ms = 10_000;
+    let proxy = HttpConnectProxy::new(&settings).expect("config");
     drop(listener);
     let result = proxy
         .connect(
@@ -447,11 +450,15 @@ async fn connection_refusal_remains_a_proxy_tcp_failure() {
             "127.0.0.1:0".parse().expect("broker listener"),
         )
         .await;
-    assert!(matches!(
-        result,
-        Err(UpstreamProxyError::Io {
-            stage: ProxyConnectStage::ConnectProxy,
-            ..
-        })
-    ));
+    let error = result.err().expect("a closed listener must reject TCP");
+    assert!(
+        matches!(
+            &error,
+            UpstreamProxyError::Io {
+                stage: ProxyConnectStage::ConnectProxy,
+                source,
+            } if source.kind() == std::io::ErrorKind::ConnectionRefused
+        ),
+        "expected proxy TCP connection refusal, got {error}"
+    );
 }
