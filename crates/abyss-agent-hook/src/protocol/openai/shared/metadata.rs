@@ -3,7 +3,11 @@
 use http::HeaderMap;
 use serde_json::Value;
 
-use crate::protocol::shared::{http::header, json::collect_string_field, text::non_empty_trimmed};
+use crate::protocol::shared::{
+    http::{header, opencode_session_id},
+    json::collect_string_field,
+    text::non_empty_trimmed,
+};
 
 const CODEX_TURN_METADATA: &str = "x-codex-turn-metadata";
 
@@ -37,6 +41,7 @@ pub fn session_id(headers: &HeaderMap) -> Option<String> {
         .or_else(|| metadata_header_value(headers, "thread_id"))
         .or_else(|| header(headers, "x-deepseek-harness-session-id").map(str::to_owned))
         .or_else(|| header(headers, "x-hermes-session-id").map(str::to_owned))
+        .or_else(|| opencode_session_id(headers).map(str::to_owned))
         .or_else(|| {
             // X-Agent-Id is a conversation ID in Cursor Local's contract.
             // Other clients may use this generic header for a different scope.

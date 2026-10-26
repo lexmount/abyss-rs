@@ -4,7 +4,11 @@ use http::HeaderMap;
 use serde_json::Value;
 
 use super::model::AnthropicSessionIdSource;
-use crate::protocol::shared::{http::header, json::collect_string_field, text::non_empty_trimmed};
+use crate::protocol::shared::{
+    http::{header, opencode_session_id},
+    json::collect_string_field,
+    text::non_empty_trimmed,
+};
 
 pub(super) struct ResolvedAnthropicSessionId {
     pub(super) id: String,
@@ -36,6 +40,7 @@ fn provider_session_id(headers: &HeaderMap, payload: &Value) -> Option<String> {
         .or_else(|| header(headers, "x-claude-session-id"))
         .or_else(|| header(headers, "x-deepseek-harness-session-id"))
         .or_else(|| header(headers, "x-hermes-session-id"))
+        .or_else(|| opencode_session_id(headers))
         .map(str::to_owned)
         .or_else(|| metadata_session_id(payload))
         .or_else(|| collect_string_field(payload, "session_id"))

@@ -33,6 +33,187 @@ struct Scenario {
     hook: HarnessUsageHook<Arc<RecordingSink>>,
 }
 
+#[tokio::test]
+async fn opencode_native_sessions_and_declared_turns_survive_protocol_changes() {
+    let scenario = Scenario::new(json!({}));
+    for path in ["/v1/responses", "/v1/chat/completions", "/v1/messages"] {
+        for (session, turn, response) in [
+            ("session-a", "message-1", "response-1"),
+            ("session-a", "message-1", "tool-followup"),
+            ("session-a", "message-2", "resumed-turn"),
+            ("session-b", "message-3", "independent-session"),
+        ] {
+            scenario
+                .http(
+                    &[
+                        ("user-agent", "opencode/latest/1.19.4/cli"),
+                        ("x-opencode-session-id", session),
+                        ("x-opencode-session", "gateway-alias"),
+                        ("x-session-id", "generic-alias"),
+                        ("x-opencode-parent-session-id", "parent-is-not-this-session"),
+                        ("x-opencode-request", turn),
+                    ],
+                    path,
+                    response,
+                )
+                .await;
+        }
+    }
+    let events = scenario.sink.0.lock();
+    assert_eq!(events.len(), 24);
+    for (pair, (session, turn)) in events.as_chunks::<2>().0.iter().zip(
+        [
+            ("session-a", "message-1"),
+            ("session-a", "message-1"),
+            ("session-a", "message-2"),
+            ("session-b", "message-3"),
+        ]
+        .into_iter()
+        .cycle(),
+    ) {
+        for event in pair {
+            assert_eq!(event.agent.name, "opencode");
+            assert_eq!(event.agent.version.as_deref(), Some("1.19.4"));
+            assert_eq!(event.session_id, session);
+            assert_eq!(event.turn_id.as_deref(), Some(turn));
+            assert_eq!(event.llm.provider.wire_name(), "openai");
+        }
+    }
+}
+
+#[tokio::test]
+async fn opencode_session_aliases_do_not_invent_a_user_turn() {
+    for path in ["/v1/responses", "/v1/chat/completions", "/v1/messages"] {
+        for session_header in [
+            "x-opencode-session-id",
+            "x-opencode-session",
+            "x-session-id",
+        ] {
+            let scenario = Scenario::new(json!({}));
+            scenario
+                .http(
+                    &[
+                        ("user-agent", "opencode/1.1.50"),
+                        (session_header, " session-a "),
+                        ("x-opencode-request", "  "),
+                        ("x-request-id", "provider-request"),
+                    ],
+                    path,
+                    "reply",
+                )
+                .await;
+            let events = scenario.sink.0.lock();
+            assert_eq!(events.len(), 2);
+            for event in events.iter() {
+                assert_eq!(event.session_id, "session-a");
+                assert!(event.turn_id.is_none());
+                assert_eq!(event.agent.version.as_deref(), Some("1.1.50"));
+            }
+        }
+    }
+}
+
+#[tokio::test]
+async fn opencode_headers_and_gateway_routes_alone_do_not_identify_the_client() {
+    for user_agent in ["ai-sdk/5.0", "OpenAI/Python 2.0", "other-opencode/1.0"] {
+        let scenario = Scenario::new(json!({}));
+        scenario
+            .http(
+                &[
+                    ("user-agent", user_agent),
+                    ("x-opencode-session-id", "session-a"),
+                    ("x-opencode-session", "session-a"),
+                    ("x-opencode-request", "message-a"),
+                    ("x-opencode-client", "cli"),
+                ],
+                "/zen/v1/chat/completions",
+                "reply",
+            )
+            .await;
+        assert!(scenario.sink.0.lock().is_empty());
+    }
+    let scenario = Scenario::new(json!({}));
+    for path in ["/v1/responses", "/v1/messages"] {
+        scenario
+            .http(
+                &[
+                    ("user-agent", "deepseek-harness/0.2.0"),
+                    ("x-session-id", "not-an-opencode-session"),
+                    ("x-opencode-request", "not-a-deepseek-turn"),
+                ],
+                path,
+                "reply",
+            )
+            .await;
+    }
+    let events = scenario.sink.0.lock();
+    assert_eq!(events.len(), 4);
+    for event in events.iter() {
+        assert_ne!(event.session_id, "not-an-opencode-session");
+        assert!(event.turn_id.is_none());
+    }
+}
+
+#[tokio::test]
+async fn opencode_obeys_harness_and_content_policy() {
+    for enabled in [true, false] {
+        let scenario = Scenario::new(json!({"harness_usage": {"config": {
+            "harnesses": {"opencode": {"enabled": enabled,
+                "content": {"conversation_text": false, "tool_calls": false, "images": false}}}
+        }}}));
+        scenario
+            .http(
+                &[
+                    ("user-agent", "opencode/latest/1.19.4/cli"),
+                    ("x-opencode-session-id", "session-a"),
+                ],
+                "/v1/chat/completions",
+                "reply",
+            )
+            .await;
+        let events = scenario.sink.0.lock();
+        if !enabled {
+            assert!(events.is_empty());
+            continue;
+        }
+        assert_eq!(events.len(), 2);
+        for event in events.iter() {
+            assert!(event.text.is_none());
+            let conversation = event.conversation.as_ref().unwrap();
+            assert!(conversation.policy_omitted);
+            assert!(conversation.messages.is_empty());
+            assert_eq!(event.session_id, "session-a");
+            assert!(event.token_usage.total_tokens > 0);
+        }
+    }
+}
+
+#[tokio::test]
+async fn opencode_websocket_upgrade_does_not_pin_future_turns() {
+    let scenario = Scenario::new(json!({}));
+    scenario
+        .websocket(
+            &[
+                ("user-agent", "opencode/latest/1.19.4/cli"),
+                ("x-opencode-session-id", "session-a"),
+                ("x-opencode-request", "upgrade-message"),
+            ],
+            &[
+                json!({"type": "response.create", "model": "test-model", "input": [
+                    {"role": "user", "content": "hello"}
+                ]}),
+            ],
+        )
+        .await;
+    let events = scenario.sink.0.lock();
+    assert_eq!(events.len(), 2);
+    for event in events.iter() {
+        assert_eq!(event.agent.name, "opencode");
+        assert_eq!(event.session_id, "session-a");
+        assert!(event.turn_id.is_none());
+    }
+}
+
 impl Scenario {
     fn new(policy: Value) -> Self {
         let sink = Arc::new(RecordingSink::default());

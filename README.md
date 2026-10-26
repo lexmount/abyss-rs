@@ -40,6 +40,7 @@ abyss run -- codex
 - OpenAI Codex
 - Claude Code
 - Claude Desktop
+- [OpenCode](docs/opencode.md)
 - DeepSeek Harness: Headless, [dsh-tui](https://github.com/ccch1mneyyy/dsh-TUI), and Web UI
 
 **Supported Model Families**

@@ -471,6 +471,7 @@ impl StatusCommandRunner {
             BuiltInHarness::Hermes.id(),
             BuiltInHarness::Cursor.id(),
             BuiltInHarness::WorkBuddy.id(),
+            BuiltInHarness::OpenCode.id(),
         ]
         .into_iter()
         .chain(
@@ -613,6 +614,7 @@ fn parse_harness(value: &str, hooks: &HooksConfig) -> Result<HarnessId, CliError
         "hermes" => Ok(BuiltInHarness::Hermes.into()),
         "cursor" => Ok(BuiltInHarness::Cursor.into()),
         "workbuddy" => Ok(BuiltInHarness::WorkBuddy.into()),
+        "opencode" => Ok(BuiltInHarness::OpenCode.into()),
         name => hooks
             .harness_usage
             .config
@@ -650,7 +652,13 @@ mod tests {
     #[test]
     fn builtins_can_be_selected_without_a_policy_entry() {
         let hooks = HooksConfig::default();
-        for name in ["deepseek-harness", "hermes", "cursor", "workbuddy"] {
+        for name in [
+            "deepseek-harness",
+            "hermes",
+            "cursor",
+            "workbuddy",
+            "opencode",
+        ] {
             let id = super::parse_harness(name, &hooks).unwrap();
             assert_eq!(id.as_str(), name);
             assert_eq!(super::enabled_label(&hooks, id.as_str()), "enabled");

@@ -198,6 +198,10 @@ matches are skipped. Request headers provide attribution, not authenticated proc
 Cursor Local is built in as `cursor`; see [supported clients and native session
 headers](cursor.md). The ordinary Cursor cloud CLI uses a separate, unsupported
 RPC protocol.
+OpenCode is built in as `opencode` and enabled by default. Its native User-Agent
+identifies the client independently of the provider; native headers preserve
+sessions across tool calls and resumed processes. See [OpenCode setup and
+session handling](opencode.md), including the limits of user-turn attribution.
 TLS traffic must also be selected for interception by the MITM policy.
 HTTP compression negotiation and forwarded bytes are preserved. The background
 MITM hook worker decodes request/response `Content-Encoding` before Agent parsing
