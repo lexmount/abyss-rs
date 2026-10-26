@@ -1,0 +1,114 @@
+{
+  "path": "/anthropic/v1/messages",
+  "request": {
+    "model": "kimi-k3",
+    "stream": true,
+    "max_tokens": 2048,
+    "messages": [
+      {
+        "role": "user",
+        "content": "Read probe.txt."
+      }
+    ]
+  },
+  "followup": {
+    "model": "kimi-k3",
+    "stream": true,
+    "max_tokens": 2048,
+    "messages": [
+      {
+        "role": "user",
+        "content": "Read probe.txt."
+      },
+      {
+        "role": "assistant",
+        "content": [
+          {
+            "type": "thinking",
+            "thinking": "Read the file.",
+            "signature": "fixture-signature"
+          },
+          {
+            "type": "tool_use",
+            "id": "kimi-call-1",
+            "name": "read",
+            "input": {
+              "path": "probe.txt"
+            }
+          }
+        ]
+      },
+      {
+        "role": "user",
+        "content": [
+          {
+            "type": "tool_result",
+            "tool_use_id": "kimi-call-1",
+            "content": "KIMI_PROBE_OK"
+          }
+        ]
+      }
+    ]
+  },
+  "response": {
+    "id": "msg_kimi_1",
+    "type": "message",
+    "role": "assistant",
+    "model": "kimi-k3",
+    "content": [
+      {
+        "type": "thinking",
+        "thinking": "Read the file.",
+        "signature": "fixture-signature"
+      },
+      {
+        "type": "tool_use",
+        "id": "kimi-call-1",
+        "name": "read",
+        "input": {
+          "path": "probe.txt"
+        }
+      }
+    ],
+    "stop_reason": "tool_use",
+    "usage": {
+      "input_tokens": 10,
+      "cache_read_input_tokens": 60,
+      "cache_creation_input_tokens": 30,
+      "cache_creation": {
+        "ephemeral_5m_input_tokens": 30,
+        "ephemeral_1h_input_tokens": 0
+      },
+      "output_tokens": 12,
+      "output_tokens_details": {
+        "thinking_tokens": 5
+      }
+    }
+  },
+  "reply": {
+    "id": "msg_kimi_2",
+    "type": "message",
+    "role": "assistant",
+    "model": "kimi-k3",
+    "content": [
+      {
+        "type": "text",
+        "text": "KIMI_PROBE_OK"
+      }
+    ],
+    "stop_reason": "end_turn",
+    "usage": {
+      "input_tokens": 30,
+      "cache_read_input_tokens": 60,
+      "cache_creation_input_tokens": 30,
+      "cache_creation": {
+        "ephemeral_5m_input_tokens": 30,
+        "ephemeral_1h_input_tokens": 0
+      },
+      "output_tokens": 12,
+      "output_tokens_details": {
+        "thinking_tokens": 5
+      }
+    }
+  }
+}

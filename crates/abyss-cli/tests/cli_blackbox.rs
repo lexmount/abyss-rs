@@ -39,8 +39,9 @@ fn version_commands_report_the_workspace_version() {
 }
 
 #[test]
-fn proxy_env_preserves_the_posix_explicit_proxy_output() {
+fn proxy_env_only_exports_proxy_variables_with_user_managed_node_ca() {
     let output = Command::new(env!("CARGO_BIN_EXE_abyss"))
+        .env("NODE_EXTRA_CA_CERTS", "/user-managed/certs/extra.pem")
         .args(["proxy", "env", "--proxy-url", "http://127.0.0.1:28999"])
         .output()
         .expect("Abyss CLI should run");
@@ -342,8 +343,8 @@ fn deploy_local_reports_redirect_safe_stages_and_preserves_endpoint_output() {
     for expected in [
         "[1/5] Checking local dependencies...",
         "[1/5] Checking local dependencies... done",
-        "[2/5] Preparing abyss-backend v1.0.0... configured",
-        "[3/5] Preparing abyss-dashboard v0.1.0... configured",
+        "[2/5] Preparing abyss-backend v1.1.0... configured",
+        "[3/5] Preparing abyss-dashboard v0.3.0... configured",
         "[4/5] Starting local services...",
         "Starting backend; waiting for health check",
         "Backend ready: http://127.0.0.1:",

@@ -34,14 +34,17 @@ use crate::http1::{
 use super::{
     CapturedBody, FlowContext, FlowOperation, HttpExchange, MitmTimeouts, TransparentFlowError,
     TransparentProtocol,
+    content_encoding::ContentDecoder,
     hook::HookDispatcher,
     utils::{
         content_length, has_expect_continue, http_request_head_without_relay_headers, is_chunked,
-        is_websocket_upgrade_request, should_strip_accept_encoding, status_has_no_body,
-        websocket_request_head_bytes,
+        is_websocket_upgrade_request, status_has_no_body, websocket_request_head_bytes,
     },
     websocket::{WebSocketRelayOutcome, WebSocketUpgrade, relay_websocket_messages},
 };
+
+#[cfg(test)]
+mod response_capture_tests;
 
 /// Bounded scratch buffer used while streaming HTTP bodies.
 ///
@@ -230,7 +233,7 @@ where
             head,
             head_buffer,
         } = response;
-        let response_capture = Box::pin(forward_response(
+        let mut response_capture = Box::pin(forward_response(
             &mut stream,
             &mut self.stream,
             &self.first_request,
@@ -247,13 +250,21 @@ where
         // Do not rely on dropping `self.stream` here. A drop can surface as a
         // raw socket EOF on the Swift bridge while it still has a partial frame
         // buffered, which is reported as `unexpectedEOF` and can make Codex
-        // report that the response body could not be decoded. `forward_response`
-        // only returns after the HTTP/1 response body has been fully relayed, so
-        // this is the earliest point where closing the client side is both
-        // correct and framed-protocol safe.
-        shutdown_completed_agent_stream(&mut self.stream).await?;
+        // report that the response body could not be decoded. When forwarding
+        // succeeded, this is the earliest point where closing the client side
+        // is both correct and framed-protocol safe.
+        //
+        // Observation is complete once upstream HTTP framing is complete. An
+        // Agent may close after its final SSE event, before the chunk terminator
+        // arrives. Preserve that capture, while still reporting the write error
+        // and counting only bytes actually accepted by the client stream.
+        // Enqueue only after the final write or shutdown attempt has finished.
+        let close_result = match response_capture.agent_write_error.take() {
+            Some(error) => Err(error),
+            None => shutdown_completed_agent_stream(&mut self.stream).await,
+        };
 
-        Ok(submit_captured_exchange(
+        let outcome = submit_captured_exchange(
             self.context,
             self.first_request,
             head,
@@ -261,7 +272,9 @@ where
             response_capture,
             hooks,
             log_kind,
-        ))
+        );
+        close_result?;
+        Ok(outcome)
     }
 
     #[tracing::instrument(level = "trace", skip_all)]
@@ -469,12 +482,14 @@ where
     usize_to_u64(request_head.len())
 }
 
-/// Captured representation of one HTTP message as it was forwarded.
+/// Captured representation of one complete observed HTTP message.
 struct MessageCapture {
     /// Decoded body bytes exposed to hooks.
     body: CapturedBody,
     /// Raw wire bytes forwarded for the message, including head and framing.
     forwarded_bytes: u64,
+    /// Final client write error, retained alongside the complete response.
+    agent_write_error: Option<TransparentFlowError>,
 }
 
 /// Selects the log message for the first exchange just submitted to hooks.
@@ -516,6 +531,7 @@ fn empty_message_capture(forwarded_bytes: u64) -> MessageCapture {
     MessageCapture {
         body: CapturedBody::from_bytes(Bytes::new()),
         forwarded_bytes,
+        agent_write_error: None,
     }
 }
 
@@ -624,10 +640,9 @@ enum BodyFraming {
 
 /// Copy the first request to upstream and capture the decoded request body.
 ///
-/// Relay preserves the original request head bytes unless the flow targets a
-/// provider endpoint where hooks require uncompressed, parseable response
-/// bodies. `head_buffer` still carries any body bytes already read while
-/// decoding the head.
+/// Relay preserves the original request head bytes except for locally handled
+/// `Expect: 100-continue` negotiation. `head_buffer` still carries any body
+/// bytes already read while decoding the head.
 #[tracing::instrument(level = "trace", skip_all)]
 async fn forward_request<R, W>(
     client: &mut R,
@@ -646,7 +661,7 @@ where
     })?;
     let handle_expect_continue =
         has_expect_continue(request) && !matches!(body_framing, BodyFraming::Empty);
-    let request_head = request_head_for_relay(request, head_buffer, flow, handle_expect_continue)?;
+    let request_head = request_head_for_relay(request, head_buffer, handle_expect_continue)?;
 
     upstream
         .write_all(&request_head)
@@ -682,26 +697,22 @@ where
             body_capture.forwarded_bytes,
         )?,
         body: body_capture.body,
+        agent_write_error: body_capture.agent_write_error,
     })
 }
 
 fn request_head_for_relay<'a>(
     request: &'a Request<()>,
     head_buffer: &'a Http1HeadBuffer,
-    flow: &FlowContext,
     strip_expect_continue: bool,
 ) -> Result<Cow<'a, [u8]>, TransparentFlowError> {
-    let strip_accept_encoding = should_strip_accept_encoding(flow, request);
-    if strip_accept_encoding || strip_expect_continue {
+    if strip_expect_continue {
         return Ok(Cow::Owned(
-            http_request_head_without_relay_headers(
-                request,
-                strip_accept_encoding,
-                strip_expect_continue,
-            )
-            .map_err(|source| {
-                TransparentFlowError::http1(FlowOperation::WriteProviderRequestHead, source)
-            })?,
+            http_request_head_without_relay_headers(request, strip_expect_continue).map_err(
+                |source| {
+                    TransparentFlowError::http1(FlowOperation::WriteProviderRequestHead, source)
+                },
+            )?,
         ));
     }
     Ok(Cow::Borrowed(head_buffer.head_bytes()))
@@ -793,6 +804,7 @@ where
             body_capture.forwarded_bytes,
         )?,
         body: body_capture.body,
+        agent_write_error: body_capture.agent_write_error,
     })
 }
 
@@ -800,12 +812,61 @@ where
 struct BodyCapture {
     /// Decoded body bytes retained for hooks.
     ///
-    /// This may be shorter than the body represented by `forwarded_bytes`. That
-    /// means hook capture was truncated at `max_body_bytes`; it does not mean
-    /// the network body was truncated.
+    /// The capture limit can truncate this prefix without truncating forwarding.
+    /// A complete upstream capture may also include bytes a disconnected Agent
+    /// did not accept; `agent_write_error` retains that transport failure.
     body: CapturedBody,
     /// Raw bytes forwarded for the body portion only.
     forwarded_bytes: u64,
+    /// Only a complete response may retain a final Agent write failure.
+    agent_write_error: Option<TransparentFlowError>,
+}
+
+impl BodyCapture {
+    /// Finish the last write attempt before returning the complete capture.
+    /// Client write errors are returned alongside capture for the caller to
+    /// submit after forwarding; provider request errors still fail immediately.
+    async fn forward_last_bytes<W>(
+        mut self,
+        writer: &mut W,
+        mut bytes: &[u8],
+        direction: BodyDirection,
+    ) -> Result<Self, TransparentFlowError>
+    where
+        W: AsyncWrite + Unpin,
+    {
+        self.forwarded_bytes = self
+            .forwarded_bytes
+            .checked_sub(usize_to_u64(bytes.len())?)
+            .ok_or(TransparentFlowError::ByteCountOverflow)?;
+        while !bytes.is_empty() {
+            let result = writer.write(bytes).await.and_then(|written| {
+                if written == 0 {
+                    Err(std::io::ErrorKind::WriteZero.into())
+                } else {
+                    Ok(written)
+                }
+            });
+            match result {
+                Ok(written) => {
+                    self.forwarded_bytes = add_len(self.forwarded_bytes, usize_to_u64(written)?)?;
+                    bytes = &bytes[written..];
+                }
+                Err(source) => {
+                    let error = TransparentFlowError::Io {
+                        operation: body_forward_operation(direction),
+                        source,
+                    };
+                    if matches!(direction, BodyDirection::Request) {
+                        return Err(error);
+                    }
+                    self.agent_write_error = Some(error);
+                    break;
+                }
+            }
+        }
+        Ok(self)
+    }
 }
 
 /// Direction-specific context for diagnostics while copying a body.
@@ -893,16 +954,23 @@ where
     // A flush is enough for an empty body because the head was already written
     // by the caller. This gives the peer a chance to observe the completed
     // message even if no more bytes are sent immediately.
-    writer
-        .flush()
-        .await
-        .map_err(|source| TransparentFlowError::Io {
-            operation: body_forward_operation(direction),
-            source,
-        })?;
+    let agent_write_error = match writer.flush().await {
+        Ok(()) => None,
+        Err(source) => {
+            let error = TransparentFlowError::Io {
+                operation: body_forward_operation(direction),
+                source,
+            };
+            if matches!(direction, BodyDirection::Request) {
+                return Err(error);
+            }
+            Some(error)
+        }
+    };
     Ok(BodyCapture {
         body: CapturedBody::from_bytes(Bytes::new()),
         forwarded_bytes: 0,
+        agent_write_error,
     })
 }
 
@@ -936,20 +1004,35 @@ where
     // client/upstream exchange.
     let mut capture_body = true;
     let mut body = Vec::with_capacity(initial_body_capture_capacity(length, max_body_bytes));
-    if !buffered_body.is_empty() {
+    let mut remaining = length;
+    let mut buffer = [0_u8; RELAY_CHUNK_BYTES];
+    let mut bytes = buffered_body;
+    loop {
+        append_body_for_capture(&mut body, &mut capture_body, bytes, max_body_bytes);
+        remaining = remaining
+            .checked_sub(bytes.len())
+            .ok_or(TransparentFlowError::ByteCountOverflow)?;
+        // Retain the complete body separately from the final write result.
+        // Hook submission still waits for forwarding to finish.
+        let capture = if remaining == 0 {
+            Some(BodyCapture {
+                body: captured_body(std::mem::take(&mut body), capture_body, max_body_bytes),
+                forwarded_bytes: usize_to_u64(length)?,
+                agent_write_error: None,
+            })
+        } else {
+            None
+        };
+        if let Some(capture) = capture {
+            return capture.forward_last_bytes(writer, bytes, direction).await;
+        }
         writer
-            .write_all(buffered_body)
+            .write_all(bytes)
             .await
             .map_err(|source| TransparentFlowError::Io {
                 operation: body_forward_operation(direction),
                 source,
             })?;
-        append_body_for_capture(&mut body, &mut capture_body, buffered_body, max_body_bytes);
-    }
-
-    let mut remaining = length.saturating_sub(buffered_body.len());
-    let mut buffer = [0_u8; RELAY_CHUNK_BYTES];
-    while remaining > 0 {
         let read_len = reader
             .read(&mut buffer[..remaining.min(RELAY_CHUNK_BYTES)])
             .await
@@ -963,28 +1046,8 @@ where
                 Http1Error::InvalidBody("content-length body ended early"),
             ));
         }
-        writer
-            .write_all(&buffer[..read_len])
-            .await
-            .map_err(|source| TransparentFlowError::Io {
-                operation: body_forward_operation(direction),
-                source,
-            })?;
-        append_body_for_capture(
-            &mut body,
-            &mut capture_body,
-            &buffer[..read_len],
-            max_body_bytes,
-        );
-        remaining = remaining
-            .checked_sub(read_len)
-            .ok_or(TransparentFlowError::ByteCountOverflow)?;
+        bytes = &buffer[..read_len];
     }
-
-    Ok(BodyCapture {
-        body: captured_body(body, capture_body),
-        forwarded_bytes: usize_to_u64(length)?,
-    })
 }
 
 fn initial_body_capture_capacity(length: usize, max_body_bytes: usize) -> usize {
@@ -1014,6 +1077,11 @@ where
 
     if !buffered_body.is_empty() {
         let capture = chunked.feed(buffered_body, max_body_bytes)?;
+        if let Some(capture) = capture {
+            return capture
+                .forward_last_bytes(writer, buffered_body, direction)
+                .await;
+        }
         writer
             .write_all(buffered_body)
             .await
@@ -1021,9 +1089,6 @@ where
                 operation: body_forward_operation(direction),
                 source,
             })?;
-        if let Some(capture) = capture {
-            return Ok(capture);
-        }
     }
 
     loop {
@@ -1043,6 +1108,11 @@ where
         }
 
         let capture = chunked.feed(&buffer[..read_len], max_body_bytes)?;
+        if let Some(capture) = capture {
+            return capture
+                .forward_last_bytes(writer, &buffer[..read_len], direction)
+                .await;
+        }
         writer
             .write_all(&buffer[..read_len])
             .await
@@ -1050,9 +1120,6 @@ where
                 operation: body_forward_operation(direction),
                 source,
             })?;
-        if let Some(capture) = capture {
-            return Ok(capture);
-        }
     }
 }
 
@@ -1151,9 +1218,9 @@ impl ChunkedBodyCapture {
                         return Ok(None);
                     }
                     let payload_len = remaining.min(self.pending.len());
-                    // Only chunk payload bytes enter hook capture. Wire framing
-                    // was already forwarded before `feed` was called and is
-                    // counted in `forwarded_bytes`.
+                    // Only chunk payload bytes enter hook capture. Framing is
+                    // counted here before the caller attempts forwarding; the
+                    // final write corrects the count if the Agent closes.
                     append_body_for_capture(
                         &mut self.body,
                         &mut self.capture_body,
@@ -1190,7 +1257,7 @@ impl ChunkedBodyCapture {
                     if &self.pending[..2] == b"\r\n" {
                         self.pending.drain(..2);
                         self.reject_pipelined_bytes()?;
-                        return Ok(Some(self.finish()));
+                        return Ok(Some(self.finish(max_body_bytes)));
                     }
                     if self.pending.len() > MAX_HTTP1_HEADER_BYTES {
                         return Err(TransparentFlowError::http1(
@@ -1210,7 +1277,7 @@ impl ChunkedBodyCapture {
                         .ok_or(TransparentFlowError::ByteCountOverflow)?;
                     self.pending.drain(..trailer_end);
                     self.reject_pipelined_bytes()?;
-                    return Ok(Some(self.finish()));
+                    return Ok(Some(self.finish(max_body_bytes)));
                 }
             }
         }
@@ -1227,10 +1294,15 @@ impl ChunkedBodyCapture {
         }
     }
 
-    fn finish(&mut self) -> BodyCapture {
+    fn finish(&mut self, max_body_bytes: usize) -> BodyCapture {
         BodyCapture {
-            body: captured_body(std::mem::take(&mut self.body), self.capture_body),
+            body: captured_body(
+                std::mem::take(&mut self.body),
+                self.capture_body,
+                max_body_bytes,
+            ),
             forwarded_bytes: self.forwarded_bytes,
+            agent_write_error: None,
         }
     }
 }
@@ -1280,8 +1352,9 @@ where
                 })?;
         if read_len == 0 {
             return Ok(BodyCapture {
-                body: captured_body(body, capture_body),
+                body: captured_body(body, capture_body, max_body_bytes),
                 forwarded_bytes,
+                agent_write_error: None,
             });
         }
         writer
@@ -1302,14 +1375,16 @@ where
 }
 
 /// Attach a captured body to a request while preserving the parsed head parts.
-fn request_with_body(request: Request<()>, body: CapturedBody) -> Request<CapturedBody> {
+fn request_with_body(request: Request<()>, mut body: CapturedBody) -> Request<CapturedBody> {
     let (parts, ()) = request.into_parts();
+    ContentDecoder::prepare_body(&parts.headers, &mut body);
     Request::from_parts(parts, body)
 }
 
 /// Attach a captured body to a response while preserving the parsed head parts.
-fn response_with_body(response: Response<()>, body: CapturedBody) -> Response<CapturedBody> {
+fn response_with_body(response: Response<()>, mut body: CapturedBody) -> Response<CapturedBody> {
     let (parts, ()) = response.into_parts();
+    ContentDecoder::prepare_body(&parts.headers, &mut body);
     Response::from_parts(parts, body)
 }
 
@@ -1360,8 +1435,8 @@ fn append_body_for_capture(
     }
     let Some(next_len) = body.len().checked_add(bytes.len()) else {
         // Capture memory accounting overflow is treated as "stop extending the
-        // captured prefix" so the relay path can continue. Forwarding has
-        // already happened before this helper is called.
+        // captured prefix" so the relay path can continue. Forwarding is
+        // independent of this capture bookkeeping.
         *capture_body = false;
         return;
     };
@@ -1379,12 +1454,17 @@ fn append_body_for_capture(
     body.extend_from_slice(bytes);
 }
 
-fn captured_body(body: Vec<u8>, capture_completed_within_limit: bool) -> CapturedBody {
-    if capture_completed_within_limit {
+fn captured_body(
+    body: Vec<u8>,
+    capture_completed_within_limit: bool,
+    max_body_bytes: usize,
+) -> CapturedBody {
+    let captured = if capture_completed_within_limit {
         CapturedBody::from_bytes(Bytes::from(body))
     } else {
         CapturedBody::from_truncated_bytes(Bytes::from(body))
-    }
+    };
+    captured.with_decode_limit(max_body_bytes)
 }
 
 /// Add forwarded byte counts without silently wrapping.
@@ -1522,7 +1602,7 @@ mod tests {
     async fn expect_continue_request_gets_local_continue_and_stripped_upstream_head() {
         let request_head = concat!(
             "POST /v1/messages?beta=true HTTP/1.1\r\n",
-            "Host: www.dmxapi.cn\r\n",
+            "Host: gateway.example\r\n",
             "Accept-Encoding: gzip\r\n",
             "Expect: 100-continue\r\n",
             "Content-Length: 4\r\n",
@@ -1609,8 +1689,8 @@ mod tests {
             "locally-handled Expect must not be forwarded upstream"
         );
         assert!(
-            !lower.contains("accept-encoding:"),
-            "Claude-compatible gateway responses should remain parseable for hooks"
+            lower.contains("accept-encoding:"),
+            "model API routes must preserve response compression negotiation"
         );
         assert!(
             upstream_text.ends_with("ping"),
@@ -1627,7 +1707,7 @@ mod tests {
     async fn content_length_request_is_flushed_after_body() {
         let request_bytes = concat!(
             "POST /v1/messages HTTP/1.1\r\n",
-            "Host: api.anthropic.com\r\n",
+            "Host: gateway.example\r\n",
             "Content-Length: 4\r\n",
             "\r\n",
             "ping"
@@ -1702,13 +1782,13 @@ mod tests {
         ));
     }
 
-    fn test_flow() -> FlowContext {
+    pub(super) fn test_flow() -> FlowContext {
         FlowContext::new(
             SocketAddr::from(([127, 0, 0, 1], 50000)),
             SocketAddr::from(([127, 0, 0, 1], 18080)),
-            OriginalDestination::from(SocketAddr::from(([110, 42, 10, 198], 443))),
+            OriginalDestination::from(SocketAddr::from(([127, 0, 0, 1], 443))),
             TransparentProtocol::TlsHttp {
-                server_name: "www.dmxapi.cn".to_owned(),
+                server_name: "gateway.example".to_owned(),
             },
         )
     }

@@ -23,13 +23,16 @@ def sample_metadata():
             "id": name, "name": name, "version": "1.0.0", "publish": ["crates-io"],
             "description": "A public component", "readme": "README.md", "dependencies": [],
         })
-    dependencies = {"abyss-broker": "abyss-agent-hook", "abyss-sdk": "abyss-plugin-protocol"}
+    dependencies = {
+        "abyss-broker": ["abyss-agent-hook"], "abyss-sdk": ["abyss-plugin-protocol"],
+        "abyss-query-cli": ["abyss-terminal-auth", "abyss-data-client"],
+    }
     for package in packages:
-        if dependency := dependencies.get(package["name"]):
+        if names := dependencies.get(package["name"]):
             package["dependencies"] = [{
                 "name": dependency, "kind": None,
                 "path": f"/workspace/crates/{dependency}", "req": "^1.0.0", "source": None,
-            }]
+            } for dependency in names]
     packages.append({"id": "abyss-cli", "name": "abyss-cli", "publish": []})
     return {"packages": packages, "workspace_members": [p["id"] for p in packages]}
 
@@ -45,6 +48,14 @@ class ReleaseValidationTests(unittest.TestCase):
     def test_accepts_complete_broker_and_sdk_release(self):
         self.assertEqual(self.validate(), "1.0.0")
         self.assertEqual(self.validate(tag=None), "1.0.0")
+
+    def test_query_cli_and_its_dependencies_are_in_release_order(self):
+        for dependency in ("abyss-data-client", "abyss-terminal-auth"):
+            self.assertLess(release.PACKAGES.index(dependency), release.PACKAGES.index("abyss-query-cli"))
+        query = next(package for package in self.metadata["packages"] if package["name"] == "abyss-query-cli")
+        query["dependencies"][0]["name"] = "abyss-cli"
+        with self.assertRaisesRegex(ValueError, "unpublished or unordered"):
+            self.validate()
 
     def test_rejects_wrong_or_malformed_tag(self):
         for tag in ("1.0.0", "v2.0.0", "v1.0.0-extra", "v1.0.0; echo unexpected"):

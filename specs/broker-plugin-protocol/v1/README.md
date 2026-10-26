@@ -322,20 +322,24 @@ The role of an entry follows from the protocol structure alone:
 
 | Role | Anthropic | OpenAI Responses | Chat Completions |
 | --- | --- | --- | --- |
-| `system` | each block of the top-level `system`; text blocks of a `role: "system"` message | `instructions`; `role: "system"` messages | `system` |
-| `developer` | — | each content part of a `role: "developer"` message | `developer` |
+| `system` | each block of the top-level `system`; text blocks of a `role: "system"` message | `role: "system"` messages | `system` |
+| `developer` | — | `instructions`; each content part of a `role: "developer"` message | `developer` |
 | `user` | `text` blocks of user messages | `input_text` of user messages | `user` |
-| `assistant` | `text` blocks of assistant messages | `output_text`, `refusal` | assistant `content` |
-| `reasoning` | `thinking`, `redacted_thinking` | `reasoning` (its summary, else its content) | — |
+| `assistant` | `text` blocks of assistant messages | `output_text`, `refusal` | assistant `content`, `refusal` |
+| `reasoning` | `thinking`, `redacted_thinking` | `reasoning` (its content, else its summary) | assistant `reasoning_content` |
 | `tool_call` | `tool_use`, `server_tool_use`, `mcp_tool_use` | every `*_call` item | each assistant `tool_calls[]` |
 | `tool_result` | `tool_result`, every `*_tool_result` | every `*_output` item | `tool` |
-| `unknown` | any other block that carries text | any other item that carries text | — |
+| `unknown` | — | an item without a recognized `role`, such as `agent_message` | a message without a recognized `role` |
 
+Any other block or content part keeps its visible text in the role of its
+enclosing message, and any other Responses item in its own `role`; a tool part
+inside message content, such as a `tool_result` part, contributes nothing.
 A `thinking` or `redacted_thinking` block or a `reasoning` item produces its
 entry even when it carries no readable text, such as a reasoning item with only
-`encrypted_content`; the entry's `text` is then empty. A block or item that
-carries no text and has no role above, such as an image or a tool definition,
-produces no entry; images are carried by `attachments`.
+`encrypted_content`; the entry's `text` is then empty. A block, part, or item
+that carries no text, such as an image or a tool definition, produces no entry;
+images are carried by `attachments`. Chat Completions `reasoning_content`
+precedes the content of its message.
 Responses use the same table: Anthropic response content blocks and OpenAI
 output items become entries the same way, after the collector assembles
 streamed fragments, so a streamed block appears as one entry with its complete

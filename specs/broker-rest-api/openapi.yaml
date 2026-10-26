@@ -288,6 +288,12 @@ components:
           items:
             type: string
             minLength: 1
+        process_entry_points:
+          description: Absolute entry-script paths using native std::path component matching, including the application installation directory. Missing metadata does not match. No globs or filesystem resolution.
+          type: array
+          items:
+            type: string
+            minLength: 1
         destination_hosts:
           type: array
           items:
@@ -330,11 +336,17 @@ components:
           $ref: "#/components/schemas/HarnessUsageContentConfig"
         matchers:
           type: array
+          description: >-
+            Custom Harness identity selectors. Built-in Harnesses do not accept
+            overrides.
           items:
             $ref: "#/components/schemas/HarnessMatcherConfig"
     HarnessMatcherConfig:
       type: object
       additionalProperties: false
+      description: >-
+        Populated fields must all match; values within a field are alternatives.
+        Each custom Harness requires at least one nonempty matcher.
       properties:
         process_names:
           type: array
@@ -479,6 +491,9 @@ components:
         pid:
           type: integer
           minimum: 1
+        application_id:
+          type: string
+          description: Application or code-signing identifier supplied by the platform adapter.
         upload_bytes:
           type: integer
           minimum: 0

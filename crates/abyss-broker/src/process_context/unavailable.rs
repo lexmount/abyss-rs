@@ -1,4 +1,4 @@
-//! Fallback process-context provider for targets without cwd lookup support.
+//! Fallback process-context provider for targets without native process-context lookup.
 
 use std::path::PathBuf;
 

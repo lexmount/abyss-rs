@@ -70,6 +70,34 @@ blackbox_assert_pair_identity "${PAIR_JSON}"
 USAGE_JSON="$(blackbox_extract_codex_usage "${CODEX_LOG}")"
 blackbox_assert_codex_usage_matches_pair "${USAGE_JSON}" "${PAIR_JSON}"
 
+# Codex 0.144.3 reports these four counters but no cache-write counter. Keep
+# that absence distinct from zero while retaining strict input-total checks.
+printf '%s\n' \
+  '{"type":"turn.completed","usage":{"input_tokens":11,"cached_input_tokens":2,"output_tokens":7,"reasoning_output_tokens":3}}' \
+  >"${TMP_DIR}/codex-0.144.3.jsonl"
+LEGACY_USAGE_JSON="$(blackbox_extract_codex_usage "${TMP_DIR}/codex-0.144.3.jsonl")"
+jq -e 'has("cache_write_input_tokens") | not' <<<"${LEGACY_USAGE_JSON}" >/dev/null
+blackbox_assert_codex_usage_matches_pair "${LEGACY_USAGE_JSON}" "${PAIR_JSON}"
+for field in input_tokens cached_input_tokens output_tokens reasoning_output_tokens; do
+  BAD_USAGE_JSON="$(jq -c --arg field "${field}" '.[$field] += 1' <<<"${LEGACY_USAGE_JSON}")"
+  if blackbox_assert_codex_usage_matches_pair "${BAD_USAGE_JSON}" "${PAIR_JSON}" >/dev/null 2>&1; then
+    echo "Missing cache-write evidence must not hide ${field} mismatches" >&2
+    exit 1
+  fi
+done
+ZERO_WRITE_USAGE_JSON="$(jq -c '.cache_write_input_tokens = 0' <<<"${LEGACY_USAGE_JSON}")"
+if blackbox_assert_codex_usage_matches_pair "${ZERO_WRITE_USAGE_JSON}" "${PAIR_JSON}" >/dev/null 2>&1; then
+  echo "Explicit zero cache writes must still match the backend" >&2
+  exit 1
+fi
+printf '%s\n' \
+  '{"type":"turn.completed","usage":{"input_tokens":11,"output_tokens":7,"cache_write_input_tokens":null}}' \
+  >"${TMP_DIR}/codex-invalid-cache-write.jsonl"
+if blackbox_extract_codex_usage "${TMP_DIR}/codex-invalid-cache-write.jsonl" >/dev/null 2>&1; then
+  echo "Invalid cache writes must not be treated as an absent counter" >&2
+  exit 1
+fi
+
 SUMMARY_JSON='{
   "rows": [
     {"event_type":"request","requests":1,"responses":0,"input_tokens":8,"output_tokens":0,"cache_read_tokens":2,"cache_write_tokens":1,"reasoning_tokens":0,"total_tokens":11},
@@ -123,7 +151,7 @@ fi
 printf '%s\n' \
   '{"type":"turn.completed","usage":{"input_tokens":5,"output_tokens":4}}' \
   >"${TMP_DIR}/codex-optional-fields.jsonl"
-EXPECTED_OPTIONAL_USAGE='{"input_tokens":5,"cached_input_tokens":0,"cache_write_input_tokens":0,"output_tokens":4,"reasoning_output_tokens":0}'
+EXPECTED_OPTIONAL_USAGE='{"input_tokens":5,"cached_input_tokens":0,"output_tokens":4,"reasoning_output_tokens":0}'
 ACTUAL_OPTIONAL_USAGE="$(blackbox_extract_codex_usage "${TMP_DIR}/codex-optional-fields.jsonl")"
 [[ "${ACTUAL_OPTIONAL_USAGE}" == "${EXPECTED_OPTIONAL_USAGE}" ]]
 

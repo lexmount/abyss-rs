@@ -1,5 +1,12 @@
 # Codex Agent-driven E2E CI
 
+The complementary [headless harness × model matrix](../agent_matrix_ci/README.md)
+covers Codex, Claude Code and DSH across provider protocols. Both GitHub
+workflows use repository API Secrets; this workflow uses
+`CODEX_API_KEY` for all three Codex phases. No runner login is needed
+when that key is supplied; local runs can still use an existing login when the
+environment variable is absent.
+
 This package powers `.github/workflows/codex-agent-e2e.yml`. It runs a fresh
 black-box topology for every pull request:
 
@@ -51,21 +58,33 @@ Both `fail` and `inconclusive` return a failing process status. A maintainer can
 add the `skip-agent-e2e` PR label when a human-reviewed exception is appropriate.
 The successful skipped check records the actor, commit, and reason in the GitHub
 Job Summary. Fork pull requests are skipped automatically because they must not
-use a self-hosted Codex login. The workflow deliberately does not use
+use provider API credentials. The workflow deliberately does not use
 `pull_request_target`.
 
 ## Runner prerequisites
 
-The `abyss-debian-runner` is selected through its registered labels
-`self-hosted`, `abyss`, `Linux`, and `X64`. Its service account must provide
-these preinstalled commands:
+CI runs on GitHub-hosted `ubuntu-latest`. The workflow sets up stable Rust with
+the repository's shared action and Cargo build cache, selects Node.js 24, and
+installs Codex `0.163.0` into the job's temporary directory. It shares the
+`agent-e2e` Rust cache key with the headless matrix. No persistent runner login
+or preinstalled Codex CLI is required.
+
+The shared `setup-codex-sandbox` action installs distribution bubblewrap and
+loads its AppArmor user-namespace profile. It probes Codex's read-only and
+workspace-write sandbox modes before invoking models. This follows the
+[official sandbox prerequisites](https://learn.chatgpt.com/docs/sandboxing#prerequisites)
+and keeps sandbox enforcement enabled on Ubuntu 24.04. Local Linux runners
+must also provide a functioning bubblewrap sandbox.
+
+For local runs, provide these commands:
 
 - `bash` and `git` for the GitHub job and checkout;
 - Python 3.10 or newer with the standard library;
 - `cargo` and the repository's Rust toolchain/dependency cache;
 - `docker` with permission to use a running broker;
 - `openssl`;
-- `codex`, authenticated for that same service account.
+- `codex`, with `CODEX_API_KEY` supplied by GitHub (or an existing
+  service-account login for local runs without that variable).
 
 The installed Codex CLI must support `exec --json`, `--image`, `--ephemeral`,
 `--ignore-user-config`, `--ignore-rules`, `--output-schema`,
@@ -76,8 +95,7 @@ read-only check with:
 python3 -m scripts.agent_e2e_ci preflight
 ```
 
-The workflow has no package-manager or toolchain installation step. Docker pulls
-the digest-pinned public Backend image recorded in
+Docker pulls the digest-pinned public Backend image recorded in
 `scripts/ci/abyss-backend-image.txt` and may also need `postgres:16`. Pre-cache
 those images on the runner if CI must operate without downloading inputs. Real
 test traffic requires outbound access to the Codex/OpenAI endpoints.
@@ -98,10 +116,10 @@ The uploaded `artifacts` directory contains only:
 - the structured A2 verdict and runner version inventory;
 - a Markdown summary.
 
-The internal runtime is preserved for self-hosted runner diagnostics, while
-containers, the dedicated network, and broker process are stopped or removed by
-the orchestrator. The shared digest-pinned Backend image remains in Docker's
-local cache.
+The orchestrator stops or removes containers, the dedicated network, and broker
+process. On GitHub-hosted runners, the internal runtime and Docker cache are
+discarded with the VM after the job; only sanitized artifacts are uploaded.
+Local runs retain the internal runtime for diagnostics and Docker's image cache.
 
 ## Configuration
 

@@ -312,7 +312,7 @@ mod tests {
     #[cfg(unix)]
     use std::os::unix::fs::PermissionsExt as _;
 
-    use serde_json::Value;
+    use serde_json::{Value, json};
 
     use super::ClaudeCodeConfigurator;
 
@@ -400,6 +400,54 @@ mod tests {
 
         assert!(bundle.contains("managed-root"));
         assert!(!bundle.contains("abyss-root"));
+        drop(fs::remove_dir_all(root));
+    }
+
+    #[test]
+    fn configure_merges_existing_ca_bundle_without_modifying_it() {
+        let (root, configurator) = test_paths();
+        let previous_path = root.join("existing-ca.pem");
+        let previous_certificate =
+            "-----BEGIN CERTIFICATE-----\nexisting-root\n-----END CERTIFICATE-----\n";
+        fs::write(&previous_path, previous_certificate).expect("existing CA bundle should write");
+        fs::create_dir_all(&configurator.claude_directory)
+            .expect("Claude Code directory should create");
+        fs::write(
+            &configurator.settings_path,
+            serde_json::to_vec(&json!({
+                "env": {"NODE_EXTRA_CA_CERTS": previous_path}
+            }))
+            .unwrap(),
+        )
+        .expect("existing settings should write");
+
+        let result = configurator
+            .configure()
+            .expect("configuration should merge");
+        let bundle = fs::read_to_string(result.bundle_path()).expect("managed bundle should read");
+        assert!(bundle.contains(previous_certificate));
+        assert!(bundle.contains("abyss-root"));
+        assert_eq!(
+            fs::read_to_string(&previous_path).unwrap(),
+            previous_certificate
+        );
+        let state: Value = serde_json::from_slice(&fs::read(&configurator.state_path).unwrap())
+            .expect("configuration state should parse");
+        assert_eq!(
+            state["previous_environment"]["NODE_EXTRA_CA_CERTS"],
+            previous_path.to_string_lossy().as_ref()
+        );
+        let backup_path = state["backup_path"].as_str().expect("backup should exist");
+        let backup: Value = serde_json::from_slice(&fs::read(backup_path).unwrap())
+            .expect("backup should preserve valid settings");
+        assert_eq!(
+            backup["env"]["NODE_EXTRA_CA_CERTS"],
+            previous_path.to_string_lossy().as_ref()
+        );
+        configurator
+            .configure()
+            .expect("repeated setup should work");
+        assert_eq!(fs::read_to_string(result.bundle_path()).unwrap(), bundle);
         drop(fs::remove_dir_all(root));
     }
 

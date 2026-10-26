@@ -1,0 +1,26 @@
+[package]
+name = "abyss-data-client"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license-file.workspace = true
+repository.workspace = true
+description = "Read-only HTTP client for Abyss event data backends"
+publish = ["crates-io"]
+readme = "README.md"
+
+[dependencies]
+chrono = { version = "0.4", features = ["serde"] }
+reqwest = { version = "0.12", default-features = false, features = ["blocking", "json", "rustls-tls-native-roots"] }
+schemars = { version = "1", features = ["chrono04", "uuid1"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+thiserror.workspace = true
+uuid = { version = "1", features = ["serde"] }
+
+[dev-dependencies]
+rcgen = "0.14"
+rustls = { version = "0.23", default-features = false, features = ["aws_lc_rs", "std", "tls12"] }
+
+[lints]
+workspace = true

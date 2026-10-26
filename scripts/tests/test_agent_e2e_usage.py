@@ -70,6 +70,38 @@ class UsageAccountingTests(unittest.TestCase):
         self.assertTrue(result["matches"])
         self.assertEqual(result["codex_completed_inference"]["input_tokens"], 22)
 
+    def test_unreported_cache_writes_are_not_assumed_zero(self) -> None:
+        del self.native[0]["cache_write_input_tokens"]
+        result = UsageAccounting.compare(self.events, self.native)
+        self.assertTrue(result["matches"])
+        self.assertEqual(result["unavailable_native_fields"], ["cache_write_input_tokens"])
+        self.assertNotIn("cache_write_input_tokens", result["difference"])
+        self.assertNotIn("cache_write_input_tokens", result["codex_completed_inference"])
+        self.assertEqual(result["backend_inference"]["cache_write_input_tokens"], 1)
+        self.events[1]["cache_write_tokens"] = 2
+        result = UsageAccounting.compare(self.events, self.native)
+        self.assertFalse(result["matches"])
+        self.assertEqual(result["difference"]["input_tokens"], 1)
+
+    def test_explicit_zero_cache_writes_must_match(self) -> None:
+        self.native[0]["cache_write_input_tokens"] = 0
+        result = UsageAccounting.compare(self.events, self.native)
+        self.assertFalse(result["matches"])
+        self.assertEqual(result["unavailable_native_fields"], [])
+        self.assertEqual(result["difference"]["cache_write_input_tokens"], 1)
+
+    def test_partial_cache_write_reporting_does_not_claim_an_exact_total(self) -> None:
+        second = dict(self.native[0])
+        del second["cache_write_input_tokens"]
+        result = UsageAccounting.compare(self.events * 2, (self.native[0], second))
+        self.assertTrue(result["matches"])
+        self.assertEqual(result["unavailable_native_fields"], ["cache_write_input_tokens"])
+        self.assertNotIn("cache_write_input_tokens", result["codex_completed_inference"])
+        self.assertEqual(result["backend_inference"]["cache_write_input_tokens"], 2)
+        self.native[0]["cache_write_input_tokens"] = None
+        with self.assertRaises(OrchestrationError):
+            UsageAccounting.compare(self.events * 2, (self.native[0], second))
+
     def test_missing_inference_evidence_cannot_pass(self) -> None:
         self.assertFalse(UsageAccounting.compare(self.events, ())["matches"])
         self.assertFalse(UsageAccounting.compare([], ({},))["matches"])

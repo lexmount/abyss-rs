@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Validate and publish the broker, Rust SDK, and their dependencies to crates.io."""
+"""Validate and publish the broker, Rust SDK, query CLI, and their dependencies to crates.io."""
 
 import argparse
 import json
@@ -21,6 +21,9 @@ PACKAGES = (
     "abyss-agent-hook",
     "abyss-broker",
     "abyss-sdk",
+    "abyss-terminal-auth",
+    "abyss-data-client",
+    "abyss-query-cli",
 )
 
 

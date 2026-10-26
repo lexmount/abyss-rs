@@ -44,6 +44,12 @@ Judging rules:
    Do not add either subset again. Every counter in `difference` must be zero
    and `matches` must be true for token_usage_consistent to pass. Provider calls
    inside one agent turn may span several Backend event pairs.
+   `unavailable_native_fields` names counters absent from B's usage schema
+   (for example, cache writes in Codex 0.144.3). They remain visible in Backend
+   totals but cannot be independently compared with B. Do not treat absence as
+   zero or claim these counters were independently verified. Input totals still
+   include all cache reads and writes, and explicitly reported counters,
+   including zero, must match.
 8. The Backend database is fresh and only B receives proxy variables. Confirm
    run isolation from markers, session ids and timestamps instead of assuming
    it from topology alone.

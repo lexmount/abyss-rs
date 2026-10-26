@@ -1,7 +1,8 @@
-"""Self-hosted runner capability checks with no installation side effects."""
+"""Linux runner capability checks with no installation side effects."""
 
 from __future__ import annotations
 
+import os
 import platform
 import shutil
 from dataclasses import dataclass
@@ -52,12 +53,12 @@ class RunnerPreflight:
     def run(self) -> PreflightResult:
         issues: list[str] = []
         if platform.system() != "Linux":
-            issues.append("Agent E2E CI requires a Linux self-hosted runner")
-        missing = [command for command in REQUIRED_COMMANDS if shutil.which(command) is None]
+            issues.append("Agent E2E CI requires a Linux runner")
+        missing = [
+            command for command in REQUIRED_COMMANDS if shutil.which(command) is None
+        ]
         if missing:
-            issues.append(
-                f"missing required commands: {', '.join(missing)}"
-            )
+            issues.append(f"missing required commands: {', '.join(missing)}")
         if "docker" not in missing:
             docker_info = self.commands.run(
                 ["docker", "info"],
@@ -68,15 +69,19 @@ class RunnerPreflight:
                 detail = docker_info.stderr.strip() or docker_info.stdout.strip()
                 issues.append(f"Docker broker is unavailable: {detail[-1_000:]}")
         if "codex" not in missing:
-            login = self.commands.run(
-                ["codex", "login", "status"],
-                timeout=30,
-                check=False,
-            )
-            if login.returncode != 0:
-                issues.append(
-                    "Codex CLI is not authenticated for the runner service account"
+            if "CODEX_API_KEY" in os.environ:
+                if not os.environ["CODEX_API_KEY"].strip():
+                    issues.append("required GitHub secret CODEX_API_KEY is empty")
+            else:
+                login = self.commands.run(
+                    ["codex", "login", "status"],
+                    timeout=30,
+                    check=False,
                 )
+                if login.returncode != 0:
+                    issues.append(
+                        "Codex CLI is not authenticated for the runner service account"
+                    )
             help_result = self.commands.run(
                 ["codex", "exec", "--help"],
                 timeout=30,
@@ -96,7 +101,9 @@ class RunnerPreflight:
                         + ", ".join(missing_options)
                     )
         if issues:
-            raise OrchestrationError("runner preflight failed:\n- " + "\n- ".join(issues))
+            raise OrchestrationError(
+                "runner preflight failed:\n- " + "\n- ".join(issues)
+            )
         return PreflightResult(
             codex_version=self._version(["codex", "--version"]),
             cargo_version=self._version(["cargo", "--version"]),

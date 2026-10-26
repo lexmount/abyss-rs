@@ -88,6 +88,8 @@ jobs:
             --package abyss-sdk
             --package abyss-storage
             --package abyss-terminal-auth
+            --package abyss-data-client
+            --package abyss-query-cli
           )
           if [[ "$RUNNER_OS" != "Windows" ]]; then
             packages+=(--package abyss-cli)

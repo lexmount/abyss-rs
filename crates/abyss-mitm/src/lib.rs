@@ -31,14 +31,14 @@ pub use explicit_http::{
 pub use http1::{Http1Error, MAX_HTTP1_HEADER_BYTES};
 pub use tls::{TlsMitmError, install_default_crypto_provider};
 pub use transparent::{
-    AcceptedTcpFlow, BoxedDuplexStream, CapturedBody, CapturedBodyPlaintextDisplay, DuplexStream,
-    FlowContext, FlowId, FlowIngress, FlowOperation, HookError, HookFuture, HookResult,
-    HttpExchange, HttpHeadersDisplay, HttpRequestHeadDisplay, HttpResponseHeadDisplay,
-    InterceptedHttpOutcome, MitmEngine, MitmHook, MitmTimeouts, OriginalDestination,
-    REDACTED_HEADER_VALUE, SourceProcess, TlsDecryptionAction, TlsDecryptionContext,
-    TlsDecryptionDecision, TlsDecryptionPolicy, TlsDecryptionPolicyError, TlsDecryptionRule,
-    TlsErrorSide, TrafficDirection, TrafficObserver, TransparentFlowError, TransparentFlowOutcome,
-    TransparentFlowSource, TransparentPassthroughOutcome, TransparentPassthroughProtocol,
-    TransparentProtocol, ValidatedTlsDecryptionPolicy, WebSocketDirection, WebSocketMessage,
-    is_sensitive_header,
+    AcceptedTcpFlow, BodyDecodingStatus, BoxedDuplexStream, CapturedBody,
+    CapturedBodyPlaintextDisplay, DuplexStream, FlowContext, FlowId, FlowIngress, FlowOperation,
+    HookError, HookFuture, HookResult, HttpExchange, HttpHeadersDisplay, HttpRequestHeadDisplay,
+    HttpResponseHeadDisplay, InterceptedHttpOutcome, MitmEngine, MitmHook, MitmTimeouts,
+    OriginalDestination, REDACTED_HEADER_VALUE, SourceProcess, TlsDecryptionAction,
+    TlsDecryptionContext, TlsDecryptionDecision, TlsDecryptionPolicy, TlsDecryptionPolicyError,
+    TlsDecryptionRule, TlsErrorSide, TrafficDirection, TrafficObserver, TransparentFlowError,
+    TransparentFlowOutcome, TransparentFlowSource, TransparentPassthroughOutcome,
+    TransparentPassthroughProtocol, TransparentProtocol, ValidatedTlsDecryptionPolicy,
+    WebSocketDirection, WebSocketMessage, is_sensitive_header,
 };

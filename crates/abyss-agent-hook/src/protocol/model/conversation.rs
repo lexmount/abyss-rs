@@ -9,8 +9,6 @@ use abyss_plugin_protocol::event::{
 };
 use serde_json::Value;
 
-use crate::protocol::model::text::{MAX_PARSE_DEPTH, json_to_text};
-
 /// Constructors for public conversation values.
 pub struct ConversationProjection;
 
@@ -118,13 +116,6 @@ impl ConversationProjection {
         }
     }
 
-    /// The entry of an unrecognized block or item: its visible text, or none
-    /// when it carries no text.
-    #[must_use]
-    pub fn unknown(value: &Value) -> Option<ConversationEntry> {
-        json_to_text(value, MAX_PARSE_DEPTH).map(|text| Self::text(EntryRole::Unknown, &text))
-    }
-
     /// A string as sent, or the compact JSON of any other value.
     #[must_use]
     pub fn verbatim(value: &Value) -> String {
@@ -180,6 +171,5 @@ mod tests {
             ConversationProjection::verbatim(&object),
             r#"{"command":"ls","b":1,"a":[2]}"#
         );
-        assert!(ConversationProjection::unknown(&json!({"type": "tool_addition"})).is_none());
     }
 }

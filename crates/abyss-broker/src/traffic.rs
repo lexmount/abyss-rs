@@ -37,6 +37,7 @@ pub struct TrafficFlowMetadata {
     host: String,
     process: Option<String>,
     pid: Option<u32>,
+    application_id: Option<String>,
 }
 
 #[derive(Default)]
@@ -98,6 +99,9 @@ pub struct ActiveFlowSnapshot {
     /// Source process ID when the platform adapter supplied it.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub pid: Option<u32>,
+    /// Application or code-signing identifier supplied by the platform adapter.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub application_id: Option<String>,
     /// Bytes read from the local client for this flow.
     pub upload_bytes: u64,
     /// Bytes read from the upstream service for this flow.
@@ -150,6 +154,7 @@ impl TrafficMonitor {
                 host: flow.metadata.host.clone(),
                 process: flow.metadata.process.clone(),
                 pid: flow.metadata.pid,
+                application_id: flow.metadata.application_id.clone(),
                 upload_bytes: flow.upload_bytes,
                 download_bytes: flow.download_bytes,
             })
@@ -225,6 +230,9 @@ impl TrafficFlowMetadata {
                 .map_or_else(|| flow.original_destination().to_string(), str::to_owned),
             process,
             pid,
+            application_id: flow
+                .source_process()
+                .and_then(|source| source.application_id.clone()),
         }
     }
 }
@@ -361,6 +369,7 @@ mod tests {
             host: "api.openai.com".to_owned(),
             process: Some("codex".to_owned()),
             pid: Some(42),
+            application_id: Some("com.openai.codex".to_owned()),
         });
         flow.record_bytes(TrafficDirection::ClientToUpstream, 2_048);
         flow.record_bytes(TrafficDirection::UpstreamToClient, 4_096);
@@ -386,6 +395,7 @@ mod tests {
             host: "example.test".to_owned(),
             process: None,
             pid: None,
+            application_id: None,
         });
         let observer = flow.observer();
         observer.record_bytes(TrafficDirection::ClientToUpstream, 10);

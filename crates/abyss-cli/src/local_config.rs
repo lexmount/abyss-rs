@@ -169,11 +169,8 @@ impl Default for LocalConfig {
 
 impl Default for LocalRuntimePolicy {
     fn default() -> Self {
-        Self {
-            schema_version: CONFIG_SCHEMA_VERSION,
-            mitm: LocalMitmConfig::default(),
-            hooks: HooksConfig::default(),
-        }
+        toml::from_str(PACKAGED_RUNTIME_POLICY)
+            .expect("the packaged CLI runtime policy must be valid")
     }
 }
 
@@ -289,6 +286,48 @@ fn packaged_default_tls_decryption_policy() -> TlsDecryptionPolicy {
                     "*.claude.ai",
                 ],
             ),
+            tls_rule(
+                "decrypt-deepseek-api",
+                TlsDecryptionAction::Intercept,
+                true,
+                &["api.deepseek.com"],
+            ),
+            tls_rule(
+                "decrypt-glm-api",
+                TlsDecryptionAction::Intercept,
+                true,
+                &["open.bigmodel.cn", "api.z.ai"],
+            ),
+            tls_rule(
+                "decrypt-kimi-api",
+                TlsDecryptionAction::Intercept,
+                true,
+                &["api.moonshot.cn", "api.moonshot.ai"],
+            ),
+            tls_rule(
+                "decrypt-minimax-api",
+                TlsDecryptionAction::Intercept,
+                true,
+                &["api.minimax.cn", "api.minimax.io", "api.minimaxi.com"],
+            ),
+            tls_rule(
+                "decrypt-qwen-api",
+                TlsDecryptionAction::Intercept,
+                true,
+                &[
+                    "dashscope.aliyuncs.com",
+                    "dashscope-intl.aliyuncs.com",
+                    "dashscope-us.aliyuncs.com",
+                    "coding.dashscope.aliyuncs.com",
+                    "coding-intl.dashscope.aliyuncs.com",
+                    "*.cn-beijing.maas.aliyuncs.com",
+                    "*.ap-southeast-1.maas.aliyuncs.com",
+                    "*.us-east-1.maas.aliyuncs.com",
+                    "*.eu-central-1.maas.aliyuncs.com",
+                    "*.ap-northeast-1.maas.aliyuncs.com",
+                    "*.cn-hongkong.maas.aliyuncs.com",
+                ],
+            ),
         ],
     }
 }
@@ -305,6 +344,7 @@ fn tls_rule(
         action,
         process_names: Vec::new(),
         application_ids: Vec::new(),
+        process_entry_points: Vec::new(),
         destination_hosts: destination_hosts
             .iter()
             .map(|host| (*host).to_owned())
@@ -547,6 +587,83 @@ mod tests {
                 .config
                 .enabled_for_harness(BuiltInHarness::ClaudeCode.id())
         );
+        for harness in [
+            BuiltInHarness::DeepSeekHarness,
+            BuiltInHarness::Hermes,
+            BuiltInHarness::Cursor,
+            BuiltInHarness::OpenCode,
+        ] {
+            let entry = &policy.hooks.harness_usage.config.harnesses[harness.id()];
+            assert_eq!(entry.enabled, Some(true));
+            assert!(entry.matchers.is_empty());
+        }
+    }
+
+    #[test]
+    fn compatible_provider_interception_is_scoped_to_official_api_hosts_in_both_defaults() {
+        let packaged = toml::from_str::<LocalRuntimePolicy>(super::PACKAGED_RUNTIME_POLICY)
+            .expect("packaged policy should parse");
+        for policy in [
+            packaged.mitm.tls_decryption,
+            super::packaged_default_tls_decryption_policy(),
+        ] {
+            for host in [
+                "open.bigmodel.cn",
+                "api.z.ai",
+                "api.moonshot.cn",
+                "api.moonshot.ai",
+                "api.minimax.cn",
+                "api.minimax.io",
+                "api.minimaxi.com",
+                "dashscope.aliyuncs.com",
+                "dashscope-intl.aliyuncs.com",
+                "dashscope-us.aliyuncs.com",
+                "coding.dashscope.aliyuncs.com",
+                "coding-intl.dashscope.aliyuncs.com",
+                "workspace.cn-beijing.maas.aliyuncs.com",
+                "workspace.ap-southeast-1.maas.aliyuncs.com",
+                "workspace.us-east-1.maas.aliyuncs.com",
+                "workspace.eu-central-1.maas.aliyuncs.com",
+                "workspace.ap-northeast-1.maas.aliyuncs.com",
+                "workspace.cn-hongkong.maas.aliyuncs.com",
+            ] {
+                assert_eq!(
+                    policy.decide(Some(host)).action(),
+                    super::TlsDecryptionAction::Intercept,
+                    "{host}"
+                );
+            }
+            for host in [
+                "bigmodel.cn",
+                "z.ai",
+                "api.z.ai.example",
+                "moonshot.cn",
+                "moonshot.ai",
+                "api.moonshot.cn.example",
+                "api.moonshot.ai.example",
+                "minimax.cn",
+                "minimax.io",
+                "minimaxi.com",
+                "platform.minimax.cn",
+                "api.minimax.cn.example",
+                "api.minimax.io.example",
+                "api.minimaxi.com.example",
+                "aliyuncs.com",
+                "oss-cn-beijing.aliyuncs.com",
+                "maas.aliyuncs.com",
+                "workspace.other-region.maas.aliyuncs.com",
+                "dashscope.aliyuncs.com.example",
+                "other.dashscope.aliyuncs.com",
+                "workspace.cn-beijing.maas.aliyuncs.com.example",
+                "example.com",
+            ] {
+                assert_eq!(
+                    policy.decide(Some(host)).action(),
+                    super::TlsDecryptionAction::Passthrough,
+                    "{host}"
+                );
+            }
+        }
     }
 
     #[test]
