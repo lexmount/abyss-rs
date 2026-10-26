@@ -591,6 +591,7 @@ mod tests {
             BuiltInHarness::DeepSeekHarness,
             BuiltInHarness::Hermes,
             BuiltInHarness::Cursor,
+            BuiltInHarness::OpenCode,
         ] {
             let entry = &policy.hooks.harness_usage.config.harnesses[harness.id()];
             assert_eq!(entry.enabled, Some(true));

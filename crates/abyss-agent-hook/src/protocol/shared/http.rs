@@ -35,6 +35,17 @@ pub fn header<'a>(headers: &'a HeaderMap, name: &str) -> Option<&'a str> {
         .and_then(non_empty_trimmed)
 }
 
+/// Reads `OpenCode`'s session headers without treating them as client identity.
+pub fn opencode_session_id(headers: &HeaderMap) -> Option<&str> {
+    header(headers, "x-opencode-session-id")
+        .or_else(|| header(headers, "x-opencode-session"))
+        .or_else(|| {
+            // The generic alias has session semantics only for this client.
+            header(headers, "user-agent")?.strip_prefix("opencode/")?;
+            header(headers, "x-session-id")
+        })
+}
+
 pub const fn transport_name(protocol: &TransparentProtocol) -> &'static str {
     match protocol {
         TransparentProtocol::PlainHttp => "http",

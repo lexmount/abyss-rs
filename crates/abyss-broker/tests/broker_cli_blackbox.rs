@@ -1478,6 +1478,10 @@ const fn broker_binary() -> &'static str {
 #[path = "scenarios/compatible_providers.rs"]
 mod compatible_providers;
 
+#[cfg(unix)]
+#[path = "scenarios/opencode.rs"]
+mod opencode;
+
 #[cfg(target_os = "macos")]
 #[path = "scenarios/process_entry_points.rs"]
 mod process_entry_points;

@@ -6,6 +6,7 @@ mod codex;
 mod cursor;
 mod deepseek_harness;
 mod hermes;
+mod opencode;
 mod workbuddy;
 
 use abyss_mitm::{FlowContext, HttpExchange, WebSocketMessage};
@@ -62,7 +63,7 @@ impl HarnessRegistry {
         path: &str,
         config: &HarnessUsageConfig,
     ) -> Option<HarnessDetection> {
-        let detectors: [&dyn HarnessDetector; 7] = [
+        let detectors: [&dyn HarnessDetector; 8] = [
             &codex::CodexDetector,
             &claude_desktop::ClaudeDesktopDetector,
             &claude_code::ClaudeCodeDetector,
@@ -70,6 +71,7 @@ impl HarnessRegistry {
             &hermes::HermesDetector,
             &cursor::CursorDetector,
             &workbuddy::WorkBuddyDetector,
+            &opencode::OpenCodeDetector,
         ];
         let mut detections = detectors
             .into_iter()
@@ -132,6 +134,7 @@ impl HarnessRegistry {
             id if id == BuiltInHarness::Hermes.id() => hermes::declare(source),
             id if id == BuiltInHarness::Cursor.id() => cursor::declare(source),
             id if id == BuiltInHarness::WorkBuddy.id() => workbuddy::declare(source),
+            id if id == BuiltInHarness::OpenCode.id() => opencode::declare(source),
             _ => AgentDeclaration::default(),
         }
     }

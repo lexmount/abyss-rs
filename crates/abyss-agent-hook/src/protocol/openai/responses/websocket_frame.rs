@@ -20,7 +20,7 @@ use crate::protocol::{
     },
     shared::{
         digest::sha256_hex,
-        http::{flow_server_name, header, request_host, transport_name},
+        http::{flow_server_name, header, opencode_session_id, request_host, transport_name},
         json::{collect_string_field, event_types, string_field},
     },
 };
@@ -149,6 +149,7 @@ fn websocket_session_id(message: &WebSocketMessage, payload: &Value) -> String {
         .or_else(|| header(message.upgrade_request.headers(), "session_id"))
         .or_else(|| header(message.upgrade_request.headers(), "thread-id"))
         .or_else(|| header(message.upgrade_request.headers(), "x-hermes-session-id"))
+        .or_else(|| opencode_session_id(message.upgrade_request.headers()))
         .map(str::to_owned)
         .or_else(|| collect_string_field(payload, "session_id"))
         .or_else(|| collect_string_field(payload, "thread_id"))

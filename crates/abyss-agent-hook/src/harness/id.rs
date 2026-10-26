@@ -22,6 +22,8 @@ pub enum BuiltInHarness {
     Cursor,
     /// Tencent `WorkBuddy` application traffic.
     WorkBuddy,
+    /// `OpenCode` provider traffic.
+    OpenCode,
 }
 
 impl BuiltInHarness {
@@ -36,6 +38,7 @@ impl BuiltInHarness {
             Self::Hermes => "hermes",
             Self::Cursor => "cursor",
             Self::WorkBuddy => "workbuddy",
+            Self::OpenCode => "opencode",
         }
     }
 }
@@ -63,6 +66,7 @@ impl HarnessId {
                 | "hermes"
                 | "cursor"
                 | "workbuddy"
+                | "opencode"
         )
     }
 }

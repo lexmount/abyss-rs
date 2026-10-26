@@ -109,3 +109,6 @@ enabled = true
 
 [hooks.harness_usage.config.harnesses.cursor]
 enabled = true
+
+[hooks.harness_usage.config.harnesses.opencode]
+enabled = true
