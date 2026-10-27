@@ -5,6 +5,7 @@
 //! and exposes following `FlowData` frames as ordinary duplex byte IO.
 
 mod framed_protocol;
+mod original_proxy;
 
 pub(super) use framed_protocol::FlowProtocolError;
 
@@ -371,11 +372,11 @@ impl IngressConnection for FramedUnixConnection {
             "broker ingress accepted framed Unix flow"
         );
         Ok(
-            PlatformFlow::new(FramedFlowIo::new(stream, flow_id), metadata).with_ingress(
-                abyss_mitm::FlowIngress::transparent(
+            PlatformFlow::new(FramedFlowIo::new(stream, flow_id), metadata)
+                .with_ingress(abyss_mitm::FlowIngress::transparent(
                     abyss_mitm::TransparentFlowSource::MacosNetworkExtension,
-                ),
-            ),
+                ))
+                .with_proxy_connector(original_proxy::MacosOriginalProxyConnector),
         )
     }
 }

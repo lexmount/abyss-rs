@@ -8,6 +8,8 @@
 pub mod explicit;
 #[cfg(target_os = "macos")]
 mod macos;
+mod original_proxy;
+mod preparation;
 #[cfg(target_os = "windows")]
 mod windows;
 
@@ -15,7 +17,6 @@ use std::{future::Future, net::SocketAddr, path::Path};
 
 #[cfg(target_os = "windows")]
 use std::error::Error;
-#[cfg(any(target_os = "macos", target_os = "windows"))]
 use std::io;
 #[cfg(target_os = "macos")]
 use std::path::PathBuf;
@@ -396,6 +397,9 @@ pub struct PlatformFlow {
     ingress: abyss_mitm::FlowIngress,
     prepared_upstream: Option<abyss_mitm::BoxedDuplexStream>,
     read_prefix: Box<[u8]>,
+    // Platforms opt in only once their original-peer connection adapter is ready.
+    // Windows deliberately leaves this absent until WFP support is implemented.
+    original_proxy_connector: Option<Box<dyn original_proxy::OriginalProxyConnector>>,
 }
 
 impl PlatformFlow {
@@ -419,6 +423,7 @@ impl PlatformFlow {
             ),
             prepared_upstream: None,
             read_prefix: Box::default(),
+            original_proxy_connector: None,
         }
     }
 
@@ -426,6 +431,20 @@ impl PlatformFlow {
     #[must_use]
     pub fn with_ingress(mut self, ingress: abyss_mitm::FlowIngress) -> Self {
         self.ingress = ingress;
+        self
+    }
+
+    /// Enables original-proxy preparation using a platform-owned connector.
+    #[must_use]
+    #[cfg_attr(
+        not(any(target_os = "macos", test)),
+        expect(dead_code, reason = "Other platform connectors are not enabled yet.")
+    )]
+    fn with_proxy_connector<C>(mut self, connector: C) -> Self
+    where
+        C: original_proxy::OriginalProxyConnector + 'static,
+    {
+        self.original_proxy_connector = Some(Box::new(connector));
         self
     }
 
@@ -509,6 +528,18 @@ impl IngressConnection for PlatformFlow {
 #[derive(Debug, Error)]
 #[non_exhaustive]
 pub enum IngressError {
+    /// A transparent flow's original proxy negotiation failed.
+    #[error("transparent CONNECT ingress error: {0}")]
+    ConnectRelay(#[from] abyss_mitm::connect_relay::ConnectRelayError),
+    /// Connecting to the captured peer failed, without a direct fallback.
+    #[error("connect original proxy {peer}: {source}")]
+    OriginalProxy {
+        /// Captured peer, never the CONNECT target.
+        peer: SocketAddr,
+        /// Transport failure.
+        #[source]
+        source: io::Error,
+    },
     /// An ingress-specific blocking system operation could not be joined.
     #[cfg(any(target_os = "macos", target_os = "windows"))]
     #[error("ingress task failed during {operation}: {source}")]

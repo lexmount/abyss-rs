@@ -11,6 +11,7 @@
 //! byte IO plus normalized target metadata.
 
 pub mod ca;
+pub mod connect_relay;
 pub mod outbound;
 
 mod explicit_http;
@@ -19,6 +20,7 @@ mod http1;
 mod sys;
 mod tls;
 mod transparent;
+pub use transparent::PrefixedDuplexStream;
 
 pub use ca::{
     CaError, CaMaterialPersistence, CaMaterialState, CaResult, CaStatus, CaStore,
@@ -40,6 +42,6 @@ pub use transparent::{
     TlsDecryptionContext, TlsDecryptionDecision, TlsDecryptionPolicy, TlsDecryptionPolicyError,
     TlsDecryptionRule, TlsErrorSide, TrafficDirection, TrafficObserver, TransparentFlowError,
     TransparentFlowOutcome, TransparentFlowSource, TransparentPassthroughOutcome,
-    TransparentPassthroughProtocol, TransparentProtocol, ValidatedTlsDecryptionPolicy,
-    WebSocketDirection, WebSocketMessage,
+    TransparentPassthroughProtocol, TransparentProtocol, TransparentProxyContext,
+    ValidatedTlsDecryptionPolicy, WebSocketDirection, WebSocketMessage,
 };
