@@ -8,6 +8,7 @@
 pub mod explicit;
 #[cfg(target_os = "macos")]
 mod macos;
+mod preparation;
 #[cfg(target_os = "windows")]
 mod windows;
 
@@ -15,7 +16,6 @@ use std::{future::Future, net::SocketAddr, path::Path};
 
 #[cfg(target_os = "windows")]
 use std::error::Error;
-#[cfg(any(target_os = "macos", target_os = "windows"))]
 use std::io;
 #[cfg(target_os = "macos")]
 use std::path::PathBuf;
@@ -396,6 +396,8 @@ pub struct PlatformFlow {
     ingress: abyss_mitm::FlowIngress,
     prepared_upstream: Option<abyss_mitm::BoxedDuplexStream>,
     read_prefix: Box<[u8]>,
+    #[cfg(target_os = "windows")]
+    redirect_records: Option<crate::sys::RedirectRecords>,
 }
 
 impl PlatformFlow {
@@ -419,6 +421,8 @@ impl PlatformFlow {
             ),
             prepared_upstream: None,
             read_prefix: Box::default(),
+            #[cfg(target_os = "windows")]
+            redirect_records: None,
         }
     }
 
@@ -509,6 +513,22 @@ impl IngressConnection for PlatformFlow {
 #[derive(Debug, Error)]
 #[non_exhaustive]
 pub enum IngressError {
+    /// A transparent flow's original proxy negotiation failed.
+    #[error("transparent CONNECT ingress error: {0}")]
+    ConnectRelay(#[from] abyss_mitm::connect_relay::ConnectRelayError),
+    /// Connecting to the captured peer failed, without a direct fallback.
+    #[error("connect original proxy {peer}: {source}")]
+    OriginalProxy {
+        /// Captured peer, never the CONNECT target.
+        peer: SocketAddr,
+        /// Transport failure.
+        #[source]
+        source: io::Error,
+    },
+    /// Recovering or applying opaque Windows redirect records failed.
+    #[cfg(target_os = "windows")]
+    #[error("WFP redirect records: {0}")]
+    RedirectRecords(#[from] crate::sys::winsock::WinSockError),
     /// An ingress-specific blocking system operation could not be joined.
     #[cfg(any(target_os = "macos", target_os = "windows"))]
     #[error("ingress task failed during {operation}: {source}")]

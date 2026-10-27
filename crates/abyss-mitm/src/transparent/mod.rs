@@ -52,6 +52,7 @@ pub use self::types::{
     FlowIngress, FlowOperation, InterceptedHttpOutcome, OriginalDestination, TlsErrorSide,
     TransparentFlowError, TransparentFlowOutcome, TransparentFlowSource,
     TransparentPassthroughOutcome, TransparentPassthroughProtocol, TransparentProtocol,
+    TransparentProxyContext,
 };
 
 #[cfg(test)]

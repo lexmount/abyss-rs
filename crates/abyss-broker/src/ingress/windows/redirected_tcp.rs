@@ -1,6 +1,6 @@
 //! Loopback TCP ingress for Windows WFP connect redirection.
 
-use std::net::SocketAddr;
+use std::{net::SocketAddr, os::windows::io::AsSocket as _};
 
 use abyss_mitm::SourceProcess;
 use tokio::net::{TcpListener, TcpStream};
@@ -181,17 +181,19 @@ impl IngressConnection for RedirectedTcpConnection {
             process_context_resolver,
         } = self;
         let local_addr = Self::accepted_local_addr(&stream, peer_addr)?;
-        let (stream, redirect_metadata) = tokio::task::spawn_blocking(move || {
-            let redirect_metadata = Self::query_redirect_metadata(
-                &stream,
-                peer_addr,
-                local_addr,
-                process_context_resolver.as_ref(),
-            );
-            (stream, redirect_metadata)
-        })
-        .await
-        .map_err(|source| IngressError::task("query Windows redirect context", source))?;
+        let (stream, redirect_metadata, redirect_records) =
+            tokio::task::spawn_blocking(move || {
+                let redirect_metadata = Self::query_redirect_metadata(
+                    &stream,
+                    peer_addr,
+                    local_addr,
+                    process_context_resolver.as_ref(),
+                );
+                let redirect_records = crate::sys::RedirectRecords::capture(stream.as_socket());
+                (stream, redirect_metadata, redirect_records)
+            })
+            .await
+            .map_err(|source| IngressError::task("query Windows redirect context", source))?;
         let (original_destination, source_process) = redirect_metadata?;
 
         tracing::info!(
@@ -206,7 +208,7 @@ impl IngressConnection for RedirectedTcpConnection {
             source_entry_point = ?source_process.as_ref().and_then(|source| source.entry_point.as_deref()),
             "broker ingress accepted redirected TCP flow"
         );
-        Ok(PlatformFlow::new(
+        let mut flow = PlatformFlow::new(
             stream,
             PlatformFlowMetadata::from_parts(
                 Some(peer_addr),
@@ -218,7 +220,9 @@ impl IngressConnection for RedirectedTcpConnection {
         )
         .with_ingress(abyss_mitm::FlowIngress::transparent(
             abyss_mitm::TransparentFlowSource::WindowsWfp,
-        )))
+        ));
+        flow.redirect_records = Some(redirect_records);
+        Ok(flow)
     }
 }
 

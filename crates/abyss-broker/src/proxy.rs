@@ -555,6 +555,15 @@ where
                 return;
             }
         };
+        let flow = match flow.prepare().await {
+            Ok(Some(flow)) => flow,
+            Ok(None) => return,
+            Err(error) => {
+                diagnostics.record_ingress_error(&error, started_at);
+                tracing::warn!(%error, "broker transparent proxy negotiation failed");
+                return;
+            }
+        };
         diagnostics.record_accepted();
         Self::run_flow(flow, mitm, diagnostics, traffic).await;
     }

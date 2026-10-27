@@ -1,5 +1,11 @@
 # Abyss Broker Upstream Proxy Chain Design
 
+For transparently intercepted Agent-owned CONNECT, see
+[preserving the original proxy](transparent-connect-design.md). That path forwards
+the Agent's negotiation and remains separate from the configured-upstream mode
+described here.
+
+
 Status: implemented for explicit ingress. Research and local validation date:
 2026-10-26. The configuration below matches the implementation; proxy TLS,
 authentication, SOCKS5, and transparent-ingress chaining remain deferred.

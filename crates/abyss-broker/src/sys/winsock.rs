@@ -97,12 +97,48 @@ pub fn ioctl_output_buffer(
     Ok(output.into_boxed_slice())
 }
 
+/// Runs a synchronous socket IOCTL with borrowed, opaque input bytes.
+pub(crate) fn ioctl_input_buffer(
+    socket: BorrowedSocket<'_>,
+    io_control_code: u32,
+    input: &[u8],
+) -> Result<(), WinSockError> {
+    let socket = SOCKET(
+        usize::try_from(socket.as_raw_socket()).map_err(|_| WinSockError::SocketDoesNotFitUsize)?,
+    );
+    let input_size = u32::try_from(input.len())
+        .map_err(|_| WinSockError::InputBufferTooLarge { size: input.len() })?;
+    let mut bytes_returned = 0_u32;
+    // SAFETY: The socket and input remain borrowed for the synchronous call;
+    // the API reads input_size bytes and writes only the live bytes_returned.
+    let result = unsafe {
+        WSAIoctl(
+            socket,
+            io_control_code,
+            Some(input.as_ptr().cast::<c_void>()),
+            input_size,
+            None,
+            0,
+            &raw mut bytes_returned,
+            None,
+            None,
+        )
+    };
+    if result != 0_i32 {
+        // SAFETY: Reads the thread-local WinSock error from the failed call.
+        let error = unsafe { WSAGetLastError() };
+        return Err(WinSockError::Api { code: error.0 });
+    }
+    Ok(())
+}
+
 #[derive(Debug, Clone, Copy)]
 pub enum WinSockError {
     Api { code: i32 },
     SocketDoesNotFitUsize,
     OutputBufferTooSmall { size: usize },
     OutputBufferTooLarge { size: usize },
+    InputBufferTooLarge { size: usize },
     OutputLengthDoesNotFitUsize { size: u32 },
     EmptyOutput,
     OutputExceedsBuffer { capacity: usize, actual: usize },
@@ -118,6 +154,9 @@ impl std::fmt::Display for WinSockError {
             }
             Self::OutputBufferTooLarge { size } => {
                 write!(formatter, "output buffer size {size} does not fit in u32")
+            }
+            Self::InputBufferTooLarge { size } => {
+                write!(formatter, "input buffer size {size} does not fit in u32")
             }
             Self::OutputLengthDoesNotFitUsize { size } => {
                 write!(

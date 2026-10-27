@@ -360,6 +360,18 @@ impl ExplicitRequestDecoder {
         ExplicitRequestParser::new(&buffer, head_len).parse()
     }
 
+    /// Validates a complete CONNECT head without discarding hop authentication.
+    /// Used by transparent handshake relays; the caller retains the original bytes.
+    pub(crate) fn connect_target(head: &[u8]) -> Result<TargetAuthority, ExplicitRequestError> {
+        let decoded = ExplicitRequestParser::new(head, head.len()).parse()?;
+        if decoded.protocol != ExplicitProxyProtocol::HttpConnect {
+            return Err(ExplicitRequestError::InvalidRequest {
+                reason: "expected CONNECT during proxy negotiation",
+            });
+        }
+        Ok(decoded.target)
+    }
+
     async fn read_request_head<S>(
         &self,
         stream: &mut S,

@@ -44,6 +44,8 @@ pub enum FlowIngress {
     Transparent {
         /// Typed adapter family that recovered the redirected flow.
         source: TransparentFlowSource,
+        /// Proxy handshake observed inside this platform flow, if established.
+        proxy: Option<TransparentProxyContext>,
     },
     /// A local client connected through the broker's explicit HTTP proxy.
     ExplicitProxy {
@@ -56,6 +58,15 @@ pub enum FlowIngress {
         /// Validated configured proxy authority, independent of DNS-selected peer.
         proxy_endpoint: Option<String>,
     },
+}
+
+/// Proxy context recovered from a transparent connection without changing its origin.
+#[derive(Debug, Clone)]
+pub struct TransparentProxyContext {
+    /// Authority requested by the Agent, without local DNS resolution.
+    pub target: TargetAuthority,
+    /// Original TCP peer selected by the Agent before OS redirection.
+    pub original_peer: SocketAddr,
 }
 
 /// Transparent adapter family that supplied a normalized flow.
@@ -221,7 +232,10 @@ impl FlowIngress {
     /// Creates transparent ingress metadata for a concrete adapter family.
     #[must_use]
     pub const fn transparent(source: TransparentFlowSource) -> Self {
-        Self::Transparent { source }
+        Self::Transparent {
+            source,
+            proxy: None,
+        }
     }
 
     /// Returns the stable ingress source label used by diagnostics and audit metadata.
@@ -230,15 +244,19 @@ impl FlowIngress {
         match self {
             Self::Transparent {
                 source: TransparentFlowSource::MacosNetworkExtension,
+                ..
             } => "macos_network_extension",
             Self::Transparent {
                 source: TransparentFlowSource::WindowsWfp,
+                ..
             } => "windows_wfp",
             Self::Transparent {
                 source: TransparentFlowSource::LinuxTransparent,
+                ..
             } => "linux_transparent",
             Self::Transparent {
                 source: TransparentFlowSource::Unattributed,
+                ..
             } => "unattributed_transparent",
             Self::ExplicitProxy { .. } => "explicit_proxy",
         }
@@ -249,7 +267,10 @@ impl FlowIngress {
     pub const fn proxy_protocol(&self) -> Option<ExplicitProxyProtocol> {
         match self {
             Self::ExplicitProxy { protocol, .. } => Some(*protocol),
-            Self::Transparent { .. } => None,
+            Self::Transparent { proxy, .. } => match proxy {
+                Some(_) => Some(ExplicitProxyProtocol::HttpConnect),
+                None => None,
+            },
         }
     }
 
@@ -258,7 +279,10 @@ impl FlowIngress {
     pub const fn proxy_target(&self) -> Option<&TargetAuthority> {
         match self {
             Self::ExplicitProxy { target, .. } => Some(target),
-            Self::Transparent { .. } => None,
+            Self::Transparent { proxy, .. } => match proxy {
+                Some(proxy) => Some(&proxy.target),
+                None => None,
+            },
         }
     }
 
@@ -267,7 +291,10 @@ impl FlowIngress {
     pub const fn upstream_proxy(&self) -> Option<SocketAddr> {
         match self {
             Self::ExplicitProxy { upstream_proxy, .. } => *upstream_proxy,
-            Self::Transparent { .. } => None,
+            Self::Transparent { proxy, .. } => match proxy {
+                Some(proxy) => Some(proxy.original_peer),
+                None => None,
+            },
         }
     }
 
@@ -281,20 +308,14 @@ impl FlowIngress {
     }
 
     pub(super) const fn requires_tls_server_name_validation(&self) -> bool {
-        matches!(
-            self,
-            Self::ExplicitProxy {
-                target,
-                ..
-            } if matches!(target.host(), TargetHost::Dns(_))
-        )
+        matches!(self.proxy_target(), Some(target) if matches!(target.host(), TargetHost::Dns(_)))
     }
 
     pub(super) fn validate_tls_server_name(
         &self,
         server_name: Option<&str>,
     ) -> Result<(), TransparentFlowError> {
-        let Self::ExplicitProxy { target, .. } = self else {
+        let Some(target) = self.proxy_target() else {
             return Ok(());
         };
         let TargetHost::Dns(target_name) = target.host() else {

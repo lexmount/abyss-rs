@@ -182,7 +182,7 @@ class NextHop(socketserver.BaseRequestHandler):
 
 
 class Broker:
-    def __init__(self, directory, proxy):
+    def __init__(self, directory, proxy, *, transparent_socket=None):
         self.directory = directory
         self.home = directory / "home"
         self.home.mkdir()
@@ -264,12 +264,18 @@ class Broker:
             "[hooks.harness_usage]\nenabled = false\n"
         )
         config = directory / "broker-config.toml"
-        config.write_text(
-            'schema_version = 1\n[ca]\npath = "ca"\n[proxy]\nmode = "explicit"\n'
-            'listen_addr = "127.0.0.1:0"\n[proxy.upstream]\nprotocol = "http_connect"\n'
-            f'endpoint = "http://127.0.0.1:{proxy.server_address[1]}"\n'
-            "connect_timeout_ms = 1000\nhandshake_timeout_ms = 200\n"
-        )
+        if transparent_socket is None:
+            config.write_text(
+                'schema_version = 1\n[ca]\npath = "ca"\n[proxy]\nmode = "explicit"\n'
+                'listen_addr = "127.0.0.1:0"\n[proxy.upstream]\nprotocol = "http_connect"\n'
+                f'endpoint = "http://127.0.0.1:{proxy.server_address[1]}"\n'
+                "connect_timeout_ms = 1000\nhandshake_timeout_ms = 200\n"
+            )
+        else:
+            config.write_text(
+                'schema_version = 1\n[ca]\npath = "ca"\n[proxy]\nmode = "macos_network_extension"\n'
+                f'socket_path = "{transparent_socket}"\n'
+            )
         self.token_file = directory / "token"
         startup = directory / "startup.json"
         self.log = (directory / "broker.log").open("w+")
@@ -303,10 +309,13 @@ class Broker:
                     self.api = json.loads(startup.read_text())["api_addr"]
                     self.token = self.token_file.read_text().strip()
                     status = self.request("GET", "/v1/proxy/status")
-                    self.address = tuple(
-                        status["ingresses"][0]["listen_addr"].rsplit(":", 1)
-                    )
-                    self.address = (self.address[0], int(self.address[1]))
+                    if transparent_socket is None:
+                        self.address = tuple(
+                            status["ingresses"][0]["listen_addr"].rsplit(":", 1)
+                        )
+                        self.address = (self.address[0], int(self.address[1]))
+                    else:
+                        self.socket_path = status["ingresses"][0]["socket_path"]
                     return
                 time.sleep(0.05)
             raise AssertionError("broker startup timed out")
