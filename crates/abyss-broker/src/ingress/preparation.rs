@@ -1,7 +1,7 @@
 //! Converts an Agent-owned proxy negotiation into the common MITM flow.
 //!
-//! Protocol relay lives in abyss-mitm; this layer owns connecting to the captured
-//! peer and rebinding logical target metadata without changing platform identity.
+//! Protocol relay lives in abyss-mitm; platform adapters supply an original-peer
+//! connector. This layer coordinates them and rebinds logical target metadata.
 
 use std::{net::SocketAddr, time::Duration};
 
@@ -9,7 +9,7 @@ use abyss_mitm::{
     DestinationAddress, FlowIngress, PrefixedDuplexStream, TransparentProxyContext,
     connect_relay::{ConnectProbe, ConnectRelayError, ConnectRelayOutcome, HttpConnectRelay},
 };
-use tokio::{net::TcpSocket, time::timeout};
+use tokio::time::timeout;
 
 use super::{IngressError, PlatformFlow};
 
@@ -29,6 +29,9 @@ impl PlatformFlow {
         if self.prepared_upstream.is_some() {
             return Ok(Some(self));
         }
+        let Some(connector) = self.original_proxy_connector.take() else {
+            return Ok(Some(self));
+        };
         let stream = PrefixedDuplexStream::new(self.read_prefix, self.io).boxed();
         let client = match ConnectProbe::read(stream, PREPARATION_TIMEOUT).await? {
             ConnectProbe::Other(stream) => {
@@ -45,25 +48,11 @@ impl PlatformFlow {
                 .ok_or(ConnectRelayError::Protocol(
                     "CONNECT requires a captured proxy peer",
                 ))?;
-        let socket = if peer.is_ipv4() {
-            TcpSocket::new_v4()
-        } else {
-            TcpSocket::new_v6()
-        }
-        .map_err(|source| IngressError::OriginalProxy { peer, source })?;
-        #[cfg(target_os = "windows")]
-        if let Some(records) = &self.redirect_records {
-            use std::os::windows::io::AsSocket as _;
-            records.apply(socket.as_socket())?;
-        }
-        let upstream = timeout(PREPARATION_TIMEOUT, socket.connect(peer))
+        let upstream = timeout(PREPARATION_TIMEOUT, connector.connect(peer))
             .await
             .map_err(|_| ConnectRelayError::Timeout)?
             .map_err(|source| IngressError::OriginalProxy { peer, source })?;
-        match HttpConnectRelay::default()
-            .relay(client, Box::new(upstream))
-            .await?
-        {
+        match HttpConnectRelay::default().relay(client, upstream).await? {
             ConnectRelayOutcome::Closed => Ok(None),
             ConnectRelayOutcome::Established {
                 client,

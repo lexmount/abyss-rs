@@ -7,6 +7,10 @@ Abyss now forwards that negotiation and supplies the established tunnel to the
 existing MITM engine. It does not resolve the target locally, recreate the Agent's
 authentication, or replace the Agent's chosen route.
 
+The current platform implementation is **macOS only**. Shared CONNECT and MITM
+logic remains portable. Windows keeps its existing behavior and has no original
+proxy connector until its WFP implementation can be developed and tested there.
+
 ## Two separate route owners
 
 | Mode | Proxy selection | CONNECT / authentication | Input to existing MITM |
@@ -14,8 +18,8 @@ authentication, or replace the Agent's chosen route.
 | Configured upstream, explicit Abyss listener | Abyss `proxy.upstream` | Abyss originates CONNECT; existing configuration validation applies | Connected target tunnel |
 | Preserve original proxy, transparent ingress | Agent's captured TCP peer | Agent request and proxy responses are relayed, including authentication | The same socket pair after successful CONNECT |
 
-No new configuration is needed for the second mode. `proxy.upstream` remains
-unsupported on transparent ingress. This change neither interprets proxy product
+No new configuration is needed for the second mode on macOS. `proxy.upstream`
+remains unsupported on transparent ingress. This change neither interprets proxy product
 names nor adds client-specific environment, PAC, or configuration discovery.
 
 ## Flow
@@ -23,10 +27,12 @@ names nor adds client-specific environment, PAC, or configuration discovery.
 ```mermaid
 flowchart TD
     A[Agent TCP connection] --> P{Platform ingress}
-    P -->|macOS NE framed flow| F[Common PlatformFlow]
-    P -->|Windows WFP redirected TCP| F
-    F --> D{Starts with HTTP CONNECT?}
-    D -->|No: restore probe bytes| M[Existing HTTP / TLS pipeline]
+    P -->|macOS NE: connector supplied| F[Common PlatformFlow]
+    P -->|Windows WFP: connector absent| F
+    F --> K{Original proxy connector available?}
+    K -->|No: skip preparation entirely| M[Existing HTTP / TLS pipeline]
+    K -->|Yes| D{Starts with HTTP CONNECT?}
+    D -->|No: restore probe bytes| M
     D -->|Yes| C[Connect to captured original proxy peer]
     C --> H[Forward Agent CONNECT and authentication unchanged]
     H --> R{Original proxy response}
@@ -57,22 +63,35 @@ continues to require the Agent's existing trust of the Abyss CA.
   HTTP/1 negotiation over supplied duplex streams. It opens no sockets, resolves
   no DNS, and emits no content hooks. Authentication headers, challenges and
   response bodies stay outside the application capture pipeline.
-- `abyss-broker::ingress::preparation` connects to the captured peer, calls the
-  relay, and normalizes the resulting flow. Configured explicit ingress bypasses
-  this preparation. The original peer is retained in `TransparentProxyContext`;
+- `abyss-broker::ingress::original_proxy::OriginalProxyConnector` is the platform
+  capability boundary. It accepts the captured peer and returns a connected
+  duplex stream. Its implementation owns socket creation and per-flow OS
+  context; it never sends CONNECT or resolves the inner target.
+- `abyss-broker::ingress::preparation` uses the supplied connector with a bounded
+  timeout, calls the relay, and normalizes the resulting flow. Configured
+  explicit ingress and flows with no connector bypass preparation before any
+  bytes are read. The original peer is retained in `TransparentProxyContext`;
   the target IP is unknown for a DNS authority, or the literal IP when supplied.
+- `ingress::macos::original_proxy` implements the connector with TCP to the
+  captured peer. The NE ingress attaches it when creating `PlatformFlow`.
+  No TCP fallback lives in the shared preparation code.
 - `FlowIngress::Transparent` retains its platform source and optionally carries
   the observed proxy context. Existing target checks, TLS policies and prepared
   upstream support are reused. Flow metadata and Agent process identity survive
   preparation.
-- `sys::redirect_records` is the Windows-only IOCTL adapter. It captures the
-  opaque WFP redirect records on the accepted socket and applies them to the
-  outgoing proxy socket **before connecting**. Capture failures fail the new
-  CONNECT route, without changing the pre-existing direct-flow path.
+- Windows currently leaves `PlatformFlow.original_proxy_connector` absent. There
+  is no stub that opens ordinary TCP, no `unimplemented!()` path, and no added
+  WFP IOCTL implementation. The existing Windows ingress and system adapters
+  retain their previous code and behavior.
 
-WFP records are OS redirection history, not HTTP proxy authentication. Their
-transfer follows Microsoft's [redirect-record contract](https://learn.microsoft.com/en-us/windows/win32/winsock/sio-set-wfp-connection-redirect-records).
-The protocol relay has no dependency on WFP, Network Extension, or a proxy brand.
+To implement Windows later, provide an `OriginalProxyConnector` that owns the
+per-flow WFP state and performs the required socket setup before connecting;
+then attach it from the WFP ingress. Redirect-record recovery and transfer belong
+inside that platform implementation, following Microsoft's
+[redirect-record contract](https://learn.microsoft.com/en-us/windows/win32/winsock/sio-set-wfp-connection-redirect-records).
+A connector failure remains terminal: shared code must never bypass it with a
+plain TCP connection. CONNECT/authentication, target checks, TLS and content
+hooks require no Windows-specific implementation.
 
 ## Protocol and failure contract
 
@@ -92,13 +111,13 @@ bodies are streamed with backpressure. Ambiguous framing fails closed.
 
 Both client and proxy read-ahead buffers are restored on the successful handoff.
 No target connection is opened directly after a proxy rejection, malformed
-response, I/O error, timeout, or failed WFP record transfer.
+response, platform connector failure, I/O error, or timeout.
 
 Bounds are 16 KiB per head/trailer section, 64 headers, eight negotiation rounds,
 and eight informational responses per round. Detection, peer connection and
 complete negotiation each have a 30-second budget. Error cleanup has a one-second
 budget. An established stream uses the existing pipeline timeouts, not the
-negotiation deadline. Windows redirect records are capped at 64 KiB.
+negotiation deadline.
 
 SOCKS, TLS to the proxy, absolute-form HTTP forwarding, HTTP/2 CONNECT, CONNECT-UDP
 and recursive nested CONNECT interpretation are outside this adapter. They are
@@ -108,15 +127,14 @@ continue through the existing protocol path.
 
 ## Platform integration and verification
 
-The macOS and Windows native adapters must actually deliver the Agent-to-proxy
-connection, including its original destination and Agent identity. A broker
-cannot inspect a connection excluded by platform rules. In particular, a
+The macOS native adapter must actually deliver the Agent-to-proxy connection,
+including its original destination and Agent identity. A broker cannot inspect a connection excluded by platform rules. In particular, a
 product NE rule excluding loopback must be changed separately before local
 loopback proxies can be covered. Broker-originated outgoing connections must
-remain excluded from interception; Windows additionally carries redirect
-records. The protocol guarantee is preservation of the selected proxy peer, CONNECT
-request and authentication. The outgoing socket is owned by the broker; a proxy
-that routes according to the connecting OS process rather than the protocol may
+remain excluded from interception. The same requirements must be verified when
+implementing Windows later. The protocol guarantee is preservation of the
+selected proxy peer, CONNECT request and authentication. The outgoing socket is
+owned by the broker; a proxy that routes according to the connecting OS process rather than the protocol may
 need additional platform cooperation to preserve that policy. No private driver,
 Swift, C# or product packaging changes belong here.
 
@@ -125,11 +143,15 @@ Verification added here:
 - Duplex protocol tests: fragmented probing, original authentication, 407 retry,
   chunked and close-delimited bodies, informational / non-200 success, both
   read-ahead buffers, malformed framing, header/round/time bounds.
-- Shared broker preparation tests: both platform identities, target metadata,
-  Agent identity, original proxy route, unchanged direct/configured flows.
+- Shared broker preparation tests: explicit connector opt-in, target metadata,
+  Agent identity, original proxy route, unchanged direct/configured flows,
+  connector failure without fallback, and no probing for Windows/other flows
+  whose connector is absent.
 - TLS socket integration: configured upstream and preserved Agent proxy routes,
-  each platform identity, decrypted HTTP capture and TLS passthrough. Private
-  target trust is injected only inside the test; production trust is unchanged.
+  portable source metadata, decrypted HTTP capture and TLS passthrough. Windows
+  labels here exercise protocol metadata only; they do not enable a Windows
+  connector. Private target trust is injected only inside the test; production
+  trust is unchanged.
 - `make test-blackbox-broker-transparent-connect`: a real macOS broker receives
   public NE flow frames, performs Agent-owned authentication, relays HTTP/SSE/
   WebSocket, and exposes target/peer/process diagnostics. Rejection cannot cause
@@ -137,6 +159,7 @@ Verification added here:
 - Existing configured-upstream and explicit-listener black-box suites remain
   regression gates.
 
-Native WFP driver and installed NE provider validation must run in the product
-repository on their respective OSes. A shared Rust test carrying a Windows source
-label is not evidence of native WFP execution.
+Installed NE provider validation must run in the macOS product environment.
+Windows support remains deferred until its connector is implemented and validated
+against the native WFP driver. A shared Rust test carrying a Windows source label
+is not evidence of Windows support.

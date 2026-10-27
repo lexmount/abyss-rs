@@ -1,18 +1,21 @@
-//! Shared preparation contract for platform identities and route preservation.
+//! Shared preparation contract for platform capability opt-in and route preservation.
 
 use super::*;
-use crate::ingress::PlatformFlowMetadata;
+use crate::ingress::{
+    PlatformFlowMetadata,
+    original_proxy::{OriginalProxyConnect, OriginalProxyConnector},
+};
 use abyss_mitm::{ExplicitProxyProtocol, SourceProcess, TargetAuthority, TransparentFlowSource};
 use tokio::{
     io::{AsyncReadExt as _, AsyncWriteExt as _, duplex},
-    net::TcpListener,
+    net::{TcpListener, TcpStream},
 };
 
 #[tokio::test]
 async fn normalizes_target_without_losing_route_identity_or_read_ahead() {
     for source in [
         TransparentFlowSource::MacosNetworkExtension,
-        TransparentFlowSource::WindowsWfp,
+        TransparentFlowSource::Unattributed,
     ] {
         let proxy = TcpListener::bind("127.0.0.1:0")
             .await
@@ -52,9 +55,10 @@ async fn normalizes_target_without_losing_route_identity_or_read_ahead() {
             )),
         );
         let flow_id = metadata.flow_id.clone();
-        let flow = PlatformFlow::new(client, metadata)
+        let mut flow = PlatformFlow::new(client, metadata)
             .with_ingress(FlowIngress::transparent(source))
             .with_read_prefix(Box::from(&b"CON"[..]));
+        flow.original_proxy_connector = Some(Box::new(TestTcpConnector));
         let mut prepared = flow.prepare().await.expect("prepare").expect("established");
         assert_eq!(prepared.metadata.flow_id, flow_id, "flow identity retained");
         assert_eq!(
@@ -126,6 +130,7 @@ async fn direct_and_configured_explicit_flows_keep_their_existing_path() {
             None,
         );
         let mut flow = PlatformFlow::new(client, metadata);
+        flow.original_proxy_connector = Some(Box::new(RejectConnector));
         if explicit {
             flow = flow.with_ingress(FlowIngress::ExplicitProxy {
                 protocol: ExplicitProxyProtocol::HttpConnect,
@@ -148,4 +153,114 @@ async fn direct_and_configured_explicit_flows_keep_their_existing_path() {
         );
         assert!(flow.prepared_upstream.is_none(), "no new upstream opened");
     }
+}
+
+struct TestTcpConnector;
+
+impl OriginalProxyConnector for TestTcpConnector {
+    fn connect(&self, peer: SocketAddr) -> OriginalProxyConnect<'_> {
+        Box::pin(async move {
+            let stream: abyss_mitm::BoxedDuplexStream = Box::new(TcpStream::connect(peer).await?);
+            Ok(stream)
+        })
+    }
+}
+
+struct RejectConnector;
+
+impl OriginalProxyConnector for RejectConnector {
+    fn connect(&self, _peer: SocketAddr) -> OriginalProxyConnect<'_> {
+        Box::pin(std::future::ready(Err(std::io::Error::other(
+            "test platform cannot open this route",
+        ))))
+    }
+}
+
+#[tokio::test]
+async fn missing_platform_capability_preserves_flow_without_probing() {
+    for source in [
+        TransparentFlowSource::WindowsWfp,
+        TransparentFlowSource::LinuxTransparent,
+        TransparentFlowSource::Unattributed,
+    ] {
+        let (mut agent, client) = duplex(1024);
+        let peer = "127.0.0.1:12345".parse().expect("peer");
+        let metadata = PlatformFlowMetadata::from_destination_parts(
+            None,
+            None,
+            DestinationAddress::Known(peer),
+            None,
+            None,
+        );
+        let flow = PlatformFlow::new(client, metadata)
+            .with_ingress(FlowIngress::transparent(source))
+            .with_read_prefix(Box::from(&b"CON"[..]));
+        // With no bytes available beyond the prefix, even a method probe would
+        // block. An unfinished platform adapter must return immediately.
+        let mut flow = timeout(Duration::from_millis(100), flow.prepare())
+            .await
+            .expect("no protocol probe without opt-in")
+            .expect("unchanged flow")
+            .expect("flow");
+        assert_eq!(&*flow.read_prefix, b"CON", "prefix remains unconsumed");
+        assert_eq!(
+            flow.original_destination().socket_addr(),
+            Some(peer),
+            "original peer retained"
+        );
+        assert!(
+            flow.ingress.proxy_target().is_none(),
+            "no proxy negotiation claimed"
+        );
+        assert!(flow.prepared_upstream.is_none(), "no connection prepared");
+        agent
+            .write_all(b"NECT target.invalid:443 HTTP/1.1\r\n")
+            .await
+            .expect("input");
+        agent.shutdown().await.expect("EOF");
+        let mut actual = Vec::new();
+        flow.io
+            .read_to_end(&mut actual)
+            .await
+            .expect("unchanged stream");
+        assert_eq!(
+            actual, b"NECT target.invalid:443 HTTP/1.1\r\n",
+            "original stream remains available"
+        );
+    }
+}
+
+#[tokio::test]
+async fn platform_connector_failure_cannot_fall_back_to_plain_tcp() {
+    let proxy = TcpListener::bind("127.0.0.1:0")
+        .await
+        .expect("proxy listener");
+    let peer = proxy.local_addr().expect("peer");
+    let (mut agent, client) = duplex(1024);
+    agent
+        .write_all(b"CONNECT target.invalid:443 HTTP/1.1\r\nHost: target.invalid:443\r\n\r\n")
+        .await
+        .expect("CONNECT");
+    let metadata = PlatformFlowMetadata::from_destination_parts(
+        None,
+        None,
+        DestinationAddress::Known(peer),
+        None,
+        None,
+    );
+    let mut flow = PlatformFlow::new(client, metadata);
+    flow.original_proxy_connector = Some(Box::new(RejectConnector));
+    assert!(
+        matches!(
+            flow.prepare().await,
+            Err(IngressError::OriginalProxy { .. })
+        ),
+        "platform connection failure is terminal"
+    );
+    assert!(
+        timeout(Duration::from_millis(100), proxy.accept())
+            .await
+            .is_err(),
+        "no direct TCP bypass of platform connector"
+    );
 }

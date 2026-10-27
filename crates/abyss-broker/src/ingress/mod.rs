@@ -8,6 +8,7 @@
 pub mod explicit;
 #[cfg(target_os = "macos")]
 mod macos;
+mod original_proxy;
 mod preparation;
 #[cfg(target_os = "windows")]
 mod windows;
@@ -396,8 +397,9 @@ pub struct PlatformFlow {
     ingress: abyss_mitm::FlowIngress,
     prepared_upstream: Option<abyss_mitm::BoxedDuplexStream>,
     read_prefix: Box<[u8]>,
-    #[cfg(target_os = "windows")]
-    redirect_records: Option<crate::sys::RedirectRecords>,
+    // Platforms opt in only once their original-peer connection adapter is ready.
+    // Windows deliberately leaves this absent until WFP support is implemented.
+    original_proxy_connector: Option<Box<dyn original_proxy::OriginalProxyConnector>>,
 }
 
 impl PlatformFlow {
@@ -421,8 +423,7 @@ impl PlatformFlow {
             ),
             prepared_upstream: None,
             read_prefix: Box::default(),
-            #[cfg(target_os = "windows")]
-            redirect_records: None,
+            original_proxy_connector: None,
         }
     }
 
@@ -525,10 +526,6 @@ pub enum IngressError {
         #[source]
         source: io::Error,
     },
-    /// Recovering or applying opaque Windows redirect records failed.
-    #[cfg(target_os = "windows")]
-    #[error("WFP redirect records: {0}")]
-    RedirectRecords(#[from] crate::sys::winsock::WinSockError),
     /// An ingress-specific blocking system operation could not be joined.
     #[cfg(any(target_os = "macos", target_os = "windows"))]
     #[error("ingress task failed during {operation}: {source}")]

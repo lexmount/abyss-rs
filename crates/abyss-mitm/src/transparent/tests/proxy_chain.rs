@@ -1,4 +1,7 @@
 //! Target TLS and hook behavior over an actual HTTP CONNECT tunnel.
+//!
+//! Platform names here are metadata-only fixtures: the test connects sockets
+//! directly and does not implement or enable a native Windows ingress adapter.
 
 use super::{connected_pair, read_http_head, test_ca, test_client_config_trusting};
 use std::{future, sync::Arc, time::Duration};
