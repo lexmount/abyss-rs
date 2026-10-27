@@ -367,7 +367,7 @@ impl IngressConnection for FramedUnixConnection {
             socket_path = %socket_path.display(),
             original_destination = %metadata.original_destination(),
             destination_host = ?metadata.destination_host(),
-            fake_ip_candidate = metadata.original_destination().special_address_range().is_some(),
+            fake_ip_candidate = crate::connection::destination_address_range(metadata.original_destination()).is_some(),
             "broker ingress accepted framed Unix flow"
         );
         Ok(
@@ -1039,11 +1039,14 @@ mod tests {
             .expect("accept task should join")
             .expect("FlowOpen should produce PlatformFlow");
         assert_eq!(
-            flow.original_destination(),
-            &crate::connection::OriginalDestination {
-                ip: "127.0.0.1".parse().expect("test IP address should parse"),
-                port: 443,
-            }
+            flow.original_destination().socket_addr(),
+            Some(
+                crate::connection::OriginalDestination {
+                    ip: "127.0.0.1".parse().expect("test IP address should parse"),
+                    port: 443,
+                }
+                .socket_addr()
+            )
         );
         assert_eq!(flow.peer_addr(), None);
         assert_eq!(flow.local_addr(), None);

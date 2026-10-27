@@ -11,7 +11,7 @@ use tokio_rustls::{LazyConfigAcceptor, StartHandshake, rustls};
 use crate::tls::MitmTlsAuthority;
 
 use super::{
-    BoxedDuplexStream, FlowOperation, OriginalDestination, TlsErrorSide, TransparentFlowError,
+    BoxedDuplexStream, DestinationAddress, FlowOperation, TlsErrorSide, TransparentFlowError,
     client_hello::InspectedClientHello,
 };
 
@@ -44,7 +44,7 @@ impl ClientTlsFlow<tokio_rustls::server::TlsStream<BoxedDuplexStream>> {
     pub(super) async fn accept(
         stream: BoxedDuplexStream,
         peer_addr: Option<SocketAddr>,
-        original_destination: &OriginalDestination,
+        original_destination: &DestinationAddress,
         tls_authority: &MitmTlsAuthority,
     ) -> Result<Self, TransparentFlowError> {
         let start_handshake = LazyConfigAcceptor::new(rustls::server::Acceptor::default(), stream)
@@ -115,7 +115,7 @@ impl ClientTlsFlow<tokio_rustls::server::TlsStream<BoxedDuplexStream>> {
     pub(super) async fn accept_inspected(
         inspected: InspectedClientHello,
         peer_addr: Option<SocketAddr>,
-        original_destination: &OriginalDestination,
+        original_destination: &DestinationAddress,
         tls_authority: &MitmTlsAuthority,
     ) -> Result<Self, TransparentFlowError> {
         let InspectedClientHello {

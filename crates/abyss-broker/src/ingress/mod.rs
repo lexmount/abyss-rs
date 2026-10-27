@@ -22,8 +22,8 @@ use std::path::PathBuf;
 
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
-use tokio::net::TcpStream;
 
+#[cfg(any(target_os = "macos", target_os = "windows", test))]
 use crate::connection::OriginalDestination;
 
 /// Target-specific transparent ingress types available to the broker.
@@ -306,18 +306,37 @@ pub struct PlatformFlowMetadata {
     flow_id: abyss_mitm::FlowId,
     peer_addr: Option<SocketAddr>,
     local_addr: Option<SocketAddr>,
-    original_destination: OriginalDestination,
+    original_destination: abyss_mitm::DestinationAddress,
     destination_host: Option<String>,
     source_process: Option<abyss_mitm::SourceProcess>,
 }
 
 impl PlatformFlowMetadata {
     /// Creates platform flow metadata from normalized optional fields.
+    #[cfg(any(target_os = "macos", target_os = "windows", test))]
     #[must_use]
     pub fn from_parts(
         peer_addr: Option<SocketAddr>,
         local_addr: Option<SocketAddr>,
         original_destination: OriginalDestination,
+        destination_host: Option<String>,
+        source_process: Option<abyss_mitm::SourceProcess>,
+    ) -> Self {
+        Self::from_destination_parts(
+            peer_addr,
+            local_addr,
+            original_destination.into(),
+            destination_host,
+            source_process,
+        )
+    }
+
+    /// Creates metadata when target resolution belongs to the next-hop proxy.
+    #[must_use]
+    pub fn from_destination_parts(
+        peer_addr: Option<SocketAddr>,
+        local_addr: Option<SocketAddr>,
+        original_destination: abyss_mitm::DestinationAddress,
         destination_host: Option<String>,
         source_process: Option<abyss_mitm::SourceProcess>,
     ) -> Self {
@@ -353,7 +372,7 @@ impl PlatformFlowMetadata {
 
     /// Returns the destination captured before platform redirection.
     #[must_use]
-    pub const fn original_destination(&self) -> &OriginalDestination {
+    pub const fn original_destination(&self) -> &abyss_mitm::DestinationAddress {
         &self.original_destination
     }
 
@@ -375,7 +394,7 @@ pub struct PlatformFlow {
     metadata: PlatformFlowMetadata,
     io: abyss_mitm::BoxedDuplexStream,
     ingress: abyss_mitm::FlowIngress,
-    prepared_upstream: Option<TcpStream>,
+    prepared_upstream: Option<abyss_mitm::BoxedDuplexStream>,
     read_prefix: Box<[u8]>,
 }
 
@@ -410,9 +429,9 @@ impl PlatformFlow {
         self
     }
 
-    /// Attaches an upstream socket prepared by an explicit proxy connection.
+    /// Attaches an established tunnel without changing target TLS handling.
     #[must_use]
-    pub fn with_prepared_upstream(mut self, upstream: TcpStream) -> Self {
+    pub fn with_prepared_stream(mut self, upstream: abyss_mitm::BoxedDuplexStream) -> Self {
         self.prepared_upstream = Some(upstream);
         self
     }
@@ -444,7 +463,7 @@ impl PlatformFlow {
 
     /// Returns the destination captured before platform redirection.
     #[must_use]
-    pub const fn original_destination(&self) -> &OriginalDestination {
+    pub const fn original_destination(&self) -> &abyss_mitm::DestinationAddress {
         self.metadata.original_destination()
     }
 
@@ -463,21 +482,18 @@ impl PlatformFlow {
     /// Converts this platform flow into the current MITM transparent TCP input.
     #[must_use]
     pub fn into_mitm_flow(self) -> abyss_mitm::AcceptedTcpFlow {
-        let mut flow = abyss_mitm::AcceptedTcpFlow::from_boxed_parts(
+        let mut flow = abyss_mitm::AcceptedTcpFlow::from_destination_parts(
             self.io,
             self.metadata.peer_addr(),
             self.metadata.local_addr(),
-            abyss_mitm::OriginalDestination {
-                ip: self.metadata.original_destination().ip,
-                port: self.metadata.original_destination().port,
-            },
+            self.metadata.original_destination.clone(),
             self.metadata.source_process,
         )
         .with_flow_id(self.metadata.flow_id)
         .with_destination_host(self.metadata.destination_host)
         .with_ingress(self.ingress);
         if let Some(upstream) = self.prepared_upstream {
-            flow = flow.with_prepared_upstream(upstream);
+            flow = flow.with_prepared_stream(upstream);
         }
         flow.with_read_prefix(self.read_prefix)
     }

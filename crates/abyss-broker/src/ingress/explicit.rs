@@ -1,8 +1,8 @@
 //! Loopback HTTP explicit-proxy ingress.
 //!
 //! This adapter accepts opt-in proxy clients, decodes their initial proxy
-//! request, resolves and connects the declared target, then hands normalized
-//! client IO and metadata to the shared MITM pipeline. Provider parsing,
+//! request, connects directly or negotiates the configured next-hop tunnel, then
+//! hands normalized client IO and metadata to the shared MITM pipeline. Provider parsing,
 //! policy, auditing, and upload behavior remain outside this module.
 
 use std::{
@@ -27,7 +27,9 @@ use super::{
     Ingress, IngressConnection, IngressError, IngressFactory, IngressRuntimeStatus, PlatformFlow,
     PlatformFlowMetadata, StartedIngress,
 };
-use crate::connection::OriginalDestination;
+use abyss_mitm::outbound::{
+    HttpConnectProxy, UpstreamProxyConfig, UpstreamProxyConfigError, UpstreamProxyError,
+};
 
 const TARGET_RESOLUTION_TIMEOUT: Duration = Duration::from_secs(10);
 const TARGET_CONNECT_TIMEOUT: Duration = Duration::from_secs(10);
@@ -36,13 +38,33 @@ const TARGET_CONNECT_TIMEOUT: Duration = Duration::from_secs(10);
 #[derive(Debug, Clone, PartialEq)]
 pub struct ExplicitIngressEndpoint {
     listen_addr: SocketAddr,
+    upstream: Option<UpstreamProxyConfig>,
 }
 
 impl ExplicitIngressEndpoint {
     /// Creates an endpoint. Startup performs defense-in-depth loopback validation.
     #[must_use]
     pub const fn new(listen_addr: SocketAddr) -> Self {
-        Self { listen_addr }
+        Self {
+            listen_addr,
+            upstream: None,
+        }
+    }
+
+    /// Configures a protocol-based next hop without changing target TLS trust.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error for unsupported or malformed proxy settings.
+    pub fn with_upstream(
+        mut self,
+        upstream: Option<UpstreamProxyConfig>,
+    ) -> Result<Self, UpstreamProxyConfigError> {
+        if let Some(config) = &upstream {
+            config.validate()?;
+        }
+        self.upstream = upstream;
+        Ok(self)
     }
 
     /// Returns a compact requested-endpoint label.
@@ -51,11 +73,12 @@ impl ExplicitIngressEndpoint {
         self.listen_addr.to_string()
     }
 
-    /// Converts this endpoint into its zero-sized startup boundary.
+    /// Converts this endpoint and its upstream settings into the startup boundary.
     #[must_use]
-    pub const fn into_factory(self) -> ExplicitIngressFactory {
+    pub fn into_factory(self) -> ExplicitIngressFactory {
         ExplicitIngressFactory {
             listen_addr: self.listen_addr,
+            upstream: self.upstream,
         }
     }
 }
@@ -63,6 +86,7 @@ impl ExplicitIngressEndpoint {
 /// Factory that binds one explicit HTTP proxy listener.
 pub struct ExplicitIngressFactory {
     listen_addr: SocketAddr,
+    upstream: Option<UpstreamProxyConfig>,
 }
 
 impl IngressFactory for ExplicitIngressFactory {
@@ -84,10 +108,27 @@ impl IngressFactory for ExplicitIngressFactory {
         let listen_addr = listener
             .local_addr()
             .map_err(|source| ExplicitIngressError::ListenerAddress { source })?;
+        let upstream = self
+            .upstream
+            .as_ref()
+            .map(HttpConnectProxy::new)
+            .transpose()
+            .map_err(|source| ExplicitIngressError::UpstreamConfig { source })?;
+        if let Some(proxy) = &upstream
+            && let Some(ip) = proxy.endpoint().host().as_ip_addr()
+            && same_endpoint(SocketAddr::new(ip, proxy.endpoint().port()), listen_addr)
+        {
+            return Err(ExplicitIngressError::SelfTarget {
+                target: proxy.endpoint().authority(),
+                listen_addr,
+            }
+            .into());
+        }
         Ok(StartedIngress::new(
             ExplicitIngress {
                 listener,
                 listen_addr,
+                upstream,
             },
             IngressRuntimeStatus::explicit_http(listen_addr),
         ))
@@ -98,6 +139,7 @@ impl IngressFactory for ExplicitIngressFactory {
 pub struct ExplicitIngress {
     listener: TcpListener,
     listen_addr: SocketAddr,
+    upstream: Option<HttpConnectProxy>,
 }
 
 impl Ingress for ExplicitIngress {
@@ -113,6 +155,7 @@ impl Ingress for ExplicitIngress {
             client,
             peer_addr,
             listen_addr: self.listen_addr,
+            upstream: self.upstream.clone(),
         })
     }
 }
@@ -122,6 +165,7 @@ pub struct ExplicitConnection {
     client: TcpStream,
     peer_addr: SocketAddr,
     listen_addr: SocketAddr,
+    upstream: Option<HttpConnectProxy>,
 }
 
 impl IngressConnection for ExplicitConnection {
@@ -137,41 +181,16 @@ impl IngressConnection for ExplicitConnection {
             }
         };
         let (target, protocol, client_prefix) = decoded.into_parts();
-        let resolved = match self.resolve_target(&target).await {
-            Ok(resolved) => resolved,
+        let PreparedExplicitUpstream {
+            stream: upstream,
+            destination,
+            proxy_peer,
+        } = match self.prepare_upstream(&target).await {
+            Ok(prepared) => prepared,
             Err(error) => {
-                self.reject(error.response()).await?;
+                // Preserve the establishment error even if the client has already closed.
+                let _response = self.reject(error.response()).await;
                 return Err(error.into());
-            }
-        };
-        if resolved
-            .iter()
-            .copied()
-            .any(|address| same_endpoint(address, self.listen_addr))
-        {
-            self.reject(ProxyResponse::Forbidden).await?;
-            return Err(ExplicitIngressError::SelfTarget {
-                target: target.authority(),
-                listen_addr: self.listen_addr,
-            }
-            .into());
-        }
-        let upstream = match self.connect_target(&target, &resolved).await {
-            Ok(upstream) => upstream,
-            Err(error) => {
-                self.reject(error.response()).await?;
-                return Err(error.into());
-            }
-        };
-        let upstream_addr = match upstream.peer_addr() {
-            Ok(address) => address,
-            Err(source) => {
-                self.reject(ProxyResponse::BadGateway).await?;
-                return Err(ExplicitIngressError::UpstreamAddress {
-                    target: target.authority(),
-                    source,
-                }
-                .into());
             }
         };
 
@@ -181,22 +200,99 @@ impl IngressConnection for ExplicitConnection {
         }
 
         let destination_host = Some(target.host().to_string());
-        let ingress = FlowIngress::ExplicitProxy { protocol, target };
-        let metadata = PlatformFlowMetadata::from_parts(
+        let ingress = FlowIngress::ExplicitProxy {
+            protocol,
+            target,
+            upstream_proxy: proxy_peer,
+            proxy_endpoint: self
+                .upstream
+                .as_ref()
+                .map(|proxy| proxy.endpoint().authority()),
+        };
+        let metadata = PlatformFlowMetadata::from_destination_parts(
             Some(self.peer_addr),
             Some(self.listen_addr),
-            OriginalDestination::from(upstream_addr),
+            destination,
             destination_host,
             None,
         );
         Ok(PlatformFlow::new(self.client, metadata)
             .with_ingress(ingress)
-            .with_prepared_upstream(upstream)
+            .with_prepared_stream(upstream)
             .with_read_prefix(client_prefix))
     }
 }
 
+struct PreparedExplicitUpstream {
+    stream: abyss_mitm::BoxedDuplexStream,
+    destination: abyss_mitm::DestinationAddress,
+    proxy_peer: Option<SocketAddr>,
+}
+
 impl ExplicitConnection {
+    async fn prepare_upstream(
+        &self,
+        target: &TargetAuthority,
+    ) -> Result<PreparedExplicitUpstream, ExplicitIngressError> {
+        if let Some(proxy) = &self.upstream {
+            if target.host().as_ip_addr().is_some_and(|ip| {
+                same_endpoint(SocketAddr::new(ip, target.port()), self.listen_addr)
+            }) || target
+                .host()
+                .as_dns_name()
+                .is_some_and(|host| host == "localhost" && target.port() == self.listen_addr.port())
+            {
+                return Err(ExplicitIngressError::SelfTarget {
+                    target: target.authority(),
+                    listen_addr: self.listen_addr,
+                });
+            }
+            let tunnel = proxy
+                .connect(target, self.listen_addr)
+                .await
+                .map_err(|source| ExplicitIngressError::UpstreamProxy {
+                    target: target.clone(),
+                    endpoint: proxy.endpoint().authority(),
+                    source,
+                })?;
+            let destination = target
+                .host()
+                .as_ip_addr()
+                .map_or(abyss_mitm::DestinationAddress::Unknown, |ip| {
+                    abyss_mitm::DestinationAddress::Known(SocketAddr::new(ip, target.port()))
+                });
+            return Ok(PreparedExplicitUpstream {
+                stream: tunnel.stream,
+                destination,
+                proxy_peer: Some(tunnel.proxy_peer),
+            });
+        }
+        let resolved = self.resolve_target(target).await?;
+        if resolved
+            .iter()
+            .copied()
+            .any(|address| same_endpoint(address, self.listen_addr))
+        {
+            return Err(ExplicitIngressError::SelfTarget {
+                target: target.authority(),
+                listen_addr: self.listen_addr,
+            });
+        }
+        let upstream = self.connect_target(target, &resolved).await?;
+        let upstream_addr =
+            upstream
+                .peer_addr()
+                .map_err(|source| ExplicitIngressError::UpstreamAddress {
+                    target: target.authority(),
+                    source,
+                })?;
+        Ok(PreparedExplicitUpstream {
+            stream: Box::new(upstream),
+            destination: abyss_mitm::DestinationAddress::Known(upstream_addr),
+            proxy_peer: None,
+        })
+    }
+
     async fn resolve_target(
         &self,
         target: &TargetAuthority,
@@ -369,6 +465,20 @@ mod response_bytes {
 #[derive(Debug, Error)]
 #[non_exhaustive]
 pub enum ExplicitIngressError {
+    /// Invalid upstream configuration supplied by an embedded caller.
+    #[error("{source}")]
+    UpstreamConfig {
+        #[source]
+        source: UpstreamProxyConfigError,
+    },
+    /// Failed next-hop establishment, retaining the logical target independently.
+    #[error("upstream proxy {endpoint} for target {target}: {source}")]
+    UpstreamProxy {
+        target: TargetAuthority,
+        endpoint: String,
+        #[source]
+        source: UpstreamProxyError,
+    },
     /// Explicit proxy listeners are intentionally restricted to loopback.
     #[error("explicit proxy listener `{listen_addr}` must use a loopback address")]
     NonLoopbackListener { listen_addr: SocketAddr },
@@ -452,6 +562,9 @@ impl ExplicitIngressError {
                 ProxyResponse::GatewayTimeout
             }
             Self::SelfTarget { .. } => ProxyResponse::Forbidden,
+            Self::UpstreamProxy { source, .. } if source.is_timeout() => {
+                ProxyResponse::GatewayTimeout
+            }
             _ => ProxyResponse::BadGateway,
         }
     }

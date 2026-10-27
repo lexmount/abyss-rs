@@ -22,7 +22,7 @@ use abyss_mitm::{
 use serde::Serialize;
 
 use crate::{
-    connection::{DestinationAddressRange, OriginalDestination},
+    connection::{DestinationAddressRange, destination_address_range},
     network_diagnostics::NetworkObservation,
     network_diagnostics::NetworkObservationStore,
     proxy::ProxyStatus,
@@ -53,7 +53,7 @@ pub struct FlowDiagnosticContext<'a> {
     ingress: &'a FlowIngress,
     peer_addr: Option<SocketAddr>,
     local_addr: Option<SocketAddr>,
-    original_destination: &'a OriginalDestination,
+    original_destination: &'a abyss_mitm::DestinationAddress,
     destination_host: Option<&'a str>,
     source_process: Option<&'a SourceProcess>,
     flow_id: Option<uuid::Uuid>,
@@ -170,7 +170,7 @@ struct FlowRecord {
     miss_reason: Option<String>,
     peer_addr: Option<String>,
     local_addr: Option<String>,
-    original_destination: String,
+    original_destination: Option<String>,
     platform_destination_host: Option<String>,
     fake_ip: Option<FakeIpSnapshot>,
     protocol: Option<String>,
@@ -186,6 +186,8 @@ struct IngressSnapshot {
     source: &'static str,
     proxy_protocol: Option<&'static str>,
     target: Option<String>,
+    proxy_endpoint: Option<String>,
+    proxy_peer: Option<String>,
 }
 
 #[derive(Clone, Serialize)]
@@ -264,7 +266,7 @@ impl FlowRecord {
                     miss_reason: None,
                     peer_addr: outcome.peer_addr.map(|addr| addr.to_string()),
                     local_addr: outcome.local_addr.map(|addr| addr.to_string()),
-                    original_destination: original_destination.to_string(),
+                    original_destination: destination_label(original_destination),
                     platform_destination_host,
                     fake_ip,
                     protocol: Some(protocol),
@@ -295,7 +297,7 @@ impl FlowRecord {
                     miss_reason: Some("tls_decryption_policy_passthrough".to_owned()),
                     peer_addr: outcome.peer_addr.map(|addr| addr.to_string()),
                     local_addr: outcome.local_addr.map(|addr| addr.to_string()),
-                    original_destination: original_destination.to_string(),
+                    original_destination: destination_label(original_destination),
                     platform_destination_host,
                     fake_ip,
                     protocol: Some(protocol),
@@ -320,7 +322,7 @@ impl FlowRecord {
                     miss_reason: Some("unknown_outcome".to_owned()),
                     peer_addr: peer_addr.map(|addr| addr.to_string()),
                     local_addr: local_addr.map(|addr| addr.to_string()),
-                    original_destination: original_destination.to_string(),
+                    original_destination: destination_label(original_destination),
                     platform_destination_host,
                     fake_ip,
                     protocol: None,
@@ -356,7 +358,7 @@ impl FlowRecord {
             miss_reason: Some(flow_error_reason(error).to_owned()),
             peer_addr: peer_addr.map(|addr| addr.to_string()),
             local_addr: local_addr.map(|addr| addr.to_string()),
-            original_destination: original_destination.to_string(),
+            original_destination: destination_label(original_destination),
             platform_destination_host: platform_destination_host.clone(),
             fake_ip: FakeIpSnapshot::from_destination(original_destination),
             protocol: None,
@@ -376,7 +378,7 @@ impl<'a> FlowDiagnosticContext<'a> {
         ingress: &'a FlowIngress,
         peer_addr: Option<SocketAddr>,
         local_addr: Option<SocketAddr>,
-        original_destination: &'a OriginalDestination,
+        original_destination: &'a abyss_mitm::DestinationAddress,
         destination_host: Option<&'a str>,
         source_process: Option<&'a SourceProcess>,
     ) -> Self {
@@ -454,7 +456,7 @@ impl<'a> FlowDiagnosticContext<'a> {
     }
 
     fn trace_failure(&self, error: &TransparentFlowError) {
-        let fake_ip_range = self.original_destination.special_address_range();
+        let fake_ip_range = destination_address_range(self.original_destination);
         tracing::warn!(
             peer_addr = ?self.peer_addr,
             local_addr = ?self.local_addr,
@@ -523,6 +525,23 @@ impl FlowDiagnostics {
         });
     }
 
+    /// Records preparation failures before the normal accepted-flow pipeline.
+    pub fn record_ingress_error(&self, error: &crate::ingress::IngressError, started_at: u64) {
+        self.record_accept_error(error.to_string());
+        if let Some(observation) =
+            NetworkObservation::from_ingress_error(error, started_at, current_unix_ms())
+        {
+            self.with_state(|state| {
+                push_bounded(
+                    &mut state.recent_observations,
+                    observation.clone(),
+                    MAX_RECENT_FLOWS,
+                );
+            });
+            self.persist_observation(observation);
+        }
+    }
+
     /// Records the final decision for one handled proxy flow.
     pub fn record_outcome(
         &self,
@@ -532,7 +551,7 @@ impl FlowDiagnostics {
         let flow_id = context.flow_id;
         let started_at_unix_ms = context.started_at_unix_ms;
         let ended_at_unix_ms = current_unix_ms();
-        let observation = NetworkObservation::from_outcome(
+        let mut observation = NetworkObservation::from_outcome(
             flow_id,
             context.ingress,
             context.destination_host,
@@ -541,6 +560,10 @@ impl FlowDiagnostics {
             ended_at_unix_ms,
             outcome,
         );
+        observation.destination_addr = context
+            .original_destination
+            .socket_addr()
+            .map(|address| address.to_string());
         let record = FlowRecord::from_outcome(context, outcome, ended_at_unix_ms);
         self.record_completed(record, observation);
         context.trace_outcome(outcome);
@@ -555,7 +578,7 @@ impl FlowDiagnostics {
         let flow_id = context.flow_id;
         let started_at_unix_ms = context.started_at_unix_ms;
         let ended_at_unix_ms = current_unix_ms();
-        let observation = NetworkObservation::from_error(
+        let mut observation = NetworkObservation::from_error(
             flow_id,
             context.ingress,
             context.destination_host,
@@ -564,6 +587,10 @@ impl FlowDiagnostics {
             ended_at_unix_ms,
             error,
         );
+        observation.destination_addr = context
+            .original_destination
+            .socket_addr()
+            .map(|address| address.to_string());
         let record = FlowRecord::from_failure(context, error, ended_at_unix_ms);
         self.record_completed(record, observation);
         context.trace_failure(error);
@@ -627,9 +654,13 @@ impl FlowDiagnostics {
                 MAX_RECENT_FLOWS,
             );
         });
+        self.persist_observation(persisted_observation);
+    }
+
+    fn persist_observation(&self, observation: NetworkObservation) {
         let store = Arc::clone(&self.network_observations);
         let persist = move || {
-            if let Err(error) = store.insert(&persisted_observation) {
+            if let Err(error) = store.insert(&observation) {
                 tracing::error!(%error, "failed to persist network observation");
             }
         };
@@ -718,6 +749,8 @@ impl FlowDecision {
 impl IngressSnapshot {
     fn from_ingress(ingress: &FlowIngress) -> Self {
         Self {
+            proxy_endpoint: ingress.proxy_endpoint().map(str::to_owned),
+            proxy_peer: ingress.upstream_proxy().map(|address| address.to_string()),
             source: ingress.source_label(),
             proxy_protocol: ingress.proxy_protocol().map(explicit_proxy_protocol_label),
             target: ingress
@@ -754,10 +787,8 @@ impl SourceProcessSnapshot {
 }
 
 impl FakeIpSnapshot {
-    fn from_destination(destination: &OriginalDestination) -> Option<Self> {
-        destination
-            .special_address_range()
-            .map(Self::from_address_range)
+    fn from_destination(destination: &abyss_mitm::DestinationAddress) -> Option<Self> {
+        destination_address_range(destination).map(Self::from_address_range)
     }
 
     const fn from_address_range(range: DestinationAddressRange) -> Self {
@@ -770,14 +801,14 @@ impl FakeIpSnapshot {
     }
 }
 
-const fn mitm_original_destination_range(
-    destination: &abyss_mitm::OriginalDestination,
+fn mitm_original_destination_range(
+    destination: &abyss_mitm::DestinationAddress,
 ) -> Option<DestinationAddressRange> {
-    OriginalDestination {
-        ip: destination.ip,
-        port: destination.port,
-    }
-    .special_address_range()
+    destination_address_range(destination)
+}
+
+fn destination_label(destination: &abyss_mitm::DestinationAddress) -> Option<String> {
+    destination.socket_addr().map(|address| address.to_string())
 }
 
 fn increment_bounded(map: &mut BTreeMap<String, u64>, key: &str) {
@@ -880,7 +911,7 @@ fn current_executable_path() -> Option<String> {
         .map(|path| path.display().to_string())
 }
 
-fn current_unix_ms() -> u64 {
+pub fn current_unix_ms() -> u64 {
     system_time_ms(SystemTime::now()).unwrap_or(0)
 }
 
@@ -906,10 +937,11 @@ mod tests {
     fn record_flow_diagnostics_returns_and_records_failure() {
         let diagnostics = FlowDiagnostics::new();
         let ingress = test_ingress();
-        let original_destination = OriginalDestination {
-            ip: IpAddr::V4(Ipv4Addr::LOCALHOST),
-            port: 443,
-        };
+        let original_destination =
+            abyss_mitm::DestinationAddress::from(abyss_mitm::OriginalDestination {
+                ip: IpAddr::V4(Ipv4Addr::LOCALHOST),
+                port: 443,
+            });
         diagnostics.record_accepted();
         let result: Result<TransparentFlowOutcome, TransparentFlowError> =
             Err(TransparentFlowError::MissingSni);
@@ -942,10 +974,10 @@ mod tests {
                 &test_ingress(),
                 None,
                 None,
-                &OriginalDestination {
+                &abyss_mitm::DestinationAddress::from(abyss_mitm::OriginalDestination {
                     ip: IpAddr::V4(Ipv4Addr::new(1, 1, 1, 1)),
                     port: 443,
-                },
+                }),
                 None,
                 Some(&source_process),
             ),
@@ -991,10 +1023,10 @@ mod tests {
                 &test_ingress(),
                 None,
                 None,
-                &OriginalDestination {
+                &abyss_mitm::DestinationAddress::from(abyss_mitm::OriginalDestination {
                     ip: IpAddr::V4(Ipv4Addr::LOCALHOST),
                     port: 443,
-                },
+                }),
                 Some("api.openai.com"),
                 Some(&source_process),
             ),
@@ -1020,10 +1052,10 @@ mod tests {
                 &test_ingress(),
                 None,
                 None,
-                &OriginalDestination {
+                &abyss_mitm::DestinationAddress::from(abyss_mitm::OriginalDestination {
                     ip: IpAddr::V4(Ipv4Addr::LOCALHOST),
                     port: 8443,
-                },
+                }),
                 None,
                 None,
             ),
@@ -1072,10 +1104,10 @@ mod tests {
                 &test_ingress(),
                 None,
                 None,
-                &OriginalDestination {
+                &abyss_mitm::DestinationAddress::from(abyss_mitm::OriginalDestination {
                     ip: IpAddr::V4(Ipv4Addr::new(198, 19, 0, 2)),
                     port: 443,
-                },
+                }),
                 Some("chatgpt.com"),
                 Some(&source_process),
             ),
@@ -1151,10 +1183,10 @@ mod tests {
                 &test_ingress(),
                 None,
                 None,
-                &OriginalDestination {
+                &abyss_mitm::DestinationAddress::from(abyss_mitm::OriginalDestination {
                     ip: IpAddr::V4(Ipv4Addr::LOCALHOST),
                     port: 443,
-                },
+                }),
                 Some("api.example.test"),
                 None,
             ),

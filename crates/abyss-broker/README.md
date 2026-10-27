@@ -5,6 +5,47 @@ It provides an HTTP/HTTPS explicit proxy, policy-controlled TLS interception,
 AI agent protocol parsing, local diagnostics, a loopback REST API, and a local
 plugin event stream. Platform adapters can feed the same shared ingress pipeline.
 
+## Forward through another explicit proxy
+
+Add an upstream table to `broker-config.toml` when the broker should use a
+next-hop HTTP proxy:
+
+```toml
+[proxy]
+mode = "explicit"
+listen_addr = "127.0.0.1:8080"
+
+[proxy.upstream]
+protocol = "http_connect"
+endpoint = "http://127.0.0.1:3128"
+connect_timeout_ms = 10000
+handshake_timeout_ms = 10000
+```
+
+Use the address and port of your actual proxy, then restart the broker. The CLI
+preserves this table when it updates other startup settings. Without the table,
+the broker connects directly as before.
+
+Abyss sends `CONNECT target.example:443` to the next hop, then runs its existing
+target TLS and request processing over the resulting byte tunnel. Client trust
+in the Abyss MITM CA and target certificate verification do not change. Target
+hostnames are passed to the proxy without local resolution. Both intercepted
+and passthrough traffic use the configured proxy, with no direct fallback on
+failure. This setting does not route delivery-plugin or CLI download traffic.
+
+The initial implementation supports unauthenticated HTTP/1.1 CONNECT over TCP.
+It does not require a new CA or credential file. HTTPS proxy endpoints, proxy
+authentication, SOCKS5, and transparent-ingress chaining are not yet supported.
+The next hop must permit CONNECT to each required target port, including port
+80 for plaintext HTTP. Avoid routing the next hop back into Abyss.
+
+Proxy preparation failures appear in authenticated network diagnostics under
+`abyss_to_upstream_proxy`. `proxy_status` records a rejected CONNECT status
+separately from provider `http_status`; unresolved target addresses stay null.
+
+See [the design and API compatibility notes](../../docs/upstream-proxy-design.md)
+for the flow model and validation plan.
+
 ## Install
 
 ```bash

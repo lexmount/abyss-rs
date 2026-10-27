@@ -109,7 +109,7 @@ impl TlsFlow {
                     server_name: _,
                     raw_bytes,
                 } = inspected;
-                let flow = AcceptedTcpFlow::from_boxed_parts(
+                let flow = AcceptedTcpFlow::from_destination_parts(
                     stream,
                     peer_addr,
                     local_addr,

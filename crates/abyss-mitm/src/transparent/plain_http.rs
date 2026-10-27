@@ -6,10 +6,10 @@
 use std::{net::SocketAddr, sync::Arc};
 
 use super::{
-    AcceptedTcpFlow, BoxedDuplexStream, FlowContext, FlowId, FlowIngress, InterceptedHttpOutcome,
-    MitmEngine, OriginalDestination, SourceProcess, TransparentFlowError, TransparentFlowOutcome,
-    TransparentProtocol, accepted_flow::UpstreamConnection, relay::DecodedClientFlow,
-    upstream::connect_upstream_with_observer, utils::request_host,
+    AcceptedTcpFlow, BoxedDuplexStream, DestinationAddress, FlowContext, FlowId, FlowIngress,
+    InterceptedHttpOutcome, MitmEngine, SourceProcess, TransparentFlowError,
+    TransparentFlowOutcome, TransparentProtocol, accepted_flow::UpstreamConnection,
+    relay::DecodedClientFlow, upstream::connect_upstream_with_observer, utils::request_host,
 };
 
 pub(super) struct PlainHttpFlow {
@@ -17,7 +17,7 @@ pub(super) struct PlainHttpFlow {
     stream: BoxedDuplexStream,
     peer_addr: Option<SocketAddr>,
     local_addr: Option<SocketAddr>,
-    original_destination: OriginalDestination,
+    original_destination: DestinationAddress,
     destination_host: Option<String>,
     source_process: Option<SourceProcess>,
     ingress: FlowIngress,
@@ -48,7 +48,7 @@ impl PlainHttpFlow {
         self,
         engine: &MitmEngine,
     ) -> Result<TransparentFlowOutcome, TransparentFlowError> {
-        let context = FlowContext::from_optional_addrs(
+        let context = FlowContext::from_destination_parts(
             self.peer_addr,
             self.local_addr,
             self.original_destination.clone(),

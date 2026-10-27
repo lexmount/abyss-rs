@@ -546,10 +546,11 @@ where
             diagnostics,
             traffic,
         } = self;
+        let started_at = crate::diagnostics::current_unix_ms();
         let flow = match connection.into_flow().await {
             Ok(flow) => flow,
             Err(error) => {
-                diagnostics.record_accept_error(error.to_string());
+                diagnostics.record_ingress_error(&error, started_at);
                 tracing::warn!(%error, "broker ingress connection preparation failed");
                 return;
             }

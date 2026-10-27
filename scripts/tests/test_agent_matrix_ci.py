@@ -390,6 +390,75 @@ class TranscriptTests(unittest.TestCase):
         self.assertEqual(trace.call_ids, {"call-a"})
         self.assertNotIn("cache_write_input_tokens", trace.usage[0])
 
+    def test_dsh_exact_total_preserves_input_when_retry_cache_buckets_are_absent(self):
+        # DSH headless sums totalTokens across attempts, but omits a cache
+        # bucket if any attempt did not report it (including a zero-token retry).
+        trace = Transcript.parse(
+            "deepseek-harness",
+            jsonl(
+                {
+                    "type": "status",
+                    "phase": "step_end",
+                    "usage": {
+                        "inputTokens": 28,
+                        "outputTokens": 142,
+                        "totalTokens": 5290,
+                    },
+                }
+            ),
+        )
+        self.assertEqual(trace.usage, [{"input_tokens": 5148, "output_tokens": 142}])
+
+    def test_dsh_exact_total_keeps_only_reported_cache_buckets(self):
+        for caches in (
+            {"cacheReadTokens": 90},
+            {"cacheReadTokens": 90, "cacheWriteTokens": 5},
+        ):
+            with self.subTest(caches=caches):
+                trace = Transcript.parse(
+                    "deepseek-harness",
+                    jsonl(
+                        {
+                            "type": "status",
+                            "phase": "step_end",
+                            "usage": {
+                                "inputTokens": 5,
+                                "outputTokens": 7,
+                                "totalTokens": 107,
+                                **caches,
+                            },
+                        }
+                    ),
+                )
+                self.assertEqual(trace.usage[0]["input_tokens"], 100)
+                self.assertEqual(trace.usage[0]["cached_input_tokens"], 90)
+                self.assertEqual(
+                    "cache_write_input_tokens" in trace.usage[0],
+                    "cacheWriteTokens" in caches,
+                )
+
+    def test_dsh_invalid_or_inconsistent_totals_fail(self):
+        for usage in (
+            {"totalTokens": -1},
+            {"totalTokens": True},
+            {"totalTokens": 12.5},
+            {"totalTokens": 6},
+            {"totalTokens": 11},
+            {"totalTokens": 101, "cacheReadTokens": 90},
+            {"totalTokens": 108, "cacheReadTokens": 90, "cacheWriteTokens": 5},
+        ):
+            with self.subTest(usage=usage), self.assertRaises(ContractError):
+                Transcript.parse(
+                    "deepseek-harness",
+                    jsonl(
+                        {
+                            "type": "status",
+                            "phase": "step_end",
+                            "usage": {"inputTokens": 5, "outputTokens": 7, **usage},
+                        }
+                    ),
+                )
+
     def test_malformed_trace_and_counters_fail(self):
         for output in (
             "not-json",

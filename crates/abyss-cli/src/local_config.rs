@@ -114,6 +114,9 @@ pub struct LocalProxyConfig {
     /// Reserved platform flow socket for non-explicit modes.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub socket_path: Option<PathBuf>,
+    /// Optional protocol-based next hop, preserved when the CLI rewrites settings.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub upstream: Option<abyss_mitm::outbound::UpstreamProxyConfig>,
 }
 
 impl Default for LocalProxyConfig {
@@ -122,6 +125,7 @@ impl Default for LocalProxyConfig {
             mode: LocalProxyMode::Explicit,
             listen_addr: None,
             socket_path: None,
+            upstream: None,
         }
     }
 }
@@ -179,6 +183,7 @@ impl LocalConfig {
     pub fn load(path: &Path) -> Result<Self, CliError> {
         let config: Self = load_toml_or_packaged(path, PACKAGED_BROKER_CONFIG)?;
         config.validate_schema("broker")?;
+        config.validate_upstream()?;
         Ok(config)
     }
 
@@ -220,7 +225,18 @@ impl LocalConfig {
 
     /// Writes the static configuration atomically using the platform file policy.
     pub fn write(&self, path: &Path) -> Result<(), CliError> {
+        self.validate_upstream()?;
         write_state_toml(self, path)
+    }
+
+    fn validate_upstream(&self) -> Result<(), CliError> {
+        if let Some(upstream) = &self.proxy.upstream {
+            upstream
+                .validate()
+                .map_err(|error| CliError::InvalidConfiguration(error.to_string()))?;
+            self.require_explicit_mode()?;
+        }
+        Ok(())
     }
 
     fn validate_schema(&self, label: &str) -> Result<(), CliError> {
@@ -440,6 +456,31 @@ mod tests {
             .expect("test clock should be after the Unix epoch")
             .as_nanos();
         std::env::temp_dir().join(format!("abyss-cli-config-{}-{nonce}", std::process::id()))
+    }
+
+    #[test]
+    fn proxy_port_update_preserves_upstream_configuration() {
+        let directory = test_directory();
+        let path = directory.join("broker-config.toml");
+        let mut config = LocalConfig::default();
+        let upstream = abyss_mitm::outbound::UpstreamProxyConfig {
+            protocol: abyss_mitm::outbound::UpstreamProxyProtocol::HttpConnect,
+            endpoint: "http://proxy.example:3128".to_owned(),
+            connect_timeout_ms: 1234,
+            handshake_timeout_ms: 5678,
+        };
+        config.proxy.upstream = Some(upstream.clone());
+        config.write(&path).expect("write upstream config");
+        let mut loaded = LocalConfig::load(&path).expect("load upstream config");
+        assert!(loaded.set_explicit_proxy_port(18080), "update port");
+        loaded.write(&path).expect("rewrite config");
+        let reloaded = LocalConfig::load(&path).expect("reload config");
+        assert_eq!(
+            reloaded.proxy.upstream,
+            Some(upstream),
+            "preserve every upstream setting"
+        );
+        fs::remove_dir_all(directory).expect("remove test directory");
     }
 
     #[test]

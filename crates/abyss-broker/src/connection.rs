@@ -89,6 +89,22 @@ impl From<SocketAddr> for OriginalDestination {
     }
 }
 
+impl From<OriginalDestination> for abyss_mitm::DestinationAddress {
+    fn from(value: OriginalDestination) -> Self {
+        Self::Known(value.socket_addr())
+    }
+}
+
+/// Classifies a known target address without resolving an unknown proxy target.
+#[must_use]
+pub fn destination_address_range(
+    destination: &abyss_mitm::DestinationAddress,
+) -> Option<DestinationAddressRange> {
+    destination
+        .socket_addr()
+        .and_then(|address| OriginalDestination::from(address).special_address_range())
+}
+
 #[cfg(test)]
 mod tests {
     use std::net::{IpAddr, Ipv4Addr, SocketAddr};
