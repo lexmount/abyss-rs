@@ -371,12 +371,13 @@ impl IngressConnection for FramedUnixConnection {
             fake_ip_candidate = crate::connection::destination_address_range(metadata.original_destination()).is_some(),
             "broker ingress accepted framed Unix flow"
         );
-        let mut flow = PlatformFlow::new(FramedFlowIo::new(stream, flow_id), metadata)
-            .with_ingress(abyss_mitm::FlowIngress::transparent(
-                abyss_mitm::TransparentFlowSource::MacosNetworkExtension,
-            ));
-        flow.original_proxy_connector = Some(Box::new(original_proxy::MacosOriginalProxyConnector));
-        Ok(flow)
+        Ok(
+            PlatformFlow::new(FramedFlowIo::new(stream, flow_id), metadata)
+                .with_ingress(abyss_mitm::FlowIngress::transparent(
+                    abyss_mitm::TransparentFlowSource::MacosNetworkExtension,
+                ))
+                .with_proxy_connector(original_proxy::MacosOriginalProxyConnector),
+        )
     }
 }
 

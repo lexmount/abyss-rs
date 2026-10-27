@@ -55,10 +55,10 @@ async fn normalizes_target_without_losing_route_identity_or_read_ahead() {
             )),
         );
         let flow_id = metadata.flow_id.clone();
-        let mut flow = PlatformFlow::new(client, metadata)
+        let flow = PlatformFlow::new(client, metadata)
             .with_ingress(FlowIngress::transparent(source))
-            .with_read_prefix(Box::from(&b"CON"[..]));
-        flow.original_proxy_connector = Some(Box::new(TestTcpConnector));
+            .with_read_prefix(Box::from(&b"CON"[..]))
+            .with_proxy_connector(TestTcpConnector);
         let mut prepared = flow.prepare().await.expect("prepare").expect("established");
         assert_eq!(prepared.metadata.flow_id, flow_id, "flow identity retained");
         assert_eq!(
@@ -129,8 +129,7 @@ async fn direct_and_configured_explicit_flows_keep_their_existing_path() {
             None,
             None,
         );
-        let mut flow = PlatformFlow::new(client, metadata);
-        flow.original_proxy_connector = Some(Box::new(RejectConnector));
+        let mut flow = PlatformFlow::new(client, metadata).with_proxy_connector(RejectConnector);
         if explicit {
             flow = flow.with_ingress(FlowIngress::ExplicitProxy {
                 protocol: ExplicitProxyProtocol::HttpConnect,
@@ -248,8 +247,7 @@ async fn platform_connector_failure_cannot_fall_back_to_plain_tcp() {
         None,
         None,
     );
-    let mut flow = PlatformFlow::new(client, metadata);
-    flow.original_proxy_connector = Some(Box::new(RejectConnector));
+    let flow = PlatformFlow::new(client, metadata).with_proxy_connector(RejectConnector);
     assert!(
         matches!(
             flow.prepare().await,

@@ -434,6 +434,20 @@ impl PlatformFlow {
         self
     }
 
+    /// Enables original-proxy preparation using a platform-owned connector.
+    #[must_use]
+    #[cfg_attr(
+        not(any(target_os = "macos", test)),
+        expect(dead_code, reason = "Other platform connectors are not enabled yet.")
+    )]
+    fn with_proxy_connector<C>(mut self, connector: C) -> Self
+    where
+        C: original_proxy::OriginalProxyConnector + 'static,
+    {
+        self.original_proxy_connector = Some(Box::new(connector));
+        self
+    }
+
     /// Attaches an established tunnel without changing target TLS handling.
     #[must_use]
     pub fn with_prepared_stream(mut self, upstream: abyss_mitm::BoxedDuplexStream) -> Self {
