@@ -862,6 +862,7 @@ const fn flow_error_reason(error: &TransparentFlowError) -> &'static str {
         TransparentFlowError::ClientClosedBeforeProtocol => "client_closed_before_protocol",
         TransparentFlowError::UnsupportedProtocol => "unsupported_protocol",
         TransparentFlowError::MissingSni => "missing_sni",
+        TransparentFlowError::UpstreamProxy { .. } => "upstream_proxy_error",
         TransparentFlowError::Tls { .. } => "tls_error",
         TransparentFlowError::Http1 { .. } => "http1_decode_error",
         TransparentFlowError::WebSocket { .. } => "websocket_error",

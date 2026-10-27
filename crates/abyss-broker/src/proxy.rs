@@ -149,6 +149,7 @@ pub struct ProxyService {
 
 #[derive(Clone)]
 struct ProxyWorkerServices {
+    network: Option<crate::network_config::NetworkRuntime>,
     mitm: Arc<abyss_mitm::MitmEngine>,
     diagnostics: FlowDiagnostics,
     traffic: TrafficMonitor,
@@ -186,11 +187,19 @@ impl ProxyService {
         Self {
             state: Arc::new(Mutex::new(ProxyRuntimeState::stopped())),
             worker_services: ProxyWorkerServices {
+                network: None,
                 mitm,
                 diagnostics,
                 traffic,
             },
         }
+    }
+
+    /// Supplies the shared policy used by configurable ingress transports.
+    #[must_use]
+    pub fn with_network(mut self, network: crate::network_config::NetworkRuntime) -> Self {
+        self.worker_services.network = Some(network);
+        self
     }
 
     /// Starts the requested proxy ingress plan when it is not already running.
@@ -293,12 +302,20 @@ impl StoppedProxyRuntime {
         let requested_plan = plan.clone();
         let task = match plan {
             ProxyPlan::Explicit { explicit } => {
-                let started = Self::bind_factory(explicit.into_factory()).await?;
+                let started = Self::bind_factory(
+                    explicit
+                        .into_factory()
+                        .with_network(services.network.clone()),
+                )
+                .await?;
                 Self::spawn_started(started, services)
             }
             #[cfg(any(target_os = "macos", target_os = "windows"))]
             ProxyPlan::Transparent { transparent } => {
-                let started = Self::bind_factory(transparent.into_factory()).await?;
+                let factory = transparent.into_factory();
+                #[cfg(target_os = "macos")]
+                let factory = factory.with_network(services.network.clone());
+                let started = Self::bind_factory(factory).await?;
                 Self::spawn_started(started, services)
             }
         };

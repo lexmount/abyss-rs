@@ -60,6 +60,8 @@ pub struct RuntimeServices {
     pub hooks: HooksRuntimeConfig,
     /// Durable file backing REST-managed MITM and Hook policy.
     pub runtime_policy_path: PathBuf,
+    /// Shared configured outbound routing for new connections.
+    pub network: crate::network_config::NetworkRuntime,
     /// Collector for broker-owned support log files.
     pub broker_logs: BrokerLogCollector,
     /// Local Diesel-backed technical network observation store.
@@ -95,6 +97,7 @@ pub async fn serve(
         mitm,
         hooks,
         runtime_policy_path,
+        network,
         broker_logs,
         network_observations,
         plugin_server,
@@ -110,7 +113,8 @@ pub async fn serve(
     let flow_diagnostics =
         FlowDiagnostics::with_network_observation_store(network_observations.clone());
     let traffic = crate::traffic::TrafficMonitor::new();
-    let proxy = ProxyService::new(mitm.clone(), flow_diagnostics.clone(), traffic.clone());
+    let proxy = ProxyService::new(mitm.clone(), flow_diagnostics.clone(), traffic.clone())
+        .with_network(network.clone());
     let diagnostics =
         BrokerDiagnosticsService::new(actual_addr, proxy_endpoint_label, flow_diagnostics).await;
     let _proxy_status = proxy.start(proxy_plan).await?;
@@ -120,7 +124,7 @@ pub async fn serve(
     };
     let state = AppState {
         proxy: proxy.clone(),
-        runtime_config: RuntimeConfigService::new(mitm, hooks, runtime_policy_path),
+        runtime_config: RuntimeConfigService::new(mitm, hooks, network, runtime_policy_path),
         diagnostics,
         network_observations,
         traffic,
@@ -209,6 +213,10 @@ where
 fn router(state: AppState) -> Router {
     let auth = state.auth.clone();
     let protected_routes = Router::new()
+        .route(
+            "/v1/network/config",
+            get(network_config).put(update_network_config),
+        )
         .route("/v1/mitm/config", get(mitm_config).put(update_mitm_config))
         .route(
             "/v1/hooks/config",
@@ -255,6 +263,23 @@ async fn mitm_config(State(state): State<AppState>) -> Result<Json<MitmConfig>, 
 }
 
 #[tracing::instrument(level = "trace", skip_all)]
+async fn network_config(
+    State(state): State<AppState>,
+) -> Json<crate::network_config::NetworkConfig> {
+    Json(state.runtime_config.network_config())
+}
+
+async fn update_network_config(
+    State(state): State<AppState>,
+    Json(config): Json<crate::network_config::NetworkConfig>,
+) -> Result<Json<crate::network_config::NetworkConfig>, BrokerError> {
+    state
+        .runtime_config
+        .update_network_config(config)
+        .await
+        .map(Json)
+}
+
 async fn update_mitm_config(
     State(state): State<AppState>,
     Json(config): Json<MitmConfig>,

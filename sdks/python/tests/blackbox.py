@@ -26,6 +26,8 @@ def main() -> None:
     else:
         raise AssertionError("protected broker REST route accepted no bearer token")
     assert client.get_proxy_status()["lifecycle"] == "running"
+    network = client.get_network_config()
+    assert client.update_network_config(network) == network
     mitm = client.get_mitm_config()
     assert client.update_mitm_config(mitm) == mitm
     hooks = client.get_hooks_config()

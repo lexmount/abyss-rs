@@ -125,3 +125,17 @@ class NetworkObservationsResponse(TypedDict):
     schema_version: Literal[1]
     broker_started_at_unix_ms: int
     observations: list[dict[str, Any]]
+
+
+class _UpstreamProxyRequired(TypedDict):
+    protocol: Literal["http_connect"]
+    endpoint: str
+
+
+class UpstreamProxyConfig(_UpstreamProxyRequired, total=False):
+    connect_timeout_ms: int
+    handshake_timeout_ms: int
+
+
+class NetworkConfig(TypedDict):
+    upstream: Optional[UpstreamProxyConfig]

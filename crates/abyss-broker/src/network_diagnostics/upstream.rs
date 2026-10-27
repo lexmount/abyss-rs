@@ -27,25 +27,9 @@ impl NetworkObservation {
         else {
             return None;
         };
-        let operation = match source.stage() {
-            ProxyConnectStage::ResolveProxy => FlowOperation::ResolveProxy,
-            ProxyConnectStage::ConnectProxy => FlowOperation::ConnectProxyTcp,
-            _ => FlowOperation::ProxyConnectHandshake,
-        };
-        let location = NetworkLocation::from(operation);
-        let failure_class = match source {
-            UpstreamProxyError::Timeout { .. } => NetworkFailureClass::Timeout,
-            UpstreamProxyError::Io {
-                stage: ProxyConnectStage::ResolveProxy,
-                ..
-            } => NetworkFailureClass::DnsError,
-            UpstreamProxyError::Io { source, .. } => NetworkFailureClass::from(source),
-            UpstreamProxyError::Rejected { .. } => NetworkFailureClass::HttpError,
-            UpstreamProxyError::Protocol { .. } | UpstreamProxyError::Loop { .. } => {
-                NetworkFailureClass::InvalidProtocol
-            }
-            _ => NetworkFailureClass::Unknown,
-        };
+        let location = NetworkLocation::from(source);
+        let operation = location.operation;
+        let failure_class = NetworkFailureClass::from(source);
         let proxy_status = match source {
             UpstreamProxyError::Rejected { status } => Some(*status),
             _ => None,
@@ -100,5 +84,33 @@ impl NetworkObservation {
                     .collect(),
             ),
         })
+    }
+}
+
+impl From<&UpstreamProxyError> for NetworkLocation {
+    fn from(source: &UpstreamProxyError) -> Self {
+        Self::from(match source.stage() {
+            ProxyConnectStage::ResolveProxy => FlowOperation::ResolveProxy,
+            ProxyConnectStage::ConnectProxy => FlowOperation::ConnectProxyTcp,
+            _ => FlowOperation::ProxyConnectHandshake,
+        })
+    }
+}
+
+impl From<&UpstreamProxyError> for NetworkFailureClass {
+    fn from(source: &UpstreamProxyError) -> Self {
+        match source {
+            UpstreamProxyError::Timeout { .. } => Self::Timeout,
+            UpstreamProxyError::Io {
+                stage: ProxyConnectStage::ResolveProxy,
+                ..
+            } => Self::DnsError,
+            UpstreamProxyError::Io { source, .. } => Self::from(source),
+            UpstreamProxyError::Rejected { .. } => Self::HttpError,
+            UpstreamProxyError::Protocol { .. } | UpstreamProxyError::Loop { .. } => {
+                Self::InvalidProtocol
+            }
+            _ => Self::Unknown,
+        }
     }
 }

@@ -2,7 +2,7 @@
 //!
 //! This path preserves connectivity for redirected TLS flows whose SNI does not
 //! match the MITM decryption policy. No TLS or HTTP parsing happens here; Abyss
-//! only relays bytes between the client socket and the original destination.
+//! only relays bytes between the client stream and its selected upstream route.
 
 use std::time::Duration;
 
@@ -56,7 +56,7 @@ impl TlsPassthroughFlow {
             traffic_observer,
         } = flow;
         let mut upstream = connect_upstream_with_observer(
-            upstream,
+            upstream.with_server_name(server_name.as_deref())?,
             &original_destination,
             connect_timeout,
             traffic_observer,

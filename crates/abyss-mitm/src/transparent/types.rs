@@ -396,6 +396,17 @@ pub enum TransparentFlowOutcome {
 #[derive(Debug, Error)]
 #[non_exhaustive]
 pub enum TransparentFlowError {
+    /// Configured next-hop establishment failed; direct fallback is prohibited.
+    #[error("upstream proxy {endpoint} could not connect to {target}: {source}")]
+    UpstreamProxy {
+        /// Logical destination, independent of the next-hop socket.
+        target: crate::TargetAuthority,
+        /// Configured proxy authority, without URL or credentials.
+        endpoint: String,
+        /// Bounded protocol or transport failure.
+        #[source]
+        source: crate::outbound::UpstreamProxyError,
+    },
     /// The client closed before enough bytes were available to classify.
     #[error("client closed before transparent protocol detection")]
     ClientClosedBeforeProtocol,

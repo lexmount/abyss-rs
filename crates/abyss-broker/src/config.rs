@@ -357,7 +357,8 @@ impl ProxyConfig {
                         .clone()
                         .unwrap_or_else(|| PathBuf::from(DEFAULT_FLOW_SOCKET));
                     Ok(ProxyPlan::transparent(
-                        crate::ingress::platform::TransparentIngressEndpoint::framed_unix(socket),
+                        crate::ingress::platform::TransparentIngressEndpoint::framed_unix(socket)
+                            .with_upstream(self.upstream.clone()),
                     ))
                 }
                 #[cfg(not(target_os = "macos"))]
@@ -405,9 +406,10 @@ impl ProxyConfig {
                 .map_err(|error| BrokerConfigError::Invalid {
                     message: error.to_string(),
                 })?;
-            if self.mode != ProxyIngressMode::Explicit {
+            if self.mode == ProxyIngressMode::WindowsWfp {
                 return Err(BrokerConfigError::Invalid {
-                    message: "proxy.upstream requires explicit ingress".to_owned(),
+                    message: "configured upstream is not supported by Windows WFP ingress"
+                        .to_owned(),
                 });
             }
         }
@@ -738,7 +740,7 @@ socket_path = "run/flow.sock"
         let upstream = config.proxy.upstream.as_ref().expect("upstream retained");
         assert_eq!(upstream.connect_timeout_ms, 10_000, "default timeout");
         config.proxy.plan().expect("explicit proxy plan");
-        for mode in ["macos_network_extension", "windows_wfp"] {
+        for mode in ["windows_wfp"] {
             let contents = format!(
                 "schema_version = 1\n[proxy]\nmode = {mode:?}\n[proxy.upstream]\nprotocol = \"http_connect\"\nendpoint = \"http://proxy.example:3128\"\n"
             );
@@ -746,7 +748,7 @@ socket_path = "run/flow.sock"
                 .await
                 .expect_err("transparent chaining is unsupported");
             assert!(
-                error.to_string().contains("requires explicit"),
+                error.to_string().contains("Windows WFP"),
                 "explain incompatible mode"
             );
         }

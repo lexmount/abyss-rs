@@ -35,7 +35,8 @@ failure. This setting does not route delivery-plugin or CLI download traffic.
 
 The initial implementation supports unauthenticated HTTP/1.1 CONNECT over TCP.
 It does not require a new CA or credential file. HTTPS proxy endpoints, proxy
-authentication, SOCKS5, and transparent-ingress chaining are not yet supported.
+authentication and SOCKS5 are not yet supported. Windows WFP upstream routing
+is reserved but not enabled.
 The next hop must permit CONNECT to each required target port, including port
 80 for plaintext HTTP. Avoid routing the next hop back into Abyss.
 
@@ -45,6 +46,26 @@ separately from provider `http_status`; unresolved target addresses stay null.
 
 See [the design and API compatibility notes](../../docs/upstream-proxy-design.md)
 for the flow model and validation plan.
+
+## macOS transparent routing and live configuration
+
+`[proxy.upstream]` also applies to `mode = "macos_network_extension"`.
+Keep its existing `socket_path`; do not add a TCP `listen_addr`.
+The Network Extension continues delivering normalized flows. The broker owns
+CONNECT negotiation and uses the same MITM/capture pipeline inside the tunnel.
+No loopback interception or proxy-vendor integration is needed.
+
+Authenticated `GET /v1/network/config` returns the effective route. A `PUT` to
+the same endpoint accepts `{ "upstream": { "protocol": "http_connect",
+"endpoint": "http://127.0.0.1:3128" } }`. Set `upstream` to `null` to restore
+direct routing. Updates are validated, atomically persisted to
+`runtime-policy.toml`, and applied to new connections without interrupting
+existing streams. An explicit direct override survives restarts even when
+startup TOML contains an upstream. In the absence of a runtime override, startup
+settings remain the default. This schema extension requires an updated broker;
+older brokers reject the new `network` policy table.
+
+See [transparent routing and platform boundaries](../../docs/transparent-upstream-routing.md).
 
 ## Install
 

@@ -9,8 +9,8 @@ use serde_json::Value;
 use super::{
     error::BrokerClientError,
     types::{
-        BrokerLogRequest, BrokerLogResponse, HealthResponse, HooksConfig, MitmConfig, ProxyStatus,
-        TrafficSnapshot,
+        BrokerLogRequest, BrokerLogResponse, HealthResponse, HooksConfig, MitmConfig,
+        NetworkConfig, ProxyStatus, TrafficSnapshot,
     },
 };
 
@@ -119,6 +119,29 @@ impl BrokerClient {
     /// Returns an error when transport or response decoding fails.
     pub async fn proxy_status(&self) -> Result<ProxyStatus, BrokerClientError> {
         self.send_json(Method::GET, "v1/proxy/status", false, Option::<&()>::None)
+            .await
+    }
+
+    /// Returns the current outbound route for new connections.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error for failed authentication, transport, or decoding.
+    pub async fn network_config(&self) -> Result<NetworkConfig, BrokerClientError> {
+        self.send_json(Method::GET, "v1/network/config", true, Option::<&()>::None)
+            .await
+    }
+
+    /// Durably replaces the outbound route for new connections.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when policy validation, persistence, transport, or decoding fails.
+    pub async fn update_network_config(
+        &self,
+        config: &NetworkConfig,
+    ) -> Result<NetworkConfig, BrokerClientError> {
+        self.send_json(Method::PUT, "v1/network/config", true, Some(config))
             .await
     }
 

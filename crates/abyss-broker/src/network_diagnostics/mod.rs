@@ -720,7 +720,7 @@ impl NetworkObservation {
         let location = NetworkLocation::from(error);
         let failure_class = NetworkFailureClass::from(error);
         let outcome = outcome_for_error(error);
-        Self {
+        let mut observation = Self {
             observation_id: Uuid::new_v4(),
             flow_id,
             observed_at_unix_ms: ended_at_unix_ms,
@@ -760,7 +760,25 @@ impl NetworkObservation {
             bytes_up: 0,
             bytes_down: 0,
             error: Some(bounded_error_detail(error)),
+        };
+        if let TransparentFlowError::UpstreamProxy {
+            target,
+            endpoint,
+            source,
+        } = error
+        {
+            observation.target_authority = Some(target.authority());
+            observation.destination_host = Some(target.host().to_string());
+            observation.proxy_endpoint = Some(endpoint.clone());
+            if let abyss_mitm::outbound::UpstreamProxyError::Rejected { status } = source {
+                observation.proxy_status = Some(*status);
+                if *status == 407 {
+                    observation.technical_error_code =
+                        Some(NetworkErrorCode::UpstreamProxyAuthRequired);
+                }
+            }
         }
+        observation
     }
 }
 
@@ -769,6 +787,7 @@ impl From<&TransparentFlowError> for NetworkFailureClass {
         match error {
             _ if error.is_agent_connection_close() => Self::ClientClosed,
             TransparentFlowError::ClientClosedBeforeProtocol => Self::ClientClosed,
+            TransparentFlowError::UpstreamProxy { source, .. } => Self::from(source),
             TransparentFlowError::UnsupportedProtocol
             | TransparentFlowError::MalformedTlsClientHello(_)
             | TransparentFlowError::ProxyTargetRequestForm { .. }
@@ -838,6 +857,7 @@ struct NetworkLocation {
 impl From<&TransparentFlowError> for NetworkLocation {
     fn from(error: &TransparentFlowError) -> Self {
         let operation = match error {
+            TransparentFlowError::UpstreamProxy { source, .. } => return Self::from(source),
             TransparentFlowError::ClientClosedBeforeProtocol
             | TransparentFlowError::UnsupportedProtocol => FlowOperation::ReadAgentProtocol,
             TransparentFlowError::MissingSni

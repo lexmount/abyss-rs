@@ -79,14 +79,24 @@ impl ExplicitIngressEndpoint {
         ExplicitIngressFactory {
             listen_addr: self.listen_addr,
             upstream: self.upstream,
+            network: None,
         }
     }
 }
 
 /// Factory that binds one explicit HTTP proxy listener.
 pub struct ExplicitIngressFactory {
+    network: Option<crate::network_config::NetworkRuntime>,
     listen_addr: SocketAddr,
     upstream: Option<UpstreamProxyConfig>,
+}
+
+impl ExplicitIngressFactory {
+    /// Uses a shared runtime route instead of the startup-only next hop.
+    pub fn with_network(mut self, network: Option<crate::network_config::NetworkRuntime>) -> Self {
+        self.network = network;
+        self
+    }
 }
 
 impl IngressFactory for ExplicitIngressFactory {
@@ -108,8 +118,11 @@ impl IngressFactory for ExplicitIngressFactory {
         let listen_addr = listener
             .local_addr()
             .map_err(|source| ExplicitIngressError::ListenerAddress { source })?;
-        let upstream = self
-            .upstream
+        let effective_upstream = self
+            .network
+            .as_ref()
+            .map_or(self.upstream, |network| network.config().upstream);
+        let upstream = effective_upstream
             .as_ref()
             .map(HttpConnectProxy::new)
             .transpose()
@@ -126,6 +139,7 @@ impl IngressFactory for ExplicitIngressFactory {
         }
         Ok(StartedIngress::new(
             ExplicitIngress {
+                network: self.network,
                 listener,
                 listen_addr,
                 upstream,
@@ -137,6 +151,7 @@ impl IngressFactory for ExplicitIngressFactory {
 
 /// Bound explicit HTTP proxy listener.
 pub struct ExplicitIngress {
+    network: Option<crate::network_config::NetworkRuntime>,
     listener: TcpListener,
     listen_addr: SocketAddr,
     upstream: Option<HttpConnectProxy>,
@@ -155,7 +170,10 @@ impl Ingress for ExplicitIngress {
             client,
             peer_addr,
             listen_addr: self.listen_addr,
-            upstream: self.upstream.clone(),
+            upstream: self.network.as_ref().map_or_else(
+                || self.upstream.clone(),
+                |network| network.snapshot().proxy(),
+            ),
         })
     }
 }

@@ -182,7 +182,7 @@ class NextHop(socketserver.BaseRequestHandler):
 
 
 class Broker:
-    def __init__(self, directory, proxy):
+    def __init__(self, directory, proxy, transparent=False):
         self.directory = directory
         self.home = directory / "home"
         self.home.mkdir()
@@ -264,9 +264,16 @@ class Broker:
             "[hooks.harness_usage]\nenabled = false\n"
         )
         config = directory / "broker-config.toml"
+        self.flow_socket = directory / "flows.sock" if transparent else None
+        ingress = (
+            f'mode = "macos_network_extension"\nsocket_path = "{self.flow_socket}"\n'
+            if transparent
+            else 'mode = "explicit"\nlisten_addr = "127.0.0.1:0"\n'
+        )
         config.write_text(
-            'schema_version = 1\n[ca]\npath = "ca"\n[proxy]\nmode = "explicit"\n'
-            'listen_addr = "127.0.0.1:0"\n[proxy.upstream]\nprotocol = "http_connect"\n'
+            'schema_version = 1\n[ca]\npath = "ca"\n[proxy]\n'
+            + ingress
+            + '[proxy.upstream]\nprotocol = "http_connect"\n'
             f'endpoint = "http://127.0.0.1:{proxy.server_address[1]}"\n'
             "connect_timeout_ms = 1000\nhandshake_timeout_ms = 200\n"
         )
@@ -303,6 +310,8 @@ class Broker:
                     self.api = json.loads(startup.read_text())["api_addr"]
                     self.token = self.token_file.read_text().strip()
                     status = self.request("GET", "/v1/proxy/status")
+                    if self.flow_socket:
+                        return
                     self.address = tuple(
                         status["ingresses"][0]["listen_addr"].rsplit(":", 1)
                     )

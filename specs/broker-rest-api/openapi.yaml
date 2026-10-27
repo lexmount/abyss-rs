@@ -34,6 +34,41 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/ProxyStatus"
+  /v1/network/config:
+    get:
+      operationId: getNetworkConfig
+      responses:
+        "200":
+          description: Current outbound routing configuration.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/NetworkConfig"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+    put:
+      description: >-
+        Applies to new connections only. Null upstream selects direct routing.
+        Supports explicit ingress and macOS Network Extension; Windows WFP
+        rejects a non-null upstream. A failure never enables direct fallback.
+      operationId: updateNetworkConfig
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/NetworkConfig"
+      responses:
+        "200":
+          description: Durably committed outbound routing configuration.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/NetworkConfig"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
   /v1/mitm/config:
     get:
       operationId: getMitmConfig
@@ -242,6 +277,37 @@ components:
             - type: "null"
         socket_path:
           type: string
+    NetworkConfig:
+      type: object
+      additionalProperties: false
+      required: [upstream]
+      properties:
+        upstream:
+          oneOf:
+            - $ref: "#/components/schemas/UpstreamProxyConfig"
+            - type: "null"
+    UpstreamProxyConfig:
+      type: object
+      additionalProperties: false
+      required: [protocol, endpoint]
+      properties:
+        protocol:
+          type: string
+          enum: [http_connect]
+        endpoint:
+          type: string
+          description: HTTP URL with an explicit nonzero port. No credentials, path, query, fragment, or TLS-to-proxy transport.
+          examples: ["http://127.0.0.1:3128"]
+        connect_timeout_ms:
+          type: integer
+          minimum: 1
+          maximum: 120000
+          default: 10000
+        handshake_timeout_ms:
+          type: integer
+          minimum: 1
+          maximum: 120000
+          default: 10000
     MitmConfig:
       type: object
       additionalProperties: false

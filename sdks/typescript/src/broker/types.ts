@@ -128,3 +128,16 @@ export interface NetworkObservationsResponse {
   broker_started_at_unix_ms: number;
   observations: Record<string, unknown>[];
 }
+
+/** HTTP CONNECT next hop shared by explicit and supported transparent ingress. */
+export interface UpstreamProxyConfig {
+  protocol: "http_connect";
+  endpoint: string;
+  connect_timeout_ms?: number;
+  handshake_timeout_ms?: number;
+}
+
+/** Null selects direct routing; updates affect new connections only. */
+export interface NetworkConfig {
+  upstream: UpstreamProxyConfig | null;
+}
