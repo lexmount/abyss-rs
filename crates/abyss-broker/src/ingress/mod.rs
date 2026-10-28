@@ -531,10 +531,6 @@ impl IngressConnection for PlatformFlow {
 #[derive(Debug, Error)]
 #[non_exhaustive]
 pub enum IngressError {
-    /// Startup outbound configuration is invalid.
-    #[cfg(target_os = "macos")]
-    #[error("invalid ingress configuration: {0}")]
-    Configuration(String),
     /// An ingress-specific blocking system operation could not be joined.
     #[cfg(any(target_os = "macos", target_os = "windows"))]
     #[error("ingress task failed during {operation}: {source}")]

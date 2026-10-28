@@ -6,7 +6,6 @@ import hashlib
 import http.client
 import json
 import os
-from pathlib import Path
 import select
 import socket
 import socketserver
@@ -16,7 +15,7 @@ import subprocess
 import tempfile
 import threading
 import time
-
+from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
 
@@ -179,6 +178,17 @@ class NextHop(socketserver.BaseRequestHandler):
                     else:
                         readers.remove(source)
                         destination_stream.shutdown(socket.SHUT_WR)
+
+
+def network(proxy):
+    return {
+        "upstream": {
+            "protocol": "http_connect",
+            "endpoint": f"http://127.0.0.1:{proxy.server_address[1]}",
+            "connect_timeout_ms": 1000,
+            "handshake_timeout_ms": 200,
+        }
+    }
 
 
 class Broker:
@@ -344,6 +354,32 @@ class Broker:
         finally:
             connection.close()
 
+    def restart(self):
+        command = self.process.args
+        self.close()
+        startup = self.directory / "startup.json"
+        startup.unlink()
+        self.log = (self.directory / "broker.log").open("a+")
+        self.process = subprocess.Popen(
+            command,
+            env=dict(os.environ, ABYSS_HOME=str(self.home)),
+            stdout=self.log,
+            stderr=subprocess.STDOUT,
+        )
+        for _ in range(200):
+            if self.process.poll() is not None:
+                raise AssertionError("restarted broker exited")
+            if startup.exists():
+                self.api = json.loads(startup.read_text())["api_addr"]
+                self.token = self.token_file.read_text().strip()
+                if not self.flow_socket:
+                    status = self.request("GET", "/v1/proxy/status")
+                    host, port = status["ingresses"][0]["listen_addr"].rsplit(":", 1)
+                    self.address = (host, int(port))
+                return
+            time.sleep(0.05)
+        raise AssertionError("broker restart timed out")
+
     def connect(self, target, expected=200):
         stream = socket.create_connection(self.address, timeout=5)
         stream.sendall(
@@ -431,16 +467,18 @@ def run_checks(broker, proxy):
         "CONNECT leaked credentials"
     )
     client_context = ssl.create_default_context(cafile=str(broker.ca_file))
-    with broker.connect("tls.invalid:443") as raw:
-        with client_context.wrap_socket(raw, server_hostname="tls.invalid") as client:
-            expected_cert = ssl.PEM_cert_to_DER_cert(broker.origin_cert.read_text())
-            assert client.getpeercert(binary_form=True) == expected_cert, (
-                "passthrough substituted a certificate"
-            )
-            client.sendall(
-                b"GET /probe HTTP/1.1\r\nHost: tls.invalid\r\nConnection: close\r\n\r\n"
-            )
-            assert read_all(client).endswith(b"secure"), "TLS passthrough failed"
+    with (
+        broker.connect("tls.invalid:443") as raw,
+        client_context.wrap_socket(raw, server_hostname="tls.invalid") as client,
+    ):
+        expected_cert = ssl.PEM_cert_to_DER_cert(broker.origin_cert.read_text())
+        assert client.getpeercert(binary_form=True) == expected_cert, (
+            "passthrough substituted a certificate"
+        )
+        client.sendall(
+            b"GET /probe HTTP/1.1\r\nHost: tls.invalid\r\nConnection: close\r\n\r\n"
+        )
+        assert read_all(client).endswith(b"secure"), "TLS passthrough failed"
     for target, status in [
         ("auth.invalid:443", 502),
         ("denied.invalid:443", 502),
@@ -487,14 +525,14 @@ def run_checks(broker, proxy):
         {"tls_decryption": {"default_action": "intercept", "rules": []}},
     )
     try:
-        with broker.connect("tls.invalid:443") as raw:
-            with client_context.wrap_socket(
-                raw, server_hostname="tls.invalid"
-            ) as client:
-                client.sendall(b"GET /probe HTTP/1.1\r\nHost: tls.invalid\r\n\r\n")
-                assert b"secure" not in read_all(client), (
-                    "broker accepted an untrusted target certificate"
-                )
+        with (
+            broker.connect("tls.invalid:443") as raw,
+            client_context.wrap_socket(raw, server_hostname="tls.invalid") as client,
+        ):
+            client.sendall(b"GET /probe HTTP/1.1\r\nHost: tls.invalid\r\n\r\n")
+            assert b"secure" not in read_all(client), (
+                "broker accepted an untrusted target certificate"
+            )
     except (ssl.SSLError, OSError, EOFError):
         pass
     broker.observations(
@@ -505,12 +543,119 @@ def run_checks(broker, proxy):
     )
 
 
+def explicit_request(broker, target="plain.invalid:80", connect=False):
+    stream = (
+        broker.connect(target)
+        if connect
+        else socket.create_connection(broker.address, timeout=5)
+    )
+    with stream:
+        path = "/probe" if connect else f"http://{target}/probe"
+        stream.sendall(
+            f"GET {path} HTTP/1.1\r\nHost: {target}\r\nConnection: close\r\n\r\n".encode()
+        )
+        assert read_all(stream).endswith(b"secure"), "explicit request failed"
+
+
+def run_live_config_checks(broker, proxy, replacement):
+    assert broker.request("GET", "/v1/network/config") == network(proxy)
+    # Editing the file has no effect until startup; all accepted flows use runtime state.
+    config = broker.directory / "broker-config.toml"
+    startup = config.read_text()
+    config.write_text(
+        startup.replace(
+            network(proxy)["upstream"]["endpoint"],
+            network(replacement)["upstream"]["endpoint"],
+        )
+    )
+    before = len(replacement.requests)
+    explicit_request(broker)
+    assert len(replacement.requests) == before, "startup file was reread during a flow"
+    broker.restart()
+    assert broker.request("GET", "/v1/network/config") == network(replacement)
+    explicit_request(broker)
+    assert len(replacement.requests) == before + 1
+    config.write_text(startup)
+    broker.restart()
+    assert broker.request("GET", "/v1/network/config") == network(proxy)
+    process_id = broker.process.pid
+    listen_addr = broker.address
+
+    proxy.origin.release_sse.clear()
+    with broker.connect("plain.invalid:80") as stream:
+        stream.sendall(
+            b"GET /sse HTTP/1.1\r\nHost: plain.invalid\r\nConnection: close\r\n\r\n"
+        )
+        assert b"200 OK" in read_head(stream)
+        first = bytearray()
+        while b"data: first\n\n" not in first:
+            chunk = stream.recv(128)
+            assert chunk, "SSE stream closed before the first event"
+            first.extend(chunk)
+        assert broker.request(
+            "PUT", "/v1/network/config", network(replacement)
+        ) == network(replacement)
+        before = len(proxy.requests)
+        for connect in (False, True):
+            explicit_request(broker, connect=connect)
+        assert len(proxy.requests) == before, "new flows retained the startup route"
+        assert replacement.requests[-1].startswith(b"CONNECT plain.invalid:80")
+        proxy.origin.release_sse.set()
+        assert read_all(stream) == b"data: second\n\n", "route update interrupted SSE"
+
+    # Timeout-only changes use the same publication path as endpoint changes.
+    longer = network(replacement)
+    longer["upstream"]["connect_timeout_ms"] = 1500
+    longer["upstream"]["handshake_timeout_ms"] = 1000
+    assert broker.request("PUT", "/v1/network/config", longer) == longer
+    with broker.connect("slow.invalid:443", 502):
+        pass  # The fixture closes after 700 ms instead of reaching the new deadline.
+    broker.request("PUT", "/v1/network/config", network(replacement))
+    with broker.connect("slow.invalid:443", 504):
+        pass
+
+    replacement.reject = True
+    before = proxy.origin.accepted
+    with broker.connect(f"127.0.0.1:{proxy.origin.server_address[1]}", 502):
+        pass
+    assert proxy.origin.accepted == before, "updated proxy failure fell back to direct"
+    replacement.reject = False
+
+    broker.request("PUT", "/v1/network/config", {"upstream": None})
+    before = (len(proxy.requests), len(replacement.requests))
+    target = f"127.0.0.1:{proxy.origin.server_address[1]}"
+    for connect in (False, True):
+        explicit_request(broker, target, connect)
+    assert (len(proxy.requests), len(replacement.requests)) == before, (
+        "direct mode retained a proxy fallback"
+    )
+    assert broker.process.pid == process_id and broker.address == listen_addr, (
+        "hot update restarted the broker or listener"
+    )
+    broker.restart()
+    assert broker.request("GET", "/v1/network/config") == {"upstream": None}
+    explicit_request(broker, target)
+    assert (len(proxy.requests), len(replacement.requests)) == before, (
+        "restart resurrected the startup proxy"
+    )
+
+    broker.request("PUT", "/v1/network/config", network(replacement))
+    explicit_request(broker, connect=True)
+    broker.restart()
+    assert broker.request("GET", "/v1/network/config") == network(replacement)
+    before = len(replacement.requests)
+    explicit_request(broker)
+    assert len(replacement.requests) == before + 1, (
+        "enabled route did not survive restart"
+    )
+
+
 def main():
     origin = LocalServer(Origin)
     tls_origin = LocalServer(Origin)
-    proxy = LocalServer(NextHop)
-    proxy.origin = origin
-    proxy.tls_origin = tls_origin
+    proxy, replacement = LocalServer(NextHop), LocalServer(NextHop)
+    for server in (proxy, replacement):
+        server.origin, server.tls_origin = origin, tls_origin
     broker = None
     try:
         with tempfile.TemporaryDirectory(prefix="abyss-upstream-") as temporary:
@@ -518,6 +663,7 @@ def main():
             try:
                 broker = Broker(directory, proxy)
                 run_checks(broker, proxy)
+                run_live_config_checks(broker, proxy, replacement)
                 broker.close()
                 database = sqlite3.connect(broker.home / "data/abyss.sqlite3")
                 try:
@@ -535,12 +681,13 @@ def main():
                     print(log.read_text()[-18000:])
                 raise
         print(
-            "PASS: HTTP, CONNECT, TLS passthrough, target certificate validation, SSE, WebSocket, failure isolation, no direct fallback, durable diagnostics"
+            "PASS: HTTP, CONNECT, TLS passthrough, target certificate validation, SSE, WebSocket, failure isolation, no direct fallback, durable diagnostics, startup-only file loading, live route/timeout updates, direct mode, restart persistence"
         )
     finally:
         if broker and not broker.log.closed:
             broker.close()
         proxy.close()
+        replacement.close()
         tls_origin.close()
         origin.close()
 

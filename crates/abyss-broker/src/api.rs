@@ -113,8 +113,12 @@ pub async fn serve(
     let flow_diagnostics =
         FlowDiagnostics::with_network_observation_store(network_observations.clone());
     let traffic = crate::traffic::TrafficMonitor::new();
-    let proxy = ProxyService::new(mitm.clone(), flow_diagnostics.clone(), traffic.clone())
-        .with_network(network.clone());
+    let proxy = ProxyService::new(
+        mitm.clone(),
+        flow_diagnostics.clone(),
+        traffic.clone(),
+        network.clone(),
+    );
     let diagnostics =
         BrokerDiagnosticsService::new(actual_addr, proxy_endpoint_label, flow_diagnostics).await;
     let _proxy_status = proxy.start(proxy_plan).await?;

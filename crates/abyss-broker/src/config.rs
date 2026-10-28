@@ -96,7 +96,7 @@ pub struct ProxyConfig {
     /// Unix socket used by the macOS Network Extension bridge.
     #[serde(default)]
     pub socket_path: Option<PathBuf>,
-    /// Optional HTTP CONNECT next hop for explicit ingress.
+    /// Initial HTTP CONNECT next hop for supported ingress modes.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub upstream: Option<abyss_mitm::outbound::UpstreamProxyConfig>,
 }
@@ -342,11 +342,7 @@ impl ProxyConfig {
                         .expect("built-in explicit endpoint should parse")
                 });
                 validate_loopback_address(address, "proxy.listen_addr")?;
-                let endpoint = ExplicitIngressEndpoint::new(address)
-                    .with_upstream(self.upstream.clone())
-                    .map_err(|error| BrokerConfigError::Invalid {
-                        message: error.to_string(),
-                    })?;
+                let endpoint = ExplicitIngressEndpoint::new(address);
                 Ok(ProxyPlan::explicit(endpoint))
             }
             ProxyIngressMode::MacosNetworkExtension => {
@@ -357,8 +353,7 @@ impl ProxyConfig {
                         .clone()
                         .unwrap_or_else(|| PathBuf::from(DEFAULT_FLOW_SOCKET));
                     Ok(ProxyPlan::transparent(
-                        crate::ingress::platform::TransparentIngressEndpoint::framed_unix(socket)
-                            .with_upstream(self.upstream.clone()),
+                        crate::ingress::platform::TransparentIngressEndpoint::framed_unix(socket),
                     ))
                 }
                 #[cfg(not(target_os = "macos"))]

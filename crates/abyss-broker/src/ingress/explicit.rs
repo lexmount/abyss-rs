@@ -27,9 +27,9 @@ use super::{
     Ingress, IngressConnection, IngressError, IngressFactory, IngressRuntimeStatus, PlatformFlow,
     PlatformFlowMetadata, StartedIngress,
 };
-use abyss_mitm::outbound::{
-    HttpConnectProxy, UpstreamProxyConfig, UpstreamProxyConfigError, UpstreamProxyError,
-};
+use abyss_mitm::outbound::{HttpConnectProxy, UpstreamProxyError};
+
+use crate::network_config::NetworkRuntime;
 
 const TARGET_RESOLUTION_TIMEOUT: Duration = Duration::from_secs(10);
 const TARGET_CONNECT_TIMEOUT: Duration = Duration::from_secs(10);
@@ -38,33 +38,13 @@ const TARGET_CONNECT_TIMEOUT: Duration = Duration::from_secs(10);
 #[derive(Debug, Clone, PartialEq)]
 pub struct ExplicitIngressEndpoint {
     listen_addr: SocketAddr,
-    upstream: Option<UpstreamProxyConfig>,
 }
 
 impl ExplicitIngressEndpoint {
     /// Creates an endpoint. Startup performs defense-in-depth loopback validation.
     #[must_use]
     pub const fn new(listen_addr: SocketAddr) -> Self {
-        Self {
-            listen_addr,
-            upstream: None,
-        }
-    }
-
-    /// Configures a protocol-based next hop without changing target TLS trust.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error for unsupported or malformed proxy settings.
-    pub fn with_upstream(
-        mut self,
-        upstream: Option<UpstreamProxyConfig>,
-    ) -> Result<Self, UpstreamProxyConfigError> {
-        if let Some(config) = &upstream {
-            config.validate()?;
-        }
-        self.upstream = upstream;
-        Ok(self)
+        Self { listen_addr }
     }
 
     /// Returns a compact requested-endpoint label.
@@ -73,30 +53,20 @@ impl ExplicitIngressEndpoint {
         self.listen_addr.to_string()
     }
 
-    /// Converts this endpoint and its upstream settings into the startup boundary.
+    /// Binds this endpoint to the broker's shared outbound policy.
     #[must_use]
-    pub fn into_factory(self) -> ExplicitIngressFactory {
+    pub const fn into_factory(self, network: NetworkRuntime) -> ExplicitIngressFactory {
         ExplicitIngressFactory {
             listen_addr: self.listen_addr,
-            upstream: self.upstream,
-            network: None,
+            network,
         }
     }
 }
 
 /// Factory that binds one explicit HTTP proxy listener.
 pub struct ExplicitIngressFactory {
-    network: Option<crate::network_config::NetworkRuntime>,
+    network: NetworkRuntime,
     listen_addr: SocketAddr,
-    upstream: Option<UpstreamProxyConfig>,
-}
-
-impl ExplicitIngressFactory {
-    /// Uses a shared runtime route instead of the startup-only next hop.
-    pub fn with_network(mut self, network: Option<crate::network_config::NetworkRuntime>) -> Self {
-        self.network = network;
-        self
-    }
 }
 
 impl IngressFactory for ExplicitIngressFactory {
@@ -118,16 +88,7 @@ impl IngressFactory for ExplicitIngressFactory {
         let listen_addr = listener
             .local_addr()
             .map_err(|source| ExplicitIngressError::ListenerAddress { source })?;
-        let effective_upstream = self
-            .network
-            .as_ref()
-            .map_or(self.upstream, |network| network.config().upstream);
-        let upstream = effective_upstream
-            .as_ref()
-            .map(HttpConnectProxy::new)
-            .transpose()
-            .map_err(|source| ExplicitIngressError::UpstreamConfig { source })?;
-        if let Some(proxy) = &upstream
+        if let Some(proxy) = self.network.snapshot().proxy()
             && let Some(ip) = proxy.endpoint().host().as_ip_addr()
             && same_endpoint(SocketAddr::new(ip, proxy.endpoint().port()), listen_addr)
         {
@@ -142,7 +103,6 @@ impl IngressFactory for ExplicitIngressFactory {
                 network: self.network,
                 listener,
                 listen_addr,
-                upstream,
             },
             IngressRuntimeStatus::explicit_http(listen_addr),
         ))
@@ -151,10 +111,9 @@ impl IngressFactory for ExplicitIngressFactory {
 
 /// Bound explicit HTTP proxy listener.
 pub struct ExplicitIngress {
-    network: Option<crate::network_config::NetworkRuntime>,
+    network: NetworkRuntime,
     listener: TcpListener,
     listen_addr: SocketAddr,
-    upstream: Option<HttpConnectProxy>,
 }
 
 impl Ingress for ExplicitIngress {
@@ -170,10 +129,7 @@ impl Ingress for ExplicitIngress {
             client,
             peer_addr,
             listen_addr: self.listen_addr,
-            upstream: self.network.as_ref().map_or_else(
-                || self.upstream.clone(),
-                |network| network.snapshot().proxy(),
-            ),
+            upstream: self.network.snapshot().proxy(),
         })
     }
 }
@@ -483,12 +439,6 @@ mod response_bytes {
 #[derive(Debug, Error)]
 #[non_exhaustive]
 pub enum ExplicitIngressError {
-    /// Invalid upstream configuration supplied by an embedded caller.
-    #[error("{source}")]
-    UpstreamConfig {
-        #[source]
-        source: UpstreamProxyConfigError,
-    },
     /// Failed next-hop establishment, retaining the logical target independently.
     #[error("upstream proxy {endpoint} for target {target}: {source}")]
     UpstreamProxy {
@@ -613,10 +563,19 @@ mod tests {
     use super::{ExplicitIngressEndpoint, ProxyResponse, same_endpoint};
     use crate::ingress::{Ingress as _, IngressConnection as _, IngressFactory as _};
 
+    fn test_network() -> crate::network_config::NetworkRuntime {
+        crate::network_config::NetworkRuntime::new(
+            crate::config::ProxyIngressMode::Explicit,
+            None,
+            None,
+        )
+        .expect("test network policy should be valid")
+    }
+
     #[tokio::test]
     async fn startup_rejects_non_loopback_listener() {
         let error = ExplicitIngressEndpoint::new(SocketAddr::from(([0, 0, 0, 0], 0)))
-            .into_factory()
+            .into_factory(test_network())
             .start()
             .await
             .err()
@@ -678,7 +637,7 @@ mod tests {
     async fn request_targeting_listener_receives_forbidden() {
         let endpoint = ExplicitIngressEndpoint::new(SocketAddr::from((Ipv4Addr::LOCALHOST, 0)));
         let started = endpoint
-            .into_factory()
+            .into_factory(test_network())
             .start()
             .await
             .expect("explicit listener should start");
@@ -717,7 +676,7 @@ mod tests {
 
     async fn accepted_connection() -> (TcpStream, super::ExplicitConnection) {
         let started = ExplicitIngressEndpoint::new(SocketAddr::from((Ipv4Addr::LOCALHOST, 0)))
-            .into_factory()
+            .into_factory(test_network())
             .start()
             .await
             .expect("explicit listener should start");

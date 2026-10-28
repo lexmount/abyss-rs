@@ -20,7 +20,10 @@ flowchart LR
 ```
 
 Both HTTP CONNECT clients of the explicit listener and macOS transparent flows
-share `HttpConnectProxy`. The native extension remains a framing and metadata
+require the broker's shared `NetworkRuntime` and use `HttpConnectProxy`.
+Listener plans contain only their binding endpoints. There is no optional
+runtime, private ingress runtime, or static next-hop fallback.
+The native extension remains a framing and metadata
 adapter. Platform support is checked by `NetworkRuntime`: explicit ingress and
 macOS support configured routing; Windows WFP currently permits direct routing
 only. Enabling WFP later requires a socket transport that associates redirect
@@ -38,6 +41,20 @@ and bounded connection/handshake timeouts. A single next hop is configured;
 additional hops belong to that proxy. There are no assumptions about proxy
 software, vendor configuration files, or process names. Authentication, SOCKS,
 and TLS to the proxy are outside the supported contract.
+
+```mermaid
+flowchart LR
+    C[broker-config.toml] -->|Read at startup| S[Resolve initial configuration]
+    P[runtime-policy.toml] -->|Read persisted override at startup| S
+    S --> N[One shared NetworkRuntime]
+    A[REST PUT /v1/network/config] --> V[Validate and persist]
+    V -->|Publish hot update| N
+    N --> E[Explicit ingress: snapshot at accept]
+    N --> T[macOS ingress: snapshot at accept]
+```
+
+Configuration files are startup inputs, not a watched source or a per-connection
+fallback. Every supported proxy-chain field uses the same REST update path.
 
 ```mermaid
 sequenceDiagram
@@ -71,6 +88,9 @@ migrated when settings change. Plugin delivery is outside this routing policy.
 
 Validation includes MITM unit tests with a configured next hop and captured TLS
 response bodies, durable configuration tests, and the real broker black-box
-script `scripts/blackbox_abyss_broker_transparent_upstream.py` using the published
-macOS framed-flow boundary. Live Network Extension activation still requires a
+scripts `scripts/blackbox_abyss_broker_upstream.py` and
+`scripts/blackbox_abyss_broker_transparent_upstream.py` using the explicit proxy
+and published macOS framed-flow boundaries. They cover startup-only file reads,
+hot route updates, stream continuity, direct mode, and restart persistence.
+Live Network Extension activation still requires a
 signed product build on macOS.

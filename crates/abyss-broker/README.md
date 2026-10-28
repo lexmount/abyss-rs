@@ -22,9 +22,10 @@ connect_timeout_ms = 10000
 handshake_timeout_ms = 10000
 ```
 
-Use the address and port of your actual proxy, then restart the broker. The CLI
-preserves this table when it updates other startup settings. Without the table,
-the broker connects directly as before.
+The broker reads this file at startup; editing it does not update a running
+broker. The CLI preserves this table when it updates other startup settings.
+Without an upstream or a persisted runtime override, the broker connects directly.
+Use the REST API described below to update the running broker without restarting.
 
 Abyss sends `CONNECT target.example:443` to the next hop, then runs its existing
 target TLS and request processing over the resulting byte tunnel. Client trust
@@ -47,7 +48,7 @@ separately from provider `http_status`; unresolved target addresses stay null.
 See [the design and API compatibility notes](../../docs/upstream-proxy-design.md)
 for the flow model and validation plan.
 
-## macOS transparent routing and live configuration
+## macOS transparent routing
 
 `[proxy.upstream]` also applies to `mode = "macos_network_extension"`.
 Keep its existing `socket_path`; do not add a TCP `listen_addr`.
@@ -55,14 +56,24 @@ The Network Extension continues delivering normalized flows. The broker owns
 CONNECT negotiation and uses the same MITM/capture pipeline inside the tunnel.
 No loopback interception or proxy-vendor integration is needed.
 
+## Live proxy-chain configuration
+
+Explicit ingress and macOS transparent ingress require the same shared
+`NetworkRuntime`. Startup files initialize it once, and authenticated REST
+updates replace its validated snapshot. Listener plans contain only endpoints;
+they do not carry a second upstream configuration or a static fallback.
+
 Authenticated `GET /v1/network/config` returns the effective route. A `PUT` to
 the same endpoint accepts `{ "upstream": { "protocol": "http_connect",
 "endpoint": "http://127.0.0.1:3128" } }`. Set `upstream` to `null` to restore
 direct routing. Updates are validated, atomically persisted to
 `runtime-policy.toml`, and applied to new connections without interrupting
-existing streams. An explicit direct override survives restarts even when
-startup TOML contains an upstream. In the absence of a runtime override, startup
-settings remain the default. This schema extension requires an updated broker;
+existing streams. Endpoint, protocol, and both timeout fields use this same
+update path, subject to the supported protocol and platform capabilities.
+An explicit direct override survives restarts even when startup TOML contains
+an upstream. At startup, a persisted override takes precedence over
+`[proxy.upstream]`; neither file is watched or reread when accepting connections.
+This schema extension requires an updated broker;
 older brokers reject the new `network` policy table.
 
 See [transparent routing and platform boundaries](../../docs/transparent-upstream-routing.md).

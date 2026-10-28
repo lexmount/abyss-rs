@@ -1,6 +1,9 @@
 //! Shared next-hop policy and platform capability boundary.
 //!
-//! Ingress takes a snapshot for each accepted connection. Configuration is
+//! Startup files initialize one runtime, which is required by every ingress
+//! supporting configured routes. REST updates publish to that same runtime;
+//! ingress never reloads files or retains a separate startup-route fallback.
+//! Each accepted connection retains its selected snapshot. Configuration is
 //! validated before durable publication; protocol negotiation remains in
 //! abyss-mitm and Windows redirect-context handling remains platform-owned.
 

@@ -1003,14 +1003,18 @@ mod tests {
 
     #[tokio::test]
     async fn network_override_survives_restart_and_clear_overrides_startup() {
+        for mode in [
+            crate::config::ProxyIngressMode::Explicit,
+            crate::config::ProxyIngressMode::MacosNetworkExtension,
+        ] {
+            assert_network_override_survives_restart(mode).await;
+        }
+    }
+
+    async fn assert_network_override_survives_restart(mode: crate::config::ProxyIngressMode) {
         let path = temp_policy_path();
         let config = proxy_network("http://127.0.0.1:3128");
-        let runtime = NetworkRuntime::new(
-            crate::config::ProxyIngressMode::MacosNetworkExtension,
-            config.upstream.clone(),
-            None,
-        )
-        .unwrap();
+        let runtime = NetworkRuntime::new(mode, config.upstream.clone(), None).unwrap();
         let service = RuntimeConfigService::new(
             Arc::new(test_mitm_engine()),
             HooksRuntimeConfig::default_enabled(),
@@ -1040,12 +1044,7 @@ mod tests {
             .await
             .unwrap();
         let loaded = RuntimePolicies::load(&path).await.unwrap();
-        let restarted = NetworkRuntime::new(
-            crate::config::ProxyIngressMode::MacosNetworkExtension,
-            config.upstream,
-            loaded.network,
-        )
-        .unwrap();
+        let restarted = NetworkRuntime::new(mode, config.upstream, loaded.network).unwrap();
         assert!(
             restarted.config().upstream.is_none(),
             "clearing must not resurrect startup proxy"

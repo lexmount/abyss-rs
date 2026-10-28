@@ -1,12 +1,8 @@
 #!/usr/bin/env python3
 """Exercise configured routing through the real macOS framed-flow/API boundary."""
 
-import json
-import os
 import http.client
-import subprocess
-import time
-from pathlib import Path
+import json
 import select
 import socket
 import ssl
@@ -15,12 +11,14 @@ import sys
 import tempfile
 import threading
 import uuid
+from pathlib import Path
 
 from blackbox_abyss_broker_upstream import (
     Broker,
     LocalServer,
     NextHop,
     Origin,
+    network,
     read_all,
     read_head,
 )
@@ -121,40 +119,6 @@ def request(broker, host="plain.invalid", port=80, destination_ip=None):
         return read_all(stream)
 
 
-def network(proxy):
-    return {
-        "upstream": {
-            "protocol": "http_connect",
-            "endpoint": f"http://127.0.0.1:{proxy.server_address[1]}",
-            "connect_timeout_ms": 1000,
-            "handshake_timeout_ms": 200,
-        }
-    }
-
-
-def restart(broker):
-    command = broker.process.args
-    broker.close()
-    startup = broker.directory / "startup.json"
-    startup.unlink()
-    broker.log = (broker.directory / "broker.log").open("a+")
-    broker.process = subprocess.Popen(
-        command,
-        env=dict(os.environ, ABYSS_HOME=str(broker.home)),
-        stdout=broker.log,
-        stderr=subprocess.STDOUT,
-    )
-    for _ in range(200):
-        if broker.process.poll() is not None:
-            raise AssertionError("restarted broker exited")
-        if startup.exists():
-            broker.api = json.loads(startup.read_text())["api_addr"]
-            broker.token = broker.token_file.read_text().strip()
-            return
-        time.sleep(0.05)
-    raise AssertionError("broker restart timed out")
-
-
 def run_checks(broker, proxy, replacement):
     api = http.client.HTTPConnection(broker.api, timeout=5)
     try:
@@ -177,12 +141,14 @@ def run_checks(broker, proxy, replacement):
 
     # Real TLS travels through the proxy with target validation at the client.
     context = ssl.create_default_context(cafile=str(broker.ca_file))
-    with framed_connection(broker, "198.18.0.1", 443, "198.18.0.1") as raw:
-        with context.wrap_socket(raw, server_hostname="tls.invalid") as secure:
-            secure.sendall(
-                b"GET /secure HTTP/1.1\r\nHost: tls.invalid\r\nConnection: close\r\n\r\n"
-            )
-            assert read_all(secure).endswith(b"secure")
+    with (
+        framed_connection(broker, "198.18.0.1", 443, "198.18.0.1") as raw,
+        context.wrap_socket(raw, server_hostname="tls.invalid") as secure,
+    ):
+        secure.sendall(
+            b"GET /secure HTTP/1.1\r\nHost: tls.invalid\r\nConnection: close\r\n\r\n"
+        )
+        assert read_all(secure).endswith(b"secure")
     assert proxy.requests[-1].startswith(b"CONNECT tls.invalid:443"), (
         "SNI must replace fake IP for proxy routing"
     )
@@ -233,7 +199,7 @@ def run_checks(broker, proxy, replacement):
     )
     stored = (broker.home / "runtime-policy.toml").read_text()
     assert "[network]" in stored, "direct override must be durable, not absent"
-    restart(broker)
+    broker.restart()
     assert broker.request("GET", "/v1/network/config") == {"upstream": None}
     assert request(
         broker, "127.0.0.1", proxy.origin.server_address[1], "127.0.0.1"
@@ -244,7 +210,7 @@ def run_checks(broker, proxy, replacement):
 
     broker.request("PUT", "/v1/network/config", network(replacement))
     assert request(broker).endswith(b"secure"), "enabling a proxy must affect new flows"
-    restart(broker)
+    broker.restart()
     assert broker.request("GET", "/v1/network/config") == network(replacement)
     assert request(broker).endswith(b"secure"), (
         "enabled route must survive broker restart"

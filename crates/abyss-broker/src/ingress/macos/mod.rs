@@ -46,7 +46,6 @@ const SOCKET_FILE_MODE: u32 = 0o660;
 /// macOS framed Unix socket endpoint requested at broker startup.
 #[derive(Debug, Clone, PartialEq)]
 pub struct IngressEndpoint {
-    upstream: Option<abyss_mitm::outbound::UpstreamProxyConfig>,
     socket_path: PathBuf,
 }
 
@@ -54,20 +53,7 @@ impl IngressEndpoint {
     /// Creates a framed Unix socket endpoint.
     #[must_use]
     pub const fn framed_unix(socket_path: PathBuf) -> Self {
-        Self {
-            socket_path,
-            upstream: None,
-        }
-    }
-
-    /// Retains startup defaults for the common outbound policy.
-    #[must_use]
-    pub fn with_upstream(
-        mut self,
-        upstream: Option<abyss_mitm::outbound::UpstreamProxyConfig>,
-    ) -> Self {
-        self.upstream = upstream;
-        self
+        Self { socket_path }
     }
 
     /// Returns a compact endpoint label for diagnostics.
@@ -76,38 +62,31 @@ impl IngressEndpoint {
         self.socket_path.display().to_string()
     }
 
-    /// Converts the endpoint into its concrete ingress factory.
+    /// Binds this endpoint to the broker's shared outbound policy.
     #[must_use]
-    pub fn into_factory(self) -> FramedUnixIngressFactory {
-        let mut factory = FramedUnixIngressFactory::new(self.socket_path);
-        factory.upstream = self.upstream;
-        factory
+    pub fn into_factory(
+        self,
+        network: crate::network_config::NetworkRuntime,
+    ) -> FramedUnixIngressFactory {
+        FramedUnixIngressFactory::new(self.socket_path, network)
     }
 }
 
 /// Factory for framed Unix socket ingress.
 pub struct FramedUnixIngressFactory {
-    upstream: Option<abyss_mitm::outbound::UpstreamProxyConfig>,
-    network: Option<crate::network_config::NetworkRuntime>,
+    network: crate::network_config::NetworkRuntime,
     socket_path: PathBuf,
     process_context_resolver: SharedProcessContextResolver,
 }
 
 impl FramedUnixIngressFactory {
-    /// Uses the shared runtime route when the broker exposes configuration APIs.
-    pub fn with_network(mut self, network: Option<crate::network_config::NetworkRuntime>) -> Self {
-        self.network = network;
-        self
-    }
-
     /// Creates a framed Unix socket ingress factory.
     #[must_use]
-    pub fn new(socket_path: PathBuf) -> Self {
+    pub fn new(socket_path: PathBuf, network: crate::network_config::NetworkRuntime) -> Self {
         Self {
             socket_path,
             process_context_resolver: default_process_context_resolver(),
-            upstream: None,
-            network: None,
+            network,
         }
     }
 }
@@ -116,18 +95,12 @@ impl IngressFactory for FramedUnixIngressFactory {
     type Ingress = FramedUnixIngress;
 
     async fn start(self) -> Result<StartedIngress<Self::Ingress>, IngressError> {
-        let mut ingress =
-            FramedUnixIngress::bind_with_resolver(self.socket_path, self.process_context_resolver)
-                .await?;
-        ingress.network = Some(match self.network {
-            Some(network) => network,
-            None => crate::network_config::NetworkRuntime::new(
-                crate::config::ProxyIngressMode::MacosNetworkExtension,
-                self.upstream,
-                None,
-            )
-            .map_err(|error| IngressError::Configuration(error.to_string()))?,
-        });
+        let ingress = FramedUnixIngress::bind_with_resolver(
+            self.socket_path,
+            self.process_context_resolver,
+            self.network,
+        )
+        .await?;
         let status =
             IngressRuntimeStatus::macos_network_extension(ingress.socket_path().to_path_buf());
         Ok(StartedIngress::new(ingress, status))
@@ -136,7 +109,7 @@ impl IngressFactory for FramedUnixIngressFactory {
 
 /// Unix socket listener accepting framed platform flows.
 pub struct FramedUnixIngress {
-    network: Option<crate::network_config::NetworkRuntime>,
+    network: crate::network_config::NetworkRuntime,
     listener: UnixListener,
     socket_path: PathBuf,
     process_context_resolver: SharedProcessContextResolver,
@@ -146,11 +119,12 @@ impl FramedUnixIngress {
     async fn bind_with_resolver(
         socket_path: PathBuf,
         process_context_resolver: SharedProcessContextResolver,
+        network: crate::network_config::NetworkRuntime,
     ) -> Result<Self, IngressError> {
         Self::create_parent_directory(&socket_path).await?;
         let listener = Self::bind_listener(&socket_path).await?;
         let ingress = Self {
-            network: None,
+            network,
             listener,
             socket_path,
             process_context_resolver,
@@ -371,10 +345,7 @@ impl Ingress for FramedUnixIngress {
     async fn accept(&mut self) -> Result<Self::Accepted, IngressError> {
         let stream = self.accept_stream().await?;
         Ok(FramedUnixConnection {
-            proxy: self
-                .network
-                .as_ref()
-                .and_then(|network| network.snapshot().proxy()),
+            proxy: self.network.snapshot().proxy(),
             stream,
             socket_path: self.socket_path.clone(),
             process_context_resolver: self.process_context_resolver.clone(),
@@ -1076,6 +1047,15 @@ mod tests {
         assert_eq!(close_frame.flow_id(), flow_id);
     }
 
+    fn test_network() -> crate::network_config::NetworkRuntime {
+        crate::network_config::NetworkRuntime::new(
+            crate::config::ProxyIngressMode::MacosNetworkExtension,
+            None,
+            None,
+        )
+        .expect("test network policy should be valid")
+    }
+
     #[tokio::test]
     async fn ingress_accepts_flow_open_metadata() {
         let socket_path = std::env::temp_dir().join(format!(
@@ -1088,6 +1068,7 @@ mod tests {
             Arc::new(FixedProcessContextResolver {
                 working_directory: PathBuf::from("/tmp/abyss-project"),
             }),
+            test_network(),
         )
         .await
         .expect("framed ingress should start");
@@ -1185,6 +1166,7 @@ mod tests {
             Arc::new(FixedProcessContextResolver {
                 working_directory: PathBuf::from("/tmp/abyss-project"),
             }),
+            test_network(),
         )
         .await
         .expect("framed ingress should replace a stale socket");
@@ -1211,6 +1193,7 @@ mod tests {
             Arc::new(FixedProcessContextResolver {
                 working_directory: PathBuf::from("/tmp/abyss-project"),
             }),
+            test_network(),
         )
         .await
         .expect("framed ingress should start");
@@ -1238,7 +1221,7 @@ mod tests {
             std::process::id(),
             rand::random::<u64>()
         ));
-        let started = FramedUnixIngressFactory::new(socket_path.clone())
+        let started = FramedUnixIngressFactory::new(socket_path.clone(), test_network())
             .start()
             .await
             .expect("framed ingress should start");
