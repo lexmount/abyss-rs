@@ -345,7 +345,7 @@ impl Ingress for FramedUnixIngress {
     async fn accept(&mut self) -> Result<Self::Accepted, IngressError> {
         let stream = self.accept_stream().await?;
         Ok(FramedUnixConnection {
-            proxy: self.network.snapshot().proxy(),
+            proxy: self.network.snapshot().proxy().cloned(),
             stream,
             socket_path: self.socket_path.clone(),
             process_context_resolver: self.process_context_resolver.clone(),

@@ -129,7 +129,7 @@ impl Ingress for ExplicitIngress {
             client,
             peer_addr,
             listen_addr: self.listen_addr,
-            upstream: self.network.snapshot().proxy(),
+            upstream: self.network.snapshot().proxy().cloned(),
         })
     }
 }

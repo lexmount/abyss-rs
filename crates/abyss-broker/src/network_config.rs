@@ -38,9 +38,9 @@ pub struct NetworkSnapshot {
 }
 
 impl NetworkSnapshot {
-    /// Returns the validated next hop without changing this connection's route.
-    pub fn proxy(&self) -> Option<HttpConnectProxy> {
-        self.proxy.clone()
+    /// Borrows the validated next hop without changing this connection's route.
+    pub const fn proxy(&self) -> Option<&HttpConnectProxy> {
+        self.proxy.as_ref()
     }
 }
 
