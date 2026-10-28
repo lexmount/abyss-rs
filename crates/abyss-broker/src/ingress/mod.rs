@@ -23,7 +23,7 @@ use std::path::PathBuf;
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
 
-#[cfg(any(target_os = "macos", target_os = "windows", test))]
+#[cfg(any(target_os = "windows", test))]
 use crate::connection::OriginalDestination;
 
 /// Target-specific transparent ingress types available to the broker.
@@ -313,7 +313,7 @@ pub struct PlatformFlowMetadata {
 
 impl PlatformFlowMetadata {
     /// Creates platform flow metadata from normalized optional fields.
-    #[cfg(any(target_os = "macos", target_os = "windows", test))]
+    #[cfg(any(target_os = "windows", test))]
     #[must_use]
     pub fn from_parts(
         peer_addr: Option<SocketAddr>,
@@ -395,6 +395,10 @@ pub struct PlatformFlow {
     io: abyss_mitm::BoxedDuplexStream,
     ingress: abyss_mitm::FlowIngress,
     prepared_upstream: Option<abyss_mitm::BoxedDuplexStream>,
+    configured_upstream: Option<(
+        abyss_mitm::outbound::HttpConnectProxy,
+        abyss_mitm::TargetAuthority,
+    )>,
     read_prefix: Box<[u8]>,
 }
 
@@ -418,6 +422,7 @@ impl PlatformFlow {
                 abyss_mitm::TransparentFlowSource::Unattributed,
             ),
             prepared_upstream: None,
+            configured_upstream: None,
             read_prefix: Box::default(),
         }
     }
@@ -429,9 +434,23 @@ impl PlatformFlow {
         self
     }
 
+    /// Selects a configured next hop for a normalized transparent flow.
+    #[cfg(target_os = "macos")]
+    #[must_use]
+    pub fn with_upstream_proxy(
+        mut self,
+        proxy: abyss_mitm::outbound::HttpConnectProxy,
+        target: abyss_mitm::TargetAuthority,
+    ) -> Self {
+        self.prepared_upstream = None;
+        self.configured_upstream = Some((proxy, target));
+        self
+    }
+
     /// Attaches an established tunnel without changing target TLS handling.
     #[must_use]
     pub fn with_prepared_stream(mut self, upstream: abyss_mitm::BoxedDuplexStream) -> Self {
+        self.configured_upstream = None;
         self.prepared_upstream = Some(upstream);
         self
     }
@@ -492,6 +511,9 @@ impl PlatformFlow {
         .with_flow_id(self.metadata.flow_id)
         .with_destination_host(self.metadata.destination_host)
         .with_ingress(self.ingress);
+        if let Some((proxy, target)) = self.configured_upstream {
+            flow = flow.with_upstream_proxy(proxy, target);
+        }
         if let Some(upstream) = self.prepared_upstream {
             flow = flow.with_prepared_stream(upstream);
         }

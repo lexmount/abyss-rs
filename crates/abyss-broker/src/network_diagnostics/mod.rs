@@ -720,19 +720,38 @@ impl NetworkObservation {
         let location = NetworkLocation::from(error);
         let failure_class = NetworkFailureClass::from(error);
         let outcome = outcome_for_error(error);
+        let (proxy_target, proxy_endpoint, proxy_status) = match error {
+            TransparentFlowError::UpstreamProxy {
+                target,
+                endpoint,
+                source,
+            } => (
+                Some(target),
+                Some(endpoint.as_str()),
+                match source {
+                    abyss_mitm::outbound::UpstreamProxyError::Rejected { status } => Some(*status),
+                    _ => None,
+                },
+            ),
+            _ => (None, None, None),
+        };
         Self {
             observation_id: Uuid::new_v4(),
             flow_id,
             observed_at_unix_ms: ended_at_unix_ms,
             ingress_source: ingress.source_label().to_owned(),
-            destination_host: normalized_optional_string(destination_host),
+            destination_host: proxy_target
+                .map(|target| target.host().to_string())
+                .or_else(|| normalized_optional_string(destination_host)),
             destination_addr: None,
-            target_authority: ingress
-                .proxy_target()
+            target_authority: proxy_target
+                .or_else(|| ingress.proxy_target())
                 .map(abyss_mitm::TargetAuthority::authority),
-            proxy_endpoint: ingress.proxy_endpoint().map(str::to_owned),
+            proxy_endpoint: proxy_endpoint
+                .or_else(|| ingress.proxy_endpoint())
+                .map(str::to_owned),
             proxy_peer: ingress.upstream_proxy().map(|address| address.to_string()),
-            proxy_status: None,
+            proxy_status,
             source_pid: source_process.and_then(|source| source.pid),
             source_process_name: source_process
                 .and_then(|source| normalized_optional_string(source.name.as_deref())),
@@ -746,13 +765,17 @@ impl NetworkObservation {
             stage: location.stage,
             outcome,
             failure_class: Some(failure_class),
-            technical_error_code: NetworkErrorCode::from_observation(
-                location.hop,
-                location.stage,
-                outcome,
-                Some(failure_class),
-                None,
-            ),
+            technical_error_code: (proxy_status == Some(407))
+                .then_some(NetworkErrorCode::UpstreamProxyAuthRequired)
+                .or_else(|| {
+                    NetworkErrorCode::from_observation(
+                        location.hop,
+                        location.stage,
+                        outcome,
+                        Some(failure_class),
+                        None,
+                    )
+                }),
             timing: NetworkTiming::from_unix_ms(started_at_unix_ms, ended_at_unix_ms),
             http_status: None,
             request_method: None,
@@ -769,6 +792,7 @@ impl From<&TransparentFlowError> for NetworkFailureClass {
         match error {
             _ if error.is_agent_connection_close() => Self::ClientClosed,
             TransparentFlowError::ClientClosedBeforeProtocol => Self::ClientClosed,
+            TransparentFlowError::UpstreamProxy { source, .. } => Self::from(source),
             TransparentFlowError::UnsupportedProtocol
             | TransparentFlowError::MalformedTlsClientHello(_)
             | TransparentFlowError::ProxyTargetRequestForm { .. }
@@ -838,6 +862,7 @@ struct NetworkLocation {
 impl From<&TransparentFlowError> for NetworkLocation {
     fn from(error: &TransparentFlowError) -> Self {
         let operation = match error {
+            TransparentFlowError::UpstreamProxy { source, .. } => return Self::from(source),
             TransparentFlowError::ClientClosedBeforeProtocol
             | TransparentFlowError::UnsupportedProtocol => FlowOperation::ReadAgentProtocol,
             TransparentFlowError::MissingSni

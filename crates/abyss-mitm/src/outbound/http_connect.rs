@@ -70,16 +70,31 @@ impl HttpConnectProxy {
         target: &TargetAuthority,
         listener: SocketAddr,
     ) -> Result<ConnectedTunnel, UpstreamProxyError> {
+        self.connect_tunnel(target, &[listener]).await
+    }
+
+    /// Establishes a tunnel while excluding any broker-owned TCP listeners.
+    /// Unix-socket ingress supplies an empty exclusion list.
+    ///
+    /// # Errors
+    ///
+    /// Returns typed connection, timeout, loop, or CONNECT negotiation errors.
+    pub async fn connect_tunnel(
+        &self,
+        target: &TargetAuthority,
+        excluded_endpoints: &[SocketAddr],
+    ) -> Result<ConnectedTunnel, UpstreamProxyError> {
         let deadline = Instant::now().checked_add(self.connect_timeout).ok_or(
             UpstreamProxyError::Protocol {
                 reason: "connection deadline exceeds the monotonic clock range",
             },
         )?;
         let addresses = self.resolve(deadline).await?;
-        if let Some(address) = addresses
-            .iter()
-            .find(|address| same_endpoint(**address, listener))
-        {
+        if let Some(address) = addresses.iter().find(|address| {
+            excluded_endpoints
+                .iter()
+                .any(|listener| same_endpoint(**address, *listener))
+        }) {
             return Err(UpstreamProxyError::Loop { address: *address });
         }
         let mut stream = self.connect_tcp(&addresses, deadline).await?;

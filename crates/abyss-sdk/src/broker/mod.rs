@@ -9,7 +9,7 @@ pub use error::BrokerClientError;
 pub use types::{
     ActiveFlow, BrokerLogError, BrokerLogFile, BrokerLogRequest, BrokerLogResponse, HarnessConfig,
     HarnessMatcherConfig, HarnessUsageConfig, HarnessUsageContentConfig, HarnessUsageHookConfig,
-    HealthResponse, HooksConfig, IngressSource, IngressStatus, MitmConfig, ProxyLifecycle,
-    ProxyMode, ProxyStatus, TlsDecryptionAction, TlsDecryptionPolicy, TlsDecryptionRule,
-    TrafficSnapshot,
+    HealthResponse, HooksConfig, IngressSource, IngressStatus, MitmConfig, NetworkConfig,
+    ProxyLifecycle, ProxyMode, ProxyStatus, TlsDecryptionAction, TlsDecryptionPolicy,
+    TlsDecryptionRule, TrafficSnapshot, UpstreamProxyConfig, UpstreamProxyProtocol,
 };

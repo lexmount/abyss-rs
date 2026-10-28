@@ -15,6 +15,7 @@ from .types import (
     HealthResponse,
     HooksConfig,
     MitmConfig,
+    NetworkConfig,
     NetworkObservationsResponse,
     ProxyStatus,
     TrafficSnapshot,
@@ -74,6 +75,14 @@ class BrokerClient:
 
     def get_proxy_status(self) -> ProxyStatus:
         return self._request("v1/proxy/status", ProxyStatus, protected=False)
+
+    def get_network_config(self) -> NetworkConfig:
+        """Read the effective outbound route for new connections."""
+        return self._request("v1/network/config", NetworkConfig)
+
+    def update_network_config(self, config: NetworkConfig) -> NetworkConfig:
+        """Durably apply a route without changing established connections."""
+        return self._request("v1/network/config", NetworkConfig, method="PUT", body=config)
 
     def get_mitm_config(self) -> MitmConfig:
         return self._request("v1/mitm/config", MitmConfig)

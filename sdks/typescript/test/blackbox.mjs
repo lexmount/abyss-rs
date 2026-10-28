@@ -28,6 +28,8 @@ await assert.rejects(
 );
 assert.equal((await client.getProxyStatus()).lifecycle, "running");
 
+const network = await client.getNetworkConfig();
+assert.deepEqual(await client.updateNetworkConfig(network), network);
 const mitm = await client.getMitmConfig();
 assert.deepEqual(await client.updateMitmConfig(mitm), mitm);
 const hooks = await client.getHooksConfig();

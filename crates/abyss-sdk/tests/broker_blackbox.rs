@@ -53,6 +53,7 @@ async fn real_broker_supports_rest_and_plugin_sdk() {
         .expect("proxy status should succeed");
     assert!(matches!(status.lifecycle, ProxyLifecycle::Running));
 
+    check_network_config(&client, &unauthenticated).await;
     let mitm = client.mitm_config().await.expect("MITM config should read");
     client
         .update_mitm_config(&mitm)
@@ -109,4 +110,20 @@ async fn real_broker_supports_rest_and_plugin_sdk() {
         .take_close()
         .expect("real broker should send a deliberate close frame");
     assert_eq!(close.code, 100_u32);
+}
+
+async fn check_network_config(client: &BrokerClient, unauthenticated: &BrokerClient) {
+    let network = client
+        .network_config()
+        .await
+        .expect("network config should read");
+    client
+        .update_network_config(&network)
+        .await
+        .expect("network config should round-trip");
+    assert!(
+        matches!(unauthenticated.network_config().await,
+        Err(BrokerClientError::Api { status, .. }) if status.as_u16() == 401),
+        "network configuration must require the local bearer token"
+    );
 }

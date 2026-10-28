@@ -10,7 +10,7 @@ use tokio::net::TcpStream;
 
 use super::{
     BoxedDuplexStream, DestinationAddress, DuplexStream, FlowId, FlowIngress, OriginalDestination,
-    SourceProcess, TrafficDirection, TrafficObserver, TransparentFlowSource,
+    SourceProcess, TrafficDirection, TrafficObserver, TransparentFlowError, TransparentFlowSource,
     io::{ObservedStream, PrefixedDuplexStream},
 };
 
@@ -20,6 +20,40 @@ pub(super) enum UpstreamConnection {
     Deferred,
     /// Reuse a stream established while accepting an explicit proxy request.
     Prepared(BoxedDuplexStream),
+    /// A configured next hop; target DNS and routing belong to that proxy.
+    HttpConnect {
+        proxy: crate::outbound::HttpConnectProxy,
+        target: crate::TargetAuthority,
+    },
+}
+
+impl UpstreamConnection {
+    /// TLS SNI supplies a logical hostname only when platform metadata had an IP.
+    /// The original destination port remains authoritative.
+    pub(super) fn with_server_name(
+        self,
+        server_name: Option<&str>,
+    ) -> Result<Self, TransparentFlowError> {
+        if let Self::HttpConnect { proxy, target } = self {
+            let target = match server_name {
+                Some(name) if target.host().as_ip_addr().is_some() => {
+                    crate::TargetAuthority::from_host_port(name, target.port()).map_err(|_| {
+                        TransparentFlowError::Io {
+                            operation: super::FlowOperation::ProxyConnectHandshake,
+                            source: std::io::Error::new(
+                                std::io::ErrorKind::InvalidInput,
+                                "invalid logical target hostname",
+                            ),
+                        }
+                    })?
+                }
+                _ => target,
+            };
+            Ok(Self::HttpConnect { proxy, target })
+        } else {
+            Ok(self)
+        }
+    }
 }
 
 /// Accepted transparent flow plus metadata needed by MITM processing.
@@ -37,6 +71,18 @@ pub struct AcceptedTcpFlow {
 }
 
 impl AcceptedTcpFlow {
+    /// Routes this flow through a validated HTTP CONNECT next hop.
+    /// Target TLS validation and capture policy remain independent of routing.
+    #[must_use]
+    pub fn with_upstream_proxy(
+        mut self,
+        proxy: crate::outbound::HttpConnectProxy,
+        target: crate::TargetAuthority,
+    ) -> Self {
+        self.upstream = UpstreamConnection::HttpConnect { proxy, target };
+        self
+    }
+
     /// Creates a transparent flow from platform byte IO and metadata.
     #[must_use]
     pub fn new<S>(

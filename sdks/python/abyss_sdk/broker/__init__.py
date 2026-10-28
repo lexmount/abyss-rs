@@ -8,9 +8,11 @@ from .types import (
     HealthResponse,
     HooksConfig,
     MitmConfig,
+    NetworkConfig,
     NetworkObservationsResponse,
     ProxyStatus,
     TrafficSnapshot,
+    UpstreamProxyConfig,
 )
 
 __all__ = [
@@ -23,7 +25,9 @@ __all__ = [
     "HealthResponse",
     "HooksConfig",
     "MitmConfig",
+    "NetworkConfig",
     "NetworkObservationsResponse",
     "ProxyStatus",
     "TrafficSnapshot",
+    "UpstreamProxyConfig",
 ]

@@ -10,6 +10,7 @@ import type {
   HealthResponse,
   HooksConfig,
   MitmConfig,
+  NetworkConfig,
   NetworkObservationsResponse,
   ProxyStatus,
   TrafficSnapshot,
@@ -76,6 +77,14 @@ export class BrokerClient {
 
   getProxyStatus(): Promise<ProxyStatus> {
     return this.#request("v1/proxy/status", { protected: false });
+  }
+
+  getNetworkConfig(): Promise<NetworkConfig> {
+    return this.#request("v1/network/config");
+  }
+
+  updateNetworkConfig(config: NetworkConfig): Promise<NetworkConfig> {
+    return this.#request("v1/network/config", { method: "PUT", body: config });
   }
 
   getMitmConfig(): Promise<MitmConfig> {

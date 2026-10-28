@@ -74,8 +74,11 @@ impl PlainHttpFlow {
         // Plain HTTP connects directly to the original destination and then
         // enters the shared relay path. That relay path is responsible for
         // capturing the first complete exchange and invoking hooks.
+        let authority = request_host(&decoded.first_request)
+            .and_then(|host| host.parse::<http::uri::Authority>().ok());
         let upstream = connect_upstream_with_observer(
-            self.upstream,
+            self.upstream
+                .with_server_name(authority.as_ref().map(http::uri::Authority::host))?,
             &self.original_destination,
             engine.timeouts.upstream_connect,
             self.traffic_observer,
