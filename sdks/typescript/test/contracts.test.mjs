@@ -23,6 +23,7 @@ test("shared AgentEvent fixture decodes through the TypeScript SDK", async () =>
   assert.equal(event.turn_id, "turn-1");
   assert.equal(event.purpose, "session_title");
   assert.deepEqual(event.conversation, fixture.conversation);
+  assert.equal(event.path, "/v1/responses");
   assert.deepEqual(event.headers, fixture.headers);
   assert.equal("turn_index" in event, false);
 });
@@ -148,6 +149,7 @@ test("AgentEvent decoder rejects invalid counters and unknown sides", () => {
     session_id: "session",
     llm: { provider: "openai", model: "gpt-test" },
     side: "request",
+    path: "/v1/responses",
     token_usage: {
       input_tokens: 1,
       output_tokens: 0,

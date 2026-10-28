@@ -46,6 +46,7 @@ class AgentEventContractTests(unittest.TestCase):
         self.assertEqual(event.conversation.entries[0].item_id, "rs-123")
         self.assertEqual(event.omitted, ())
         self.assertEqual(event.conversation.completeness, "complete")
+        self.assertEqual(event.path, "/v1/responses")
         self.assertEqual(event.headers[1].name, "x-request-id")
         self.assertEqual(event.headers[1].value, "req-123")
         self.assertIsNone(event.headers[1].value_base64)

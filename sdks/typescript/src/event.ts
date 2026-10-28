@@ -21,6 +21,8 @@ export interface AgentEvent {
   omitted?: ContentCategory[];
   /** The side's content, one entry per protocol block or item. */
   conversation?: Conversation;
+  /** The request target's path and query, verbatim; on both sides. */
+  path: string;
   /** Captured headers of the event's side, credential values redacted. */
   headers?: HttpHeader[];
   token_usage: TokenUsage;
@@ -129,6 +131,7 @@ export function decodeAgentEvent(value: unknown): AgentEvent {
       "side",
       "omitted",
       "conversation",
+      "path",
       "headers",
       "token_usage",
       "attachments",
@@ -172,6 +175,7 @@ export function decodeAgentEvent(value: unknown): AgentEvent {
   if (event.conversation !== undefined) {
     decodeConversation(event.conversation);
   }
+  stringField(event, "path");
   optionalArray(event, "headers").forEach(decodeHeader);
   decodeTokenUsage(event.token_usage);
   optionalArray(event, "attachments").forEach(decodeAttachment);

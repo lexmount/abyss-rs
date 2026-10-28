@@ -249,6 +249,7 @@ provider documents, and original content blocks are not part of the contract.
     ],
     "completeness": "complete"
   },
+  "path": "/v1/responses",
   "headers": [
     {
       "name": "content-type",
@@ -402,6 +403,15 @@ declare only `turn_id`, each from one header of the request itself: Cursor
 `x-conversation-request-id`, and OpenCode `x-opencode-request`. Other clients
 declare none of the fields. The headers themselves remain in `headers`.
 
+## Path
+
+`path` is the exchange's request target: its path and query exactly as the
+request line named them, for example `/v1/messages?beta=true`. A WebSocket
+connection names its target only on its handshake, so every event of the
+connection carries the upgrade request's path. Both events of an exchange
+carry it. The value is verbatim: the query is not redacted, and the content
+policy does not govern it.
+
 ## Headers
 
 `headers` lists the captured headers of the event's side: the request headers
@@ -462,8 +472,8 @@ idempotent. Distinct provider calls produce distinct ids. The content digest
 covers the side's conversation entries before the content policy applies, so
 the policy does not change an id: every entry's `role`, `text`, `call_id`,
 `name`, and `item_id` in order, followed by the digests of the side's
-attachments. `completeness`, the declared subagent and root turn ids, and the
-headers do not enter the id.
+attachments. `completeness`, the declared subagent and root turn ids, the
+path, and the headers do not enter the id.
 
 The broker emits events only for exchanges its Agent protocol parser accepted.
 An exchange the parser rejects produces no event. Within an exchange that
@@ -474,7 +484,8 @@ usage.
 ## Delivery
 
 The official delivery plugin stores the conversation as `metadata.conversation`,
-the purpose as `metadata.purpose`, and the headers as `metadata.headers`. It sends `response_id`,
+the purpose as `metadata.purpose`, the path as `metadata.path`, and the headers
+as `metadata.headers`. It sends `response_id`,
 `previous_response_id`, `subagent_id`, `parent_subagent_id`, and
 `turn_id` as top-level fields of the backend usage event. Backend
 trajectories consume these fields without decoding provider bodies. Other plugins may translate the event for their own destinations.

@@ -1,32 +1,39 @@
-//! The captured request and response headers of one exchange, as its events
-//! carry them.
+//! What one exchange's events carry of its request line and headers, as
+//! captured.
 //!
-//! Header values pass through verbatim. The only change is credential
-//! redaction, applied once here with the list owned by `abyss-mitm`. Nothing
-//! is read from the headers.
+//! The request path and the header values pass through verbatim. The only
+//! change is credential redaction of header values, applied once here with
+//! the list owned by `abyss-mitm`. Nothing is read from them.
 
 use abyss_mitm::{REDACTED_HEADER_VALUE, is_sensitive_header};
 use abyss_plugin_protocol::event::{HttpHeader, HttpHeaderValue};
 use base64::{Engine as _, engine::general_purpose::STANDARD};
-use http::HeaderMap;
+use http::{HeaderMap, Uri};
 
-/// The headers one exchange's events carry: the request headers on the
-/// request event and the response headers on the response event.
+/// What one exchange's events carry verbatim: the request path on both
+/// events, the request headers on the request event and the response headers
+/// on the response event.
 #[derive(Debug, Default)]
-pub struct ExchangeHeaders {
+pub struct ExchangePassthrough {
+    /// The request target's path and query, as the request named it.
+    pub path: String,
     /// Every request header in capture order, credential values redacted.
     pub request: Vec<HttpHeader>,
     /// Every response header in capture order, credential values redacted.
     pub response: Vec<HttpHeader>,
 }
 
-impl ExchangeHeaders {
-    /// Copies the captured header maps of one exchange: the HTTP request and
-    /// response, or the upgrade request and `101` response of a WebSocket
-    /// connection.
+impl ExchangePassthrough {
+    /// Copies the captured request target and header maps of one exchange:
+    /// the HTTP request and response, or the upgrade request and `101`
+    /// response of a WebSocket connection.
     #[must_use]
-    pub fn new(request: &HeaderMap, response: &HeaderMap) -> Self {
+    pub fn new(target: &Uri, request: &HeaderMap, response: &HeaderMap) -> Self {
         Self {
+            path: target
+                .path_and_query()
+                .map_or_else(|| target.path(), |path| path.as_str())
+                .to_owned(),
             request: Self::passthrough(request),
             response: Self::passthrough(response),
         }
@@ -53,9 +60,9 @@ impl ExchangeHeaders {
 #[cfg(test)]
 mod tests {
     use abyss_plugin_protocol::event::{HttpHeader, HttpHeaderValue};
-    use http::{HeaderMap, HeaderName, HeaderValue};
+    use http::{HeaderMap, HeaderName, HeaderValue, Uri};
 
-    use super::ExchangeHeaders;
+    use super::ExchangePassthrough;
 
     fn headers(entries: &[(&str, &[u8])]) -> HeaderMap {
         let mut headers = HeaderMap::new();
@@ -77,7 +84,8 @@ mod tests {
 
     #[test]
     fn headers_keep_order_and_duplicates_and_redact_credentials() {
-        let captured = ExchangeHeaders::new(
+        let captured = ExchangePassthrough::new(
+            &Uri::from_static("/v1/messages"),
             &headers(&[
                 ("accept", b"application/json"),
                 ("authorization", b"Bearer secret"),
@@ -125,6 +133,32 @@ mod tests {
                 text("set-cookie", "<redacted>"),
                 text("request-id", "req_1"),
             ]
+        );
+    }
+
+    #[test]
+    fn path_keeps_the_query_verbatim() {
+        let path = |target: &'static str| {
+            ExchangePassthrough::new(
+                &Uri::from_static(target),
+                &HeaderMap::new(),
+                &HeaderMap::new(),
+            )
+            .path
+        };
+        assert_eq!(path("/v1/messages?beta=true"), "/v1/messages?beta=true");
+        assert_eq!(
+            path("/v1beta/models/m:generateContent?key=k&alt=sse"),
+            "/v1beta/models/m:generateContent?key=k&alt=sse"
+        );
+        assert_eq!(
+            path("/backend-api/codex/responses"),
+            "/backend-api/codex/responses"
+        );
+        // An absolute-form target still yields only its path and query.
+        assert_eq!(
+            path("https://api.example/v1/responses?x=1"),
+            "/v1/responses?x=1"
         );
     }
 }

@@ -184,6 +184,7 @@ pub mod tests {
             event_type: "request",
             omitted: Vec::new(),
             conversation: None,
+            path: "/v1/responses".to_owned(),
             headers: Vec::new(),
             token_usage: TokenUsage {
                 input_tokens: 1_i64,

@@ -1,8 +1,8 @@
 //! Common normalization from detected Harness and parsed protocol values.
 
-mod headers;
 mod identifier;
 pub mod normalizer;
+mod passthrough;
 
-pub use headers::ExchangeHeaders;
 pub use normalizer::*;
+pub use passthrough::ExchangePassthrough;

@@ -9,7 +9,7 @@ use http::{HeaderMap, header::HOST};
 use crate::{
     config::{HarnessUsageHookConfig, HooksRuntimeConfig},
     delivery::{AgentEventSink, EventDelivery},
-    event::{ExchangeHeaders, NormalizableExchange, NormalizedUsageEvent, normalize_exchange},
+    event::{ExchangePassthrough, NormalizableExchange, NormalizedUsageEvent, normalize_exchange},
     harness::{AgentDeclaration, DeclarationSource, HarnessDetection, HarnessRegistry},
     protocol::{
         AnthropicProtocol, ClaudeWebProtocol, LlmProtocol, OpenAiProtocol, ProtocolDetector,
@@ -72,8 +72,13 @@ where
             .harness_usage
             .config
             .content_for_harness(detection.harness_id.as_str());
-        let headers =
-            || ExchangeHeaders::new(exchange.request.headers(), exchange.response.headers());
+        let passthrough = || {
+            ExchangePassthrough::new(
+                exchange.request.uri(),
+                exchange.request.headers(),
+                exchange.response.headers(),
+            )
+        };
 
         match protocol {
             LlmProtocol::OpenAi(protocol) => {
@@ -86,7 +91,7 @@ where
                         &detection,
                         &provider,
                         &declaration,
-                        &headers(),
+                        &passthrough(),
                     )
                 })
             }
@@ -99,7 +104,7 @@ where
                         &detection,
                         &provider,
                         &declaration,
-                        &headers(),
+                        &passthrough(),
                     )
                 })
             }
@@ -115,7 +120,7 @@ where
                     &detection,
                     &provider,
                     &declaration,
-                    &headers(),
+                    &passthrough(),
                 )
             }),
         }
@@ -129,7 +134,7 @@ where
         detection: &HarnessDetection,
         provider: &LlmProvider,
         declaration: &AgentDeclaration,
-        headers: &ExchangeHeaders,
+        passthrough: &ExchangePassthrough,
     ) -> Vec<NormalizedUsageEvent>
     where
         E: NormalizableExchange,
@@ -141,7 +146,7 @@ where
             detection,
             provider,
             declaration,
-            headers,
+            passthrough,
         )
     }
 
@@ -179,7 +184,8 @@ where
                 client_metadata: parsed.client_metadata.as_ref(),
             },
         );
-        let headers = ExchangeHeaders::new(
+        let passthrough = ExchangePassthrough::new(
+            message.upgrade_request.uri(),
             message.upgrade_request.headers(),
             message.upgrade_response.headers(),
         );
@@ -189,7 +195,7 @@ where
             &detection,
             &provider,
             &declaration,
-            &headers,
+            &passthrough,
         )
     }
 }
@@ -462,6 +468,9 @@ mod tests {
             assert_eq!(reply.entries[0].role, EntryRole::Assistant);
             assert_eq!(reply.entries[0].text, "hi");
             assert_eq!(reply.completeness, ContentCompleteness::Complete);
+            // Both events carry the request's path.
+            assert_eq!(events[0].path, "/v1/responses");
+            assert_eq!(events[1].path, "/v1/responses");
             drop(events);
         }
     }
@@ -494,6 +503,7 @@ mod tests {
         let exchange = openai_exchange("codex");
         let (parts, _) = exchange.request.into_parts();
         let mut upgrade = Request::from_parts(parts, ());
+        *upgrade.uri_mut() = "/backend-api/codex/responses".parse().unwrap();
         upgrade
             .headers_mut()
             .insert("authorization", "Bearer secret".parse().unwrap());
@@ -552,10 +562,11 @@ mod tests {
         );
         assert_eq!(response_content.entries[0].text, "hi there");
         assert_eq!(response_content.completeness, ContentCompleteness::Partial);
-        // Every turn of the connection carries the upgrade request's headers
-        // and the `101` response's headers, and the ids the upgrade request
-        // declares.
+        // Every turn of the connection carries the upgrade request's path and
+        // headers, the `101` response's headers, and the ids the upgrade
+        // request declares.
         for event in events.iter() {
+            assert_eq!(event.path, "/backend-api/codex/responses");
             assert_eq!(event.subagent_id.as_deref(), Some("ws-thread"));
             assert_eq!(event.parent_subagent_id.as_deref(), Some("ws-parent"));
             assert_eq!(event.turn_id.as_deref(), Some("ws-turn"));

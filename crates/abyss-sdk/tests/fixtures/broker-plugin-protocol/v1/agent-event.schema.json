@@ -12,6 +12,7 @@
     "session_id",
     "llm",
     "side",
+    "path",
     "token_usage"
   ],
   "properties": {
@@ -84,6 +85,9 @@
     },
     "conversation": {
       "$ref": "#/$defs/conversation"
+    },
+    "path": {
+      "type": "string"
     },
     "headers": {
       "type": "array",

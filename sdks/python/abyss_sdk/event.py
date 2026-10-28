@@ -120,6 +120,7 @@ class AgentEvent:
     side: str
     omitted: tuple[ContentCategory, ...]
     conversation: Optional[Conversation]
+    path: str
     headers: tuple[HttpHeader, ...]
     token_usage: TokenUsage
     attachments: tuple[ImageAttachment, ...]
@@ -147,6 +148,7 @@ class AgentEvent:
                 "side",
                 "omitted",
                 "conversation",
+                "path",
                 "headers",
                 "token_usage",
                 "attachments",
@@ -183,6 +185,7 @@ class AgentEvent:
                 if event.get("conversation") is not None
                 else None
             ),
+            path=_string(event, "path"),
             headers=tuple(
                 _header(item) for item in _list(event.get("headers", []), "AgentEvent.headers")
             ),

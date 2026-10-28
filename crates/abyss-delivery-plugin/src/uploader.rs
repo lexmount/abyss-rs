@@ -387,7 +387,9 @@ impl TryFrom<AgentEvent> for IngestUsageEvent {
             metadata["conversation"] = serde_json::to_value(conversation)
                 .map_err(|error| DeliveryPluginError::Translate(error.to_string()))?;
         }
-        // Headers are stored untouched; the backend reads nothing from them.
+        // The path and headers are stored untouched; the backend reads
+        // nothing from them.
+        metadata["path"] = Value::String(event.path);
         if !event.headers.is_empty() {
             metadata["headers"] = serde_json::to_value(event.headers)
                 .map_err(|error| DeliveryPluginError::Translate(error.to_string()))?;
@@ -669,6 +671,7 @@ mod tests {
             side: AgentEventSide::Request,
             omitted: Vec::new(),
             conversation: None,
+            path: "/v1/responses?stream=true".to_owned(),
             headers: vec![HttpHeader {
                 name: "request-id".to_owned(),
                 value: HttpHeaderValue::Text("req_1".to_owned()),
@@ -707,6 +710,11 @@ mod tests {
         }
         assert!(serialized["events"][0]["metadata"].get("turn_id").is_none());
         assert!(serialized["events"][0].get("turn_index").is_none());
+        assert_eq!(
+            serialized["events"][0]["metadata"]["path"],
+            "/v1/responses?stream=true"
+        );
+        assert!(serialized["events"][0].get("path").is_none());
         assert_eq!(
             serialized["events"][0]["metadata"]["headers"],
             serde_json::json!([{"name": "request-id", "value": "req_1"}])

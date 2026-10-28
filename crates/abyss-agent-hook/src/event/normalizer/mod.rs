@@ -16,7 +16,7 @@ use thiserror::Error;
 
 use crate::{
     config::{DeviceIdentity, HarnessUsageContentConfig, HarnessUsageHookConfig},
-    event::{headers::ExchangeHeaders, identifier::stable_event_id},
+    event::{identifier::stable_event_id, passthrough::ExchangePassthrough},
     harness::{AgentDeclaration, BuiltInHarness, HarnessDetection},
     protocol::model::image::ParsedImageAttachment,
     protocol::model::usage::{TokenUsage, TokenUsageSource},
@@ -105,6 +105,8 @@ pub struct NormalizedUsageEvent {
     /// Role-aware request or response entries after content policy.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub conversation: Option<Conversation>,
+    /// The request target's path and query, verbatim; on both sides.
+    pub path: String,
     /// Captured headers of this event's side, credential values redacted.
     #[serde(skip_serializing_if = "Vec::is_empty")]
     pub headers: Vec<HttpHeader>,
@@ -137,6 +139,7 @@ impl TryFrom<NormalizedUsageEvent> for AgentEvent {
             event_type,
             omitted,
             conversation,
+            path,
             headers,
             token_usage,
             metadata: _,
@@ -180,6 +183,7 @@ impl TryFrom<NormalizedUsageEvent> for AgentEvent {
             side,
             omitted,
             conversation,
+            path,
             headers,
             token_usage: token_usage.try_into()?,
             attachments: attachments
@@ -316,8 +320,8 @@ pub trait NormalizableExchange {
 }
 
 /// Normalizes one parsed interaction with independently detected context,
-/// what the detected Agent declared about it, and the exchange's captured
-/// headers.
+/// what the detected Agent declared about it, and what the exchange's events
+/// carry verbatim.
 pub fn normalize_exchange<E>(
     config: &HarnessUsageHookConfig,
     parsed: &E,
@@ -325,7 +329,7 @@ pub fn normalize_exchange<E>(
     detection: &HarnessDetection,
     provider: &LlmProvider,
     declaration: &AgentDeclaration,
-    headers: &ExchangeHeaders,
+    passthrough: &ExchangePassthrough,
 ) -> Vec<NormalizedUsageEvent>
 where
     E: NormalizableExchange,
@@ -341,7 +345,7 @@ where
         parent_subagent_id: declaration.parent_subagent_id.as_deref(),
         turn_id: declaration.turn_id.as_deref(),
     };
-    events_for_parsed_exchange(config, &parts, content, declared, headers)
+    events_for_parsed_exchange(config, &parts, content, declared, passthrough)
 }
 
 fn harness_client(detection: &HarnessDetection) -> &'static str {
@@ -397,6 +401,7 @@ struct EventSide<'a> {
     token_usage: TokenUsage,
     metadata: Value,
     attachments: &'a [ParsedImageAttachment],
+    path: &'a str,
     headers: &'a [HttpHeader],
     content: &'a HarnessUsageContentConfig,
     declared: Declared<'a>,
@@ -442,7 +447,7 @@ fn events_for_parsed_exchange(
     parts: &ParsedEventParts<'_>,
     content: &HarnessUsageContentConfig,
     declared: Declared<'_>,
-    headers: &ExchangeHeaders,
+    passthrough: &ExchangePassthrough,
 ) -> Vec<NormalizedUsageEvent> {
     // Most provider hooks wait until a response body or usage appears before
     // emitting events. Claude Desktop private SSE responses do not include
@@ -494,7 +499,8 @@ fn events_for_parsed_exchange(
                 token_usage: retained_token_usage(request_usage, content),
                 metadata: metadata.clone(),
                 attachments: &parts.request_images,
-                headers: &headers.request,
+                path: &passthrough.path,
+                headers: &passthrough.request,
                 content,
                 declared,
             },
@@ -513,7 +519,8 @@ fn events_for_parsed_exchange(
                 token_usage: retained_token_usage(response_usage, content),
                 metadata,
                 attachments: &[],
-                headers: &headers.response,
+                path: &passthrough.path,
+                headers: &passthrough.response,
                 content,
                 declared,
             },
@@ -631,6 +638,7 @@ fn usage_event(
         event_type: side.event_type,
         omitted: omitted_categories(side.content),
         conversation: Some(retained_conversation(side.conversation, side.content)),
+        path: side.path.to_owned(),
         headers: side.headers.to_vec(),
         token_usage: side.token_usage,
         metadata: side.metadata,
@@ -714,7 +722,7 @@ mod tests {
 
     use crate::{
         config::{DeviceIdentity, HarnessUsageContentConfig, HarnessUsageHookConfig},
-        event::ExchangeHeaders,
+        event::ExchangePassthrough,
         harness::{AgentDeclaration, BuiltInHarness, HarnessDetection, HarnessEvidence, HarnessId},
         protocol::{
             anthropic::{
@@ -803,7 +811,7 @@ mod tests {
             &detection,
             &LlmProvider::Other("gateway.example".to_owned()),
             &AgentDeclaration::default(),
-            &ExchangeHeaders::default(),
+            &ExchangePassthrough::default(),
         );
 
         assert_eq!(events.len(), 2);
@@ -839,7 +847,7 @@ mod tests {
             &detection,
             &LlmProvider::OpenAi,
             &declaration,
-            &ExchangeHeaders::default(),
+            &ExchangePassthrough::default(),
         );
 
         assert_eq!(events.len(), 2);
@@ -867,7 +875,7 @@ mod tests {
             &detection(BuiltInHarness::Codex, "x-openai-originator"),
             &LlmProvider::OpenAi,
             &AgentDeclaration::default(),
-            &ExchangeHeaders::default(),
+            &ExchangePassthrough::default(),
         );
 
         assert_eq!(events.len(), 2);
@@ -925,7 +933,7 @@ mod tests {
                 &detection(BuiltInHarness::Codex, "x-openai-originator"),
                 &LlmProvider::OpenAi,
                 &AgentDeclaration::default(),
-                &ExchangeHeaders::default(),
+                &ExchangePassthrough::default(),
             )
             .into_iter()
             .map(|event| {
@@ -997,7 +1005,7 @@ mod tests {
             &detection,
             &LlmProvider::Anthropic,
             &AgentDeclaration::default(),
-            &ExchangeHeaders::default(),
+            &ExchangePassthrough::default(),
         );
 
         assert_eq!(events.len(), 2);
@@ -1041,7 +1049,7 @@ mod tests {
             &detection(BuiltInHarness::ClaudeDesktop, "claude-web-path"),
             &LlmProvider::Anthropic,
             &AgentDeclaration::default(),
-            &ExchangeHeaders::default(),
+            &ExchangePassthrough::default(),
         );
 
         assert_eq!(events.len(), 1);
@@ -1060,7 +1068,7 @@ mod tests {
                 &detection(BuiltInHarness::Codex, "x-openai-originator"),
                 &LlmProvider::OpenAi,
                 &AgentDeclaration::default(),
-                &ExchangeHeaders::default(),
+                &ExchangePassthrough::default(),
             )
             .pop()
             .expect("response event")
@@ -1117,7 +1125,7 @@ mod tests {
             &detection(BuiltInHarness::Codex, "x-openai-originator"),
             &LlmProvider::OpenAi,
             &AgentDeclaration::default(),
-            &ExchangeHeaders::default(),
+            &ExchangePassthrough::default(),
         );
         assert!(events.is_empty());
 
@@ -1130,7 +1138,7 @@ mod tests {
             &detection(BuiltInHarness::Codex, "x-openai-originator"),
             &LlmProvider::OpenAi,
             &AgentDeclaration::default(),
-            &ExchangeHeaders::default(),
+            &ExchangePassthrough::default(),
         );
         assert_eq!(
             events
@@ -1145,7 +1153,11 @@ mod tests {
     fn both_events_carry_the_declared_ids() {
         let mut response = http::HeaderMap::new();
         response.append("request-id", http::HeaderValue::from_static("req_1"));
-        let headers = ExchangeHeaders::new(&http::HeaderMap::new(), &response);
+        let passthrough = ExchangePassthrough::new(
+            &http::Uri::from_static("/v1/messages?beta=true"),
+            &http::HeaderMap::new(),
+            &response,
+        );
         let parsed = anthropic_messages_exchange();
         let normalize = |declaration: &AgentDeclaration| {
             normalize_exchange(
@@ -1155,7 +1167,7 @@ mod tests {
                 &detection(BuiltInHarness::ClaudeCode, "x-claude-code-session-id"),
                 &LlmProvider::Anthropic,
                 declaration,
-                &headers,
+                &passthrough,
             )
         };
         let events = normalize(&AgentDeclaration {
@@ -1183,6 +1195,8 @@ mod tests {
         assert_eq!(request["subagent_id"], "a-2");
         assert_eq!(request["parent_subagent_id"], "a-1");
         assert_eq!(reply["turn_id"], "p-1");
+        assert_eq!(request["path"], "/v1/messages?beta=true");
+        assert_eq!(reply["path"], "/v1/messages?beta=true");
         assert_eq!(
             reply["headers"],
             serde_json::json!([{"name": "request-id", "value": "req_1"}])

@@ -68,6 +68,10 @@ pub struct AgentEvent {
     /// item; the only carrier of the side's content.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub conversation: Option<Conversation>,
+    /// The exchange's request target: its path and query as the request named
+    /// them (for a WebSocket connection, its upgrade request's), verbatim.
+    /// Both events of an exchange carry it.
+    pub path: String,
     /// Captured headers of this event's side: request headers on a request
     /// event, response headers on a response event. In capture order,
     /// duplicates kept, verbatim except that credential values are redacted.
@@ -546,6 +550,7 @@ mod tests {
             side: AgentEventSide::Request,
             omitted: Vec::new(),
             conversation: None,
+            path: "/v1/responses".to_owned(),
             headers: Vec::new(),
             token_usage: TokenUsage {
                 input_tokens: 10,
