@@ -270,7 +270,7 @@ impl FramedUnixIngress {
     async fn metadata_from_open(
         payload: FlowOpenPayload,
         process_context_resolver: SharedProcessContextResolver,
-        resolution: DestinationResolution,
+        resolution: DnsResolution,
     ) -> Result<PlatformFlowMetadata, IngressError> {
         tracing::debug!(
             flow_id = %payload.flow_id,
@@ -382,9 +382,9 @@ impl IngressConnection for FramedUnixConnection {
             payload,
             process_context_resolver,
             if proxy.is_some() {
-                DestinationResolution::UpstreamProxy
+                DnsResolution::UpstreamProxy
             } else {
-                DestinationResolution::Local
+                DnsResolution::Local
             },
         )
         .await?;
@@ -429,7 +429,7 @@ fn configured_target(
         .map_err(|_| IngressError::invalid_framed_flow("FlowOpen has an invalid proxy target"))
 }
 
-enum DestinationResolution {
+enum DnsResolution {
     Local,
     UpstreamProxy,
 }
@@ -441,7 +441,7 @@ struct FramedFlowDestination {
 impl FramedFlowDestination {
     async fn from_open(
         payload: &FlowOpenPayload,
-        resolution: DestinationResolution,
+        resolution: DnsResolution,
     ) -> Result<Self, IngressError> {
         let port = payload
             .destination_port
@@ -462,7 +462,7 @@ impl FramedFlowDestination {
             .ok_or(IngressError::invalid_framed_flow(
                 "FlowOpen missing destination_ip and destination_host",
             ))?;
-        if matches!(resolution, DestinationResolution::UpstreamProxy) {
+        if matches!(resolution, DnsResolution::UpstreamProxy) {
             return Ok(Self {
                 original_destination: abyss_mitm::DestinationAddress::Unknown,
             });
