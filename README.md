@@ -1,6 +1,8 @@
 # Abyss: Non-invasive observability platform for AI Agent
 
-![Abyss observes AI agent traffic and publishes events for sessions, tools, and token usage.](docs/assets/abyss-overview-dark.svg)
+<p align="center">
+  <img src="docs/assets/abyss-overview-dark.svg" width="720" alt="Abyss observes AI agent traffic and publishes events for sessions, tools, and token usage." />
+</p>
 
 ## Overview
 
