@@ -1430,10 +1430,16 @@ where
 }
 
 fn client() -> Client {
-    Client::builder()
-        .timeout(REST_TIMEOUT)
-        .build()
-        .expect("reqwest client should build with static configuration")
+    // Reuse platform trust setup across timed REST checks and live-flow fixtures.
+    static REST_CLIENT: OnceLock<Client> = OnceLock::new();
+    REST_CLIENT
+        .get_or_init(|| {
+            Client::builder()
+                .timeout(REST_TIMEOUT)
+                .build()
+                .expect("reqwest client should build with static configuration")
+        })
+        .clone()
 }
 
 fn reserve_api_loopback_addr() -> SocketAddr {
