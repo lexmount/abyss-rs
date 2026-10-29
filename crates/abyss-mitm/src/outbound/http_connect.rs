@@ -3,19 +3,23 @@
 use std::{
     io,
     net::{IpAddr, SocketAddr},
+    sync::Arc,
     time::Duration,
 };
 
 use futures_util::{StreamExt as _, stream::FuturesUnordered};
 use tokio::{
     io::{AsyncReadExt as _, AsyncWriteExt as _},
-    net::{TcpStream, lookup_host},
+    net::{TcpSocket, TcpStream, lookup_host},
     time::{self, Instant},
 };
 
 use crate::{BoxedDuplexStream, TargetAuthority, transparent::PrefixedDuplexStream};
 
-use super::{ProxyConnectStage, UpstreamProxyConfig, UpstreamProxyConfigError, UpstreamProxyError};
+use super::{
+    ProxyConnectStage, ProxySocketInitializer, UpstreamProxyConfig, UpstreamProxyConfigError,
+    UpstreamProxyError,
+};
 
 const MAX_HEADER_BYTES: usize = 16 * 1024;
 const MAX_HEADERS: usize = 64;
@@ -27,6 +31,8 @@ pub struct HttpConnectProxy {
     endpoint: TargetAuthority,
     connect_timeout: Duration,
     handshake_timeout: Duration,
+    socket_initializer: Option<Arc<dyn ProxySocketInitializer>>,
+    excluded_endpoints: Vec<SocketAddr>,
 }
 
 /// A target tunnel plus its actual next-hop transport peer.
@@ -49,7 +55,23 @@ impl HttpConnectProxy {
             endpoint: config.target()?,
             connect_timeout: config.connect_timeout(),
             handshake_timeout: config.handshake_timeout(),
+            socket_initializer: None,
+            excluded_endpoints: Vec::new(),
         })
+    }
+
+    /// Associates this flow's platform state with every next-hop socket before TCP connect.
+    #[must_use]
+    pub fn with_socket_initializer(mut self, initializer: Arc<dyn ProxySocketInitializer>) -> Self {
+        self.socket_initializer = Some(initializer);
+        self
+    }
+
+    /// Excludes a bound ingress listener when tunneling is deferred until protocol detection.
+    #[must_use]
+    pub fn excluding_endpoint(mut self, endpoint: SocketAddr) -> Self {
+        self.excluded_endpoints.push(endpoint);
+        self
     }
 
     /// Returns the configured proxy authority without credentials or URL details.
@@ -93,6 +115,7 @@ impl HttpConnectProxy {
         if let Some(address) = addresses.iter().find(|address| {
             excluded_endpoints
                 .iter()
+                .chain(&self.excluded_endpoints)
                 .any(|listener| same_endpoint(**address, *listener))
         }) {
             return Err(UpstreamProxyError::Loop { address: *address });
@@ -155,7 +178,7 @@ impl HttpConnectProxy {
         let attempts = async {
             let mut pending = addresses
                 .iter()
-                .map(TcpStream::connect)
+                .map(|address| self.connect_address(*address))
                 .collect::<FuturesUnordered<_>>();
             let mut last_error =
                 io::Error::new(io::ErrorKind::NotFound, "proxy resolved to no addresses");
@@ -177,6 +200,18 @@ impl HttpConnectProxy {
                 stage: ProxyConnectStage::ConnectProxy,
                 source,
             })
+    }
+
+    async fn connect_address(&self, address: SocketAddr) -> io::Result<TcpStream> {
+        let socket = if address.is_ipv4() {
+            TcpSocket::new_v4()?
+        } else {
+            TcpSocket::new_v6()?
+        };
+        if let Some(initializer) = &self.socket_initializer {
+            initializer.initialize(&socket)?;
+        }
+        socket.connect(address).await
     }
 
     async fn handshake(

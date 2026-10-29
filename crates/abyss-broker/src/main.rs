@@ -106,7 +106,6 @@ async fn run(
     let runtime_policy_path = RuntimePolicies::default_path(&abyss_home);
     let runtime_policies = RuntimePolicies::load(&runtime_policy_path).await?;
     let network = network_config::NetworkRuntime::new(
-        broker_config.proxy.mode,
         broker_config.proxy.upstream.clone(),
         runtime_policies.network.clone(),
     )?;

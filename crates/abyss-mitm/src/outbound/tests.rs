@@ -12,6 +12,109 @@ use tokio::{
 use super::{HttpConnectProxy, ProxyConnectStage, UpstreamProxyConfig, UpstreamProxyError};
 use crate::TargetAuthority;
 
+struct RecordingSocketInitializer {
+    initialized: std::sync::atomic::AtomicUsize,
+    reject: bool,
+}
+
+impl super::ProxySocketInitializer for RecordingSocketInitializer {
+    fn initialize(&self, socket: &tokio::net::TcpSocket) -> std::io::Result<()> {
+        // Binding succeeds only before the connector binds/connects the socket.
+        socket.bind(SocketAddr::from(([127, 0, 0, 1], 0)))?;
+        self.initialized
+            .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        if self.reject {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::PermissionDenied,
+                "platform socket setup failed",
+            ));
+        }
+        Ok(())
+    }
+}
+
+#[tokio::test]
+async fn socket_setup_precedes_connect_and_preserves_tunnel_bytes() {
+    let mut fixture =
+        ProxyFixture::start(b"HTTP/1.1 200 OK\r\n\r\nprefix".to_vec(), Duration::ZERO).await;
+    let initializer = std::sync::Arc::new(RecordingSocketInitializer {
+        initialized: std::sync::atomic::AtomicUsize::new(0),
+        reject: false,
+    });
+    fixture.connector = fixture
+        .connector
+        .with_socket_initializer(initializer.clone());
+    let mut tunnel = fixture.connect("target.invalid:8443").await.unwrap();
+    let mut prefix = [0_u8; 6];
+    tunnel.stream.read_exact(&mut prefix).await.unwrap();
+    assert_eq!(&prefix, b"prefix");
+    assert_eq!(
+        initializer
+            .initialized
+            .load(std::sync::atomic::Ordering::SeqCst),
+        1
+    );
+    tunnel.stream.shutdown().await.unwrap();
+    assert_eq!(
+        fixture.task.await.unwrap(),
+        b"CONNECT target.invalid:8443 HTTP/1.1\r\nHost: target.invalid:8443\r\n\r\n"
+    );
+}
+
+#[tokio::test]
+async fn socket_setup_failure_never_dials_the_proxy_without_context() {
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let initializer = std::sync::Arc::new(RecordingSocketInitializer {
+        initialized: std::sync::atomic::AtomicUsize::new(0),
+        reject: true,
+    });
+    let proxy = HttpConnectProxy::new(&config(listener.local_addr().unwrap()))
+        .unwrap()
+        .with_socket_initializer(initializer.clone());
+    let result = proxy
+        .connect_tunnel(&TargetAuthority::parse("target.invalid:443").unwrap(), &[])
+        .await;
+    assert!(
+        matches!(result, Err(UpstreamProxyError::Io { stage: ProxyConnectStage::ConnectProxy, source }) if source.kind() == std::io::ErrorKind::PermissionDenied)
+    );
+    assert_eq!(
+        initializer
+            .initialized
+            .load(std::sync::atomic::Ordering::SeqCst),
+        1
+    );
+    assert!(
+        timeout(Duration::from_millis(50), listener.accept())
+            .await
+            .is_err(),
+        "no connection may bypass platform setup"
+    );
+}
+
+#[tokio::test]
+async fn deferred_tunnel_rejects_its_ingress_listener_before_socket_setup() {
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let address = listener.local_addr().unwrap();
+    let initializer = std::sync::Arc::new(RecordingSocketInitializer {
+        initialized: std::sync::atomic::AtomicUsize::new(0),
+        reject: false,
+    });
+    let proxy = HttpConnectProxy::new(&config(address))
+        .unwrap()
+        .with_socket_initializer(initializer.clone())
+        .excluding_endpoint(address);
+    let result = proxy
+        .connect_tunnel(&TargetAuthority::parse("target.invalid:443").unwrap(), &[])
+        .await;
+    assert!(matches!(result, Err(UpstreamProxyError::Loop { .. })));
+    assert_eq!(
+        initializer
+            .initialized
+            .load(std::sync::atomic::Ordering::SeqCst),
+        0
+    );
+}
+
 struct ProxyFixture {
     connector: HttpConnectProxy,
     task: JoinHandle<Vec<u8>>,

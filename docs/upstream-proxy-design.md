@@ -1,7 +1,7 @@
 # Abyss Broker Upstream Proxy Chain Design
 
-Status: implemented for explicit ingress and macOS Network Extension ingress.
-Windows WFP routing, proxy TLS, authentication and SOCKS5 remain deferred.
+Status: implemented for explicit ingress, macOS Network Extension, and Windows
+WFP ingress. Proxy TLS, authentication and SOCKS5 remain deferred.
 See [transparent routing](transparent-upstream-routing.md) for the platform
 boundary and durable network configuration API added after the initial release.
 

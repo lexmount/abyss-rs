@@ -1,7 +1,9 @@
 //! Loopback TCP ingress for Windows WFP connect redirection.
 
-use std::net::SocketAddr;
+use std::{net::SocketAddr, sync::Arc};
 
+use super::upstream::WfpSocketInitializer;
+use crate::network_config::NetworkRuntime;
 use abyss_mitm::SourceProcess;
 use tokio::net::{TcpListener, TcpStream};
 
@@ -34,21 +36,25 @@ impl IngressEndpoint {
 
     /// Converts the endpoint into its concrete ingress factory.
     #[must_use]
-    pub const fn into_factory(self) -> RedirectedTcpIngressFactory {
-        RedirectedTcpIngressFactory::new(self.listen_addr)
+    pub const fn into_factory(self, network: NetworkRuntime) -> RedirectedTcpIngressFactory {
+        RedirectedTcpIngressFactory::new(self.listen_addr, network)
     }
 }
 
 /// Factory for loopback TCP ingress used by Windows connect redirection.
 pub struct RedirectedTcpIngressFactory {
     listen_addr: SocketAddr,
+    network: NetworkRuntime,
 }
 
 impl RedirectedTcpIngressFactory {
     /// Creates a loopback TCP ingress factory.
     #[must_use]
-    pub const fn new(listen_addr: SocketAddr) -> Self {
-        Self { listen_addr }
+    pub const fn new(listen_addr: SocketAddr, network: NetworkRuntime) -> Self {
+        Self {
+            listen_addr,
+            network,
+        }
     }
 }
 
@@ -56,7 +62,7 @@ impl IngressFactory for RedirectedTcpIngressFactory {
     type Ingress = RedirectedTcpIngress;
 
     async fn start(self) -> Result<StartedIngress<Self::Ingress>, IngressError> {
-        let ingress = RedirectedTcpIngress::bind(self.listen_addr).await?;
+        let ingress = RedirectedTcpIngress::bind(self.listen_addr, self.network).await?;
         let status = IngressRuntimeStatus::windows_wfp(ingress.listen_addr());
         Ok(StartedIngress::new(ingress, status))
     }
@@ -67,6 +73,7 @@ pub struct RedirectedTcpIngress {
     listener: TcpListener,
     listen_addr: SocketAddr,
     process_context_resolver: SharedProcessContextResolver,
+    network: NetworkRuntime,
 }
 
 impl RedirectedTcpIngress {
@@ -76,7 +83,10 @@ impl RedirectedTcpIngress {
     ///
     /// Returns an error when binding fails or the concrete listener address
     /// cannot be read.
-    pub async fn bind(listen_addr: SocketAddr) -> Result<Self, IngressError> {
+    pub async fn bind(
+        listen_addr: SocketAddr,
+        network: NetworkRuntime,
+    ) -> Result<Self, IngressError> {
         let listener = TcpListener::bind(listen_addr)
             .await
             .map_err(|source| IngressError::bind(listen_addr, source))?;
@@ -88,6 +98,7 @@ impl RedirectedTcpIngress {
             listener,
             listen_addr,
             process_context_resolver: default_process_context_resolver(),
+            network,
         })
     }
 
@@ -103,6 +114,7 @@ pub struct RedirectedTcpConnection {
     stream: TcpStream,
     peer_addr: SocketAddr,
     process_context_resolver: SharedProcessContextResolver,
+    proxy: Option<abyss_mitm::outbound::HttpConnectProxy>,
 }
 
 impl RedirectedTcpConnection {
@@ -169,6 +181,7 @@ impl Ingress for RedirectedTcpIngress {
             stream,
             peer_addr,
             process_context_resolver: self.process_context_resolver.clone(),
+            proxy: self.network.snapshot().proxy().cloned(),
         })
     }
 }
@@ -179,6 +192,7 @@ impl IngressConnection for RedirectedTcpConnection {
             stream,
             peer_addr,
             process_context_resolver,
+            proxy,
         } = self;
         let local_addr = Self::accepted_local_addr(&stream, peer_addr)?;
         let (stream, redirect_metadata) = tokio::task::spawn_blocking(move || {
@@ -187,12 +201,35 @@ impl IngressConnection for RedirectedTcpConnection {
                 peer_addr,
                 local_addr,
                 process_context_resolver.as_ref(),
-            );
+            )
+            .and_then(|metadata| {
+                let proxy = proxy
+                    .map(|proxy| {
+                        WfpSocketInitializer::query(&stream)
+                            .map(|initializer| {
+                                proxy
+                                    .with_socket_initializer(Arc::new(initializer))
+                                    .excluding_endpoint(local_addr)
+                            })
+                            .map_err(|source| {
+                                IngressError::redirect_context(peer_addr, local_addr, source)
+                            })
+                    })
+                    .transpose()?;
+                Ok((metadata, proxy))
+            });
             (stream, redirect_metadata)
         })
         .await
         .map_err(|source| IngressError::task("query Windows redirect context", source))?;
-        let (original_destination, source_process) = redirect_metadata?;
+        let ((original_destination, source_process), proxy) = redirect_metadata?;
+        let target = proxy
+            .as_ref()
+            .map(|_| {
+                abyss_mitm::TargetAuthority::parse(&original_destination.to_string())
+                    .map_err(|source| IngressError::redirect_context(peer_addr, local_addr, source))
+            })
+            .transpose()?;
 
         tracing::info!(
             %peer_addr,
@@ -206,7 +243,7 @@ impl IngressConnection for RedirectedTcpConnection {
             source_entry_point = ?source_process.as_ref().and_then(|source| source.entry_point.as_deref()),
             "broker ingress accepted redirected TCP flow"
         );
-        Ok(PlatformFlow::new(
+        let flow = PlatformFlow::new(
             stream,
             PlatformFlowMetadata::from_parts(
                 Some(peer_addr),
@@ -218,7 +255,11 @@ impl IngressConnection for RedirectedTcpConnection {
         )
         .with_ingress(abyss_mitm::FlowIngress::transparent(
             abyss_mitm::TransparentFlowSource::WindowsWfp,
-        )))
+        ));
+        Ok(match proxy.zip(target) {
+            Some((proxy, target)) => flow.with_upstream_proxy(proxy, target),
+            None => flow,
+        })
     }
 }
 
@@ -234,6 +275,43 @@ mod tests {
     };
 
     struct FixedProcessContext(Option<&'static str>);
+
+    fn test_network() -> crate::network_config::NetworkRuntime {
+        crate::network_config::NetworkRuntime::new(None, None).unwrap()
+    }
+
+    #[tokio::test]
+    async fn accepted_connection_keeps_route_selected_before_hot_update() {
+        let network = test_network();
+        let configured = serde_json::from_value(serde_json::json!({"upstream": {
+            "protocol": "http_connect", "endpoint": "http://127.0.0.1:3128"
+        }}))
+        .unwrap();
+        network.publish(crate::network_config::NetworkRuntime::validate(configured).unwrap());
+        let mut ingress =
+            RedirectedTcpIngress::bind("127.0.0.1:0".parse().unwrap(), network.clone())
+                .await
+                .unwrap();
+        let first_client = TcpStream::connect(ingress.listen_addr()).await.unwrap();
+        let first = ingress.accept().await.unwrap();
+        network.publish(
+            crate::network_config::NetworkRuntime::validate(
+                crate::network_config::NetworkConfig::default(),
+            )
+            .unwrap(),
+        );
+        let second_client = TcpStream::connect(ingress.listen_addr()).await.unwrap();
+        let second = ingress.accept().await.unwrap();
+        assert_eq!(
+            first.proxy.as_ref().unwrap().endpoint().authority(),
+            "127.0.0.1:3128"
+        );
+        assert!(
+            second.proxy.is_none(),
+            "new connections use the updated direct route"
+        );
+        drop((first, second, first_client, second_client));
+    }
 
     impl ProcessContextResolver for FixedProcessContext {
         fn working_directory(
@@ -309,6 +387,7 @@ mod tests {
             "127.0.0.1:0"
                 .parse()
                 .expect("loopback ingress address should parse"),
+            test_network(),
         )
         .start()
         .await
@@ -331,6 +410,7 @@ mod tests {
             "127.0.0.1:0"
                 .parse()
                 .expect("loopback ingress address should parse"),
+            test_network(),
         )
         .await
         .expect("test ingress should bind");

@@ -1,4 +1,4 @@
-//! Small platform adapters used by the broker.
+//! Safe wrappers around native OS APIs used by the broker.
 
 #[cfg(target_os = "windows")]
 mod callout;
@@ -7,7 +7,7 @@ mod macos;
 #[cfg(target_os = "windows")]
 pub mod windows;
 #[cfg(target_os = "windows")]
-mod winsock;
+pub mod winsock;
 
 #[cfg(target_os = "windows")]
 pub use callout::query_redirect_metadata;

@@ -7,7 +7,7 @@ or intercept loopback connections to an Agent-configured proxy.
 ```mermaid
 flowchart LR
     A[Agent HTTPS connection] --> NE[macOS Network Extension]
-    W[Windows WFP adapter] -. future proxy socket context .-> F
+    W[Windows WFP adapter] -->|Redirect records| F
     NE --> F[Normalized PlatformFlow]
     F --> R[Snapshot of outbound route]
     R -->|Direct| D[OS destination socket]
@@ -19,15 +19,20 @@ flowchart LR
     M -->|Passthrough policy| B[Encrypted byte relay]
 ```
 
-Both HTTP CONNECT clients of the explicit listener and macOS transparent flows
+HTTP CONNECT clients of the explicit listener and macOS/Windows transparent flows
 require the broker's shared `NetworkRuntime` and use `HttpConnectProxy`.
 Listener plans contain only their binding endpoints. There is no optional
 runtime, private ingress runtime, or static next-hop fallback.
 The native extension remains a framing and metadata
-adapter. Platform support is checked by `NetworkRuntime`: explicit ingress and
-macOS support configured routing; Windows WFP currently permits direct routing
-only. Enabling WFP later requires a socket transport that associates redirect
-context before connecting to the next hop. The WFP implementation is unchanged.
+adapter. All three ingress modes use the same `NetworkRuntime`. Windows retrieves
+the opaque WFP redirect records from the accepted connection and associates them
+with every candidate next-hop socket before TCP connect. These OS records differ
+from the callout's original-destination context. Record-query or socket-setup
+failure closes the flow; it never retries without records or falls back to direct.
+The shared connector retains its DNS/connect deadlines and CONNECT framing rules.
+Windows excludes its bound ingress endpoint, including mapped IPv6 equivalents,
+from proxy candidates. The Host must exclude external proxy processes where
+their outbound traffic would otherwise re-enter the configured chain.
 
 For configured routes, a native hostname is preferred. If native metadata has
 only an IP, TLS SNI (or an HTTP Host hostname) supplies the logical target.
@@ -51,6 +56,7 @@ flowchart LR
     V -->|Publish hot update| N
     N --> E[Explicit ingress: snapshot at accept]
     N --> T[macOS ingress: snapshot at accept]
+    N --> W[Windows WFP ingress: snapshot at accept]
 ```
 
 Configuration files are startup inputs, not a watched source or a per-connection
@@ -65,7 +71,7 @@ sequenceDiagram
     participant Route as Shared route snapshots
     UI->>Host: updateNetworkConfig
     Host->>API: Authenticated PUT /v1/network/config
-    API->>API: Validate protocol and platform capability
+    API->>API: Validate proxy protocol and endpoint
     API->>Disk: Atomic durable replacement
     Disk-->>API: Committed
     API->>Route: Publish validated snapshot
@@ -94,3 +100,11 @@ and published macOS framed-flow boundaries. They cover startup-only file reads,
 hot route updates, stream continuity, direct mode, and restart persistence.
 Live Network Extension activation still requires a
 signed product build on macOS.
+
+On Windows, `scripts/blackbox_abyss_broker_windows_upstream.py` exercises a real
+WFP broker supplied by the Host, an isolated Node test executable, and local
+CONNECT peers. It verifies HTTP Host and TLS SNI routing, nondefault target ports,
+TLS passthrough, target-certificate rejection, SSE continuity during hot updates,
+proxy rejection diagnostics, and self-loop rejection. `--trusted-tls-host` adds
+interception and direct-route checks against a public HTTPS target. The script
+restores network and TLS policy; service/driver setup remains Host-owned.
