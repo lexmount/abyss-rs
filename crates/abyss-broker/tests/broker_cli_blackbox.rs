@@ -1799,9 +1799,10 @@ impl BrokerProcess {
 
     #[cfg(unix)]
     fn wait_for_completed_flow_diagnostics(&mut self) -> serde_json::Value {
-        let start_time = Instant::now();
         let token = read_auth_token(&self.auth_token_file);
         let http_client = client();
+        // Client setup can load platform trust stores; give polling its full timeout.
+        let start_time = Instant::now();
         while start_time.elapsed() < STARTUP_TIMEOUT {
             if let Ok(response) = http_client
                 .get(url(self.api_addr, "/v1/support/diagnostics"))
