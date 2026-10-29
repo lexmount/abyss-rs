@@ -5,7 +5,7 @@ use std::{io, os::windows::io::AsSocket as _};
 use abyss_mitm::outbound::ProxySocketInitializer;
 use tokio::net::{TcpSocket, TcpStream};
 
-use crate::sys::RedirectRecords;
+use super::redirect_records::RedirectRecords;
 
 pub(super) struct WfpSocketInitializer {
     records: RedirectRecords,

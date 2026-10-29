@@ -1,18 +1,13 @@
-//! Small platform adapters used by the broker.
+//! Safe wrappers around native OS APIs used by the broker.
 
 #[cfg(target_os = "windows")]
 mod callout;
 #[cfg(target_os = "macos")]
 mod macos;
 #[cfg(target_os = "windows")]
-mod redirect_records;
-#[cfg(target_os = "windows")]
 pub mod windows;
 #[cfg(target_os = "windows")]
-mod winsock;
-
-#[cfg(target_os = "windows")]
-pub use redirect_records::RedirectRecords;
+pub mod winsock;
 
 #[cfg(target_os = "windows")]
 pub use callout::query_redirect_metadata;

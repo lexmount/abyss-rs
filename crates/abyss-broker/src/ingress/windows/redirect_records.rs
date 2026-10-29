@@ -1,4 +1,4 @@
-//! Owns opaque WFP redirect records and transfers them to outbound sockets.
+//! Owns WFP redirect records for an ingress flow and transfers them to outbound sockets.
 //!
 //! These OS records are distinct from the callout driver's destination context.
 //! Their contents are never decoded or synthesized by the broker.
@@ -9,19 +9,19 @@ use windows::Win32::Networking::WinSock::{
     SIO_QUERY_WFP_CONNECTION_REDIRECT_RECORDS, SIO_SET_WFP_CONNECTION_REDIRECT_RECORDS, WSAEFAULT,
 };
 
-use super::winsock::{self, WinSockError};
+use crate::sys::winsock::{self, WinSockError};
 
 const INITIAL_RECORD_CAPACITY: usize = 1024;
 // Bound allocation for the variable-size OS record chain before retrying.
 const MAX_RECORD_CAPACITY: usize = 1024 * 1024;
 
 #[repr(transparent)]
-pub struct RedirectRecords {
+pub(super) struct RedirectRecords {
     inner: Box<[u8]>,
 }
 
 impl RedirectRecords {
-    pub fn query(socket: BorrowedSocket<'_>) -> io::Result<Self> {
+    pub(super) fn query(socket: BorrowedSocket<'_>) -> io::Result<Self> {
         let query = |capacity| {
             winsock::ioctl_output_buffer(
                 socket,
@@ -43,9 +43,9 @@ impl RedirectRecords {
                     }
                     capacity = next;
                 }
-                // WSAIoctl may signal a short buffer without a required length.
-                // All supplied pointers are valid; retry only this documented
-                // sizing error, with bounded geometric growth and no decoding.
+                // Native WFP testing returned WSAEFAULT for a short buffer
+                // without a required length. The IOCTL wrapper supplies valid
+                // pointers; accommodate this behavior with bounded growth.
                 Err(WinSockError::Api { code })
                     if code == WSAEFAULT.0 && capacity < MAX_RECORD_CAPACITY =>
                 {
@@ -72,7 +72,7 @@ impl RedirectRecords {
             })
     }
 
-    pub fn apply(&self, socket: BorrowedSocket<'_>) -> io::Result<()> {
+    pub(super) fn apply(&self, socket: BorrowedSocket<'_>) -> io::Result<()> {
         winsock::ioctl_input_buffer(socket, SIO_SET_WFP_CONNECTION_REDIRECT_RECORDS, &self.inner)
             .map_err(io::Error::other)
     }
