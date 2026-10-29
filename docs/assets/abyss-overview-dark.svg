@@ -182,11 +182,6 @@
   <g class="s" font-size="13" font-weight="600" fill="#f6f5fb" text-anchor="middle">
     <text x="170" y="190">AI agents</text><text x="360" y="190">Abyss</text><text x="550" y="190">Model providers</text>
   </g>
-  <g class="s" font-size="10" fill="#a9a5b4" text-anchor="middle">
-    <text x="170" y="206">Codex · Claude Code · more</text>
-    <text x="360" y="206">Policy-controlled observation</text>
-    <text x="550" y="206">OpenAI · Anthropic · more</text>
-  </g>
 
   <!-- Bidirectional model traffic. The middle junction belongs to Abyss. -->
   <path d="M170 212v27h380v-27" stroke="#8b6cf0" stroke-width="5" stroke-opacity=".27" filter="url(#abyss-glow)"/>
@@ -246,10 +241,6 @@
   <g class="s" font-size="13" font-weight="600" fill="#f6f5fb">
     <text x="118" y="339">Sessions, tools &amp; tokens</text>
     <text x="602" y="339" text-anchor="end">Plugins &amp; SDKs</text>
-  </g>
-  <g class="m" font-size="10" fill="#a9a5b4">
-    <text x="118" y="373">Dashboard &amp; history</text>
-    <text x="602" y="373" text-anchor="end">Export &amp; integrate</text>
   </g>
   <text x="34" y="402" class="m" font-size="9" fill="#746c81" letter-spacing=".04em">OPEN SOURCE / NO AGENT CODE CHANGES</text>
   <circle class="led" cx="547" cy="398.5" r="2" fill="#c4b5fd"/>
