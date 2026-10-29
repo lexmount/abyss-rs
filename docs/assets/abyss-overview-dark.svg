@@ -1,0 +1,257 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="720" height="422" viewBox="0 0 720 422" fill="none" role="img" aria-labelledby="abyss-title abyss-description">
+  <title id="abyss-title">Abyss — observability for AI agents</title>
+  <desc id="abyss-description">AI agents send requests to model providers through the local Abyss runtime. Abyss observes traffic according to capture policy, parses supported protocols, and publishes normalized events for sessions, tool activity, and token usage. Dashboards and plugins consume those events. Animated requests and responses travel across the upper line, then events flow to the two outputs below.</desc>
+  <!-- 720 × 422. Website dark palette; reference typography and isometric linework.
+       Standalone SVG: no scripts, remote resources, or embedded raster images. -->
+  <style>
+    .s { font-family: Geist, Inter, -apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial, sans-serif; }
+    .m { font-family: 'Geist Mono', ui-monospace, SFMono-Regular, Menlo, monospace; }
+    text { font-kerning: normal; }
+    .wire { stroke-linecap: round; stroke-linejoin: round; }
+    .edge { stroke: #a9a5b4; stroke-width: .9; stroke-linejoin: round; stroke-linecap: round; }
+    .detail { stroke: #484052; stroke-width: .8; stroke-linecap: round; }
+    .packet, .trail, .node-highlight, .event-flash { opacity: 0; }
+    @keyframes forward { to { stroke-dashoffset: -24; } }
+    @keyframes led { 0%, 100% { fill-opacity: 1; } 50% { fill-opacity: .2; } }
+    @keyframes cursor { 0%, 49% { fill-opacity: 1; } 50%, 100% { fill-opacity: 0; } }
+    @keyframes request {
+      0% { transform: translate(0,0); opacity: 0; }
+      1% { opacity: 1; }
+      1.86636% { transform: translate(0,27px); }
+      28.13364% { transform: translate(380px,27px); }
+      30%, 32% { transform: translate(380px,0); opacity: 1; }
+      34%, 100% { transform: translate(380px,0); opacity: 0; }
+    }
+    @keyframes response {
+      0%, 36% { transform: translate(0,0); opacity: 0; }
+      37% { opacity: 1; }
+      37.86636% { transform: translate(0,27px); }
+      64.13364% { transform: translate(-380px,27px); }
+      66%, 67% { transform: translate(-380px,0); opacity: 1; }
+      69%, 100% { transform: translate(-380px,0); opacity: 0; }
+    }
+    @keyframes request-trail {
+      0% { stroke-dashoffset: 434; opacity: 0; }
+      1% { opacity: .85; }
+      30%, 32% { stroke-dashoffset: 0; opacity: .85; }
+      35%, 100% { stroke-dashoffset: 0; opacity: 0; }
+    }
+    @keyframes response-trail {
+      0%, 36% { stroke-dashoffset: 434; opacity: 0; }
+      37% { opacity: .7; }
+      66%, 67% { stroke-dashoffset: 0; opacity: .7; }
+      70%, 100% { stroke-dashoffset: 0; opacity: 0; }
+    }
+    @keyframes event-left {
+      0%, 67% { transform: translate(0,0); opacity: 0; }
+      68% { opacity: 1; }
+      75.97808% { transform: translate(0,113px); }
+      96%, 97% { transform: translate(-252px,113px); opacity: 1; }
+      99%, 100% { transform: translate(-252px,113px); opacity: 0; }
+    }
+    @keyframes event-right {
+      0%, 67% { transform: translate(0,0); opacity: 0; }
+      68% { opacity: 1; }
+      75.97808% { transform: translate(0,113px); }
+      96%, 97% { transform: translate(252px,113px); opacity: 1; }
+      99%, 100% { transform: translate(252px,113px); opacity: 0; }
+    }
+    @keyframes event-trail {
+      0%, 67% { stroke-dashoffset: 365; opacity: 0; }
+      68% { opacity: .8; }
+      96%, 97% { stroke-dashoffset: 0; opacity: .8; }
+      100% { stroke-dashoffset: 0; opacity: 0; }
+    }
+    @keyframes agent-active { 0%, 7%, 61%, 68% { opacity: 1; } 10%, 58%, 71%, 100% { opacity: 0; } }
+    @keyframes abyss-active { 0%, 10%, 22%, 46%, 58%, 64%, 84%, 100% { opacity: 0; } 13%, 19%, 49%, 55%, 67%, 80% { opacity: 1; } }
+    @keyframes provider-active { 0%, 25%, 44%, 100% { opacity: 0; } 28%, 40% { opacity: 1; } }
+    @keyframes output-active { 0%, 89%, 100% { opacity: 0; } 94%, 98% { opacity: 1; } }
+    @media (prefers-reduced-motion: no-preference) {
+      .flow-forward { animation: forward 1.4s linear infinite; }
+      .led { animation: led 2.4s ease-in-out infinite; }
+      .cursor { animation: cursor 1.1s steps(1) infinite; }
+      .request { animation: request 12s linear infinite; }
+      .response { animation: response 12s linear infinite; }
+      .request-trail { animation: request-trail 12s linear infinite; }
+      .response-trail { animation: response-trail 12s linear infinite; }
+      .event-left { animation: event-left 12s linear infinite; }
+      .event-right { animation: event-right 12s linear infinite; }
+      .event-trail { animation: event-trail 12s linear infinite; }
+      .agent-active { animation: agent-active 12s linear infinite; }
+      .abyss-active { animation: abyss-active 12s linear infinite; }
+      .provider-active { animation: provider-active 12s linear infinite; }
+      .output-active { animation: output-active 12s linear infinite; }
+    }
+  </style>
+  <defs>
+    <pattern id="abyss-dots" width="16" height="16" patternUnits="userSpaceOnUse">
+      <circle cx="8" cy="8" r=".7" fill="#c4b5fd" fill-opacity=".1"/>
+    </pattern>
+    <radialGradient id="abyss-wash" cx="50%" cy="35%" r="65%">
+      <stop stop-color="#7c3aed" stop-opacity=".09"/>
+      <stop offset="1" stop-color="#7c3aed" stop-opacity="0"/>
+    </radialGradient>
+    <filter id="abyss-grain" x="0" y="0" width="100%" height="100%">
+      <feTurbulence type="fractalNoise" baseFrequency=".9" numOctaves="2" seed="7" stitchTiles="stitch"/>
+      <feColorMatrix values="0 0 0 0 .5  0 0 0 0 .5  0 0 0 0 .5  0 0 0 .035 0"/>
+    </filter>
+    <filter id="abyss-glow" filterUnits="userSpaceOnUse" x="0" y="0" width="720" height="422">
+      <feGaussianBlur stdDeviation="3"/>
+    </filter>
+    <clipPath id="abyss-card"><rect x=".5" y=".5" width="719" height="421" rx="14"/></clipPath>
+    <g id="abyss-layer" class="edge">
+      <path d="M41.6 24 0 48v9l41.6-24Z" fill="#1f1b29"/>
+      <path d="M-41.6 24 0 48v9l-41.6-24Z" fill="#15111e"/>
+      <path d="M0 0 41.6 24 0 48-41.6 24Z" fill="#15111e"/>
+      <path d="m-36.4 30 0 4m3.5-2v4m3.5-2v4" class="detail"/>
+    </g>
+    <g id="abyss-mark" stroke="#c4b5fd" stroke-width="1.8" stroke-linejoin="round">
+      <path d="M24 4.75C19.1 8.63 14.1 10.6 8.25 12.05V22.15C8.25 31.05 13.18 38.02 24 44.25C34.82 38.02 39.75 31.05 39.75 22.15V12.05C33.9 10.6 28.9 8.63 24 4.75Z"/>
+      <circle cx="24" cy="24" r="7.25"/>
+      <path d="M31.25 24H34.2" stroke-linecap="round"/>
+    </g>
+  </defs>
+
+  <!-- Card, registration marks, and figure caption. -->
+  <rect x=".5" y=".5" width="719" height="421" rx="14" fill="#08050f"/>
+  <g clip-path="url(#abyss-card)">
+    <rect width="720" height="422" fill="url(#abyss-wash)"/>
+    <rect width="720" height="422" fill="url(#abyss-dots)"/>
+    <rect width="720" height="422" filter="url(#abyss-grain)"/>
+  </g>
+  <rect x=".5" y=".5" width="719" height="421" rx="14" stroke="#2b2735"/>
+  <path d="M15 20h10m-5-5v10M695 20h10m-5-5v10M15 402h10m-5-5v10M695 402h10m-5-5v10" stroke="#484052" stroke-width=".75"/>
+  <text x="34" y="24.5" class="m" font-size="10" fill="#a9a5b4" letter-spacing=".08em">FIG 0.0</text>
+  <text x="686" y="24.5" class="m" font-size="10" fill="#a9a5b4" letter-spacing=".08em" text-anchor="end">ABYSS / AI AGENT OBSERVABILITY</text>
+
+  <!-- Execution boundaries use the reference's bracket treatment. -->
+  <path d="M100 43v8m314-8v8M100 47h105m104 0h105" stroke="#a9a5b4" stroke-width="1"/>
+  <text x="257" y="51" class="s" font-size="11.5" font-weight="600" fill="#f6f5fb" text-anchor="middle">On your machine</text>
+  <path d="M480 43v8m140-8v8M480 47h17m106 0h17" stroke="#8b6cf0" stroke-width="1"/>
+  <text x="550" y="51" class="s" font-size="11.5" font-weight="600" fill="#c4b5fd" text-anchor="middle">Your model APIs</text>
+
+  <!-- AI agent: layered isometric terminal. -->
+  <path d="m138 116 88.3 51-31.2 18-88.3-51Z" stroke="#363140" stroke-width=".8" stroke-dasharray="2 3"/>
+  <g transform="matrix(.866 .5 0 1 146 114)">
+    <rect x="0" y="-48" width="78" height="50" rx="5" fill="#08050f" stroke="#484052" stroke-width=".9" stroke-dasharray="2 3"/>
+  </g>
+  <g transform="matrix(.866 .5 0 1 132 122)" class="wire">
+    <rect x="0" y="-56" width="86" height="56" rx="5" fill="#15111e" stroke="#a9a5b4" stroke-width=".9"/>
+    <path d="M0-44h86" class="detail"/>
+    <g fill="#746c81"><circle cx="7" cy="-50" r="1.5"/><circle cx="12.5" cy="-50" r="1.5"/><circle cx="18" cy="-50" r="1.5"/></g>
+    <path d="m8-36 4 3-4 3" stroke="#c4b5fd" stroke-width="1.1"/>
+    <path d="M18-33h38" stroke="#a9a5b4" stroke-width="1.1"/>
+    <path d="M8-24h59m-59 6h43m-43 6h55" class="detail"/>
+    <path d="m8-10 4 3-4 3" stroke="#746c81" stroke-width="1.1"/>
+    <rect class="cursor" x="18" y="-11" width="4.5" height="7" fill="#c4b5fd"/>
+  </g>
+
+  <!-- Abyss: layered runtime with the official shield mark on its top face. -->
+  <g transform="translate(360 67)">
+    <path d="m-41.6 66 41.6 24 41.6-24m-83.2 12 41.6 24 41.6-24" stroke="#484052" stroke-width=".8" stroke-dasharray="2 3"/>
+    <use href="#abyss-layer" y="30"/>
+    <use href="#abyss-layer" y="15"/>
+    <use href="#abyss-layer"/>
+    <path d="M0 0 41.6 24 0 48-41.6 24Z" stroke="#c4b5fd" stroke-width="1"/>
+    <g transform="matrix(.866 .5 -.866 .5 0 0)"><use href="#abyss-mark"/></g>
+    <g fill="#c4b5fd">
+      <path class="led" d="m-8 46 4 2.3v2.6L-8 48.6Z"/>
+      <path class="led" style="animation-delay:-.8s" d="m-8 61 4 2.3v2.6L-8 63.6Z"/>
+      <path class="led" style="animation-delay:-1.6s" d="m-8 76 4 2.3v2.6L-8 78.6Z"/>
+    </g>
+  </g>
+
+  <!-- Provider: separate server stack, independent of agent identity. -->
+  <g transform="translate(550 73)">
+    <path d="m-41.6 66 41.6 24 41.6-24" stroke="#484052" stroke-width=".8" stroke-dasharray="2 3"/>
+    <use href="#abyss-layer" y="24"/>
+    <use href="#abyss-layer" y="12"/>
+    <use href="#abyss-layer"/>
+    <g transform="matrix(.866 .5 -.866 .5 0 0)">
+      <rect x="12" y="12" width="24" height="24" rx="4" stroke="#a9a5b4" stroke-width=".9"/>
+      <path d="M18 12V7m6 5V7m6 5V7m-12 29v5m6-5v5m6-5v5M12 18H7m5 6H7m5 6H7m29-12h5m-5 6h5m-5 6h5" stroke="#484052" stroke-width=".8"/>
+      <path d="m19 24 5-5 5 5-5 5Z" stroke="#c4b5fd" stroke-width="1.1"/>
+    </g>
+    <path class="led" style="animation-delay:-1.2s" d="m-8 46 4 2.3v2.6L-8 48.6Z" fill="#c4b5fd"/>
+  </g>
+
+  <!-- Node labels: 13px semibold, as in the reference. -->
+  <rect class="node-highlight agent-active" x="129" y="173.5" width="82" height="24" rx="12" fill="#2d2547"/>
+  <rect class="node-highlight abyss-active" x="326" y="173.5" width="68" height="24" rx="12" fill="#2d2547"/>
+  <rect class="node-highlight provider-active" x="501" y="173.5" width="98" height="24" rx="12" fill="#2d2547"/>
+  <g class="s" font-size="13" font-weight="600" fill="#f6f5fb" text-anchor="middle">
+    <text x="170" y="190">AI agents</text><text x="360" y="190">Abyss</text><text x="550" y="190">Model providers</text>
+  </g>
+  <g class="s" font-size="10" fill="#a9a5b4" text-anchor="middle">
+    <text x="170" y="206">Codex · Claude Code · more</text>
+    <text x="360" y="206">Policy-controlled observation</text>
+    <text x="550" y="206">OpenAI · Anthropic · more</text>
+  </g>
+
+  <!-- Bidirectional model traffic. The middle junction belongs to Abyss. -->
+  <path d="M170 212v27h380v-27" stroke="#8b6cf0" stroke-width="5" stroke-opacity=".27" filter="url(#abyss-glow)"/>
+  <path d="M170 212v27h380v-27" class="wire" stroke="#8b6cf0" stroke-width=".9" stroke-opacity=".65"/>
+  <path d="M173 235.5h374M173 242.5h374" stroke="#c4b5fd" stroke-width=".6" stroke-opacity=".28"/>
+  <path class="wire flow-forward" d="M170 212v27h380v-27" stroke="#c4b5fd" stroke-width="1.7" stroke-dasharray="4 20"/>
+  <path d="M360 212v27" stroke="#c4b5fd" stroke-width="1"/>
+  <path class="wire trail request-trail" d="M170 212v27h380v-27" stroke="#c4b5fd" stroke-width="2.2" stroke-dasharray="434 444" stroke-dashoffset="434"/>
+  <path class="wire trail response-trail" d="M550 212v27H170v-27" stroke="#f6f5fb" stroke-width="1.6" stroke-dasharray="434 444" stroke-dashoffset="434"/>
+  <g fill="#08050f" stroke="#c4b5fd" stroke-width="1.4">
+    <circle cx="170" cy="239" r="4.2"/><circle cx="360" cy="239" r="4.6"/><circle cx="550" cy="239" r="4.2"/>
+  </g>
+  <g fill="#c4b5fd"><circle cx="170" cy="239" r="1.5"/><circle cx="360" cy="239" r="1.7"/><circle cx="550" cy="239" r="1.5"/></g>
+  <circle class="packet request" cx="170" cy="212" r="4.2" fill="#c4b5fd" stroke="#08050f" stroke-width="1.6"/>
+  <circle class="packet response" cx="550" cy="212" r="4.2" fill="#f6f5fb" stroke="#08050f" stroke-width="1.6"/>
+  <text x="170" y="265" class="m" font-size="10" fill="#a9a5b4">HTTP / HTTPS / WS</text>
+  <text x="550" y="265" class="m" font-size="10" fill="#a9a5b4" text-anchor="end">REQUEST ↔ RESPONSE</text>
+
+  <!-- Observation branches off the model traffic into a common event stream. -->
+  <path d="M360 244v108H108m252 0h252" class="wire" stroke="#746c81" stroke-width="1"/>
+  <path d="M360 244v108H108" class="wire flow-forward" stroke="#a9a5b4" stroke-width="1.8" stroke-dasharray="3 21"/>
+  <path d="M360 352h252" class="wire flow-forward" stroke="#a9a5b4" stroke-width="1.8" stroke-dasharray="3 21"/>
+  <path class="wire trail event-trail" d="M360 239v113H108" stroke="#c4b5fd" stroke-width="1.8" stroke-dasharray="365 375" stroke-dashoffset="365"/>
+  <path class="wire trail event-trail" d="M360 239v113h252" stroke="#c4b5fd" stroke-width="1.8" stroke-dasharray="365 375" stroke-dashoffset="365"/>
+  <circle class="packet event-left" cx="360" cy="239" r="3.8" fill="#c4b5fd" stroke="#08050f" stroke-width="1.5"/>
+  <circle class="packet event-right" cx="360" cy="239" r="3.8" fill="#c4b5fd" stroke="#08050f" stroke-width="1.5"/>
+  <rect x="288" y="292" width="144" height="27" rx="13.5" fill="#15111e" stroke="#363140" stroke-width=".8"/>
+  <rect class="event-flash abyss-active" x="288" y="292" width="144" height="27" rx="13.5" fill="#2d2547" stroke="#8b6cf0" stroke-width=".8"/>
+  <text x="360" y="309.5" class="s" font-size="11.5" fill="#c4b5fd" font-weight="600" text-anchor="middle">Normalized events</text>
+  <g fill="#08050f" stroke="#a9a5b4" stroke-width="1.2"><circle cx="108" cy="352" r="3.2"/><circle cx="360" cy="352" r="4.2"/><circle cx="612" cy="352" r="3.2"/></g>
+  <circle cx="360" cy="352" r="1.5" fill="#c4b5fd"/>
+
+  <!-- A compact dashboard at the event stream's left endpoint. -->
+  <path d="m48 353.5 53.7 31-15.6 9-53.7-31Z" stroke="#363140" stroke-width=".8" stroke-dasharray="2 3"/>
+  <g transform="matrix(.866 .5 0 1 51 354)"><rect y="-38" width="50" height="38" rx="4" fill="#08050f" stroke="#484052" stroke-width=".8"/></g>
+  <g transform="matrix(.866 .5 0 1 44 358)" class="wire">
+    <rect y="-38" width="50" height="38" rx="4" fill="#15111e" stroke="#a9a5b4" stroke-width=".9"/>
+    <path d="M0-28h50" class="detail"/>
+    <circle class="led" cx="6" cy="-33" r="1.6" fill="#c4b5fd"/>
+    <path d="M13-33h25M7-21h12m-12 6h9m-9 6h13" class="detail"/>
+    <path d="M27-9v-6m6 6v-11m6 11v-17" stroke="#c4b5fd" stroke-width="2"/>
+    <path class="event-flash output-active" d="M27-9v-6m6 6v-11m6 11v-17" stroke="#f6f5fb" stroke-width="2"/>
+  </g>
+
+  <!-- A compact plugin/code window at the right endpoint. -->
+  <path d="m638 350 45 26-12 7-45-26Z" stroke="#363140" stroke-width=".8" stroke-dasharray="2 3"/>
+  <g transform="matrix(.866 .5 0 1 642 350)"><rect y="-33" width="46" height="34" rx="4" fill="#08050f" stroke="#484052" stroke-width=".8" stroke-dasharray="2 3"/></g>
+  <g transform="matrix(.866 .5 0 1 635 354)" class="wire">
+    <rect y="-35" width="46" height="35" rx="4" fill="#15111e" stroke="#a9a5b4" stroke-width=".9"/>
+    <path d="M0-25h46" class="detail"/>
+    <circle class="led" style="animation-delay:-.8s" cx="6" cy="-30" r="1.6" fill="#c4b5fd"/>
+    <path d="M13-30h26" class="detail"/>
+    <path d="m15-19-5 5 5 5m16-10 5 5-5 5m-6-13-4 16" stroke="#c4b5fd" stroke-width="1.2"/>
+    <path class="event-flash output-active" d="m15-19-5 5 5 5m16-10 5 5-5 5" stroke="#f6f5fb" stroke-width="1.2"/>
+  </g>
+
+  <g class="s" font-size="13" font-weight="600" fill="#f6f5fb">
+    <text x="118" y="339">Sessions, tools &amp; tokens</text>
+    <text x="602" y="339" text-anchor="end">Plugins &amp; SDKs</text>
+  </g>
+  <g class="m" font-size="10" fill="#a9a5b4">
+    <text x="118" y="373">Dashboard &amp; history</text>
+    <text x="602" y="373" text-anchor="end">Export &amp; integrate</text>
+  </g>
+  <text x="34" y="402" class="m" font-size="9" fill="#746c81" letter-spacing=".04em">OPEN SOURCE / NO AGENT CODE CHANGES</text>
+  <circle class="led" cx="547" cy="398.5" r="2" fill="#c4b5fd"/>
+  <text x="686" y="402" class="m" font-size="9" fill="#a9a5b4" text-anchor="end">LOCAL OBSERVATION</text>
+</svg>
