@@ -327,7 +327,7 @@ impl RuntimePolicyTransaction {
         &mut self,
         config: NetworkConfig,
     ) -> Result<NetworkConfig, BrokerError> {
-        let validated = self.network.validate(config.clone())?;
+        let validated = NetworkRuntime::validate(config.clone())?;
         let candidate = RuntimePolicies {
             network: Some(config.clone()),
             ..self.current.clone()
@@ -1003,18 +1003,9 @@ mod tests {
 
     #[tokio::test]
     async fn network_override_survives_restart_and_clear_overrides_startup() {
-        for mode in [
-            crate::config::ProxyIngressMode::Explicit,
-            crate::config::ProxyIngressMode::MacosNetworkExtension,
-        ] {
-            assert_network_override_survives_restart(mode).await;
-        }
-    }
-
-    async fn assert_network_override_survives_restart(mode: crate::config::ProxyIngressMode) {
         let path = temp_policy_path();
         let config = proxy_network("http://127.0.0.1:3128");
-        let runtime = NetworkRuntime::new(mode, config.upstream.clone(), None).unwrap();
+        let runtime = NetworkRuntime::new(config.upstream.clone(), None).unwrap();
         let service = RuntimeConfigService::new(
             Arc::new(test_mitm_engine()),
             HooksRuntimeConfig::default_enabled(),
@@ -1044,7 +1035,7 @@ mod tests {
             .await
             .unwrap();
         let loaded = RuntimePolicies::load(&path).await.unwrap();
-        let restarted = NetworkRuntime::new(mode, config.upstream, loaded.network).unwrap();
+        let restarted = NetworkRuntime::new(config.upstream, loaded.network).unwrap();
         assert!(
             restarted.config().upstream.is_none(),
             "clearing must not resurrect startup proxy"
@@ -1082,21 +1073,15 @@ mod tests {
     }
 
     #[test]
-    fn windows_wfp_rejects_upstream_without_changing_the_common_contract() {
-        let runtime =
-            NetworkRuntime::new(crate::config::ProxyIngressMode::WindowsWfp, None, None).unwrap();
-        assert!(
-            runtime
-                .validate(proxy_network("http://127.0.0.1:3128"))
-                .is_err()
-        );
-        assert!(runtime.validate(super::NetworkConfig::default()).is_ok());
+    fn validating_a_proxy_does_not_publish_it() {
+        let runtime = NetworkRuntime::new(None, None).unwrap();
+        assert!(NetworkRuntime::validate(proxy_network("http://127.0.0.1:3128")).is_ok());
+        assert!(NetworkRuntime::validate(super::NetworkConfig::default()).is_ok());
         assert!(runtime.config().upstream.is_none());
     }
 
     fn test_network() -> NetworkRuntime {
-        NetworkRuntime::new(crate::config::ProxyIngressMode::Explicit, None, None)
-            .expect("direct network config")
+        NetworkRuntime::new(None, None).expect("direct network config")
     }
 
     fn test_service(policy_path: &Path) -> RuntimeConfigService {

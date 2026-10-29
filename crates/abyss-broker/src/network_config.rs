@@ -1,4 +1,4 @@
-//! Shared next-hop policy and platform capability boundary.
+//! Shared next-hop policy for explicit and platform transparent ingress.
 //!
 //! Startup files initialize one runtime, which is required by every ingress
 //! supporting configured routes. REST updates publish to that same runtime;
@@ -13,7 +13,7 @@ use abyss_mitm::outbound::{HttpConnectProxy, UpstreamProxyConfig};
 use parking_lot::RwLock;
 use serde::{Deserialize, Serialize};
 
-use crate::{config::ProxyIngressMode, error::BrokerError};
+use crate::error::BrokerError;
 
 /// Editable outbound route. No upstream means direct routing.
 #[derive(Debug, Clone, Default, Deserialize, PartialEq, Serialize)]
@@ -21,14 +21,6 @@ use crate::{config::ProxyIngressMode, error::BrokerError};
 pub struct NetworkConfig {
     /// Optional next hop using the shared upstream protocol configuration.
     pub upstream: Option<UpstreamProxyConfig>,
-}
-
-/// Transport capabilities of the selected ingress, independent of UI platform.
-#[derive(Clone, Copy)]
-enum OutboundCapability {
-    HttpConnect,
-    /// WFP must supply redirect context before proxy socket creation is enabled.
-    DirectOnly,
 }
 
 /// Validated policy retained for the complete lifetime of one connection.
@@ -47,30 +39,21 @@ impl NetworkSnapshot {
 /// Shared policy publisher; only the runtime configuration transaction writes it.
 #[derive(Clone)]
 pub struct NetworkRuntime {
-    capability: OutboundCapability,
     current: Arc<RwLock<Arc<NetworkSnapshot>>>,
     persisted: Option<NetworkConfig>,
 }
 
 impl NetworkRuntime {
-    /// Resolves a durable override over startup defaults and validates support.
+    /// Resolves a durable override over startup defaults and validates the route.
     pub fn new(
-        mode: ProxyIngressMode,
         startup_upstream: Option<UpstreamProxyConfig>,
         persisted: Option<NetworkConfig>,
     ) -> Result<Self, BrokerError> {
-        let capability = match mode {
-            ProxyIngressMode::Explicit | ProxyIngressMode::MacosNetworkExtension => {
-                OutboundCapability::HttpConnect
-            }
-            ProxyIngressMode::WindowsWfp => OutboundCapability::DirectOnly,
-        };
         let config = persisted.clone().unwrap_or(NetworkConfig {
             upstream: startup_upstream,
         });
-        let snapshot = Self::validate_for(capability, config)?;
+        let snapshot = Self::validate(config)?;
         Ok(Self {
-            capability,
             current: Arc::new(RwLock::new(snapshot)),
             persisted,
         })
@@ -89,19 +72,7 @@ impl NetworkRuntime {
         self.persisted.clone()
     }
 
-    pub fn validate(&self, config: NetworkConfig) -> Result<Arc<NetworkSnapshot>, BrokerError> {
-        Self::validate_for(self.capability, config)
-    }
-
-    fn validate_for(
-        capability: OutboundCapability,
-        config: NetworkConfig,
-    ) -> Result<Arc<NetworkSnapshot>, BrokerError> {
-        if config.upstream.is_some() && matches!(capability, OutboundCapability::DirectOnly) {
-            return Err(BrokerError::invalid_config(
-                "configured upstream is not supported by Windows WFP ingress",
-            ));
-        }
+    pub fn validate(config: NetworkConfig) -> Result<Arc<NetworkSnapshot>, BrokerError> {
         let proxy = config
             .upstream
             .as_ref()

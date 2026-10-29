@@ -36,8 +36,7 @@ failure. This setting does not route delivery-plugin or CLI download traffic.
 
 The initial implementation supports unauthenticated HTTP/1.1 CONNECT over TCP.
 It does not require a new CA or credential file. HTTPS proxy endpoints, proxy
-authentication and SOCKS5 are not yet supported. Windows WFP upstream routing
-is reserved but not enabled.
+authentication and SOCKS5 are not yet supported.
 The next hop must permit CONNECT to each required target port, including port
 80 for plaintext HTTP. Avoid routing the next hop back into Abyss.
 
@@ -56,9 +55,29 @@ The Network Extension continues delivering normalized flows. The broker owns
 CONNECT negotiation and uses the same MITM/capture pipeline inside the tunnel.
 No loopback interception or proxy-vendor integration is needed.
 
+## Windows transparent routing
+
+`[proxy.upstream]` also applies to `mode = "windows_wfp"`. Keep the dynamic
+loopback endpoint supplied by the Host; do not configure `listen_addr` or
+`socket_path`. The broker transfers the accepted connection's opaque WFP redirect
+records to each next-hop socket before connecting. Query or association failures
+close that flow without attempting an untracked connection or direct fallback.
+
+The original destination port is retained. TLS SNI or an HTTP Host hostname
+supplies the CONNECT target when WFP provides only an IP address. Without a
+hostname, the original IP is sent to the proxy. Direct mode retains the OS
+destination. The next hop cannot point back to the broker's bound listener.
+External proxy processes must be excluded from the Host's interception policy
+when their own outbound connections would otherwise re-enter this proxy chain.
+
+With a test Host redirecting an isolated Node executable, run
+`scripts/blackbox_abyss_broker_windows_upstream.py --help` for native WFP checks.
+It uses local CONNECT peers and restores TLS/network policy after testing.
+An optional `--trusted-tls-host` adds a public HTTPS interception check.
+
 ## Live proxy-chain configuration
 
-Explicit ingress and macOS transparent ingress require the same shared
+Explicit ingress and both macOS and Windows transparent ingress require the same shared
 `NetworkRuntime`. Startup files initialize it once, and authenticated REST
 updates replace its validated snapshot. Listener plans contain only endpoints;
 they do not carry a second upstream configuration or a static fallback.

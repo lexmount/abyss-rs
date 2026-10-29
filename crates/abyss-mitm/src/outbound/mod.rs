@@ -16,6 +16,18 @@ use std::{io, net::SocketAddr, time::Duration};
 
 use thiserror::Error;
 
+/// Per-flow socket setup performed before connecting to a next-hop address.
+///
+/// Platform adapters use this to associate native connection tracking records.
+/// An error aborts that socket attempt; the connector never retries without setup.
+pub trait ProxySocketInitializer: Send + Sync {
+    /// Initializes a fresh, unconnected socket. Called for every address attempt.
+    ///
+    /// # Errors
+    /// Returns an error when the platform cannot associate its connection state.
+    fn initialize(&self, socket: &tokio::net::TcpSocket) -> io::Result<()>;
+}
+
 /// Establishment phase used to attribute next-hop failures.
 #[derive(Debug, Clone, Copy, PartialEq)]
 #[non_exhaustive]

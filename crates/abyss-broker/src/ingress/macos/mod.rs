@@ -1048,12 +1048,8 @@ mod tests {
     }
 
     fn test_network() -> crate::network_config::NetworkRuntime {
-        crate::network_config::NetworkRuntime::new(
-            crate::config::ProxyIngressMode::MacosNetworkExtension,
-            None,
-            None,
-        )
-        .expect("test network policy should be valid")
+        crate::network_config::NetworkRuntime::new(None, None)
+            .expect("test network policy should be valid")
     }
 
     #[tokio::test]

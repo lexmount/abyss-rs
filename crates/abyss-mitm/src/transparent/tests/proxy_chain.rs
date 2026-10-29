@@ -27,12 +27,15 @@ struct ObservedTarget {
 impl MitmHook for ObservedTarget {
     fn on_http_exchange<'a>(&'a self, exchange: &'a HttpExchange) -> HookFuture<'a> {
         self.exchanges.lock().push((
-            exchange
-                .flow
-                .ingress
-                .proxy_target()
-                .expect("explicit authority")
-                .authority(),
+            exchange.flow.ingress.proxy_target().map_or_else(
+                || match &exchange.flow.protocol {
+                    crate::TransparentProtocol::TlsHttp { server_name } => {
+                        format!("{server_name}:443")
+                    }
+                    _ => panic!("expected TLS HTTP target"),
+                },
+                TargetAuthority::authority,
+            ),
             exchange.flow.original_destination.socket_addr().is_none(),
         ));
         Box::pin(future::ready(Ok(())))
@@ -46,14 +49,15 @@ async fn preserves_separate_client_and_target_trust_over_connect() {
             TlsDecryptionAction::Intercept,
             TlsDecryptionAction::Passthrough,
         ] {
-            run_tls_chain(action).await;
+            run_tls_chain(action, false).await;
+            run_tls_chain(action, true).await;
         }
     })
     .await
     .expect("TLS chain test must finish");
 }
 
-async fn run_tls_chain(action: TlsDecryptionAction) {
+async fn run_tls_chain(action: TlsDecryptionAction, transparent: bool) {
     let broker_ca = test_ca();
     let target_ca = test_ca();
     let host = "only-proxy-knows.invalid";
@@ -67,25 +71,8 @@ async fn run_tls_chain(action: TlsDecryptionAction) {
         handshake_timeout_ms: 1000,
     })
     .expect("proxy configuration");
-    let tunnel = connector
-        .connect(&target, "127.0.0.1:0".parse().expect("listener"))
-        .await
-        .expect("CONNECT tunnel");
     let (client_tcp, server) = connected_pair().await;
-    let flow = AcceptedTcpFlow::from_destination_parts(
-        Box::new(server),
-        None,
-        None,
-        DestinationAddress::Unknown,
-        None,
-    )
-    .with_ingress(FlowIngress::ExplicitProxy {
-        protocol: ExplicitProxyProtocol::HttpConnect,
-        target,
-        upstream_proxy: Some(tunnel.proxy_peer),
-        proxy_endpoint: Some(proxy_address.to_string()),
-    })
-    .with_prepared_stream(tunnel.stream);
+    let flow = chain_flow(server, connector, target, transparent).await;
     let observations = ObservedTarget {
         exchanges: Arc::default(),
     };
@@ -141,8 +128,8 @@ async fn run_tls_chain(action: TlsDecryptionAction) {
         }
         assert_eq!(
             *observations.exchanges.lock(),
-            vec![("only-proxy-knows.invalid:443".to_owned(), true)],
-            "hook sees original target and unknown target IP"
+            vec![("only-proxy-knows.invalid:443".to_owned(), !transparent)],
+            "hook sees logical target and preserves OS destination availability"
         );
     } else {
         assert!(
@@ -153,6 +140,46 @@ async fn run_tls_chain(action: TlsDecryptionAction) {
             observations.exchanges.lock().is_empty(),
             "passthrough does not emit content events"
         );
+    }
+}
+
+async fn chain_flow(
+    server: TcpStream,
+    connector: HttpConnectProxy,
+    target: TargetAuthority,
+    transparent: bool,
+) -> AcceptedTcpFlow {
+    if transparent {
+        AcceptedTcpFlow::from_destination_parts(
+            Box::new(server),
+            None,
+            None,
+            DestinationAddress::Known("198.18.0.1:443".parse().unwrap()),
+            None,
+        )
+        .with_ingress(FlowIngress::transparent(
+            crate::TransparentFlowSource::WindowsWfp,
+        ))
+        .with_upstream_proxy(connector, TargetAuthority::parse("198.18.0.1:443").unwrap())
+    } else {
+        let tunnel = connector
+            .connect(&target, "127.0.0.1:0".parse().unwrap())
+            .await
+            .unwrap();
+        AcceptedTcpFlow::from_destination_parts(
+            Box::new(server),
+            None,
+            None,
+            DestinationAddress::Unknown,
+            None,
+        )
+        .with_ingress(FlowIngress::ExplicitProxy {
+            protocol: ExplicitProxyProtocol::HttpConnect,
+            target,
+            upstream_proxy: Some(tunnel.proxy_peer),
+            proxy_endpoint: Some(connector.endpoint().authority()),
+        })
+        .with_prepared_stream(tunnel.stream)
     }
 }
 

@@ -49,8 +49,8 @@ paths:
     put:
       description: >-
         Applies to new connections only. Null upstream selects direct routing.
-        Supports explicit ingress and macOS Network Extension; Windows WFP
-        rejects a non-null upstream. A failure never enables direct fallback.
+        Supports explicit ingress, macOS Network Extension, and Windows WFP.
+        A failure never enables direct fallback.
       operationId: updateNetworkConfig
       requestBody:
         required: true

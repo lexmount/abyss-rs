@@ -401,12 +401,6 @@ impl ProxyConfig {
                 .map_err(|error| BrokerConfigError::Invalid {
                     message: error.to_string(),
                 })?;
-            if self.mode == ProxyIngressMode::WindowsWfp {
-                return Err(BrokerConfigError::Invalid {
-                    message: "configured upstream is not supported by Windows WFP ingress"
-                        .to_owned(),
-                });
-            }
         }
         match self.mode {
             ProxyIngressMode::Explicit => {
@@ -735,16 +729,16 @@ socket_path = "run/flow.sock"
         let upstream = config.proxy.upstream.as_ref().expect("upstream retained");
         assert_eq!(upstream.connect_timeout_ms, 10_000, "default timeout");
         config.proxy.plan().expect("explicit proxy plan");
-        for mode in ["windows_wfp"] {
+        for mode in ["windows_wfp", "macos_network_extension"] {
             let contents = format!(
                 "schema_version = 1\n[proxy]\nmode = {mode:?}\n[proxy.upstream]\nprotocol = \"http_connect\"\nendpoint = \"http://proxy.example:3128\"\n"
             );
-            let error = load_temp_config(&contents)
+            let config = load_temp_config(&contents)
                 .await
-                .expect_err("transparent chaining is unsupported");
+                .expect("transparent upstream configuration is supported");
             assert!(
-                error.to_string().contains("Windows WFP"),
-                "explain incompatible mode"
+                config.proxy.upstream.is_some(),
+                "transparent route retains its next hop"
             );
         }
         for endpoint in [

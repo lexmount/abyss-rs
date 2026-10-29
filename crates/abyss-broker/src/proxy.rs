@@ -302,10 +302,7 @@ impl StoppedProxyRuntime {
             }
             #[cfg(any(target_os = "macos", target_os = "windows"))]
             ProxyPlan::Transparent { transparent } => {
-                #[cfg(target_os = "macos")]
                 let factory = transparent.into_factory(services.network.clone());
-                #[cfg(target_os = "windows")]
-                let factory = transparent.into_factory();
                 let started = Self::bind_factory(factory).await?;
                 Self::spawn_started(started, services)
             }
@@ -866,12 +863,8 @@ mod tests {
 
     async fn test_proxy_service() -> ProxyService {
         let (mitm, diagnostics) = test_proxy_dependencies().await;
-        let network = crate::network_config::NetworkRuntime::new(
-            crate::config::ProxyIngressMode::Explicit,
-            None,
-            None,
-        )
-        .expect("test network policy should be valid");
+        let network = crate::network_config::NetworkRuntime::new(None, None)
+            .expect("test network policy should be valid");
         ProxyService::new(Arc::new(mitm), diagnostics, TrafficMonitor::new(), network)
     }
 

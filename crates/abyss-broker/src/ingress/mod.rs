@@ -435,7 +435,7 @@ impl PlatformFlow {
     }
 
     /// Selects a configured next hop for a normalized transparent flow.
-    #[cfg(target_os = "macos")]
+    #[cfg(any(target_os = "macos", target_os = "windows"))]
     #[must_use]
     pub fn with_upstream_proxy(
         mut self,
