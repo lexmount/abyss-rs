@@ -39,24 +39,6 @@ abyss deploy-local start
 abyss run -- codex
 ```
 
-**Supported Harnesses**
-
-- OpenAI Codex
-- Claude Code
-- Claude Desktop
-- [OpenCode](docs/opencode.md)
-- DeepSeek Harness: Headless, [dsh-tui](https://github.com/ccch1mneyyy/dsh-TUI), and Web UI
-
-**Supported Model Families**
-
-- OpenAI GPT / o-series
-- Anthropic Claude
-- DeepSeek
-- [GLM](docs/glm.md)
-- [Kimi](docs/kimi.md)
-- [Qwen](docs/qwen.md)
-- [MiniMax](docs/minimax.md)
-
 Open the dashboard to review captured activity, or inspect the runtime from your terminal:
 
 ```bash
@@ -67,6 +49,26 @@ abyss diagnostics
 
 See the [Abyss CLI guide](https://abyss.lexmount.cn/docs/product/open-source-software/abyss-cli)
 for configuration, capture controls, and lifecycle commands.
+
+## Supported Harnesses and Models
+
+| Harnesses | Desktop | CLI | Web |
+| --- | :---: | :---: | :---: |
+| <picture><source media="(prefers-color-scheme: dark)" srcset="https://cdn.jsdelivr.net/npm/@lobehub/icons-static-png@2.5.0/dark/codex.png"><img src="https://cdn.jsdelivr.net/npm/@lobehub/icons-static-png@2.5.0/light/codex.png" width="20" height="20" alt=""></picture> OpenAI Codex | ✅ | ✅ | ❌ |
+| <picture><source media="(prefers-color-scheme: dark)" srcset="https://cdn.jsdelivr.net/npm/@lobehub/icons-static-png@2.5.0/dark/claude-color.png"><img src="https://cdn.jsdelivr.net/npm/@lobehub/icons-static-png@2.5.0/light/claude-color.png" width="20" height="20" alt=""></picture> Claude Code | ✅ | ✅ | ❌ |
+| <picture><source media="(prefers-color-scheme: dark)" srcset="https://cdn.jsdelivr.net/npm/@lobehub/icons-static-png@2.5.0/dark/claude-color.png"><img src="https://cdn.jsdelivr.net/npm/@lobehub/icons-static-png@2.5.0/light/claude-color.png" width="20" height="20" alt=""></picture> Claude Desktop | ✅ | ❌ | ❌ |
+| <picture><source media="(prefers-color-scheme: dark)" srcset="https://cdn.jsdelivr.net/npm/@lobehub/icons-static-png@2.5.0/dark/opencode.png"><img src="https://cdn.jsdelivr.net/npm/@lobehub/icons-static-png@2.5.0/light/opencode.png" width="20" height="20" alt=""></picture> [OpenCode](docs/opencode.md) | ✅ | ✅ | ✅ |
+| <picture><source media="(prefers-color-scheme: dark)" srcset="https://cdn.jsdelivr.net/npm/@lobehub/icons-static-png@2.5.0/dark/deepseek-color.png"><img src="https://cdn.jsdelivr.net/npm/@lobehub/icons-static-png@2.5.0/light/deepseek-color.png" width="20" height="20" alt=""></picture> [DeepSeek Harness](docs/configuration.md) | ✅ | ✅ | ✅ |
+
+| Models | Supported |
+| --- | :---: |
+| <picture><source media="(prefers-color-scheme: dark)" srcset="https://cdn.jsdelivr.net/npm/@lobehub/icons-static-png@2.5.0/dark/openai.png"><img src="https://cdn.jsdelivr.net/npm/@lobehub/icons-static-png@2.5.0/light/openai.png" width="20" height="20" alt=""></picture> OpenAI GPT / o-series | ✅ |
+| <picture><source media="(prefers-color-scheme: dark)" srcset="https://cdn.jsdelivr.net/npm/@lobehub/icons-static-png@2.5.0/dark/claude-color.png"><img src="https://cdn.jsdelivr.net/npm/@lobehub/icons-static-png@2.5.0/light/claude-color.png" width="20" height="20" alt=""></picture> Anthropic Claude | ✅ |
+| <picture><source media="(prefers-color-scheme: dark)" srcset="https://cdn.jsdelivr.net/npm/@lobehub/icons-static-png@2.5.0/dark/deepseek-color.png"><img src="https://cdn.jsdelivr.net/npm/@lobehub/icons-static-png@2.5.0/light/deepseek-color.png" width="20" height="20" alt=""></picture> DeepSeek | ✅ |
+| <picture><source media="(prefers-color-scheme: dark)" srcset="https://cdn.jsdelivr.net/npm/@lobehub/icons-static-png@2.5.0/dark/zhipu-color.png"><img src="https://cdn.jsdelivr.net/npm/@lobehub/icons-static-png@2.5.0/light/zhipu-color.png" width="20" height="20" alt=""></picture> [GLM](docs/glm.md) | ✅ |
+| <picture><source media="(prefers-color-scheme: dark)" srcset="https://cdn.jsdelivr.net/npm/@lobehub/icons-static-png@2.5.0/dark/kimi-color.png"><img src="https://cdn.jsdelivr.net/npm/@lobehub/icons-static-png@2.5.0/light/kimi-color.png" width="20" height="20" alt=""></picture> [Kimi](docs/kimi.md) | ✅ |
+| <picture><source media="(prefers-color-scheme: dark)" srcset="https://cdn.jsdelivr.net/npm/@lobehub/icons-static-png@2.5.0/dark/qwen-color.png"><img src="https://cdn.jsdelivr.net/npm/@lobehub/icons-static-png@2.5.0/light/qwen-color.png" width="20" height="20" alt=""></picture> [Qwen](docs/qwen.md) | ✅ |
+| <picture><source media="(prefers-color-scheme: dark)" srcset="https://cdn.jsdelivr.net/npm/@lobehub/icons-static-png@2.5.0/dark/minimax-color.png"><img src="https://cdn.jsdelivr.net/npm/@lobehub/icons-static-png@2.5.0/light/minimax-color.png" width="20" height="20" alt=""></picture> [MiniMax](docs/minimax.md) | ✅ |
 
 ## Broker
 
