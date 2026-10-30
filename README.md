@@ -39,13 +39,15 @@ abyss deploy-local start
 abyss run -- codex
 ```
 
-Open the dashboard to review captured activity, or inspect the runtime from your terminal:
+Open the Abyss dashboard to explore sessions, model activity, and token usage:
 
 ```bash
 abyss dashboard
-abyss status
-abyss diagnostics
 ```
+
+![Abyss dashboard showing sessions, token usage, and activity trends with sample data](docs/assets/abyss-dashboard.jpg)
+
+*Dashboard preview with sample data.*
 
 See the [Abyss CLI guide](https://abyss.lexmount.cn/docs/product/open-source-software/abyss-cli)
 for configuration, capture controls, and lifecycle commands.
