@@ -11,8 +11,10 @@ use std::{
     os::windows::io::{AsRawSocket, BorrowedSocket},
 };
 
+use windows::Win32::Foundation::ERROR_INSUFFICIENT_BUFFER;
 use windows::Win32::Networking::WinSock::{
-    AF_INET, AF_INET6, SIO_QUERY_WFP_CONNECTION_REDIRECT_CONTEXT, SOCKET, WSAGetLastError, WSAIoctl,
+    AF_INET, AF_INET6, SIO_QUERY_WFP_CONNECTION_REDIRECT_CONTEXT, SOCKET, WSAEFAULT,
+    WSAGetLastError, WSAIoctl,
 };
 
 pub const SIO_QUERY_WFP_CONNECTION_REDIRECT_CONTEXT_CODE: u32 =
@@ -77,6 +79,15 @@ pub fn ioctl_output_buffer(
     if result != 0_i32 {
         // SAFETY: Reads the thread-local WinSock error from the failed call.
         let error = unsafe { WSAGetLastError() };
+        // Some providers report an undersized WFP record buffer as WSAEFAULT.
+        // Only treat it as a sizing response when the API reports actual growth.
+        if u32::try_from(error.0).ok() == Some(ERROR_INSUFFICIENT_BUFFER.0)
+            || (error == WSAEFAULT && bytes_returned > output_size)
+        {
+            return Err(WinSockError::InsufficientBuffer {
+                required: bytes_returned,
+            });
+        }
         return Err(WinSockError::Api { code: error.0 });
     }
     let returned_size =
@@ -97,9 +108,47 @@ pub fn ioctl_output_buffer(
     Ok(output.into_boxed_slice())
 }
 
+/// Runs a synchronous socket IOCTL with an input buffer and no output payload.
+pub fn ioctl_input_buffer(
+    socket: BorrowedSocket<'_>,
+    io_control_code: u32,
+    input: &[u8],
+) -> Result<(), WinSockError> {
+    let socket = SOCKET(
+        usize::try_from(socket.as_raw_socket()).map_err(|_| WinSockError::SocketDoesNotFitUsize)?,
+    );
+    let input_size = u32::try_from(input.len())
+        .map_err(|_| WinSockError::InputBufferTooLarge { size: input.len() })?;
+    let mut bytes_returned = 0_u32;
+    // SAFETY: The socket is borrowed from a live owner. Input points to
+    // input_size initialized bytes and remains alive until this synchronous
+    // call returns. The output count is writable; no output buffer is supplied.
+    let result = unsafe {
+        WSAIoctl(
+            socket,
+            io_control_code,
+            Some(input.as_ptr().cast::<c_void>()),
+            input_size,
+            None,
+            0,
+            &raw mut bytes_returned,
+            None,
+            None,
+        )
+    };
+    if result != 0_i32 {
+        // SAFETY: Reads this thread's error from the failed WinSock operation.
+        let error = unsafe { WSAGetLastError() };
+        return Err(WinSockError::Api { code: error.0 });
+    }
+    Ok(())
+}
+
 #[derive(Debug, Clone, Copy)]
 pub enum WinSockError {
     Api { code: i32 },
+    InsufficientBuffer { required: u32 },
+    InputBufferTooLarge { size: usize },
     SocketDoesNotFitUsize,
     OutputBufferTooSmall { size: usize },
     OutputBufferTooLarge { size: usize },
@@ -112,6 +161,12 @@ impl std::fmt::Display for WinSockError {
     fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             Self::Api { code } => write!(formatter, "WinSock error {code}"),
+            Self::InsufficientBuffer { required } => {
+                write!(formatter, "WinSock requires {required} output bytes")
+            }
+            Self::InputBufferTooLarge { size } => {
+                write!(formatter, "input buffer size {size} does not fit in u32")
+            }
             Self::SocketDoesNotFitUsize => formatter.write_str("socket handle does not fit usize"),
             Self::OutputBufferTooSmall { size } => {
                 write!(formatter, "output buffer size {size} is smaller than a u32")

@@ -1,6 +1,6 @@
 {
   "name": "@lexmount.com/abyss-sdk",
-  "version": "1.2.0",
+  "version": "1.4.0",
   "description": "Node.js SDK for the Abyss broker REST API and plugin event stream",
   "type": "module",
   "main": "./dist/index.js",

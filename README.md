@@ -1,5 +1,9 @@
 # Abyss: Non-invasive observability platform for AI Agent
 
+<p align="center">
+  <img src="docs/assets/abyss-overview-dark.svg" width="720" alt="Abyss observes AI agent traffic and publishes events for sessions, tools, and token usage." />
+</p>
+
 ## Overview
 
 Abyss is an open-source observability platform for AI agents. It observes

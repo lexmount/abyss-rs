@@ -21,7 +21,7 @@ use crate::{
     ExplicitProxyProtocol, TargetAuthority, TargetHost, http1::Http1Error, tls::TlsMitmError,
 };
 
-use super::{decrypt_policy::TlsDecryptionPolicyError, hook::CapturedBody};
+use super::{DestinationAddress, decrypt_policy::TlsDecryptionPolicyError, hook::CapturedBody};
 
 /// Original remote endpoint captured before the OS redirected the connection.
 #[derive(Debug, Clone)]
@@ -51,6 +51,10 @@ pub enum FlowIngress {
         protocol: ExplicitProxyProtocol,
         /// Authority requested by the proxy client before DNS resolution.
         target: TargetAuthority,
+        /// Actual next-hop peer when an outbound CONNECT tunnel was used.
+        upstream_proxy: Option<SocketAddr>,
+        /// Validated configured proxy authority, independent of DNS-selected peer.
+        proxy_endpoint: Option<String>,
     },
 }
 
@@ -104,6 +108,12 @@ pub enum FlowOperation {
     WriteProviderRequestBody,
     /// Write a locally generated `100 Continue` response to the Agent.
     WriteAgentContinueResponse,
+    /// Resolve the configured next-hop proxy, never the logical target.
+    ResolveProxy,
+    /// Connect to the next-hop proxy's TCP endpoint.
+    ConnectProxyTcp,
+    /// Negotiate an HTTP CONNECT target tunnel.
+    ProxyConnectHandshake,
     /// Connect to the provider's TCP endpoint.
     ConnectProviderTcp,
     /// Establish TLS between Abyss and the provider.
@@ -147,6 +157,9 @@ impl FlowOperation {
             Self::WriteProviderRequestHead => "write_provider_request_head",
             Self::WriteProviderRequestBody => "write_provider_request_body",
             Self::WriteAgentContinueResponse => "write_agent_continue_response",
+            Self::ResolveProxy => "resolve_proxy",
+            Self::ConnectProxyTcp => "connect_proxy_tcp",
+            Self::ProxyConnectHandshake => "proxy_connect_handshake",
             Self::ConnectProviderTcp => "connect_provider_tcp",
             Self::ConnectProviderTls => "connect_provider_tls",
             Self::WriteProviderTlsClientHello => "write_provider_tls_client_hello",
@@ -176,6 +189,9 @@ impl FlowOperation {
             "write_provider_request_head" => Self::WriteProviderRequestHead,
             "write_provider_request_body" => Self::WriteProviderRequestBody,
             "write_agent_continue_response" => Self::WriteAgentContinueResponse,
+            "resolve_proxy" => Self::ResolveProxy,
+            "connect_proxy_tcp" => Self::ConnectProxyTcp,
+            "proxy_connect_handshake" => Self::ProxyConnectHandshake,
             "connect_provider_tcp" => Self::ConnectProviderTcp,
             "connect_provider_tls" => Self::ConnectProviderTls,
             "write_provider_tls_client_hello" => Self::WriteProviderTlsClientHello,
@@ -246,6 +262,24 @@ impl FlowIngress {
         }
     }
 
+    /// Returns the connected next-hop peer, separately from the logical target.
+    #[must_use]
+    pub const fn upstream_proxy(&self) -> Option<SocketAddr> {
+        match self {
+            Self::ExplicitProxy { upstream_proxy, .. } => *upstream_proxy,
+            Self::Transparent { .. } => None,
+        }
+    }
+
+    /// Returns the configured next-hop authority when chaining is enabled.
+    #[must_use]
+    pub fn proxy_endpoint(&self) -> Option<&str> {
+        match self {
+            Self::ExplicitProxy { proxy_endpoint, .. } => proxy_endpoint.as_deref(),
+            Self::Transparent { .. } => None,
+        }
+    }
+
     pub(super) const fn requires_tls_server_name_validation(&self) -> bool {
         matches!(
             self,
@@ -306,7 +340,7 @@ pub struct InterceptedHttpOutcome {
     /// Local broker listener address for this accepted connection when available.
     pub local_addr: Option<SocketAddr>,
     /// Original remote endpoint captured before platform redirection.
-    pub original_destination: OriginalDestination,
+    pub original_destination: DestinationAddress,
     /// Decoded application protocol.
     pub protocol: TransparentProtocol,
     /// First HTTP/1 request observed on the decoded client stream.
@@ -328,7 +362,7 @@ pub struct TransparentPassthroughOutcome {
     /// Local broker listener address for this accepted connection when available.
     pub local_addr: Option<SocketAddr>,
     /// Original remote endpoint captured before platform redirection.
-    pub original_destination: OriginalDestination,
+    pub original_destination: DestinationAddress,
     /// Opaque protocol that was relayed without decryption.
     pub protocol: TransparentPassthroughProtocol,
     /// Bytes forwarded from client to upstream.
@@ -362,6 +396,17 @@ pub enum TransparentFlowOutcome {
 #[derive(Debug, Error)]
 #[non_exhaustive]
 pub enum TransparentFlowError {
+    /// Configured next-hop establishment failed; direct fallback is prohibited.
+    #[error("upstream proxy {endpoint} could not connect to {target}: {source}")]
+    UpstreamProxy {
+        /// Logical destination, independent of the next-hop socket.
+        target: crate::TargetAuthority,
+        /// Configured proxy authority, without URL or credentials.
+        endpoint: String,
+        /// Bounded protocol or transport failure.
+        #[source]
+        source: crate::outbound::UpstreamProxyError,
+    },
     /// The client closed before enough bytes were available to classify.
     #[error("client closed before transparent protocol detection")]
     ClientClosedBeforeProtocol,

@@ -72,7 +72,7 @@ pub struct FlowContext {
     /// Local broker listener address for this accepted connection when available.
     pub local_addr: Option<SocketAddr>,
     /// Original remote endpoint captured before platform redirection.
-    pub original_destination: OriginalDestination,
+    pub original_destination: super::DestinationAddress,
     /// Destination hostname recovered before DNS resolution, when available.
     pub destination_host: Option<String>,
     /// Decoded application protocol for this flow.
@@ -96,7 +96,7 @@ impl FlowContext {
             flow_id: FlowId::generate(),
             peer_addr: Some(peer_addr),
             local_addr: Some(local_addr),
-            original_destination,
+            original_destination: original_destination.into(),
             destination_host: None,
             protocol,
             source_process: None,
@@ -110,6 +110,24 @@ impl FlowContext {
         peer_addr: Option<SocketAddr>,
         local_addr: Option<SocketAddr>,
         original_destination: OriginalDestination,
+        protocol: TransparentProtocol,
+        source_process: Option<SourceProcess>,
+    ) -> Self {
+        Self::from_destination_parts(
+            peer_addr,
+            local_addr,
+            original_destination.into(),
+            protocol,
+            source_process,
+        )
+    }
+
+    /// Creates hook metadata with an explicitly unresolved target address.
+    #[must_use]
+    pub fn from_destination_parts(
+        peer_addr: Option<SocketAddr>,
+        local_addr: Option<SocketAddr>,
+        original_destination: super::DestinationAddress,
         protocol: TransparentProtocol,
         source_process: Option<SourceProcess>,
     ) -> Self {
@@ -1213,6 +1231,8 @@ mod tests {
             protocol,
         )
         .with_ingress(FlowIngress::ExplicitProxy {
+            upstream_proxy: None,
+            proxy_endpoint: None,
             protocol: proxy_protocol,
             target,
         })

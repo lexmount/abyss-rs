@@ -9,8 +9,8 @@ use std::{net::SocketAddr, sync::Arc};
 use tokio::net::TcpStream;
 
 use super::{
-    BoxedDuplexStream, DuplexStream, FlowId, FlowIngress, OriginalDestination, SourceProcess,
-    TrafficDirection, TrafficObserver, TransparentFlowSource,
+    BoxedDuplexStream, DestinationAddress, DuplexStream, FlowId, FlowIngress, OriginalDestination,
+    SourceProcess, TrafficDirection, TrafficObserver, TransparentFlowError, TransparentFlowSource,
     io::{ObservedStream, PrefixedDuplexStream},
 };
 
@@ -19,7 +19,41 @@ pub(super) enum UpstreamConnection {
     /// Connect to the normalized original destination inside the MITM pipeline.
     Deferred,
     /// Reuse a stream established while accepting an explicit proxy request.
-    Prepared(TcpStream),
+    Prepared(BoxedDuplexStream),
+    /// A configured next hop; target DNS and routing belong to that proxy.
+    HttpConnect {
+        proxy: crate::outbound::HttpConnectProxy,
+        target: crate::TargetAuthority,
+    },
+}
+
+impl UpstreamConnection {
+    /// TLS SNI supplies a logical hostname only when platform metadata had an IP.
+    /// The original destination port remains authoritative.
+    pub(super) fn with_server_name(
+        self,
+        server_name: Option<&str>,
+    ) -> Result<Self, TransparentFlowError> {
+        if let Self::HttpConnect { proxy, target } = self {
+            let target = match server_name {
+                Some(name) if target.host().as_ip_addr().is_some() => {
+                    crate::TargetAuthority::from_host_port(name, target.port()).map_err(|_| {
+                        TransparentFlowError::Io {
+                            operation: super::FlowOperation::ProxyConnectHandshake,
+                            source: std::io::Error::new(
+                                std::io::ErrorKind::InvalidInput,
+                                "invalid logical target hostname",
+                            ),
+                        }
+                    })?
+                }
+                _ => target,
+            };
+            Ok(Self::HttpConnect { proxy, target })
+        } else {
+            Ok(self)
+        }
+    }
 }
 
 /// Accepted transparent flow plus metadata needed by MITM processing.
@@ -28,7 +62,7 @@ pub struct AcceptedTcpFlow {
     pub(super) stream: BoxedDuplexStream,
     pub(super) peer_addr: Option<SocketAddr>,
     pub(super) local_addr: Option<SocketAddr>,
-    pub(super) original_destination: OriginalDestination,
+    pub(super) original_destination: DestinationAddress,
     pub(super) destination_host: Option<String>,
     pub(super) source_process: Option<SourceProcess>,
     pub(super) ingress: FlowIngress,
@@ -37,6 +71,18 @@ pub struct AcceptedTcpFlow {
 }
 
 impl AcceptedTcpFlow {
+    /// Routes this flow through a validated HTTP CONNECT next hop.
+    /// Target TLS validation and capture policy remain independent of routing.
+    #[must_use]
+    pub fn with_upstream_proxy(
+        mut self,
+        proxy: crate::outbound::HttpConnectProxy,
+        target: crate::TargetAuthority,
+    ) -> Self {
+        self.upstream = UpstreamConnection::HttpConnect { proxy, target };
+        self
+    }
+
     /// Creates a transparent flow from platform byte IO and metadata.
     #[must_use]
     pub fn new<S>(
@@ -81,6 +127,27 @@ impl AcceptedTcpFlow {
         peer_addr: Option<SocketAddr>,
         local_addr: Option<SocketAddr>,
         original_destination: OriginalDestination,
+        source_process: Option<SourceProcess>,
+    ) -> Self {
+        Self::from_destination_parts(
+            stream,
+            peer_addr,
+            local_addr,
+            original_destination.into(),
+            source_process,
+        )
+    }
+
+    /// Creates a flow whose target address may be resolved by an upstream proxy.
+    ///
+    /// An unknown destination requires a prepared upstream stream. The logical
+    /// authority is supplied separately by the explicit ingress metadata.
+    #[must_use]
+    pub fn from_destination_parts(
+        stream: BoxedDuplexStream,
+        peer_addr: Option<SocketAddr>,
+        local_addr: Option<SocketAddr>,
+        original_destination: DestinationAddress,
         source_process: Option<SourceProcess>,
     ) -> Self {
         Self {
@@ -150,7 +217,13 @@ impl AcceptedTcpFlow {
     /// `CONNECT` request, so the MITM pipeline must consume that exact stream
     /// rather than opening a second connection.
     #[must_use]
-    pub fn with_prepared_upstream(mut self, upstream: TcpStream) -> Self {
+    pub fn with_prepared_upstream(self, upstream: TcpStream) -> Self {
+        self.with_prepared_stream(Box::new(upstream))
+    }
+
+    /// Reuses a byte tunnel, including any bytes read during its handshake.
+    #[must_use]
+    pub fn with_prepared_stream(mut self, upstream: BoxedDuplexStream) -> Self {
         self.upstream = UpstreamConnection::Prepared(upstream);
         self
     }

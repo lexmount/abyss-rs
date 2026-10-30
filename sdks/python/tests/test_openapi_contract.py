@@ -10,6 +10,7 @@ SPEC_PATH = Path(__file__).resolve().parents[3] / "specs" / "broker-rest-api" / 
 EXPECTED_OPERATIONS = {
     "/healthz": {"get": "getHealth"},
     "/v1/proxy/status": {"get": "getProxyStatus"},
+    "/v1/network/config": {"get": "getNetworkConfig", "put": "updateNetworkConfig"},
     "/v1/mitm/config": {
         "get": "getMitmConfig",
         "put": "updateMitmConfig",

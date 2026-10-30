@@ -149,6 +149,7 @@ pub struct ProxyService {
 
 #[derive(Clone)]
 struct ProxyWorkerServices {
+    network: crate::network_config::NetworkRuntime,
     mitm: Arc<abyss_mitm::MitmEngine>,
     diagnostics: FlowDiagnostics,
     traffic: TrafficMonitor,
@@ -182,10 +183,12 @@ impl ProxyService {
         mitm: Arc<abyss_mitm::MitmEngine>,
         diagnostics: FlowDiagnostics,
         traffic: TrafficMonitor,
+        network: crate::network_config::NetworkRuntime,
     ) -> Self {
         Self {
             state: Arc::new(Mutex::new(ProxyRuntimeState::stopped())),
             worker_services: ProxyWorkerServices {
+                network,
                 mitm,
                 diagnostics,
                 traffic,
@@ -293,12 +296,14 @@ impl StoppedProxyRuntime {
         let requested_plan = plan.clone();
         let task = match plan {
             ProxyPlan::Explicit { explicit } => {
-                let started = Self::bind_factory(explicit.into_factory()).await?;
+                let started =
+                    Self::bind_factory(explicit.into_factory(services.network.clone())).await?;
                 Self::spawn_started(started, services)
             }
             #[cfg(any(target_os = "macos", target_os = "windows"))]
             ProxyPlan::Transparent { transparent } => {
-                let started = Self::bind_factory(transparent.into_factory()).await?;
+                let factory = transparent.into_factory(services.network.clone());
+                let started = Self::bind_factory(factory).await?;
                 Self::spawn_started(started, services)
             }
         };
@@ -546,10 +551,11 @@ where
             diagnostics,
             traffic,
         } = self;
+        let started_at = crate::diagnostics::current_unix_ms();
         let flow = match connection.into_flow().await {
             Ok(flow) => flow,
             Err(error) => {
-                diagnostics.record_accept_error(error.to_string());
+                diagnostics.record_ingress_error(&error, started_at);
                 tracing::warn!(%error, "broker ingress connection preparation failed");
                 return;
             }
@@ -857,7 +863,9 @@ mod tests {
 
     async fn test_proxy_service() -> ProxyService {
         let (mitm, diagnostics) = test_proxy_dependencies().await;
-        ProxyService::new(Arc::new(mitm), diagnostics, TrafficMonitor::new())
+        let network = crate::network_config::NetworkRuntime::new(None, None)
+            .expect("test network policy should be valid");
+        ProxyService::new(Arc::new(mitm), diagnostics, TrafficMonitor::new(), network)
     }
 
     async fn test_proxy_dependencies() -> (abyss_mitm::MitmEngine, FlowDiagnostics) {

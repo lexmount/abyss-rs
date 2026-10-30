@@ -19,6 +19,7 @@ mod diagnostics;
 mod error;
 mod ingress;
 mod logging;
+mod network_config;
 mod network_diagnostics;
 mod platform;
 mod plugin;
@@ -104,6 +105,10 @@ async fn run(
     let plugin_event_sink = plugin_server.event_sink();
     let runtime_policy_path = RuntimePolicies::default_path(&abyss_home);
     let runtime_policies = RuntimePolicies::load(&runtime_policy_path).await?;
+    let network = network_config::NetworkRuntime::new(
+        broker_config.proxy.upstream.clone(),
+        runtime_policies.network.clone(),
+    )?;
     let runtime = BrokerRuntime::from_policies(&ca, runtime_policies)?
         .with_harness_usage_hook(plugin_event_sink);
     let database_path = network_diagnostics::database_path(platform.as_ref());
@@ -136,6 +141,7 @@ async fn run(
                     mitm: runtime.mitm,
                     hooks: runtime.hooks,
                     runtime_policy_path,
+                    network,
                     broker_logs,
                     network_observations,
                     plugin_server,

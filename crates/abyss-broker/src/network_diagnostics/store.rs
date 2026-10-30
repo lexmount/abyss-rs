@@ -35,6 +35,11 @@ diesel::table! {
         observed_at_unix_ms -> BigInt,
         ingress_source -> Text,
         destination_host -> Nullable<Text>,
+        destination_addr -> Nullable<Text>,
+        target_authority -> Nullable<Text>,
+        proxy_endpoint -> Nullable<Text>,
+        proxy_peer -> Nullable<Text>,
+        proxy_status -> Nullable<Integer>,
         source_pid -> Nullable<BigInt>,
         source_process_name -> Nullable<Text>,
         source_executable_path -> Nullable<Text>,
@@ -66,6 +71,11 @@ struct NewNetworkObservationRow {
     observed_at_unix_ms: i64,
     ingress_source: String,
     destination_host: Option<String>,
+    destination_addr: Option<String>,
+    target_authority: Option<String>,
+    proxy_endpoint: Option<String>,
+    proxy_peer: Option<String>,
+    proxy_status: Option<i32>,
     source_pid: Option<i64>,
     source_process_name: Option<String>,
     source_executable_path: Option<String>,
@@ -97,6 +107,11 @@ struct NetworkObservationRow {
     observed_at_unix_ms: i64,
     ingress_source: String,
     destination_host: Option<String>,
+    destination_addr: Option<String>,
+    target_authority: Option<String>,
+    proxy_endpoint: Option<String>,
+    proxy_peer: Option<String>,
+    proxy_status: Option<i32>,
     source_pid: Option<i64>,
     source_process_name: Option<String>,
     source_executable_path: Option<String>,
@@ -239,6 +254,11 @@ impl TryFrom<&NetworkObservation> for NewNetworkObservationRow {
             observed_at_unix_ms: sqlite_integer(observation.observed_at_unix_ms, "observed_at")?,
             ingress_source: observation.ingress_source.clone(),
             destination_host: observation.destination_host.clone(),
+            destination_addr: observation.destination_addr.clone(),
+            target_authority: observation.target_authority.clone(),
+            proxy_endpoint: observation.proxy_endpoint.clone(),
+            proxy_peer: observation.proxy_peer.clone(),
+            proxy_status: observation.proxy_status.map(i32::from),
             source_pid: observation
                 .source_pid
                 .map(|value| sqlite_integer(value.into(), "source_pid"))
@@ -295,6 +315,21 @@ impl TryFrom<NetworkObservationRow> for NetworkObservation {
             )?,
             ingress_source: row.ingress_source,
             destination_host: row.destination_host,
+            destination_addr: row.destination_addr,
+            target_authority: row.target_authority,
+            proxy_endpoint: row.proxy_endpoint,
+            proxy_peer: row.proxy_peer,
+            proxy_status: row
+                .proxy_status
+                .map(|value| {
+                    u16::try_from(value).map_err(|_error| {
+                        NetworkObservationStoreError::InvalidValue {
+                            field: "proxy_status",
+                            value: value.to_string(),
+                        }
+                    })
+                })
+                .transpose()?,
             source_pid: row
                 .source_pid
                 .map(|value| non_negative_integer(value, "source_pid"))
@@ -525,6 +560,75 @@ mod tests {
         assert_eq!(loaded[0].observation_id, observation.observation_id);
 
         drop(std::fs::remove_dir_all(root));
+    }
+
+    #[test]
+    fn upstream_migration_preserves_old_rows_and_persists_proxy_context() {
+        let root = std::env::temp_dir().join(format!("abyss-proxy-migration-{}", Uuid::new_v4()));
+        let path = root.join("abyss.sqlite3");
+        let store = NetworkObservationStore::open(&path).expect("store should open");
+        let legacy = NetworkObservation::from_error(
+            None,
+            &FlowIngress::transparent(TransparentFlowSource::Unattributed),
+            Some("old.example.test"),
+            None,
+            100,
+            120,
+            &abyss_mitm::TransparentFlowError::MissingSni,
+        );
+        store.insert(&legacy).expect("legacy row should persist");
+        store
+            .database
+            .with_connection_result(|connection| {
+                connection.revert_last_migration(MIGRATIONS).map(|_| ())
+            })
+            .expect("database should return to the pre-proxy schema");
+        drop(store);
+
+        let store = NetworkObservationStore::open(&path).expect("old database should migrate");
+        let loaded = store.latest(10).expect("old rows should remain readable");
+        assert_eq!(loaded.len(), 1);
+        assert_eq!(loaded[0].observation_id, legacy.observation_id);
+        assert_eq!(loaded[0].destination_host, legacy.destination_host);
+        assert!(loaded[0].destination_addr.is_none());
+        assert!(loaded[0].target_authority.is_none());
+        assert!(loaded[0].proxy_endpoint.is_none());
+        assert!(loaded[0].proxy_peer.is_none());
+        assert!(loaded[0].proxy_status.is_none());
+
+        let failure = crate::ingress::IngressError::Explicit(
+            crate::ingress::explicit::ExplicitIngressError::UpstreamProxy {
+                target: abyss_mitm::TargetAuthority::parse("api.invalid:8443")
+                    .expect("target should parse"),
+                endpoint: "127.0.0.1:3128".to_owned(),
+                source: abyss_mitm::outbound::UpstreamProxyError::Rejected { status: 407 },
+            },
+        );
+        let observation = NetworkObservation::from_ingress_error(&failure, 200, 240)
+            .expect("proxy failure should produce an observation");
+        store
+            .insert(&observation)
+            .expect("proxy row should persist");
+        drop(store);
+        let reopened = NetworkObservationStore::open(&path).expect("store should reopen");
+        let loaded = reopened.latest(10).expect("rows should be readable");
+        assert_eq!(loaded.len(), 2);
+        assert_eq!(
+            loaded[0].target_authority.as_deref(),
+            Some("api.invalid:8443")
+        );
+        assert_eq!(loaded[0].proxy_endpoint.as_deref(), Some("127.0.0.1:3128"));
+        assert_eq!(loaded[0].proxy_status, Some(407));
+        assert_eq!(loaded[0].hop, NetworkHop::AbyssToUpstreamProxy);
+        assert_eq!(
+            loaded[0].technical_error_code,
+            Some(NetworkErrorCode::UpstreamProxyAuthRequired)
+        );
+        assert!(loaded[0].http_status.is_none());
+        assert!(loaded[0].destination_addr.is_none());
+        assert_eq!(loaded[1].observation_id, legacy.observation_id);
+        drop(reopened);
+        std::fs::remove_dir_all(root).expect("temporary database should be removed");
     }
 
     #[test]

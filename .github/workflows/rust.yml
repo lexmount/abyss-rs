@@ -155,6 +155,14 @@ jobs:
         if: runner.os == 'Linux'
         run: make test-blackbox-broker-explicit
 
+      - name: Run broker upstream proxy black-box
+        if: runner.os != 'Windows'
+        run: make test-blackbox-broker-upstream
+
+      - name: Run macOS transparent upstream black-box
+        if: runner.os == 'macOS'
+        run: make test-blackbox-broker-transparent-upstream
+
       - name: Validate Linux systemd service template
         if: runner.os == 'Linux'
         run: |

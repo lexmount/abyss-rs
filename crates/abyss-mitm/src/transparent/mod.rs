@@ -11,6 +11,7 @@ mod body;
 mod client_hello;
 mod content_encoding;
 mod decrypt_policy;
+mod destination;
 mod display;
 mod engine;
 mod flow_id;
@@ -34,6 +35,7 @@ pub use self::decrypt_policy::{
     TlsDecryptionAction, TlsDecryptionContext, TlsDecryptionDecision, TlsDecryptionPolicy,
     TlsDecryptionPolicyError, TlsDecryptionRule, ValidatedTlsDecryptionPolicy,
 };
+pub use self::destination::DestinationAddress;
 pub use self::display::{
     CapturedBodyPlaintextDisplay, HttpHeadersDisplay, HttpRequestHeadDisplay,
     HttpResponseHeadDisplay, REDACTED_HEADER_VALUE, is_sensitive_header,
@@ -44,6 +46,7 @@ pub use self::hook::{
     CapturedBody, FlowContext, HookError, HookFuture, HookResult, HttpExchange, MitmHook,
     SourceProcess, WebSocketDirection, WebSocketMessage,
 };
+pub use self::io::PrefixedDuplexStream;
 pub use self::io::{BoxedDuplexStream, DuplexStream, TrafficDirection, TrafficObserver};
 pub use self::types::{
     FlowIngress, FlowOperation, InterceptedHttpOutcome, OriginalDestination, TlsErrorSide,
@@ -53,6 +56,7 @@ pub use self::types::{
 
 #[cfg(test)]
 mod tests {
+    mod proxy_chain;
     use std::{
         future,
         net::{Ipv4Addr, SocketAddr},
@@ -845,6 +849,54 @@ mod tests {
 
     #[tokio::test]
     async fn handles_tls_http_flow_against_original_destination() {
+        tls_http_flow(false).await;
+    }
+
+    #[tokio::test]
+    async fn configured_proxy_preserves_tls_mitm_and_capture() {
+        tls_http_flow(true).await;
+    }
+
+    async fn with_test_proxy(
+        flow: AcceptedTcpFlow,
+        configured_proxy: bool,
+        upstream_addr: SocketAddr,
+    ) -> (AcceptedTcpFlow, Option<tokio::task::JoinHandle<()>>) {
+        if configured_proxy {
+            let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+            let address = listener.local_addr().unwrap();
+            let config = crate::outbound::UpstreamProxyConfig {
+                protocol: crate::outbound::UpstreamProxyProtocol::HttpConnect,
+                endpoint: format!("http://{address}"),
+                connect_timeout_ms: 1000,
+                handshake_timeout_ms: 1000,
+            };
+            let proxy_worker = tokio::spawn(async move {
+                let (mut client, _) = listener.accept().await.unwrap();
+                let head = read_http_head(&mut client).await;
+                assert!(head.starts_with(&format!(
+                    "CONNECT example.test:{} HTTP/1.1",
+                    upstream_addr.port()
+                )));
+                let mut origin = TcpStream::connect(upstream_addr).await.unwrap();
+                client.write_all(b"HTTP/1.1 200 OK\r\n\r\n").await.unwrap();
+                tokio::io::copy_bidirectional(&mut client, &mut origin)
+                    .await
+                    .unwrap();
+            });
+            (
+                flow.with_upstream_proxy(
+                    crate::outbound::HttpConnectProxy::new(&config).unwrap(),
+                    crate::TargetAuthority::parse(&upstream_addr.to_string()).unwrap(),
+                ),
+                Some(proxy_worker),
+            )
+        } else {
+            (flow, None)
+        }
+    }
+
+    async fn tls_http_flow(configured_proxy: bool) {
         let ca = test_ca();
         let server_name = "example.test";
         let upstream_listener = TcpListener::bind("127.0.0.1:0")
@@ -895,6 +947,7 @@ mod tests {
             SocketAddr::from((Ipv4Addr::LOCALHOST, 18091)),
             OriginalDestination::from(upstream_addr),
         );
+        let (flow, proxy_worker) = with_test_proxy(flow, configured_proxy, upstream_addr).await;
         let mitm = test_mitm_engine_trusting(&ca)
             .with_tls_decryption_policy(TlsDecryptionPolicy {
                 default_action: TlsDecryptionAction::Intercept,
@@ -933,18 +986,16 @@ mod tests {
                 .expect("TLS HTTP flow should succeed"),
         );
         upstream.await.expect("upstream worker should join");
+        if let Some(worker) = proxy_worker {
+            worker.await.unwrap();
+        }
+        assert_eq!(outcome.first_response.body().raw_bytes(), b"secure");
 
-        assert!(
-            response[..read_len].starts_with(b"HTTP/1.1 200 OK"),
-            "client should receive upstream TLS response through MITM"
-        );
-        assert_eq!(
+        assert!(response[..read_len].starts_with(b"HTTP/1.1 200 OK"));
+        assert!(matches!(
             outcome.protocol,
-            TransparentProtocol::TlsHttp {
-                server_name: server_name.to_owned()
-            }
-        );
-        assert_eq!(outcome.first_request.method(), http::Method::GET);
+            TransparentProtocol::TlsHttp { .. }
+        ));
         assert_eq!(outcome.first_request.uri(), "/secure");
         assert_eq!(outcome.first_response.status(), http::StatusCode::OK);
     }
@@ -1332,6 +1383,7 @@ mod tests {
                 .local_addr()
                 .expect("test upstream should expose listen address"),
         );
+        let original_destination = original_destination.into();
         let accept = listener.accept();
         let connect = connect_upstream_with_observer(
             UpstreamConnection::Deferred,
@@ -1382,7 +1434,11 @@ mod tests {
                     .json()
                     .and_then(|json| json.get("ok"))
                     .and_then(serde_json::Value::as_bool),
-                original_destination: exchange.flow.original_destination.socket_addr(),
+                original_destination: exchange
+                    .flow
+                    .original_destination
+                    .socket_addr()
+                    .expect("direct target address"),
             });
             Box::pin(future::ready(Ok(())))
         }

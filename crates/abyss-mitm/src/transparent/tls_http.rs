@@ -9,10 +9,10 @@ use std::{net::SocketAddr, sync::Arc};
 use tokio::time;
 
 use super::{
-    AcceptedTcpFlow, BoxedDuplexStream, FlowContext, FlowId, FlowIngress, InterceptedHttpOutcome,
-    MitmEngine, OriginalDestination, SourceProcess, TransparentFlowError, TransparentFlowOutcome,
-    TransparentProtocol, accepted_flow::UpstreamConnection, client_hello::InspectedClientHello,
-    relay::DecodedClientFlow, tls_flow::ClientTlsFlow,
+    AcceptedTcpFlow, BoxedDuplexStream, DestinationAddress, FlowContext, FlowId, FlowIngress,
+    InterceptedHttpOutcome, MitmEngine, SourceProcess, TransparentFlowError,
+    TransparentFlowOutcome, TransparentProtocol, accepted_flow::UpstreamConnection,
+    client_hello::InspectedClientHello, relay::DecodedClientFlow, tls_flow::ClientTlsFlow,
     upstream::connect_upstream_tls_with_observer, utils::request_host,
 };
 
@@ -25,7 +25,7 @@ pub(super) struct TlsHttpMetadata {
     pub(super) flow_id: FlowId,
     pub(super) peer_addr: Option<SocketAddr>,
     pub(super) local_addr: Option<SocketAddr>,
-    pub(super) original_destination: OriginalDestination,
+    pub(super) original_destination: DestinationAddress,
     pub(super) destination_host: Option<String>,
     pub(super) source_process: Option<SourceProcess>,
     pub(super) ingress: FlowIngress,
@@ -134,7 +134,7 @@ impl TlsHttpFlow {
         let protocol = TransparentProtocol::TlsHttp {
             server_name: client_tls.server_name,
         };
-        let context = FlowContext::from_optional_addrs(
+        let context = FlowContext::from_destination_parts(
             peer_addr,
             local_addr,
             original_destination.clone(),

@@ -62,15 +62,19 @@ impl IngressEndpoint {
         self.socket_path.display().to_string()
     }
 
-    /// Converts the endpoint into its concrete ingress factory.
+    /// Binds this endpoint to the broker's shared outbound policy.
     #[must_use]
-    pub fn into_factory(self) -> FramedUnixIngressFactory {
-        FramedUnixIngressFactory::new(self.socket_path)
+    pub fn into_factory(
+        self,
+        network: crate::network_config::NetworkRuntime,
+    ) -> FramedUnixIngressFactory {
+        FramedUnixIngressFactory::new(self.socket_path, network)
     }
 }
 
 /// Factory for framed Unix socket ingress.
 pub struct FramedUnixIngressFactory {
+    network: crate::network_config::NetworkRuntime,
     socket_path: PathBuf,
     process_context_resolver: SharedProcessContextResolver,
 }
@@ -78,10 +82,11 @@ pub struct FramedUnixIngressFactory {
 impl FramedUnixIngressFactory {
     /// Creates a framed Unix socket ingress factory.
     #[must_use]
-    pub fn new(socket_path: PathBuf) -> Self {
+    pub fn new(socket_path: PathBuf, network: crate::network_config::NetworkRuntime) -> Self {
         Self {
             socket_path,
             process_context_resolver: default_process_context_resolver(),
+            network,
         }
     }
 }
@@ -90,9 +95,12 @@ impl IngressFactory for FramedUnixIngressFactory {
     type Ingress = FramedUnixIngress;
 
     async fn start(self) -> Result<StartedIngress<Self::Ingress>, IngressError> {
-        let ingress =
-            FramedUnixIngress::bind_with_resolver(self.socket_path, self.process_context_resolver)
-                .await?;
+        let ingress = FramedUnixIngress::bind_with_resolver(
+            self.socket_path,
+            self.process_context_resolver,
+            self.network,
+        )
+        .await?;
         let status =
             IngressRuntimeStatus::macos_network_extension(ingress.socket_path().to_path_buf());
         Ok(StartedIngress::new(ingress, status))
@@ -101,6 +109,7 @@ impl IngressFactory for FramedUnixIngressFactory {
 
 /// Unix socket listener accepting framed platform flows.
 pub struct FramedUnixIngress {
+    network: crate::network_config::NetworkRuntime,
     listener: UnixListener,
     socket_path: PathBuf,
     process_context_resolver: SharedProcessContextResolver,
@@ -110,10 +119,12 @@ impl FramedUnixIngress {
     async fn bind_with_resolver(
         socket_path: PathBuf,
         process_context_resolver: SharedProcessContextResolver,
+        network: crate::network_config::NetworkRuntime,
     ) -> Result<Self, IngressError> {
         Self::create_parent_directory(&socket_path).await?;
         let listener = Self::bind_listener(&socket_path).await?;
         let ingress = Self {
+            network,
             listener,
             socket_path,
             process_context_resolver,
@@ -259,6 +270,7 @@ impl FramedUnixIngress {
     async fn metadata_from_open(
         payload: FlowOpenPayload,
         process_context_resolver: SharedProcessContextResolver,
+        resolution: DnsResolution,
     ) -> Result<PlatformFlowMetadata, IngressError> {
         tracing::debug!(
             flow_id = %payload.flow_id,
@@ -272,7 +284,7 @@ impl FramedUnixIngress {
             original_tls_sni = ?payload.original_tls_sni.as_deref(),
             "broker ingress received framed FlowOpen metadata"
         );
-        let destination = FramedFlowDestination::from_open(&payload).await?;
+        let destination = FramedFlowDestination::from_open(&payload, resolution).await?;
         let destination_host = payload
             .destination_host
             .clone()
@@ -283,7 +295,7 @@ impl FramedUnixIngress {
         })
         .await
         .map_err(|source| IngressError::task("resolve source process context", source))?;
-        Ok(PlatformFlowMetadata::from_parts(
+        Ok(PlatformFlowMetadata::from_destination_parts(
             None,
             None,
             destination.original_destination,
@@ -333,6 +345,7 @@ impl Ingress for FramedUnixIngress {
     async fn accept(&mut self) -> Result<Self::Accepted, IngressError> {
         let stream = self.accept_stream().await?;
         Ok(FramedUnixConnection {
+            proxy: self.network.snapshot().proxy().cloned(),
             stream,
             socket_path: self.socket_path.clone(),
             process_context_resolver: self.process_context_resolver.clone(),
@@ -346,6 +359,7 @@ impl Ingress for FramedUnixIngress {
 
 /// Accepted framed Unix connection awaiting its initial `FlowOpen`.
 pub struct FramedUnixConnection {
+    proxy: Option<abyss_mitm::outbound::HttpConnectProxy>,
     stream: UnixStream,
     socket_path: PathBuf,
     process_context_resolver: SharedProcessContextResolver,
@@ -354,38 +368,81 @@ pub struct FramedUnixConnection {
 impl IngressConnection for FramedUnixConnection {
     async fn into_flow(self) -> Result<PlatformFlow, IngressError> {
         let Self {
+            proxy,
             mut stream,
             socket_path,
             process_context_resolver,
         } = self;
         let (flow_id, payload) = FramedUnixIngress::read_open_frame(&mut stream).await?;
-        let metadata =
-            FramedUnixIngress::metadata_from_open(payload, process_context_resolver).await?;
+        let target = proxy
+            .as_ref()
+            .map(|_| configured_target(&payload))
+            .transpose()?;
+        let metadata = FramedUnixIngress::metadata_from_open(
+            payload,
+            process_context_resolver,
+            if proxy.is_some() {
+                DnsResolution::UpstreamProxy
+            } else {
+                DnsResolution::Local
+            },
+        )
+        .await?;
 
         tracing::info!(
             %flow_id,
             socket_path = %socket_path.display(),
             original_destination = %metadata.original_destination(),
             destination_host = ?metadata.destination_host(),
-            fake_ip_candidate = metadata.original_destination().special_address_range().is_some(),
+            fake_ip_candidate = crate::connection::destination_address_range(metadata.original_destination()).is_some(),
             "broker ingress accepted framed Unix flow"
         );
-        Ok(
-            PlatformFlow::new(FramedFlowIo::new(stream, flow_id), metadata).with_ingress(
-                abyss_mitm::FlowIngress::transparent(
-                    abyss_mitm::TransparentFlowSource::MacosNetworkExtension,
-                ),
+        let flow = PlatformFlow::new(FramedFlowIo::new(stream, flow_id), metadata).with_ingress(
+            abyss_mitm::FlowIngress::transparent(
+                abyss_mitm::TransparentFlowSource::MacosNetworkExtension,
             ),
-        )
+        );
+        Ok(match proxy.zip(target) {
+            Some((proxy, target)) => flow.with_upstream_proxy(proxy, target),
+            None => flow,
+        })
     }
 }
 
+fn configured_target(
+    payload: &FlowOpenPayload,
+) -> Result<abyss_mitm::TargetAuthority, IngressError> {
+    let host = payload
+        .destination_host
+        .clone()
+        .filter(|host| !host.is_empty())
+        .or_else(|| payload.destination_ip.map(|ip| ip.to_string()))
+        .ok_or(IngressError::invalid_framed_flow(
+            "FlowOpen missing target host",
+        ))?;
+    let port = payload
+        .destination_port
+        .ok_or(IngressError::invalid_framed_flow(
+            "FlowOpen missing destination_port",
+        ))?;
+    abyss_mitm::TargetAuthority::from_host_port(&host, port)
+        .map_err(|_| IngressError::invalid_framed_flow("FlowOpen has an invalid proxy target"))
+}
+
+enum DnsResolution {
+    Local,
+    UpstreamProxy,
+}
+
 struct FramedFlowDestination {
-    original_destination: crate::connection::OriginalDestination,
+    original_destination: abyss_mitm::DestinationAddress,
 }
 
 impl FramedFlowDestination {
-    async fn from_open(payload: &FlowOpenPayload) -> Result<Self, IngressError> {
+    async fn from_open(
+        payload: &FlowOpenPayload,
+        resolution: DnsResolution,
+    ) -> Result<Self, IngressError> {
         let port = payload
             .destination_port
             .ok_or(IngressError::invalid_framed_flow(
@@ -393,7 +450,9 @@ impl FramedFlowDestination {
             ))?;
         if let Some(ip) = payload.destination_ip {
             return Ok(Self {
-                original_destination: SocketAddr::new(ip, port).into(),
+                original_destination: abyss_mitm::DestinationAddress::Known(SocketAddr::new(
+                    ip, port,
+                )),
             });
         }
         let host = payload
@@ -403,6 +462,11 @@ impl FramedFlowDestination {
             .ok_or(IngressError::invalid_framed_flow(
                 "FlowOpen missing destination_ip and destination_host",
             ))?;
+        if matches!(resolution, DnsResolution::UpstreamProxy) {
+            return Ok(Self {
+                original_destination: abyss_mitm::DestinationAddress::Unknown,
+            });
+        }
         let mut addresses = tokio::net::lookup_host((host.as_str(), port))
             .await
             .map_err(|source| IngressError::resolve_destination(host.clone(), port, source))?;
@@ -410,7 +474,7 @@ impl FramedFlowDestination {
             "destination_host resolved to no addresses",
         ))?;
         Ok(Self {
-            original_destination: destination.into(),
+            original_destination: abyss_mitm::DestinationAddress::Known(destination),
         })
     }
 }
@@ -983,6 +1047,11 @@ mod tests {
         assert_eq!(close_frame.flow_id(), flow_id);
     }
 
+    fn test_network() -> crate::network_config::NetworkRuntime {
+        crate::network_config::NetworkRuntime::new(None, None)
+            .expect("test network policy should be valid")
+    }
+
     #[tokio::test]
     async fn ingress_accepts_flow_open_metadata() {
         let socket_path = std::env::temp_dir().join(format!(
@@ -995,6 +1064,7 @@ mod tests {
             Arc::new(FixedProcessContextResolver {
                 working_directory: PathBuf::from("/tmp/abyss-project"),
             }),
+            test_network(),
         )
         .await
         .expect("framed ingress should start");
@@ -1039,11 +1109,14 @@ mod tests {
             .expect("accept task should join")
             .expect("FlowOpen should produce PlatformFlow");
         assert_eq!(
-            flow.original_destination(),
-            &crate::connection::OriginalDestination {
-                ip: "127.0.0.1".parse().expect("test IP address should parse"),
-                port: 443,
-            }
+            flow.original_destination().socket_addr(),
+            Some(
+                crate::connection::OriginalDestination {
+                    ip: "127.0.0.1".parse().expect("test IP address should parse"),
+                    port: 443,
+                }
+                .socket_addr()
+            )
         );
         assert_eq!(flow.peer_addr(), None);
         assert_eq!(flow.local_addr(), None);
@@ -1089,6 +1162,7 @@ mod tests {
             Arc::new(FixedProcessContextResolver {
                 working_directory: PathBuf::from("/tmp/abyss-project"),
             }),
+            test_network(),
         )
         .await
         .expect("framed ingress should replace a stale socket");
@@ -1115,6 +1189,7 @@ mod tests {
             Arc::new(FixedProcessContextResolver {
                 working_directory: PathBuf::from("/tmp/abyss-project"),
             }),
+            test_network(),
         )
         .await
         .expect("framed ingress should start");
@@ -1142,7 +1217,7 @@ mod tests {
             std::process::id(),
             rand::random::<u64>()
         ));
-        let started = FramedUnixIngressFactory::new(socket_path.clone())
+        let started = FramedUnixIngressFactory::new(socket_path.clone(), test_network())
             .start()
             .await
             .expect("framed ingress should start");

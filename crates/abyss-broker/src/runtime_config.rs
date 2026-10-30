@@ -1,4 +1,4 @@
-//! Dynamic MITM and Harness usage policy state.
+//! Dynamic MITM, Harness usage, and outbound routing policy state.
 //!
 //! REST updates are kept in lock-free runtime snapshots and persisted to one
 //! broker-owned policy file. This keeps dynamic policy durable across broker
@@ -16,7 +16,10 @@ use serde::{Deserialize, Serialize};
 use thiserror::Error;
 use tokio::{fs, io::AsyncWriteExt as _, sync::Mutex};
 
-use crate::error::BrokerError;
+use crate::{
+    error::BrokerError,
+    network_config::{NetworkConfig, NetworkRuntime},
+};
 
 const RUNTIME_POLICY_SCHEMA_VERSION: u32 = 1;
 const RUNTIME_POLICY_FILE_NAME: &str = "runtime-policy.toml";
@@ -40,6 +43,9 @@ pub struct RuntimePolicies {
     /// Dynamic Harness usage policy.
     #[serde(default)]
     pub hooks: HooksConfig,
+    /// None inherits startup proxy settings; Some with no upstream means direct.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub network: Option<NetworkConfig>,
 }
 
 #[derive(Deserialize, Serialize)]
@@ -50,12 +56,17 @@ struct RuntimePolicyFile {
     mitm: MitmConfig,
     #[serde(default)]
     hooks: HooksConfig,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    network: Option<NetworkConfig>,
 }
 
 /// Runtime policy loading or persistence failure.
 #[derive(Debug, Error)]
 #[non_exhaustive]
 pub enum RuntimePolicyError {
+    /// An invalid persisted outbound route.
+    #[error("invalid runtime network policy: {0}")]
+    Network(String),
     /// An existing policy file could not be read.
     #[error("failed to read runtime policy `{path}`: {source}")]
     Read {
@@ -110,6 +121,7 @@ pub enum RuntimePolicyError {
 pub struct RuntimeConfigService {
     mitm: Arc<abyss_mitm::MitmEngine>,
     hooks: HooksRuntimeConfig,
+    network: NetworkRuntime,
     transaction: Arc<Mutex<RuntimePolicyTransaction>>,
 }
 
@@ -118,6 +130,7 @@ struct RuntimePolicyTransaction {
     current: RuntimePolicies,
     mitm: Arc<abyss_mitm::MitmEngine>,
     hooks: HooksRuntimeConfig,
+    network: NetworkRuntime,
     policy_path: PathBuf,
     #[cfg(test)]
     commit_pause: Option<Arc<TransactionCommitPause>>,
@@ -162,8 +175,18 @@ impl RuntimePolicies {
         let policies = Self {
             mitm: file.mitm,
             hooks: file.hooks,
+            network: file.network,
         };
         policies.mitm.tls_decryption.validate()?;
+        if let Some(upstream) = policies
+            .network
+            .as_ref()
+            .and_then(|network| network.upstream.as_ref())
+        {
+            upstream
+                .validate()
+                .map_err(|error| RuntimePolicyError::Network(error.to_string()))?;
+        }
         Ok(policies)
     }
 
@@ -180,15 +203,37 @@ impl RuntimeConfigService {
     pub fn new(
         mitm: Arc<abyss_mitm::MitmEngine>,
         hooks: HooksRuntimeConfig,
+        network: NetworkRuntime,
         policy_path: PathBuf,
     ) -> Self {
-        let transaction =
-            RuntimePolicyTransaction::new(Arc::clone(&mitm), hooks.clone(), policy_path);
+        let transaction = RuntimePolicyTransaction::new(
+            Arc::clone(&mitm),
+            hooks.clone(),
+            network.clone(),
+            policy_path,
+        );
         Self {
             mitm,
             hooks,
+            network,
             transaction: Arc::new(Mutex::new(transaction)),
         }
+    }
+
+    /// Returns the effective outbound route for new connections.
+    pub fn network_config(&self) -> NetworkConfig {
+        self.network.config()
+    }
+
+    /// Validates, durably commits, then publishes a new outbound route.
+    pub async fn update_network_config(
+        &self,
+        config: NetworkConfig,
+    ) -> Result<NetworkConfig, BrokerError> {
+        let mut transaction = Arc::clone(&self.transaction).lock_owned().await;
+        tokio::spawn(async move { transaction.update_network(config).await })
+            .await
+            .map_err(|source| BrokerError::task("update network runtime policy", source))?
     }
 
     /// Returns the current broker MITM configuration.
@@ -257,6 +302,7 @@ impl RuntimePolicyTransaction {
     fn new(
         mitm: Arc<abyss_mitm::MitmEngine>,
         hooks: HooksRuntimeConfig,
+        network: NetworkRuntime,
         policy_path: PathBuf,
     ) -> Self {
         let current = RuntimePolicies {
@@ -264,15 +310,34 @@ impl RuntimePolicyTransaction {
                 tls_decryption: mitm.tls_decryption_policy().as_ref().clone(),
             },
             hooks: hooks.snapshot().as_ref().clone(),
+            network: network.persisted_config(),
         };
         Self {
             current,
             mitm,
             hooks,
+            network,
             policy_path,
             #[cfg(test)]
             commit_pause: None,
         }
+    }
+
+    async fn update_network(
+        &mut self,
+        config: NetworkConfig,
+    ) -> Result<NetworkConfig, BrokerError> {
+        let validated = NetworkRuntime::validate(config.clone())?;
+        let candidate = RuntimePolicies {
+            network: Some(config.clone()),
+            ..self.current.clone()
+        };
+        self.persist(&candidate).await?;
+        #[cfg(test)]
+        self.pause_after_commit().await;
+        self.network.publish(validated);
+        self.current = candidate;
+        Ok(config)
     }
 
     async fn update_mitm(&mut self, config: MitmConfig) -> Result<MitmConfig, BrokerError> {
@@ -281,6 +346,7 @@ impl RuntimePolicyTransaction {
         let candidate = RuntimePolicies {
             mitm: config,
             hooks: self.current.hooks.clone(),
+            network: self.current.network.clone(),
         };
         self.persist(&candidate).await?;
         #[cfg(test)]
@@ -300,6 +366,7 @@ impl RuntimePolicyTransaction {
         let candidate = RuntimePolicies {
             mitm: self.current.mitm.clone(),
             hooks: config,
+            network: self.current.network.clone(),
         };
         self.persist(&candidate).await?;
         #[cfg(test)]
@@ -328,6 +395,7 @@ impl RuntimePolicyTransaction {
             schema_version: RUNTIME_POLICY_SCHEMA_VERSION,
             mitm: policies.mitm.clone(),
             hooks: policies.hooks.clone(),
+            network: policies.network.clone(),
         };
         let mut contents = toml::to_string_pretty(&file)?;
         contents.push('\n');
@@ -477,7 +545,9 @@ mod tests {
     use serde::Serialize;
     use tokio::sync::Barrier;
 
-    use super::{MitmConfig, RuntimeConfigService, RuntimePolicies, TransactionCommitPause};
+    use super::{
+        MitmConfig, NetworkRuntime, RuntimeConfigService, RuntimePolicies, TransactionCommitPause,
+    };
 
     struct TestCaMaterialPersistence;
 
@@ -861,7 +931,8 @@ mod tests {
         let mut initial_hooks = HooksConfig::default();
         initial_hooks.harness_usage.enabled = false;
         let hooks = HooksRuntimeConfig::new(initial_hooks.clone());
-        let service = RuntimeConfigService::new(Arc::new(mitm), hooks, policy_path.clone());
+        let service =
+            RuntimeConfigService::new(Arc::new(mitm), hooks, test_network(), policy_path.clone());
 
         let committed = committed_policies(&service).await;
         assert_serialized_eq(&committed.mitm, &initial_mitm);
@@ -893,10 +964,131 @@ mod tests {
         assert!(policies.mitm.tls_decryption.rules.is_empty());
     }
 
+    #[tokio::test]
+    async fn cancelling_network_request_cannot_interrupt_a_committed_route() {
+        let path = temp_policy_path();
+        let service = test_service(&path);
+        let config = proxy_network("http://localhost:3128");
+        let expected = config.clone();
+        let pause = Arc::new(TransactionCommitPause {
+            reached: tokio::sync::Notify::new(),
+            resume: tokio::sync::Notify::new(),
+        });
+        service.transaction.lock().await.commit_pause = Some(Arc::clone(&pause));
+        let updater = service.clone();
+        let waiter = tokio::spawn(async move { updater.update_network_config(config).await });
+        tokio::time::timeout(std::time::Duration::from_secs(5), pause.reached.notified())
+            .await
+            .unwrap();
+        waiter.abort();
+        assert!(waiter.await.unwrap_err().is_cancelled());
+        pause.resume.notify_one();
+        // Acquiring the transaction lock waits for detached publication to finish.
+        let committed = committed_policies(&service).await;
+        assert_eq!(committed.network, Some(expected.clone()));
+        assert_eq!(service.network_config(), expected);
+        assert_eq!(
+            RuntimePolicies::load(&path).await.unwrap().network,
+            Some(expected)
+        );
+        cleanup(&path).await;
+    }
+
+    fn proxy_network(endpoint: &str) -> super::NetworkConfig {
+        serde_json::from_value(serde_json::json!({"upstream": {
+            "protocol": "http_connect", "endpoint": endpoint
+        }}))
+        .unwrap()
+    }
+
+    #[tokio::test]
+    async fn network_override_survives_restart_and_clear_overrides_startup() {
+        let path = temp_policy_path();
+        let config = proxy_network("http://127.0.0.1:3128");
+        let runtime = NetworkRuntime::new(config.upstream.clone(), None).unwrap();
+        let service = RuntimeConfigService::new(
+            Arc::new(test_mitm_engine()),
+            HooksRuntimeConfig::default_enabled(),
+            runtime.clone(),
+            path.clone(),
+        );
+        assert_eq!(service.network_config(), config);
+        let existing_flow = runtime.snapshot();
+        service
+            .update_network_config(super::NetworkConfig::default())
+            .await
+            .unwrap();
+        assert!(
+            existing_flow.proxy().is_some(),
+            "existing flow keeps its route"
+        );
+        assert!(
+            runtime.snapshot().proxy().is_none(),
+            "new flows use direct routing"
+        );
+        service
+            .update_mitm_config(mitm_config_with_rule("network", "example.test"))
+            .await
+            .unwrap();
+        service
+            .update_hooks_config(HooksConfig::default())
+            .await
+            .unwrap();
+        let loaded = RuntimePolicies::load(&path).await.unwrap();
+        let restarted = NetworkRuntime::new(config.upstream, loaded.network).unwrap();
+        assert!(
+            restarted.config().upstream.is_none(),
+            "clearing must not resurrect startup proxy"
+        );
+        cleanup(&path).await;
+    }
+
+    #[tokio::test]
+    async fn invalid_or_unpersisted_network_update_keeps_previous_route() {
+        let path = temp_policy_path();
+        let service = test_service(&path);
+        let initial = proxy_network("http://127.0.0.1:3128");
+        service
+            .update_network_config(initial.clone())
+            .await
+            .unwrap();
+        let invalid = proxy_network("http://user:secret@127.0.0.1:3128");
+        assert!(service.update_network_config(invalid).await.is_err());
+        assert_eq!(service.network_config(), initial);
+        assert_eq!(
+            RuntimePolicies::load(&path).await.unwrap().network,
+            Some(initial.clone())
+        );
+        tokio::fs::remove_file(&path).await.unwrap();
+        tokio::fs::create_dir(&path).await.unwrap();
+        assert!(
+            service
+                .update_network_config(super::NetworkConfig::default())
+                .await
+                .is_err()
+        );
+        assert_eq!(service.network_config(), initial);
+        tokio::fs::remove_dir(&path).await.unwrap();
+        cleanup(&path).await;
+    }
+
+    #[test]
+    fn validating_a_proxy_does_not_publish_it() {
+        let runtime = NetworkRuntime::new(None, None).unwrap();
+        assert!(NetworkRuntime::validate(proxy_network("http://127.0.0.1:3128")).is_ok());
+        assert!(NetworkRuntime::validate(super::NetworkConfig::default()).is_ok());
+        assert!(runtime.config().upstream.is_none());
+    }
+
+    fn test_network() -> NetworkRuntime {
+        NetworkRuntime::new(None, None).expect("direct network config")
+    }
+
     fn test_service(policy_path: &Path) -> RuntimeConfigService {
         RuntimeConfigService::new(
             Arc::new(test_mitm_engine()),
             HooksRuntimeConfig::default_enabled(),
+            test_network(),
             policy_path.to_path_buf(),
         )
     }

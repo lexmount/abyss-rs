@@ -96,6 +96,9 @@ pub struct ProxyConfig {
     /// Unix socket used by the macOS Network Extension bridge.
     #[serde(default)]
     pub socket_path: Option<PathBuf>,
+    /// Initial HTTP CONNECT next hop for supported ingress modes.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub upstream: Option<abyss_mitm::outbound::UpstreamProxyConfig>,
 }
 
 /// Artifact-level proxy ingress choices.
@@ -330,6 +333,7 @@ impl ProxyConfig {
     /// Returns an error when the selected mode is unavailable in this artifact
     /// or its endpoint is invalid.
     pub fn plan(&self) -> Result<ProxyPlan, BrokerConfigError> {
+        self.validate_shape()?;
         match self.mode {
             ProxyIngressMode::Explicit => {
                 let address = self.listen_addr.unwrap_or_else(|| {
@@ -338,7 +342,8 @@ impl ProxyConfig {
                         .expect("built-in explicit endpoint should parse")
                 });
                 validate_loopback_address(address, "proxy.listen_addr")?;
-                Ok(ProxyPlan::explicit(ExplicitIngressEndpoint::new(address)))
+                let endpoint = ExplicitIngressEndpoint::new(address);
+                Ok(ProxyPlan::explicit(endpoint))
             }
             ProxyIngressMode::MacosNetworkExtension => {
                 #[cfg(target_os = "macos")]
@@ -390,6 +395,13 @@ impl ProxyConfig {
     }
 
     fn validate_shape(&self) -> Result<(), BrokerConfigError> {
+        if let Some(upstream) = &self.upstream {
+            upstream
+                .validate()
+                .map_err(|error| BrokerConfigError::Invalid {
+                    message: error.to_string(),
+                })?;
+        }
         match self.mode {
             ProxyIngressMode::Explicit => {
                 if self.socket_path.is_some() {
@@ -707,6 +719,44 @@ socket_path = "run/flow.sock"
             .expect("built-in Windows WFP proxy config should be startable");
 
         assert_eq!(plan.endpoint_label(), "127.0.0.1:0");
+    }
+
+    #[tokio::test]
+    async fn upstream_config_validates_protocol_and_explicit_mode() {
+        let config = load_temp_config(
+            "schema_version = 1\n[proxy]\nmode = \"explicit\"\n[proxy.upstream]\nprotocol = \"http_connect\"\nendpoint = \"http://proxy.example:3128\"\n",
+        ).await.expect("valid upstream config");
+        let upstream = config.proxy.upstream.as_ref().expect("upstream retained");
+        assert_eq!(upstream.connect_timeout_ms, 10_000, "default timeout");
+        config.proxy.plan().expect("explicit proxy plan");
+        for mode in ["windows_wfp", "macos_network_extension"] {
+            let contents = format!(
+                "schema_version = 1\n[proxy]\nmode = {mode:?}\n[proxy.upstream]\nprotocol = \"http_connect\"\nendpoint = \"http://proxy.example:3128\"\n"
+            );
+            let config = load_temp_config(&contents)
+                .await
+                .expect("transparent upstream configuration is supported");
+            assert!(
+                config.proxy.upstream.is_some(),
+                "transparent route retains its next hop"
+            );
+        }
+        for endpoint in [
+            "https://proxy.example:443",
+            "http://user:secret@proxy.example:3128",
+            "http://proxy.example:0",
+        ] {
+            let contents = format!(
+                "schema_version = 1\n[proxy]\nmode = \"explicit\"\n[proxy.upstream]\nprotocol = \"http_connect\"\nendpoint = {endpoint:?}\n"
+            );
+            let error = load_temp_config(&contents)
+                .await
+                .expect_err("invalid endpoint rejected at startup");
+            assert!(
+                !error.to_string().contains("secret"),
+                "no URL credential echo"
+            );
+        }
     }
 
     async fn load_temp_config(contents: &str) -> Result<BrokerConfig, BrokerConfigError> {

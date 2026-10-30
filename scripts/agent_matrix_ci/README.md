@@ -180,7 +180,10 @@ The result format does not expose reasoning-token counts, so they remain unavail
 
 Claude uses completed streaming message usage, including later downward
 corrections, rather than provisional assistant snapshots. DSH sums `step_end`
-usage. Codex uses `turn.completed`. Input comparisons include cached tokens;
+usage, using `totalTokens - outputTokens` for inclusive input when DSH provides
+an exact total. Retried steps can retain that total while omitting cache buckets
+that were not reported by every attempt; those cache buckets remain unavailable.
+Codex uses `turn.completed`. Input comparisons include cached tokens;
 reasoning tokens are a subset of output. Only explicitly marked prewarm events
 are excluded. No mismatched auxiliary requests are silently subtracted.
 

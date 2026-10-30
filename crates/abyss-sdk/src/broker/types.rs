@@ -277,3 +277,36 @@ pub struct ActiveFlow {
     /// Upstream-to-client bytes observed for this flow.
     pub download_bytes: u64,
 }
+
+/// Dynamic next-hop policy; no upstream selects direct routing.
+#[derive(Debug, Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct NetworkConfig {
+    /// Optional HTTP CONNECT next hop.
+    pub upstream: Option<UpstreamProxyConfig>,
+}
+
+/// Protocol-oriented next-hop settings, independent of proxy software.
+#[derive(Debug, Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct UpstreamProxyConfig {
+    /// Handshake protocol supported by the broker.
+    pub protocol: UpstreamProxyProtocol,
+    /// HTTP URL with an explicit port and no credentials.
+    pub endpoint: String,
+    /// DNS and TCP establishment budget; omitted uses the broker default.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub connect_timeout_ms: Option<u64>,
+    /// CONNECT response budget; omitted uses the broker default.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub handshake_timeout_ms: Option<u64>,
+}
+
+/// Supported next-hop handshakes.
+#[derive(Debug, Deserialize, Serialize)]
+#[non_exhaustive]
+#[serde(rename_all = "snake_case")]
+pub enum UpstreamProxyProtocol {
+    /// HTTP/1.1 CONNECT over TCP.
+    HttpConnect,
+}

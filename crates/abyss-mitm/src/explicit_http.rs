@@ -203,6 +203,28 @@ impl fmt::Display for TargetHost {
 }
 
 impl TargetAuthority {
+    /// Builds a target from a hostname or IP and the original destination port.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error for an invalid host or a zero port, without resolving DNS.
+    pub fn from_host_port(host: &str, port: u16) -> Result<Self, ExplicitRequestError> {
+        let authority = host.parse::<std::net::IpAddr>().map_or_else(
+            |_| format!("{host}:{port}"),
+            |ip| std::net::SocketAddr::new(ip, port).to_string(),
+        );
+        Self::parse(&authority)
+    }
+
+    /// Parses an authority with an explicit nonzero port without resolving DNS.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error for invalid hosts, ports, or userinfo.
+    pub fn parse(authority: &str) -> Result<Self, ExplicitRequestError> {
+        parse_target_authority(authority, None)
+    }
+
     /// Returns the normalized target host.
     #[must_use]
     pub const fn host(&self) -> &TargetHost {

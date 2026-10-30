@@ -128,9 +128,23 @@ class Transcript:
                         counter(usage, "cacheReadTokens"),
                         counter(usage, "cacheWriteTokens"),
                     )
+                    input_tokens = counter(usage, "inputTokens") + read + write
+                    output_tokens = counter(usage, "outputTokens")
+                    if "totalTokens" in usage:
+                        # DSH may omit cache buckets when it sums retries, while
+                        # retaining an exact total across all attempts.
+                        exact_input = counter(usage, "totalTokens") - output_tokens
+                        caches_complete = {
+                            "cacheReadTokens", "cacheWriteTokens"
+                        } <= usage.keys()
+                        if exact_input < input_tokens or (
+                            caches_complete and exact_input != input_tokens
+                        ):
+                            raise ContractError("inconsistent native DSH usage total")
+                        input_tokens = exact_input
                     result = {
-                        "input_tokens": counter(usage, "inputTokens") + read + write,
-                        "output_tokens": counter(usage, "outputTokens"),
+                        "input_tokens": input_tokens,
+                        "output_tokens": output_tokens,
                     }
                     for source, target in (
                         ("cacheReadTokens", "cached_input_tokens"),
