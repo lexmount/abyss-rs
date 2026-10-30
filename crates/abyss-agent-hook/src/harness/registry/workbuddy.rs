@@ -267,7 +267,6 @@ mod tests {
             &DeclarationSource {
                 headers: Some(&headers),
                 connection_headers: None,
-                body: None,
                 client_metadata: None,
             },
         )

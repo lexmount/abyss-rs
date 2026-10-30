@@ -5,7 +5,6 @@
 use abyss_mitm::FlowContext;
 use abyss_plugin_protocol::event::EventPurpose;
 use http::HeaderMap;
-use serde_json::Value;
 
 use crate::harness::{
     AgentDeclaration, BuiltInHarness, DeclarationSource, HarnessDetection, HarnessEvidence,
@@ -22,13 +21,8 @@ const AGENT_ID: &str = "x-claude-code-agent-id";
 const PARENT_AGENT_ID: &str = "x-claude-code-parent-agent-id";
 /// User prompt the request ultimately works for.
 const PROMPT_ID: &str = "x-claude-code-prompt-id";
-/// Line prefix Claude Code writes at the start of its first system block.
-const BILLING_HEADER: &str = "x-anthropic-billing-header:";
-/// System instruction Claude Code sends when naming the session it runs in.
-const NAMING_INSTRUCTION: &str = "You are naming a coding session";
-
 /// Reads the request class, subagent, and prompt Claude Code declares in its
-/// headers, and recognizes the call that names its session.
+/// headers.
 pub(super) fn declare(source: &DeclarationSource<'_>) -> AgentDeclaration {
     let declared = |name: &str| {
         source
@@ -39,44 +33,12 @@ pub(super) fn declare(source: &DeclarationSource<'_>) -> AgentDeclaration {
     let class = source
         .headers
         .and_then(|headers| header(headers, REQUEST_CLASS));
-    let purpose = if class == Some("compaction") {
-        Some(EventPurpose::Compaction)
-    } else if source.body.is_some_and(names_session) {
-        Some(EventPurpose::SessionTitle)
-    } else {
-        None
-    };
     AgentDeclaration {
-        purpose,
+        purpose: (class == Some("compaction")).then_some(EventPurpose::Compaction),
         subagent_id: declared(AGENT_ID),
         parent_subagent_id: declared(PARENT_AGENT_ID),
         turn_id: declared(PROMPT_ID),
     }
-}
-
-/// Claude Code names its session from a dedicated call: the billing header
-/// opens the first system block and a system block carries the naming
-/// instruction.
-fn names_session(body: &Value) -> bool {
-    let (first, blocks) = match body.get("system") {
-        Some(Value::String(text)) => (Some(text.as_str()), vec![text.as_str()]),
-        Some(Value::Array(blocks)) => {
-            let texts = blocks
-                .iter()
-                .filter_map(|block| block.get("text").and_then(Value::as_str))
-                .collect::<Vec<_>>();
-            (
-                blocks
-                    .first()
-                    .and_then(|block| block.get("text"))
-                    .and_then(Value::as_str),
-                texts,
-            )
-        }
-        _ => return false,
-    };
-    first.is_some_and(|text| text.starts_with(BILLING_HEADER))
-        && blocks.iter().any(|text| text.contains(NAMING_INSTRUCTION))
 }
 
 pub(super) struct ClaudeCodeDetector;
@@ -158,7 +120,6 @@ fn is_claude_code_process(value: &str) -> bool {
 mod tests {
     use abyss_plugin_protocol::event::EventPurpose;
     use http::HeaderMap;
-    use serde_json::{Value, json};
 
     use crate::harness::{AgentDeclaration, DeclarationSource};
 
@@ -176,7 +137,6 @@ mod tests {
         declare(&DeclarationSource {
             headers: Some(&headers(pairs)),
             connection_headers: None,
-            body: None,
             client_metadata: None,
         })
     }
@@ -234,51 +194,5 @@ mod tests {
             ("x-codex-parent-thread-id", "session-1"),
         ]);
         assert_eq!(codex, AgentDeclaration::default());
-    }
-
-    fn naming_body(system: &Value) -> Value {
-        json!({
-            "model": "claude-haiku-5-5",
-            "system": system,
-            "messages": [{"role": "user", "content": "<session>\n修复登录\n</session>"}]
-        })
-    }
-
-    fn naming_system() -> Value {
-        json!([
-            {"type": "text", "text": "x-anthropic-billing-header: cc_version=2.1.296.172; cc_entrypoint=cli; cch=8007c;"},
-            {"type": "text", "text": "You are Claude Code, Anthropic's official CLI for Claude."},
-            {"type": "text", "text": "You are naming a coding session so the user can pick it out of a long list."}
-        ])
-    }
-
-    fn naming(body: &Value) -> AgentDeclaration {
-        declare(&DeclarationSource {
-            headers: Some(&headers(&[("x-claude-code-request-class", "auxiliary")])),
-            connection_headers: None,
-            body: Some(body),
-            client_metadata: None,
-        })
-    }
-
-    #[test]
-    fn naming_call_is_a_session_title_call() {
-        assert_eq!(
-            naming(&naming_body(&naming_system())).purpose,
-            Some(EventPurpose::SessionTitle)
-        );
-    }
-
-    #[test]
-    fn naming_instruction_outside_a_claude_code_system_prompt_is_not_a_naming_call() {
-        let quoted_by_user = json!({
-            "system": [{"type": "text", "text": "x-anthropic-billing-header: cc_version=2.1.293.af3;"}],
-            "messages": [{"role": "user", "content": "Why does it say You are naming a coding session?"}]
-        });
-        let other_client = naming_body(&json!("You are naming a coding session."));
-
-        for body in [quoted_by_user, other_client] {
-            assert!(naming(&body).purpose.is_none());
-        }
     }
 }

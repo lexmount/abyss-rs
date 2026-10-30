@@ -201,7 +201,6 @@ mod tests {
         declare(&DeclarationSource {
             headers,
             connection_headers: None,
-            body: None,
             client_metadata,
         })
     }
@@ -322,7 +321,6 @@ mod tests {
         let declaration = declare(&DeclarationSource {
             headers: None,
             connection_headers: Some(&upgrade),
-            body: None,
             client_metadata: Some(&frame),
         });
         assert_eq!(
@@ -332,7 +330,6 @@ mod tests {
         let without_frame = declare(&DeclarationSource {
             headers: None,
             connection_headers: Some(&upgrade),
-            body: None,
             client_metadata: None,
         });
         assert_eq!(lineage(without_frame), ids([Some("t-2"), None, None]));

@@ -206,41 +206,9 @@ def main():
             },
         }
     )
-    # Claude Code names its session from a dedicated call.
-    fixtures.append(
-        {
-            "path": "/v1/messages",
-            "session_id": "structured-e2e-anthropic",
-            "process": "claude",
-            "request": {
-                "model": "test-model",
-                "system": [
-                    {
-                        "type": "text",
-                        "text": "x-anthropic-billing-header: cc_version=2.1.296.172; cc_entrypoint=cli;",
-                    },
-                    {"type": "text", "text": "You are naming a coding session."},
-                ],
-                "messages": [
-                    {"role": "user", "content": "<session>\nhello\n</session>"}
-                ],
-            },
-            "response": {
-                "id": "msg_title",
-                "model": "test-model",
-                "content": [{"type": "text", "text": '{"title": "Greeting"}'}],
-                "usage": {"input_tokens": 3, "output_tokens": 1},
-            },
-        }
-    )
     events = replay(args.replay_binary, fixtures)
-    assert len(events) == 8, events
-    assert_structured(events[:6])
-    naming_request, naming_reply = events[6:]
-    assert naming_request["purpose"] == naming_reply["purpose"] == "session_title"
-    assert naming_request["response_id"] == "msg_title"
-    for field in ("turn_id", "stream_id", "session_title"):
-        assert field not in naming_request and field not in naming_reply, field
+    assert len(events) == 6, events
+    assert_structured(events)
     # Re-observing the same exchanges yields the same deterministic event ids.
     replayed = replay(args.replay_binary, fixtures)
     assert [e["event_id"] for e in replayed] == [e["event_id"] for e in events]

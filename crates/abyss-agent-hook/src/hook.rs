@@ -180,7 +180,6 @@ where
             &DeclarationSource {
                 headers: None,
                 connection_headers: Some(message.upgrade_request.headers()),
-                body: None,
                 client_metadata: parsed.client_metadata.as_ref(),
             },
         );
@@ -244,7 +243,6 @@ fn http_declaration(
         &DeclarationSource {
             headers: Some(exchange.request.headers()),
             connection_headers: None,
-            body: exchange.request.body().json(),
             client_metadata,
         },
     )

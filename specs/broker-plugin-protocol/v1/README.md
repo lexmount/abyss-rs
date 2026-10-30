@@ -440,9 +440,7 @@ headers. The list is omitted when empty.
 says so. Both events of the call carry it. Values:
 
 - `session_title`: the Agent asks the model to name the session the call
-  belongs to. Claude Code makes such a call with the naming instruction in its
-  system prompt (`You are naming a coding session…`) and the billing header
-  present.
+  belongs to.
 - `compaction`: the Agent asks the model to summarize the conversation so far,
   to continue from the summary instead of the full history. Codex declares it
   as `request_kind` `compaction` in `x-codex-turn-metadata`, Claude Code as

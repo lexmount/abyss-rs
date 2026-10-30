@@ -1,4 +1,4 @@
-//! What an Agent declares about one request in its own headers and body.
+//! What an Agent declares about one request in its own headers.
 //!
 //! Each supported Harness reads its own declarations in its registry entry, so
 //! protocol parsers stay limited to provider-level content.
@@ -17,8 +17,6 @@ pub struct DeclarationSource<'a> {
     /// upgrade request's. Agents read only connection-wide declarations, such
     /// as their thread, from them; a request's own headers come first.
     pub connection_headers: Option<&'a HeaderMap>,
-    /// Decoded request body, when the protocol sends one per request.
-    pub body: Option<&'a Value>,
     /// The OpenAI request `client_metadata` object.
     pub client_metadata: Option<&'a Value>,
 }
