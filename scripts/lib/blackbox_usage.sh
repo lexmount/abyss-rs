@@ -91,7 +91,7 @@ blackbox_extract_event_pair() {
                   and .agent_name == $agent_name
                   and .llm_provider == $provider
                   and .session_id == $request.session_id
-                  and .turn_index == $request.turn_index
+                  and .response_id == $request.response_id
                 )] as $responses
           | if ($responses | length) == 0 then
               empty
@@ -115,8 +115,8 @@ blackbox_assert_pair_identity() {
     and .request.event_id != .response.event_id
     and (.request.session_id | type == "string" and length > 0)
     and .request.session_id == .response.session_id
-    and (.request.turn_index | type == "number")
-    and .request.turn_index == .response.turn_index
+    and (.request.response_id | type == "string" and length > 0)
+    and .request.response_id == .response.response_id
   ' <<<"${pair_json}" >/dev/null
 }
 

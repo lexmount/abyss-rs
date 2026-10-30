@@ -495,17 +495,17 @@ class VerificationTests(unittest.TestCase):
                     "input_tokens": 3 if i % 2 == 0 else 0,
                     "cache_read_tokens": 2 if i % 2 == 0 else 0,
                     "output_tokens": 3 if i % 2 else 0,
-                    "conversation": {"completeness": "complete", "messages": []},
+                    "conversation": {"completeness": "complete", "entries": []},
                     "metadata": {},
                 }
             )
-        self.events[1]["metadata"]["content_segments"] = [
-            {"type": "tool_call", "call_id": "call", "name": "read"}
+        self.events[1]["conversation"]["entries"] = [
+            {"role": "tool_call", "text": "{}", "call_id": "call", "name": "read"}
         ]
-        self.events[2]["metadata"]["content_segments"] = [
-            {"type": "tool_result", "call_id": "call", "output": "nonce"}
+        self.events[2]["conversation"]["entries"] = [
+            {"role": "tool_result", "text": "nonce", "call_id": "call"}
         ]
-        self.events[3]["conversation"]["messages"] = [
+        self.events[3]["conversation"]["entries"] = [
             {"role": "assistant", "text": "marker nonce"}
         ]
 
@@ -562,7 +562,7 @@ class VerificationTests(unittest.TestCase):
 
     def test_broken_tool_roundtrip_and_partial_capture_fail(self):
         events = copy.deepcopy(self.events)
-        events[2]["metadata"]["content_segments"][0]["call_id"] = "wrong"
+        events[2]["conversation"]["entries"][0]["call_id"] = "wrong"
         self.assertIn("tool_roundtrip", self.verify(events)["failed_checks"])
         events[0]["conversation"]["completeness"] = "partial"
         self.assertIn("complete_conversation", self.verify(events)["failed_checks"])

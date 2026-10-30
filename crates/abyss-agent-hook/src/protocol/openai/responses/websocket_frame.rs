@@ -19,7 +19,7 @@ use crate::protocol::{
     },
     shared::{
         digest::sha256_hex,
-        http::{flow_server_name, header, opencode_session_id, request_host, transport_name},
+        http::{flow_server_name, header, opencode_session_id, request_host},
         json::{collect_string_field, event_types, string_field},
     },
 };
@@ -86,10 +86,6 @@ pub fn parse_openai_websocket_message(message: &WebSocketMessage) -> OpenAiWebSo
             string_field(&payload, "type") != Some("response.create")
                 || request_payload.get("generate").and_then(Value::as_bool) != Some(false)
         }),
-        host,
-        path: path.to_owned(),
-        method: message.upgrade_request.method().to_string(),
-        transport: transport_name(&message.flow.protocol),
         session_id: websocket_session_id(message, &payload),
         request_hash,
         request_conversation: request.conversation(),

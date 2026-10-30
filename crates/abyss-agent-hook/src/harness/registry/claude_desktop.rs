@@ -3,7 +3,7 @@
 use abyss_mitm::FlowContext;
 use http::HeaderMap;
 
-use crate::harness::{BuiltInHarness, HarnessDetection, HarnessEvidence, HarnessId};
+use crate::harness::{BuiltInHarness, HarnessDetection, HarnessId};
 
 use super::{HarnessDetector, client_version, header};
 
@@ -14,49 +14,26 @@ impl HarnessDetector for ClaudeDesktopDetector {
         &self,
         flow: &FlowContext,
         headers: &HeaderMap,
-        path: &str,
+        _path: &str,
     ) -> Option<HarnessDetection> {
-        let mut evidence = Vec::new();
-        if let Some(source) = &flow.source_process {
-            if let Some(application_id) = source
-                .application_id
-                .as_deref()
-                .filter(|value| *value == "com.anthropic.claudefordesktop.helper")
-            {
-                evidence.push(HarnessEvidence::ApplicationId(application_id.to_owned()));
-            } else if source
-                .name
-                .as_deref()
-                .into_iter()
-                .chain(source.executable_path.as_deref())
-                .any(is_desktop_process)
-            {
-                evidence.push(HarnessEvidence::Process(
-                    source
-                        .name
-                        .clone()
-                        .or_else(|| source.executable_path.clone())
-                        .unwrap_or_default(),
-                ));
-            }
-        }
-        if header(headers, "anthropic-client-platform") == Some("desktop_app")
-            || header(headers, "anthropic-client-app") == Some("com.anthropic.claudefordesktop")
-        {
-            evidence.push(HarnessEvidence::Header("anthropic-client-app"));
-        }
-        if evidence.is_empty() {
+        let source = flow.source_process.as_ref().is_some_and(|source| {
+            source.application_id.as_deref() == Some("com.anthropic.claudefordesktop.helper")
+                || source
+                    .name
+                    .as_deref()
+                    .into_iter()
+                    .chain(source.executable_path.as_deref())
+                    .any(is_desktop_process)
+        });
+        let marked = header(headers, "anthropic-client-platform") == Some("desktop_app")
+            || header(headers, "anthropic-client-app") == Some("com.anthropic.claudefordesktop");
+        if !source && !marked {
             return None;
-        }
-        if path.contains("/organizations/") && path.ends_with("/completion") {
-            evidence.push(HarnessEvidence::Path(path.to_owned()));
         }
         Some(HarnessDetection {
             harness_id: HarnessId::from(BuiltInHarness::ClaudeDesktop),
-            evidence,
             version: header(headers, "user-agent")
                 .and_then(|user_agent| client_version(user_agent, &["claude/"])),
-            working_directory: flow.source_working_directory().map(str::to_owned),
         })
     }
 }

@@ -559,10 +559,6 @@ mod tests {
     fn exchange() -> ParsedOpenAiExchange {
         ParsedOpenAiExchange {
             generates_output: None,
-            host: "gateway.example".to_owned(),
-            path: "/v1/responses".to_owned(),
-            method: "GET".to_owned(),
-            transport: "https",
             session_id: "session-1".to_owned(),
             request_hash: "request-hash".to_owned(),
             request_conversation: ConversationProjection::empty(),

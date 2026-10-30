@@ -3,36 +3,19 @@
 use http::HeaderMap;
 use serde_json::Value;
 
-use super::model::AnthropicSessionIdSource;
 use crate::protocol::shared::{
     http::{header, opencode_session_id},
     json::collect_string_field,
     text::non_empty_trimmed,
 };
 
-pub(super) struct ResolvedAnthropicSessionId {
-    pub(super) id: String,
-    pub(super) source: AnthropicSessionIdSource,
-}
-
-pub(super) fn anthropic_session_id(
-    headers: &HeaderMap,
-    payload: &Value,
-    host: &str,
-) -> ResolvedAnthropicSessionId {
-    provider_session_id(headers, payload).map_or_else(
-        || ResolvedAnthropicSessionId {
-            id: format!(
-                "anthropic-unattributed-{}",
-                sanitize_session_component(host)
-            ),
-            source: AnthropicSessionIdSource::Unattributed,
-        },
-        |id| ResolvedAnthropicSessionId {
-            id,
-            source: AnthropicSessionIdSource::Provider,
-        },
-    )
+pub(super) fn anthropic_session_id(headers: &HeaderMap, payload: &Value, host: &str) -> String {
+    provider_session_id(headers, payload).unwrap_or_else(|| {
+        format!(
+            "anthropic-unattributed-{}",
+            sanitize_session_component(host)
+        )
+    })
 }
 
 fn provider_session_id(headers: &HeaderMap, payload: &Value) -> Option<String> {

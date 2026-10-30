@@ -13,7 +13,7 @@ use crate::protocol::{
     model::image::ParsedImageAttachment,
     shared::{
         digest::sha256_hex,
-        http::{request_host, transport_name},
+        http::request_host,
         json::{event_types, string_field},
         sse::ResponseDocuments,
     },
@@ -94,10 +94,6 @@ impl<'a> OpenAiHttpExchange<'a> {
 
         Some(ParsedOpenAiExchange {
             generates_output: None,
-            host,
-            path: path.to_owned(),
-            method: self.exchange.request.method().to_string(),
-            transport: transport_name(&self.exchange.flow.protocol),
             session_id: session_id(headers)
                 .unwrap_or_else(|| format!("flow-{}", &request_hash[..16])),
             request_hash,

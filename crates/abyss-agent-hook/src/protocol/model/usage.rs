@@ -1,4 +1,4 @@
-//! Protocol-level token counters and their extraction provenance.
+//! Protocol-level token counters.
 
 use serde::Serialize;
 
@@ -79,36 +79,6 @@ impl TokenUsage {
     #[must_use]
     pub const fn response_side(&self) -> Self {
         Self::from_parts(0, 0, 0, self.output_tokens, self.reasoning_tokens)
-    }
-}
-
-/// Provenance of token counters attached to one parsed exchange.
-#[derive(Debug, Clone, Copy, PartialEq, Serialize)]
-#[serde(rename_all = "snake_case")]
-pub enum TokenUsageSource {
-    /// Counters were present in provider request or response payloads.
-    ProviderReported,
-    /// Counters were estimated from visible request and response content.
-    EstimatedVisibleContent,
-    /// Neither provider counters nor an estimate were available.
-    Absent,
-}
-
-impl TokenUsageSource {
-    /// Classifies an empty usage record as absent and a non-empty one as provider reported.
-    #[must_use]
-    pub const fn provider_or_absent(usage: &TokenUsage) -> Self {
-        if usage.is_empty() {
-            Self::Absent
-        } else {
-            Self::ProviderReported
-        }
-    }
-
-    /// Returns whether the counters were estimated from visible content.
-    #[must_use]
-    pub const fn is_estimated(self) -> bool {
-        matches!(self, Self::EstimatedVisibleContent)
     }
 }
 

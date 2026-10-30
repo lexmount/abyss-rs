@@ -191,7 +191,6 @@ pub mod tests {
                 total_tokens: 1_i64,
                 ..TokenUsage::default()
             },
-            metadata: serde_json::json!({}),
             attachments: Vec::new(),
         }
     }

@@ -9,7 +9,7 @@ use abyss_plugin_protocol::event::EntryRole;
 use http::{Request, Response};
 use serde_json::{Value, json};
 
-use super::{AnthropicSessionIdSource, parse_anthropic_messages_exchange};
+use super::parse_anthropic_messages_exchange;
 use crate::protocol::model::conversation::role_texts;
 
 #[test]
@@ -30,12 +30,7 @@ fn parses_messages_json_without_harness_assumptions() {
 
     let parsed = parse_anthropic_messages_exchange(&exchange).expect("Anthropic Messages exchange");
 
-    assert_eq!(parsed.host, "gateway.example");
     assert_eq!(parsed.session_id, "session-1");
-    assert!(matches!(
-        parsed.session_id_source,
-        AnthropicSessionIdSource::Provider
-    ));
     assert_eq!(
         role_texts(&parsed.request_conversation),
         [(EntryRole::User, "hello")]
@@ -161,10 +156,6 @@ fn correlates_messages_with_native_deepseek_session_header() {
         let parsed = parse_anthropic_messages_exchange(&exchange).expect("Messages exchange");
 
         assert_eq!(parsed.session_id, session_id);
-        assert!(matches!(
-            parsed.session_id_source,
-            AnthropicSessionIdSource::Provider
-        ));
         assert_eq!(
             role_texts(&parsed.request_conversation),
             [(EntryRole::User, text)]
@@ -189,10 +180,7 @@ fn ignores_blank_deepseek_session_header() {
 
     exchange.request.headers_mut().remove("session-id");
     let parsed = parse_anthropic_messages_exchange(&exchange).expect("unattributed exchange");
-    assert!(matches!(
-        parsed.session_id_source,
-        AnthropicSessionIdSource::Unattributed
-    ));
+    assert_eq!(parsed.session_id, "anthropic-unattributed-gateway-example");
 }
 
 #[test]
@@ -219,10 +207,6 @@ fn hermes_session_headers_follow_messages_precedence_and_fallbacks() {
             .remove("x-claude-code-session-id");
         let parsed = parse_anthropic_messages_exchange(&exchange).unwrap();
         assert_eq!(parsed.session_id, "hermes-session");
-        assert!(matches!(
-            parsed.session_id_source,
-            AnthropicSessionIdSource::Provider
-        ));
 
         exchange
             .request
@@ -230,10 +214,6 @@ fn hermes_session_headers_follow_messages_precedence_and_fallbacks() {
             .insert(name, " ".parse().unwrap());
         let parsed = parse_anthropic_messages_exchange(&exchange).unwrap();
         assert_eq!(parsed.session_id, "anthropic-unattributed-gateway-example");
-        assert!(matches!(
-            parsed.session_id_source,
-            AnthropicSessionIdSource::Unattributed
-        ));
     }
 }
 
@@ -254,42 +234,38 @@ fn retains_unattributed_session_bucket_when_protocol_has_no_session_id() {
 
     let parsed = parse_anthropic_messages_exchange(&exchange).expect("unattributed exchange");
 
-    assert!(matches!(
-        parsed.session_id_source,
-        AnthropicSessionIdSource::Unattributed
-    ));
     assert_eq!(parsed.session_id, "anthropic-unattributed-gateway-example");
 }
 
-const CLAUDE_CODE_TURN_13: &str = "x-anthropic-billing-header: cc_version=2.1.293.af3; cc_entrypoint=cli; cch=71184; cc_prev_req=req_011Cfp63WyExutpXM23Swg97; cc_prompt_id=a7e7449e-3401-4091-9857-98c73e217ce3; cc_turn_origin=human; cc_prompt_index=13; cc_turn_index=13;";
+const CLAUDE_CODE_TURN_13: &str = "x-anthropic-billing-header: cc_version=2.1.100.abc; cc_entrypoint=cli; cch=00001; cc_prev_req=req_011CSyntheticRequest0001; cc_prompt_id=00000000-0000-4000-8000-000000000001; cc_turn_origin=human; cc_prompt_index=13; cc_turn_index=13;";
 
-/// Trimmed Claude Code 2.1.293 request bodies of one user turn
-/// (`cc_turn_index=13`): a `continue` that failed with `thread_not_found`,
+/// Claude Code request bodies of one user turn (`cc_turn_index=13`), with
+/// synthetic identities: a `continue` that failed with `thread_not_found`,
 /// its `create` replay under a new `cc_prompt_id`, and a later
 /// tool-result-only `continue`.
 fn claude_code_turn_13_requests() -> [Value; 3] {
     [
         json!({
             "model": "claude-opus-5-5",
-            "system": [{"type": "text", "text": "x-anthropic-billing-header: cc_version=2.1.293.af3; cc_entrypoint=cli; cch=3ceb5; cc_prev_req=req_011Cfp5Uve7sxQqhVCrv4MHM; cc_prompt_id=100bbd47-4661-4476-a802-eb9bad30b029; cc_turn_origin=human; cc_prompt_index=13; cc_turn_index=13;"}],
+            "system": [{"type": "text", "text": "x-anthropic-billing-header: cc_version=2.1.100.abc; cc_entrypoint=cli; cch=00002; cc_prev_req=req_011CSyntheticRequest0002; cc_prompt_id=00000000-0000-4000-8000-000000000002; cc_turn_origin=human; cc_prompt_index=13; cc_turn_index=13;"}],
             "messages": [
                 {"role": "user", "content": "look at the thread field"},
-                {"role": "system", "content": [{"type": "text", "text": "<total_tokens>14998716 tokens left</total_tokens>"}]}
+                {"role": "system", "content": [{"type": "text", "text": "<reminder>synthetic system note</reminder>"}]}
             ],
-            "thread": {"type": "continue", "previous_message_id": "msg_011Cfp5UzgwXz5ZQcfs9WXCP"},
+            "thread": {"type": "continue", "previous_message_id": "msg_011CSyntheticMessage0001"},
             "stream": true
         }),
         json!({
             "model": "claude-opus-5-5",
             "system": [
-                {"type": "text", "text": "x-anthropic-billing-header: cc_version=2.1.293.af3; cc_entrypoint=cli; cch=feaae; cc_prev_req=req_011Cfp5Uve7sxQqhVCrv4MHM; cc_prompt_id=a7e7449e-3401-4091-9857-98c73e217ce3; cc_turn_origin=human; cc_prompt_index=13; cc_turn_index=13;"},
+                {"type": "text", "text": "x-anthropic-billing-header: cc_version=2.1.100.abc; cc_entrypoint=cli; cch=00003; cc_prev_req=req_011CSyntheticRequest0002; cc_prompt_id=00000000-0000-4000-8000-000000000001; cc_turn_origin=human; cc_prompt_index=13; cc_turn_index=13;"},
                 {"type": "text", "text": "You are Claude Code, Anthropic's official CLI for Claude."}
             ],
             "messages": [
                 {"role": "user", "content": "earlier prompt"},
                 {"role": "assistant", "content": [{"type": "text", "text": "earlier answer"}]},
                 {"role": "user", "content": "look at the thread field"},
-                {"role": "system", "content": [{"type": "text", "text": "<total_tokens>14998716 tokens left</total_tokens>"}]}
+                {"role": "system", "content": [{"type": "text", "text": "<reminder>synthetic system note</reminder>"}]}
             ],
             "tools": [{"name": "Bash", "input_schema": {"type": "object"}}],
             "thread": {"type": "create"},
@@ -300,11 +276,11 @@ fn claude_code_turn_13_requests() -> [Value; 3] {
             "system": [{"type": "text", "text": CLAUDE_CODE_TURN_13}],
             "messages": [
                 {"role": "user", "content": [
-                    {"tool_use_id": "toolu_01NTVfgULERMfiZJkqtEfMcX", "type": "tool_result", "content": "ok"}
+                    {"tool_use_id": "toolu_01SyntheticToolUse000001", "type": "tool_result", "content": "ok"}
                 ]},
-                {"role": "system", "content": [{"type": "text", "text": "<total_tokens>14998716 tokens left</total_tokens>"}]}
+                {"role": "system", "content": [{"type": "text", "text": "<reminder>synthetic system note</reminder>"}]}
             ],
-            "thread": {"type": "continue", "previous_message_id": "msg_011Cfp64Grx3HXuyQSqYibkp"},
+            "thread": {"type": "continue", "previous_message_id": "msg_011CSyntheticMessage0002"},
             "stream": true
         }),
     ]
@@ -322,9 +298,9 @@ fn only_a_thread_continue_names_the_response_it_continues_after() {
             .each_ref()
             .map(|exchange| exchange.previous_response_id.as_deref()),
         [
-            Some("msg_011Cfp5UzgwXz5ZQcfs9WXCP"),
+            Some("msg_011CSyntheticMessage0001"),
             None,
-            Some("msg_011Cfp64Grx3HXuyQSqYibkp"),
+            Some("msg_011CSyntheticMessage0002"),
         ]
     );
 }
@@ -438,18 +414,10 @@ fn conversation_header_uses_the_existing_messages_session_chain() {
     exchange.request.headers_mut().remove("session-id");
     let parsed = parse_anthropic_messages_exchange(&exchange).unwrap();
     assert_eq!(parsed.session_id, "conversation-1");
-    assert!(matches!(
-        parsed.session_id_source,
-        AnthropicSessionIdSource::Provider
-    ));
     exchange
         .request
         .headers_mut()
         .insert("x-conversation-id", " \t".parse().unwrap());
     let parsed = parse_anthropic_messages_exchange(&exchange).unwrap();
     assert_eq!(parsed.session_id, "anthropic-unattributed-gateway-example");
-    assert!(matches!(
-        parsed.session_id_source,
-        AnthropicSessionIdSource::Unattributed
-    ));
 }

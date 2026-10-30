@@ -3,9 +3,7 @@
 use abyss_mitm::FlowContext;
 use http::HeaderMap;
 
-use crate::harness::{
-    AgentDeclaration, BuiltInHarness, DeclarationSource, HarnessDetection, HarnessEvidence,
-};
+use crate::harness::{AgentDeclaration, BuiltInHarness, DeclarationSource, HarnessDetection};
 
 use super::{HarnessDetector, client_version, header};
 
@@ -27,38 +25,23 @@ impl HarnessDetector for HermesDetector {
     ) -> Option<HarnessDetection> {
         let user_agent = header(headers, "user-agent").unwrap_or_default();
         let normalized = user_agent.to_ascii_lowercase();
-        let marker = if header(headers, SESSION_ID).is_some() {
-            Some(SESSION_ID)
-        } else if normalized.starts_with("hermesagent/") || normalized.contains("(hermes agent)") {
-            Some("user-agent")
-        } else if header(headers, "originator")
-            .is_some_and(|value| value.eq_ignore_ascii_case("hermes-agent"))
-        {
-            Some("originator")
-        } else {
-            None
-        };
-        let mut evidence = Vec::new();
-        if flow
+        let marked = header(headers, SESSION_ID).is_some()
+            || normalized.starts_with("hermesagent/")
+            || normalized.contains("(hermes agent)")
+            || header(headers, "originator")
+                .is_some_and(|value| value.eq_ignore_ascii_case("hermes-agent"));
+        let application = flow
             .source_process
             .as_ref()
             .and_then(|source| source.application_id.as_deref())
-            == Some(APPLICATION_ID)
-        {
-            evidence.push(HarnessEvidence::ApplicationId(APPLICATION_ID.to_owned()));
-        }
-        if let Some(marker) = marker {
-            evidence.push(HarnessEvidence::Header(marker));
-        }
-        if evidence.is_empty() {
+            == Some(APPLICATION_ID);
+        if !application && !marked {
             return None;
         }
         Some(HarnessDetection {
             harness_id: BuiltInHarness::Hermes.into(),
-            evidence,
             // Do not report a compatibility codex_cli_rs version as Hermes'.
             version: client_version(user_agent, &["hermesagent/"]),
-            working_directory: flow.source_working_directory().map(str::to_owned),
         })
     }
 }

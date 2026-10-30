@@ -250,17 +250,17 @@ fn output_entries_carry_the_id_of_their_item() {
 
 #[test]
 fn a_replayed_output_item_keeps_the_id_its_response_gave_it() {
-    // The ids and item shapes of a captured Codex turn whose commentary
-    // and tool call come back in the next request.
-    let message = json!({"type":"message","id":"msg_05ddafa48ca28316016ad09e37fb7c819abc6fd9aad3939596","role":"assistant","content":[{"type":"output_text","text":"I will check the size."}],"phase":"commentary"});
-    let call = json!({"type":"custom_tool_call","id":"ctc_05ddafa48ca28316016ad09e382a34819aaef0cbe1ee246e62","status":"completed","call_id":"call_281a8bc325b04e1c83d3701fbb2890d4","name":"exec","input":"wc -c notes.txt"});
+    // Codex-shaped ids and items of a turn whose commentary and tool call
+    // come back in the next request.
+    let message = json!({"type":"message","id":"msg_0000000000000000000000000000000000000000000000a001","role":"assistant","content":[{"type":"output_text","text":"I will check the size."}],"phase":"commentary"});
+    let call = json!({"type":"custom_tool_call","id":"ctc_0000000000000000000000000000000000000000000000c001","status":"completed","call_id":"call_00000000000000000000000000000001","name":"exec","input":"wc -c notes.txt"});
     let response = ResponsesResponse::assemble(&[
-            json!({"type":"response.output_item.added","output_index":0_i32,"item":{"type":"message","id":"msg_05ddafa48ca28316016ad09e37fb7c819abc6fd9aad3939596","role":"assistant","status":"in_progress","content":[]}}),
-            json!({"type":"response.output_text.delta","item_id":"msg_05ddafa48ca28316016ad09e37fb7c819abc6fd9aad3939596","output_index":0_i32,"content_index":0_i32,"delta":"I will check "}),
-            json!({"type":"response.output_text.delta","item_id":"msg_05ddafa48ca28316016ad09e37fb7c819abc6fd9aad3939596","output_index":0_i32,"content_index":0_i32,"delta":"the size."}),
+            json!({"type":"response.output_item.added","output_index":0_i32,"item":{"type":"message","id":"msg_0000000000000000000000000000000000000000000000a001","role":"assistant","status":"in_progress","content":[]}}),
+            json!({"type":"response.output_text.delta","item_id":"msg_0000000000000000000000000000000000000000000000a001","output_index":0_i32,"content_index":0_i32,"delta":"I will check "}),
+            json!({"type":"response.output_text.delta","item_id":"msg_0000000000000000000000000000000000000000000000a001","output_index":0_i32,"content_index":0_i32,"delta":"the size."}),
             json!({"type":"response.output_item.done","output_index":0_i32,"item":message}),
-            json!({"type":"response.output_item.added","output_index":1_i32,"item":{"type":"custom_tool_call","id":"ctc_05ddafa48ca28316016ad09e382a34819aaef0cbe1ee246e62","status":"in_progress","call_id":"call_281a8bc325b04e1c83d3701fbb2890d4","name":"exec","input":""}}),
-            json!({"type":"response.custom_tool_call_input.delta","item_id":"ctc_05ddafa48ca28316016ad09e382a34819aaef0cbe1ee246e62","output_index":1_i32,"delta":"wc -c notes.txt"}),
+            json!({"type":"response.output_item.added","output_index":1_i32,"item":{"type":"custom_tool_call","id":"ctc_0000000000000000000000000000000000000000000000c001","status":"in_progress","call_id":"call_00000000000000000000000000000001","name":"exec","input":""}}),
+            json!({"type":"response.custom_tool_call_input.delta","item_id":"ctc_0000000000000000000000000000000000000000000000c001","output_index":1_i32,"delta":"wc -c notes.txt"}),
             json!({"type":"response.output_item.done","output_index":1_i32,"item":call}),
             json!({"type":"response.completed","response":{"id":"resp_1","output":[message, call]}}),
         ],
@@ -268,10 +268,10 @@ fn a_replayed_output_item_keeps_the_id_its_response_gave_it() {
     )
     .conversation();
     let request = ResponsesRequest::parse(Some(&json!({"input":[
-            {"type":"message","id":"msg_01a13ee9-f8c3-7e70-b66f-6c6feeeb1bea","role":"user","content":[{"type":"input_text","text":"How big is notes.txt?"}]},
+            {"type":"message","id":"msg_00000000-0000-7000-8000-000000000001","role":"user","content":[{"type":"input_text","text":"How big is notes.txt?"}]},
             message,
             call,
-            {"type":"custom_tool_call_output","id":"ctco_01a13eea-0daa-7550-89f4-3ef8f89939a1","call_id":"call_281a8bc325b04e1c83d3701fbb2890d4","output":[{"type":"input_text","text":"11 notes.txt"}]}
+            {"type":"custom_tool_call_output","id":"ctco_00000000-0000-7000-8000-000000000002","call_id":"call_00000000000000000000000000000001","output":[{"type":"input_text","text":"11 notes.txt"}]}
         ]})),
         false,
     )
@@ -280,8 +280,8 @@ fn a_replayed_output_item_keeps_the_id_its_response_gave_it() {
     assert_eq!(
         item_ids(&response),
         [
-            Some("msg_05ddafa48ca28316016ad09e37fb7c819abc6fd9aad3939596"),
-            Some("ctc_05ddafa48ca28316016ad09e382a34819aaef0cbe1ee246e62"),
+            Some("msg_0000000000000000000000000000000000000000000000a001"),
+            Some("ctc_0000000000000000000000000000000000000000000000c001"),
         ]
     );
     assert_eq!(request.entries[1..3], response.entries[..]);

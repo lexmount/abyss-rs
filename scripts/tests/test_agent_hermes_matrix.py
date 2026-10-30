@@ -218,15 +218,14 @@ class HermesVerificationTests(unittest.TestCase):
                         "llm_provider": "openai",
                         "llm_model": self.case.model,
                         "session_id": "native-session",
-                        "turn_index": turn,
+                        "location": {"turn": turn},
                         "input_tokens": 6 if request else 0,
                         "output_tokens": 0 if request else 2,
                         "cache_read_tokens": 3 if request else 0,
                         "cache_write_tokens": 1 if request else 0,
-                        "text": "query" if request else "marker nonce",
                         "conversation": {
                             "completeness": "complete",
-                            "messages": [
+                            "entries": [
                                 {
                                     "role": "user" if request else "assistant",
                                     "text": "query" if request else "marker nonce",
@@ -236,12 +235,12 @@ class HermesVerificationTests(unittest.TestCase):
                         "metadata": {},
                     }
                 )
-        self.events[1]["metadata"]["content_segments"] = [
-            {"type": "tool_call", "call_id": "call", "name": "read_file"}
-        ]
-        self.events[2]["metadata"]["content_segments"] = [
-            {"type": "tool_result", "call_id": "call", "output": "nonce"}
-        ]
+        self.events[1]["conversation"]["entries"].append(
+            {"role": "tool_call", "text": "{}", "call_id": "call", "name": "read_file"}
+        )
+        self.events[2]["conversation"]["entries"].append(
+            {"role": "tool_result", "text": "nonce", "call_id": "call"}
+        )
 
     def verify(self, events=None):
         return MatrixVerifier.verify(
@@ -266,9 +265,9 @@ class HermesVerificationTests(unittest.TestCase):
             events = copy.deepcopy(self.events)
             if mutate == "merge":
                 for event in events:
-                    event["turn_index"] = 1
+                    event["location"]["turn"] = 1
             elif mutate == "missing_answer":
-                events[-1]["text"] = "missing"
+                events[-1]["conversation"]["entries"][0]["text"] = "missing"
             elif mutate == "wrong_session":
                 events[-1]["session_id"] = "other"
             else:

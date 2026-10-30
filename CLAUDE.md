@@ -48,6 +48,8 @@ The Rust workspace contains only active open crates:
 - `crates/abyss-agent-hook/` — Agent traffic parsing and normalized events.
 - `crates/abyss-broker/` — endpoint broker, REST control, and ingress contracts.
 - `crates/abyss-cli/` — explicit-proxy CLI for Linux and macOS.
+- `crates/abyss-data-client/` — client for the public data HTTP API.
+- `crates/abyss-query-cli/` — `abyss-query` data query CLI.
 - `crates/abyss-delivery-plugin/` — official event delivery plugin.
 - `crates/abyss-mitm/` — TLS interception and HTTP stream handling.
 - `crates/abyss-plugin-protocol/` — broker/plugin wire protocol.
@@ -87,11 +89,6 @@ private CA bundles, QUIC/HTTP/3, and local model traffic may bypass or limit
 inspection. Preserve explicit pass, block, metadata-only, and intercept outcomes.
 Enterprise deployments must define authorization, notice, privacy scope,
 retention, and data minimization.
-
-The current Agent parser diagnostic capture is temporary pre-production
-instrumentation. It uploads bounded raw HTTP and WebSocket content after
-credential-header redaction independently of normalized audit controls and must
-be removed before a production release.
 
 ## Code style
 

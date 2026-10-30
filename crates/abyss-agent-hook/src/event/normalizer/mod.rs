@@ -17,9 +17,9 @@ use thiserror::Error;
 use crate::{
     config::{DeviceIdentity, HarnessUsageContentConfig, HarnessUsageHookConfig},
     event::{identifier::stable_event_id, passthrough::ExchangePassthrough},
-    harness::{AgentDeclaration, BuiltInHarness, HarnessDetection},
+    harness::{AgentDeclaration, HarnessDetection},
     protocol::model::image::ParsedImageAttachment,
-    protocol::model::usage::{TokenUsage, TokenUsageSource},
+    protocol::model::usage::TokenUsage,
     protocol::shared::digest::sha256_hex,
 };
 
@@ -44,21 +44,6 @@ pub enum AgentEventConversionError {
     /// An attachment position cannot be represented by the public contract.
     #[error("image attachment position must be non-negative, got {value}")]
     InvalidAttachmentPosition { value: i32 },
-}
-
-#[derive(Debug, Clone, Copy)]
-enum AgentClientKind {
-    Cli,
-    Desktop,
-}
-
-impl AgentClientKind {
-    const fn metadata_value(self) -> &'static str {
-        match self {
-            Self::Cli => "cli",
-            Self::Desktop => "desktop",
-        }
-    }
 }
 
 /// One hook-internal normalized usage event.
@@ -109,8 +94,6 @@ pub struct NormalizedUsageEvent {
     pub headers: Vec<HttpHeader>,
     /// Token counters attributed to this event side.
     pub token_usage: TokenUsage,
-    /// Hook-private provider context used while building typed plugin fields.
-    pub metadata: Value,
     /// Validated image attachments associated with this event side.
     #[serde(skip_serializing_if = "Vec::is_empty")]
     pub attachments: Vec<NormalizedImageAttachment>,
@@ -139,7 +122,6 @@ impl TryFrom<NormalizedUsageEvent> for AgentEvent {
             path,
             headers,
             token_usage,
-            metadata: _,
             attachments,
         } = event;
         let observed_at = DateTime::parse_from_rfc3339(&observed_at)
@@ -340,18 +322,8 @@ where
     events_for_parsed_exchange(config, &parts, content, declared, passthrough)
 }
 
-fn harness_client(detection: &HarnessDetection) -> &'static str {
-    if detection.harness_id.as_str() == BuiltInHarness::ClaudeDesktop.id() {
-        AgentClientKind::Desktop.metadata_value()
-    } else {
-        AgentClientKind::Cli.metadata_value()
-    }
-}
-
 pub struct ParsedEventParts<'a> {
-    http: HttpMetadata<'a>,
     harness_name: String,
-    harness_client: &'static str,
     harness_version: Option<String>,
     llm_provider: String,
     llm_model: Option<String>,
@@ -361,8 +333,6 @@ pub struct ParsedEventParts<'a> {
     response_conversation: &'a Conversation,
     request_images: Vec<ParsedImageAttachment>,
     usage: TokenUsage,
-    usage_source: TokenUsageSource,
-    metadata: Value,
     allow_request_without_response: bool,
 }
 
@@ -391,7 +361,6 @@ struct EventSide<'a> {
     side: AgentEventSide,
     conversation: &'a Conversation,
     token_usage: TokenUsage,
-    metadata: Value,
     attachments: &'a [ParsedImageAttachment],
     path: &'a str,
     headers: &'a [HttpHeader],
@@ -402,8 +371,8 @@ struct EventSide<'a> {
 /// Generates strictly increasing collector timestamps for one normalized
 /// provider exchange. Provider request and response events are created only
 /// after the terminal response arrives, so wall-clock reads can otherwise
-/// collapse to the same timestamp. `PostgreSQL` stores `timestamptz` values at
-/// microsecond precision, so the minimum step must survive that boundary.
+/// collapse to the same timestamp. Timestamps are emitted at microsecond
+/// precision, so each step is at least one microsecond.
 struct EventTimestampSequence {
     previous: Option<DateTime<Utc>>,
 }
@@ -424,14 +393,6 @@ impl EventTimestampSequence {
         self.previous = Some(observed_at);
         observed_at
     }
-}
-
-#[derive(Clone)]
-struct HttpMetadata<'a> {
-    transport: &'static str,
-    host: &'a str,
-    path: &'a str,
-    method: &'a str,
 }
 
 fn events_for_parsed_exchange(
@@ -457,27 +418,6 @@ fn events_for_parsed_exchange(
         return Vec::new();
     }
 
-    // Keep provider/raw HTTP context internally while typed fields remain
-    // stable for plugin consumers.
-    let mut normalized_metadata = json!({
-        "capture_mode": "abyss-mitm",
-        "agent_product": parts.harness_name,
-        "agent_client": parts.harness_client,
-        "transport": parts.http.transport,
-        "host": parts.http.host,
-        "path": parts.http.path,
-        "method": parts.http.method,
-        "content_policy": content,
-    });
-    if content.token_usage {
-        normalized_metadata["provider_usage"] = json!(parts.usage);
-        normalized_metadata["token_usage_source"] = json!(parts.usage_source);
-        normalized_metadata["token_usage_estimated"] =
-            Value::Bool(parts.usage_source.is_estimated());
-    }
-    let provider_metadata = projected_provider_metadata(&parts.metadata, content);
-    let metadata = merge_metadata(normalized_metadata, &provider_metadata);
-
     let mut events = Vec::new();
     let mut timestamps = EventTimestampSequence::new();
     let request_usage = parts.usage.request_side();
@@ -489,7 +429,6 @@ fn events_for_parsed_exchange(
                 side: AgentEventSide::Request,
                 conversation: parts.request_conversation,
                 token_usage: retained_token_usage(request_usage, content),
-                metadata: metadata.clone(),
                 attachments: &parts.request_images,
                 path: &passthrough.path,
                 headers: &passthrough.request,
@@ -509,7 +448,6 @@ fn events_for_parsed_exchange(
                 side: AgentEventSide::Response,
                 conversation: parts.response_conversation,
                 token_usage: retained_token_usage(response_usage, content),
-                metadata,
                 attachments: &[],
                 path: &passthrough.path,
                 headers: &passthrough.response,
@@ -567,27 +505,6 @@ fn omitted_categories(content: &HarnessUsageContentConfig) -> Vec<ContentCategor
     .collect()
 }
 
-fn projected_provider_metadata(metadata: &Value, content: &HarnessUsageContentConfig) -> Value {
-    let mut metadata = metadata.clone();
-    let Some(object) = metadata.as_object_mut() else {
-        return metadata;
-    };
-
-    // Provider event type lists are a raw structural view and can reveal that
-    // a disabled tool or image category was present even after the policy
-    // empties that content. Keep them only when every normalized event
-    // content category is enabled.
-    if !content.token_usage || !content.conversation_text || !content.tool_calls || !content.images
-    {
-        object.remove("provider_event_types");
-    }
-    if !content.tool_calls {
-        object.remove("stop_reason");
-    }
-
-    metadata
-}
-
 fn usage_event(
     config: &HarnessUsageHookConfig,
     parts: &ParsedEventParts<'_>,
@@ -633,7 +550,6 @@ fn usage_event(
         path: side.path.to_owned(),
         headers: side.headers.to_vec(),
         token_usage: side.token_usage,
-        metadata: side.metadata,
         attachments: normalized_image_attachments(side.attachments, side.content),
     }
 }
@@ -695,16 +611,6 @@ fn normalized_image_attachments(
         .collect()
 }
 
-fn merge_metadata(mut base: Value, extra: &Value) -> Value {
-    let (Some(base), Some(extra)) = (base.as_object_mut(), extra.as_object()) else {
-        return base;
-    };
-    for (key, value) in extra {
-        base.insert(key.clone(), value.clone());
-    }
-    Value::Object(base.clone())
-}
-
 #[cfg(test)]
 mod tests {
     use abyss_plugin_protocol::event::{
@@ -715,16 +621,12 @@ mod tests {
     use crate::{
         config::{DeviceIdentity, HarnessUsageContentConfig, HarnessUsageHookConfig},
         event::ExchangePassthrough,
-        harness::{AgentDeclaration, BuiltInHarness, HarnessDetection, HarnessEvidence, HarnessId},
+        harness::{AgentDeclaration, BuiltInHarness, HarnessDetection, HarnessId},
         protocol::{
-            anthropic::{
-                AnthropicSessionIdSource, ParsedAnthropicMessagesExchange,
-                claude_web::{ParsedClaudeWebExchange, conversation::ClaudeWebSessionIdSource},
-            },
+            anthropic::{ParsedAnthropicMessagesExchange, claude_web::ParsedClaudeWebExchange},
             model::{
-                conversation::ConversationProjection,
-                image::ParsedImageAttachment,
-                usage::{TokenUsage, TokenUsageSource},
+                conversation::ConversationProjection, image::ParsedImageAttachment,
+                usage::TokenUsage,
             },
             openai::ParsedOpenAiExchange,
         },
@@ -788,13 +690,16 @@ mod tests {
                 ContentCategory::Images,
             ]
         );
-        assert!(omitted_categories(&HarnessUsageContentConfig::default()).is_empty());
+        assert_eq!(
+            omitted_categories(&HarnessUsageContentConfig::default()),
+            []
+        );
     }
 
     #[test]
     fn openai_normalization_uses_detected_harness_and_provider() {
         let parsed = openai_exchange();
-        let detection = detection(BuiltInHarness::Codex, "x-openai-originator");
+        let detection = detection(BuiltInHarness::Codex);
 
         let events = normalize_exchange(
             &hook_config(),
@@ -814,10 +719,6 @@ mod tests {
                 .all(|event| event.llm.provider == "gateway.example")
         );
         assert!(events.iter().all(|event| event.purpose.is_none()));
-        assert_eq!(
-            events[0].metadata["source_evidence"][0],
-            "header:x-openai-originator"
-        );
         assert_eq!(events[0].token_usage.input_tokens, 4);
         assert_eq!(events[1].token_usage.output_tokens, 6);
     }
@@ -830,7 +731,7 @@ mod tests {
             purpose: Some(EventPurpose::Compaction),
             ..AgentDeclaration::default()
         };
-        let detection = detection(BuiltInHarness::Codex, "x-openai-originator");
+        let detection = detection(BuiltInHarness::Codex);
 
         let events = normalize_exchange(
             &hook_config(),
@@ -864,7 +765,7 @@ mod tests {
             &hook_config(),
             &openai_exchange(),
             &content,
-            &detection(BuiltInHarness::Codex, "x-openai-originator"),
+            &detection(BuiltInHarness::Codex),
             &LlmProvider::OpenAi,
             &AgentDeclaration::default(),
             &ExchangePassthrough::default(),
@@ -880,11 +781,6 @@ mod tests {
             })
         }));
         assert!(events.iter().all(|event| event.token_usage.is_empty()));
-        assert!(
-            events
-                .iter()
-                .all(|event| event.metadata.get("provider_usage").is_none())
-        );
     }
 
     #[test]
@@ -922,7 +818,7 @@ mod tests {
                 &hook_config(),
                 &parsed,
                 &content,
-                &detection(BuiltInHarness::Codex, "x-openai-originator"),
+                &detection(BuiltInHarness::Codex),
                 &LlmProvider::OpenAi,
                 &AgentDeclaration::default(),
                 &ExchangePassthrough::default(),
@@ -961,12 +857,7 @@ mod tests {
 
     fn anthropic_messages_exchange() -> ParsedAnthropicMessagesExchange {
         ParsedAnthropicMessagesExchange {
-            host: "api.anthropic.com".to_owned(),
-            path: "/v1/messages".to_owned(),
-            method: "POST".to_owned(),
-            transport: "https",
             session_id: "session-1".to_owned(),
-            session_id_source: AnthropicSessionIdSource::Provider,
             request_hash: "request-hash".to_owned(),
             request_conversation: conversation(EntryRole::User, "hello"),
             response_conversation: conversation(EntryRole::Assistant, "hi"),
@@ -975,8 +866,6 @@ mod tests {
             usage: usage(),
             message_id: Some("msg-1".to_owned()),
             model: Some("claude-test".to_owned()),
-            anthropic_version: Some("2023-06-01".to_owned()),
-            event_types: vec!["message".to_owned()],
         }
     }
 
@@ -985,9 +874,7 @@ mod tests {
         let parsed = anthropic_messages_exchange();
         let detection = HarnessDetection {
             harness_id: harness_id("third-party"),
-            evidence: vec![HarnessEvidence::Process("third-party".to_owned())],
             version: Some("1.2.3".to_owned()),
-            working_directory: None,
         };
 
         let events = normalize_exchange(
@@ -1013,32 +900,23 @@ mod tests {
     #[test]
     fn claude_web_keeps_request_only_interactions() {
         let parsed = ParsedClaudeWebExchange {
-            host: "claude.ai".to_owned(),
-            path: "/api/organizations/org/chat_conversations/conversation/completion".to_owned(),
-            method: "POST".to_owned(),
-            transport: "https",
             session_id: "conversation".to_owned(),
-            session_id_source: ClaudeWebSessionIdSource::ConversationPath,
             request_hash: "request-hash".to_owned(),
             request_conversation: conversation(EntryRole::User, "hello"),
             response_conversation: ConversationProjection::empty(),
             request_images: Vec::new(),
             request_file_uuids: Vec::new(),
             usage: TokenUsage::default(),
-            usage_source: TokenUsageSource::Absent,
             message_id: None,
             model: None,
-            human_message_uuid: Some("human-message".to_owned()),
             assistant_message_uuid: Some("assistant-message".to_owned()),
-            stop_reason: None,
-            event_types: Vec::new(),
         };
 
         let events = normalize_exchange(
             &hook_config(),
             &parsed,
             &HarnessUsageContentConfig::default(),
-            &detection(BuiltInHarness::ClaudeDesktop, "claude-web-path"),
+            &detection(BuiltInHarness::ClaudeDesktop),
             &LlmProvider::Anthropic,
             &AgentDeclaration::default(),
             &ExchangePassthrough::default(),
@@ -1046,8 +924,6 @@ mod tests {
 
         assert_eq!(events.len(), 1);
         assert_eq!(events[0].side, AgentEventSide::Request);
-        assert_eq!(events[0].metadata["agent_client"], "desktop");
-        assert_eq!(events[0].metadata["path_kind"], "claude_web_completion");
     }
 
     #[test]
@@ -1057,7 +933,7 @@ mod tests {
                 &hook_config(),
                 parsed,
                 content,
-                &detection(BuiltInHarness::Codex, "x-openai-originator"),
+                &detection(BuiltInHarness::Codex),
                 &LlmProvider::OpenAi,
                 &AgentDeclaration::default(),
                 &ExchangePassthrough::default(),
@@ -1114,7 +990,7 @@ mod tests {
             &hook_config(),
             &parsed,
             &HarnessUsageContentConfig::default(),
-            &detection(BuiltInHarness::Codex, "x-openai-originator"),
+            &detection(BuiltInHarness::Codex),
             &LlmProvider::OpenAi,
             &AgentDeclaration::default(),
             &ExchangePassthrough::default(),
@@ -1127,7 +1003,7 @@ mod tests {
             &hook_config(),
             &parsed,
             &HarnessUsageContentConfig::default(),
-            &detection(BuiltInHarness::Codex, "x-openai-originator"),
+            &detection(BuiltInHarness::Codex),
             &LlmProvider::OpenAi,
             &AgentDeclaration::default(),
             &ExchangePassthrough::default(),
@@ -1153,7 +1029,7 @@ mod tests {
                 &hook_config(),
                 &parsed,
                 &HarnessUsageContentConfig::default(),
-                &detection(BuiltInHarness::ClaudeCode, "x-claude-code-session-id"),
+                &detection(BuiltInHarness::ClaudeCode),
                 &LlmProvider::Anthropic,
                 declaration,
                 &passthrough,
@@ -1206,10 +1082,6 @@ mod tests {
     fn openai_exchange() -> ParsedOpenAiExchange {
         ParsedOpenAiExchange {
             generates_output: None,
-            host: "gateway.example".to_owned(),
-            path: "/v1/responses".to_owned(),
-            method: "POST".to_owned(),
-            transport: "https",
             session_id: "session-1".to_owned(),
             request_hash: "request-hash".to_owned(),
             request_conversation: conversation(EntryRole::User, "hello"),
@@ -1242,12 +1114,10 @@ mod tests {
         }
     }
 
-    fn detection(harness: BuiltInHarness, header: &'static str) -> HarnessDetection {
+    fn detection(harness: BuiltInHarness) -> HarnessDetection {
         HarnessDetection {
             harness_id: harness.into(),
-            evidence: vec![HarnessEvidence::Header(header)],
             version: None,
-            working_directory: Some("/workspace".to_owned()),
         }
     }
 

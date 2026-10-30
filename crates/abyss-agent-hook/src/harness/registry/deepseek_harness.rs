@@ -4,7 +4,7 @@
 use abyss_mitm::FlowContext;
 use http::HeaderMap;
 
-use crate::harness::{BuiltInHarness, HarnessDetection, HarnessEvidence, HarnessId};
+use crate::harness::{BuiltInHarness, HarnessDetection, HarnessId};
 
 use super::{HarnessDetector, client_version, header};
 
@@ -15,7 +15,7 @@ pub(super) struct DeepSeekHarnessDetector;
 impl HarnessDetector for DeepSeekHarnessDetector {
     fn detect(
         &self,
-        flow: &FlowContext,
+        _flow: &FlowContext,
         headers: &HeaderMap,
         _path: &str,
     ) -> Option<HarnessDetection> {
@@ -25,9 +25,7 @@ impl HarnessDetector for DeepSeekHarnessDetector {
         }
         Some(HarnessDetection {
             harness_id: HarnessId::from(BuiltInHarness::DeepSeekHarness),
-            evidence: vec![HarnessEvidence::Header("user-agent")],
             version: client_version(user_agent, &[USER_AGENT_PREFIX]),
-            working_directory: flow.source_working_directory().map(str::to_owned),
         })
     }
 }

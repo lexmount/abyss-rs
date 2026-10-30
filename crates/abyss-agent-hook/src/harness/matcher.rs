@@ -4,8 +4,6 @@ use abyss_mitm::FlowContext;
 
 use crate::config::HarnessMatcherConfig;
 
-use super::HarnessEvidence;
-
 pub struct HarnessMatcher<'a> {
     config: &'a HarnessMatcherConfig,
 }
@@ -15,36 +13,24 @@ impl<'a> HarnessMatcher<'a> {
         Self { config }
     }
 
-    pub fn matches(&self, flow: &FlowContext) -> Option<Vec<HarnessEvidence>> {
-        let mut evidence = Vec::new();
-
-        if !self.config.process_names.is_empty() {
-            let process_name = flow.source_process.as_ref()?.name.as_deref()?;
-            let matched = self
-                .config
-                .process_names
-                .iter()
-                .any(|candidate| candidate == process_name);
-            if !matched {
-                return None;
-            }
-            evidence.push(HarnessEvidence::Process(process_name.to_owned()));
+    /// Whether the flow satisfies every populated matcher field; a matcher
+    /// with no populated field matches nothing.
+    pub fn matches(&self, flow: &FlowContext) -> bool {
+        let source = flow.source_process.as_ref();
+        let process_names = &self.config.process_names;
+        let application_ids = &self.config.application_ids;
+        if process_names.is_empty() && application_ids.is_empty() {
+            return false;
         }
-
-        if !self.config.application_ids.is_empty() {
-            let application_id = flow.source_process.as_ref()?.application_id.as_deref()?;
-            let matched = self
-                .config
-                .application_ids
-                .iter()
-                .any(|candidate| candidate == application_id);
-            if !matched {
-                return None;
-            }
-            evidence.push(HarnessEvidence::ApplicationId(application_id.to_owned()));
-        }
-
-        (!evidence.is_empty()).then_some(evidence)
+        let process_matches = process_names.is_empty()
+            || source
+                .and_then(|source| source.name.as_deref())
+                .is_some_and(|name| process_names.iter().any(|candidate| candidate == name));
+        let application_matches = application_ids.is_empty()
+            || source
+                .and_then(|source| source.application_id.as_deref())
+                .is_some_and(|id| application_ids.iter().any(|candidate| candidate == id));
+        process_matches && application_matches
     }
 }
 
@@ -66,10 +52,7 @@ mod tests {
             application_ids: vec!["com.acme.agent".to_owned()],
         };
 
-        assert_eq!(
-            HarnessMatcher::new(&matcher).matches(&flow).unwrap().len(),
-            2
-        );
+        assert!(HarnessMatcher::new(&matcher).matches(&flow));
     }
 
     #[test]
@@ -80,7 +63,7 @@ mod tests {
             application_ids: vec!["com.acme.agent".to_owned()],
         };
 
-        assert!(HarnessMatcher::new(&matcher).matches(&flow).is_none());
+        assert!(!HarnessMatcher::new(&matcher).matches(&flow));
     }
 
     fn flow(name: Option<&str>, application_id: Option<&str>) -> FlowContext {

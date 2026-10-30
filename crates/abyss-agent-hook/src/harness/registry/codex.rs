@@ -9,8 +9,7 @@ use http::HeaderMap;
 use serde_json::Value;
 
 use crate::harness::{
-    AgentDeclaration, BuiltInHarness, DeclarationSource, HarnessDetection, HarnessEvidence,
-    HarnessId,
+    AgentDeclaration, BuiltInHarness, DeclarationSource, HarnessDetection, HarnessId,
 };
 
 use super::{HarnessDetector, client_version, header};
@@ -84,37 +83,22 @@ impl HarnessDetector for CodexDetector {
     ) -> Option<HarnessDetection> {
         let user_agent = header(headers, "user-agent").unwrap_or_default();
         let originator = header(headers, "originator").unwrap_or_default();
-        let mut evidence = Vec::new();
-        if let Some(process) = flow.source_process.as_ref()
-            && process
-                .name
-                .as_deref()
-                .is_some_and(|name| normalize(name) == "codex")
-        {
-            evidence.push(HarnessEvidence::Process(
-                process.name.clone().unwrap_or_default(),
-            ));
-        }
-        if headers
+        let process = flow
+            .source_process
+            .as_ref()
+            .and_then(|process| process.name.as_deref())
+            .is_some_and(|name| normalize(name) == "codex");
+        let marked = headers
             .keys()
             .any(|name| name.as_str().to_ascii_lowercase().starts_with("x-codex-"))
-        {
-            evidence.push(HarnessEvidence::Header("x-codex-*"));
-        }
-        if Self::is_codex_client(user_agent.split('/').next().unwrap_or_default()) {
-            evidence.push(HarnessEvidence::Header("user-agent"));
-        }
-        if Self::is_codex_client(originator) {
-            evidence.push(HarnessEvidence::Header("originator"));
-        }
-        if evidence.is_empty() {
+            || Self::is_codex_client(user_agent.split('/').next().unwrap_or_default())
+            || Self::is_codex_client(originator);
+        if !process && !marked {
             return None;
         }
         Some(HarnessDetection {
             harness_id: HarnessId::from(BuiltInHarness::Codex),
-            evidence,
             version: client_version(user_agent, &["codex/tui/", "codex/desktop/", "codex/"]),
-            working_directory: flow.source_working_directory().map(str::to_owned),
         })
     }
 }
@@ -182,7 +166,6 @@ mod tests {
                 .detect(&flow, &headers, "/v1/responses")
                 .unwrap_or_else(|| panic!("{name}: {value}"));
             assert_eq!(detection.harness_id.as_str(), "codex");
-            assert_eq!(detection.evidence_names(), [format!("header:{name}")]);
         }
 
         flow.source_process = Some(SourceProcess::new(
@@ -194,7 +177,6 @@ mod tests {
             .detect(&flow, &HeaderMap::new(), "/v1/responses")
             .unwrap();
         assert_eq!(detection.harness_id.as_str(), "codex");
-        assert_eq!(detection.evidence_names(), ["process:/usr/local/bin/codex"]);
     }
 
     fn declared(client_metadata: Option<&Value>, headers: Option<&HeaderMap>) -> AgentDeclaration {

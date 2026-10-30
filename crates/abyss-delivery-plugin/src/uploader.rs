@@ -530,7 +530,7 @@ mod tests {
     };
     use serde_json::Value;
 
-    use super::{IngestEventsRequest, SpoolRecord};
+    use super::IngestEventsRequest;
 
     #[test]
     fn uploads_tool_activity_only_inside_the_conversation() {
@@ -610,40 +610,6 @@ mod tests {
             serialized["events"][0]["metadata"]["omitted"],
             serde_json::json!(["conversation_text", "images"])
         );
-    }
-
-    #[test]
-    fn reads_spooled_events_written_before_attachments_were_added() {
-        let event: AgentEvent = serde_json::from_str(include_str!(
-            "../../../specs/broker-plugin-protocol/v1/fixtures/agent-event.json"
-        ))
-        .expect("fixture should decode");
-        let request = IngestEventsRequest::try_from(event).expect("event should translate");
-        let mut request = serde_json::to_value(request).expect("request should serialize");
-        let legacy_event = request["events"][0]
-            .as_object_mut()
-            .expect("event should be an object");
-        legacy_event.remove("attachments");
-        // Older spools also carry the collector-counted turn number.
-        legacy_event.insert("turn_index".to_owned(), 3_u32.into());
-        // And the retired event text.
-        legacy_event.insert("text".to_owned(), "hello".into());
-        let legacy_record = serde_json::json!({
-            "reason": "delivery destination returned HTTP 401 Unauthorized",
-            "request": request,
-        });
-
-        let record: SpoolRecord =
-            serde_json::from_value(legacy_record).expect("legacy spool record should decode");
-        let serialized = serde_json::to_value(record).expect("record should serialize");
-
-        assert!(serialized["request"]["events"][0]["attachments"].is_null());
-        assert!(
-            serialized["request"]["events"][0]
-                .get("turn_index")
-                .is_none()
-        );
-        assert!(serialized["request"]["events"][0].get("text").is_none());
     }
 
     #[test]

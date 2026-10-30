@@ -17,8 +17,6 @@ HIGHLIGHT_START = "[[[ABYSS_SEARCH_HIGHLIGHT_START]]]"
 HIGHLIGHT_END = "[[[ABYSS_SEARCH_HIGHLIGHT_END]]]"
 SEARCHABLE_FIELDS = (
     "content",
-    "commands",
-    "file_paths",
     "tool_names",
     "tool_content",
     "session_id",
@@ -196,8 +194,6 @@ def collapsed_hit(
             {
                 "_source": {
                     "event_pk": event["event_pk"],
-                    "turn_pk": event["turn_pk"],
-                    "turn_index": event["turn_index"],
                     "event_type": event["event_type"],
                     "llm_provider": event["llm_provider"],
                     "llm_model": event["llm_model"],

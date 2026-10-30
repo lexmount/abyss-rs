@@ -158,11 +158,11 @@ fn conversation_carries_one_entry_per_block() {
         serde_json::from_value::<AgentEvent>(blocks).is_err(),
         "original content blocks are not part of the v1 contract"
     );
-    let mut retired = fixture.clone();
-    retired["conversation"]["entries"][0]["role"] = "tool".into();
+    let mut merged_tool = fixture.clone();
+    merged_tool["conversation"]["entries"][0]["role"] = "tool".into();
     assert!(
-        serde_json::from_value::<AgentEvent>(retired).is_err(),
-        "the merged `tool` role is replaced by `tool_call` and `tool_result`"
+        serde_json::from_value::<AgentEvent>(merged_tool).is_err(),
+        "tool entries use the `tool_call` and `tool_result` roles"
     );
     let mut messages = fixture.clone();
     messages["conversation"]["messages"] = serde_json::json!([]);
@@ -335,7 +335,7 @@ fn published_event_schema_defines_the_flat_typed_contract() {
     assert!(
         event_schema["$defs"].get("toolCall").is_none()
             && event_schema["$defs"].get("toolResult").is_none(),
-        "the retired tool summaries should have no schema"
+        "tool calls and results have no schema outside conversation entries"
     );
     assert_eq!(
         event_schema["additionalProperties"], false,

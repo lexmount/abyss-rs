@@ -24,7 +24,7 @@ jq -n \
         llm_provider: "openai",
         llm_model: "gpt-test",
         session_id: "session-test",
-        turn_index: 3,
+        response_id: "response-test",
         input_tokens: 8,
         output_tokens: 0,
         cache_read_tokens: 2,
@@ -32,9 +32,7 @@ jq -n \
         reasoning_tokens: 0,
         total_tokens: 11,
         conversation: {entries: [{role: "user", text: $marker}], completeness: "complete"},
-        metadata: {
-          provider_usage: {input_tokens: 11, output_tokens: 7, total_tokens: 21}
-        }
+        metadata: {}
       },
       {
         event_id: "response-event",
@@ -43,7 +41,7 @@ jq -n \
         llm_provider: "openai",
         llm_model: "gpt-test",
         session_id: "session-test",
-        turn_index: 3,
+        response_id: "response-test",
         input_tokens: 0,
         output_tokens: 7,
         cache_read_tokens: 0,

@@ -492,7 +492,7 @@ trajectories consume these fields without decoding provider bodies. Other plugin
 
 Rust, Python, and TypeScript SDKs all request protocol version 1 and consume this
 same event shape with the same 64 MiB JSON frame limit. The broker forwards the
-structured event without a legacy projection or a synthetic turn counter.
+structured event unchanged.
 
 The complete event schema is in
 [`agent-event.schema.json`](agent-event.schema.json).

@@ -11,14 +11,6 @@ pub struct ParsedOpenAiExchange {
     /// WebSocket client generation mode. Only `response.create` with the boolean
     /// `generate: false` disables it; server frames and HTTP exchanges carry none.
     pub generates_output: Option<bool>,
-    /// Normalized request host.
-    pub host: String,
-    /// Request path used to distinguish OpenAI/Codex API families.
-    pub path: String,
-    /// HTTP method.
-    pub method: String,
-    /// Transport observed by `abyss-mitm`: `http`, `https`, or `unknown`.
-    pub transport: &'static str,
     /// Session/thread id used to group turns. A request-derived fallback is used
     /// for HTTP when client headers do not expose one.
     pub session_id: String,

@@ -487,7 +487,7 @@ mod tests {
     }
 
     #[test]
-    fn retired_content_projections_are_rejected() {
+    fn content_outside_conversation_entries_is_rejected() {
         let serialized = serde_json::to_value(sample_event(LlmProvider::OpenAi))
             .expect("event should serialize");
         for (field, value) in [

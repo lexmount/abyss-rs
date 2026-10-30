@@ -95,16 +95,14 @@ impl HarnessRegistry {
             if harness_id.is_reserved() || !harness.enabled.unwrap_or(true) {
                 continue;
             }
-            if let Some(evidence) = harness
+            if harness
                 .matchers
                 .iter()
-                .find_map(|matcher| HarnessMatcher::new(matcher).matches(flow))
+                .any(|matcher| HarnessMatcher::new(matcher).matches(flow))
             {
                 detections.push(HarnessDetection {
                     harness_id: harness_id.clone(),
-                    evidence,
                     version: None,
-                    working_directory: flow.source_working_directory().map(str::to_owned),
                 });
             }
         }

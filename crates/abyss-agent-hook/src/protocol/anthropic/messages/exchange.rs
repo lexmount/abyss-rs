@@ -13,8 +13,8 @@ use crate::protocol::{
     },
     shared::{
         digest::sha256_hex,
-        http::{flow_server_name, header, request_host, transport_name},
-        json::{event_types, string_field},
+        http::{flow_server_name, request_host},
+        json::string_field,
         sse::ResponseDocuments,
     },
 };
@@ -65,7 +65,6 @@ pub fn parse_anthropic_messages_exchange(
         path,
         String::from_utf8_lossy(exchange.request.body().bytes())
     ));
-    let session = anthropic_session_id(headers, request_json, &host);
     let previous_response_id = request_json
         .get("thread")
         .filter(|thread| string_field(thread, "type") == Some("continue"))
@@ -73,12 +72,7 @@ pub fn parse_anthropic_messages_exchange(
         .map(str::to_owned);
 
     Some(ParsedAnthropicMessagesExchange {
-        host,
-        path: path.to_owned(),
-        method: exchange.request.method().to_string(),
-        transport: transport_name(&exchange.flow.protocol),
-        session_id: session.id,
-        session_id_source: session.source,
+        session_id: anthropic_session_id(headers, request_json, &host),
         request_hash,
         request_conversation,
         response_conversation: response.conversation(),
@@ -87,8 +81,6 @@ pub fn parse_anthropic_messages_exchange(
         usage,
         message_id,
         model,
-        anthropic_version: header(headers, "anthropic-version").map(str::to_owned),
-        event_types: response_values.iter().flat_map(event_types).collect(),
     })
 }
 

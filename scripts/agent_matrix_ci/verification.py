@@ -68,18 +68,20 @@ class MatrixVerifier:
             and counts == Counter({"request": 1, "response": 1})
             for identity, counts in pairs.items()
         )
-        segments = [
-            s for e in events for s in e.get("metadata", {}).get("content_segments", [])
+        entries = [
+            entry
+            for e in events
+            for entry in (e.get("conversation") or {}).get("entries", [])
         ]
         calls = {
-            s.get("call_id")
-            for s in segments
-            if s.get("type") == "tool_call" and s.get("call_id")
+            entry.get("call_id")
+            for entry in entries
+            if entry.get("role") == "tool_call" and entry.get("call_id")
         }
         results = {
-            s.get("call_id")
-            for s in segments
-            if s.get("type") == "tool_result" and s.get("call_id")
+            entry.get("call_id")
+            for entry in entries
+            if entry.get("role") == "tool_result" and entry.get("call_id")
         }
         checks["tool_roundtrip"] = bool(calls) and calls == results
         # pi's Responses adapter exposes `call_id|item_id` to DSH, then sends
@@ -94,19 +96,11 @@ class MatrixVerifier:
             not wire_call_ids or wire_call_ids <= calls & results
         )
         checks["captured_tool_output"] = any(
-            s.get("type") == "tool_result" and nonce in s.get("output", "")
-            for s in segments
+            entry.get("role") == "tool_result" and nonce in entry.get("text", "")
+            for entry in entries
         )
-        messages = [
-            m
-            for e in events
-            for m in (e.get("conversation") or {}).get("messages", [])
-        ]
         checks["captured_final_answer"] = any(
-            m.get("role") == "assistant"
-            and marker in m.get("text", "")
-            and nonce in m.get("text", "")
-            for m in messages
+            MatrixVerifier._answers(event, marker, nonce) for event in events
         )
         checks["complete_conversation"] = bool(events) and all(
             (e.get("conversation") or {}).get("completeness")
@@ -150,15 +144,13 @@ class MatrixVerifier:
             checks["resumed_memory_without_tools"] = len(native.turns) == 3 and all(
                 turn["tool_results"] == 0 for turn in native.turns[1:]
             )
-            checks["three_captured_user_turns"] = {
-                e.get("turn_index") for e in events
-            } == {1, 2, 3} and all(
+            turns = [(e.get("location") or {}).get("turn") for e in events]
+            checks["three_captured_user_turns"] = set(turns) == {1, 2, 3} and all(
                 any(
                     event.get("event_type") == "response"
-                    and event.get("turn_index") == index
-                    and marker in (event.get("text") or "")
-                    and nonce in (event.get("text") or "")
-                    for event in events
+                    and turn == index
+                    and MatrixVerifier._answers(event, marker, nonce)
+                    for event, turn in zip(events, turns)
                 )
                 for index in (1, 2, 3)
             )
@@ -195,6 +187,16 @@ class MatrixVerifier:
             },
             "backend_events": events,
         }
+
+    @staticmethod
+    def _answers(event: dict, marker: str, nonce: str) -> bool:
+        """Whether one assistant entry of the event carries both proofs."""
+        return any(
+            entry.get("role") == "assistant"
+            and marker in entry.get("text", "")
+            and nonce in entry.get("text", "")
+            for entry in (event.get("conversation") or {}).get("entries", [])
+        )
 
 
 class SecretRedactor:

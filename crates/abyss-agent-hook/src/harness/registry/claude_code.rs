@@ -7,8 +7,7 @@ use abyss_plugin_protocol::event::EventPurpose;
 use http::HeaderMap;
 
 use crate::harness::{
-    AgentDeclaration, BuiltInHarness, DeclarationSource, HarnessDetection, HarnessEvidence,
-    HarnessId,
+    AgentDeclaration, BuiltInHarness, DeclarationSource, HarnessDetection, HarnessId,
 };
 
 use super::{HarnessDetector, client_version, header};
@@ -53,27 +52,18 @@ impl HarnessDetector for ClaudeCodeDetector {
         if path.contains("/organizations/") && path.ends_with("/completion") {
             return None;
         }
-        let mut evidence = Vec::new();
-        if let Some(source) = &flow.source_process
-            && source
+        let process = flow.source_process.as_ref().is_some_and(|source| {
+            source
                 .name
                 .as_deref()
                 .into_iter()
                 .chain(source.executable_path.as_deref())
                 .any(is_claude_code_process)
-        {
-            evidence.push(HarnessEvidence::Process(
-                source
-                    .name
-                    .clone()
-                    .or_else(|| source.executable_path.clone())
-                    .unwrap_or_default(),
-            ));
-        }
+        });
         let user_agent = header(headers, "user-agent").unwrap_or_default();
         let originator = header(headers, "originator").unwrap_or_default();
         let combined = format!("{path} {user_agent} {originator}").to_ascii_lowercase();
-        if [
+        let marked = [
             "claude-code",
             "claude_code",
             "claude-cli",
@@ -81,16 +71,12 @@ impl HarnessDetector for ClaudeCodeDetector {
             "/api/claude_",
         ]
         .iter()
-        .any(|marker| combined.contains(marker))
-        {
-            evidence.push(HarnessEvidence::Header("claude-code"));
-        }
-        if evidence.is_empty() {
+        .any(|marker| combined.contains(marker));
+        if !process && !marked {
             return None;
         }
         Some(HarnessDetection {
             harness_id: HarnessId::from(BuiltInHarness::ClaudeCode),
-            evidence,
             version: client_version(
                 user_agent,
                 &[
@@ -101,7 +87,6 @@ impl HarnessDetector for ClaudeCodeDetector {
                     "claude/",
                 ],
             ),
-            working_directory: flow.source_working_directory().map(str::to_owned),
         })
     }
 }

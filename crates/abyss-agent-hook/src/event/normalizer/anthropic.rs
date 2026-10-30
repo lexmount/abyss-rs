@@ -1,17 +1,13 @@
 //! Anthropic-family parsed exchange adaptation for the common event normalizer.
 
 use abyss_plugin_protocol::event::LlmProvider;
-use serde_json::json;
 
 use crate::{
     harness::HarnessDetection,
-    protocol::{
-        anthropic::{ParsedAnthropicMessagesExchange, ParsedClaudeWebExchange},
-        model::usage::TokenUsageSource,
-    },
+    protocol::anthropic::{ParsedAnthropicMessagesExchange, ParsedClaudeWebExchange},
 };
 
-use super::{Continuation, HttpMetadata, NormalizableExchange, ParsedEventParts, harness_client};
+use super::{Continuation, NormalizableExchange, ParsedEventParts};
 
 impl NormalizableExchange for ParsedAnthropicMessagesExchange {
     fn session_id(&self) -> &str {
@@ -31,14 +27,7 @@ impl NormalizableExchange for ParsedAnthropicMessagesExchange {
         provider: &LlmProvider,
     ) -> ParsedEventParts<'_> {
         ParsedEventParts {
-            http: HttpMetadata {
-                transport: self.transport,
-                host: &self.host,
-                path: &self.path,
-                method: &self.method,
-            },
             harness_name: detection.harness_id.to_string(),
-            harness_client: harness_client(detection),
             harness_version: detection.version.clone(),
             llm_provider: provider.wire_name().to_owned(),
             llm_model: self.model.clone(),
@@ -51,16 +40,6 @@ impl NormalizableExchange for ParsedAnthropicMessagesExchange {
             response_conversation: &self.response_conversation,
             request_images: self.request_images.clone(),
             usage: self.usage.clone(),
-            usage_source: TokenUsageSource::provider_or_absent(&self.usage),
-            metadata: json!({
-                "message_id": self.message_id,
-                "request_hash": self.request_hash,
-                "source_evidence": detection.evidence_names(),
-                "working_directory": detection.working_directory,
-                "session_id_source": self.session_id_source,
-                "anthropic_version": self.anthropic_version,
-                "provider_event_types": self.event_types,
-            }),
             allow_request_without_response: false,
         }
     }
@@ -84,14 +63,7 @@ impl NormalizableExchange for ParsedClaudeWebExchange {
         provider: &LlmProvider,
     ) -> ParsedEventParts<'_> {
         ParsedEventParts {
-            http: HttpMetadata {
-                transport: self.transport,
-                host: &self.host,
-                path: &self.path,
-                method: &self.method,
-            },
             harness_name: detection.harness_id.to_string(),
-            harness_client: harness_client(detection),
             harness_version: detection.version.clone(),
             llm_provider: provider.wire_name().to_owned(),
             llm_model: self.model.clone(),
@@ -105,19 +77,6 @@ impl NormalizableExchange for ParsedClaudeWebExchange {
             response_conversation: &self.response_conversation,
             request_images: self.request_images.clone(),
             usage: self.usage.clone(),
-            usage_source: self.usage_source,
-            metadata: json!({
-                "message_id": self.message_id,
-                "request_hash": self.request_hash,
-                "source_evidence": detection.evidence_names(),
-                "working_directory": detection.working_directory,
-                "session_id_source": self.session_id_source,
-                "human_message_uuid": self.human_message_uuid,
-                "assistant_message_uuid": self.assistant_message_uuid,
-                "stop_reason": self.stop_reason,
-                "path_kind": "claude_web_completion",
-                "provider_event_types": self.event_types,
-            }),
             allow_request_without_response: true,
         }
     }

@@ -134,7 +134,7 @@ mod tests {
     }
 
     #[test]
-    fn retired_and_raw_fields_are_rejected() {
+    fn undeclared_and_raw_fields_are_rejected() {
         let conversation = json!({
             "entries": [{"role": "user", "text": "hello"}],
             "completeness": "partial"
@@ -148,10 +148,10 @@ mod tests {
             ("policy_omitted", json!(false)),
             ("payloads", json!([{"output": []}])),
         ] {
-            let mut retired = conversation.clone();
-            retired[path] = value;
+            let mut undeclared = conversation.clone();
+            undeclared[path] = value;
             assert!(
-                serde_json::from_value::<Conversation>(retired).is_err(),
+                serde_json::from_value::<Conversation>(undeclared).is_err(),
                 "{path}"
             );
         }

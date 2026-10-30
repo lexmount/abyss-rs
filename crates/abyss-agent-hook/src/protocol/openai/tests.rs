@@ -53,7 +53,6 @@ fn parses_responses_json_without_harness_assumptions() {
 
     let parsed = parse_openai_exchange(&exchange).expect("OpenAI exchange");
 
-    assert_eq!(parsed.host, "gateway.example");
     assert_eq!(parsed.session_id, "session-1");
     assert_eq!(
         role_texts(&parsed.request_conversation),
@@ -496,8 +495,8 @@ fn truncated_exchange_is_retained_without_parseable_content() {
 
     let parsed = parse_openai_exchange(&exchange).expect("truncated exchange");
 
-    assert!(parsed.request_conversation.entries.is_empty());
-    assert!(parsed.response_conversation.entries.is_empty());
+    assert_eq!(parsed.request_conversation.entries, []);
+    assert_eq!(parsed.response_conversation.entries, []);
 }
 
 #[test]

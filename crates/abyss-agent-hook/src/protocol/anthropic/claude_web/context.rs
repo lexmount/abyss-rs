@@ -345,13 +345,8 @@ mod tests {
 
     use super::{ClaudeWebContext, ParsedUpload};
     use crate::{
-        protocol::anthropic::claude_web::{
-            ParsedClaudeWebExchange, conversation::ClaudeWebSessionIdSource,
-        },
-        protocol::model::{
-            conversation::ConversationProjection,
-            usage::{TokenUsage, TokenUsageSource},
-        },
+        protocol::anthropic::claude_web::ParsedClaudeWebExchange,
+        protocol::model::{conversation::ConversationProjection, usage::TokenUsage},
     };
 
     const PNG_BYTES: &[u8] = b"\x89PNG\r\n\x1a\nclaude-web-upload";
@@ -424,12 +419,7 @@ mod tests {
 
     fn completion_fixture(session_id: &str, file_uuids: &[&str]) -> ParsedClaudeWebExchange {
         ParsedClaudeWebExchange {
-            host: "claude.ai".to_owned(),
-            path: format!("/api/organizations/org-1/chat_conversations/{session_id}/completion"),
-            method: "POST".to_owned(),
-            transport: "https",
             session_id: session_id.to_owned(),
-            session_id_source: ClaudeWebSessionIdSource::ConversationPath,
             request_hash: "request-hash".to_owned(),
             request_conversation: ConversationProjection::from_entries(
                 vec![ConversationProjection::text(
@@ -445,13 +435,9 @@ mod tests {
             request_images: Vec::new(),
             request_file_uuids: file_uuids.iter().map(|value| (*value).to_owned()).collect(),
             usage: TokenUsage::default(),
-            usage_source: TokenUsageSource::Absent,
             message_id: Some("assistant-turn-1".to_owned()),
             model: Some("claude-sonnet-5".to_owned()),
-            human_message_uuid: Some("human-turn-1".to_owned()),
             assistant_message_uuid: Some("assistant-turn-1".to_owned()),
-            stop_reason: Some("end_turn".to_owned()),
-            event_types: Vec::new(),
         }
     }
 
