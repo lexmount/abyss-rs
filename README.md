@@ -20,6 +20,13 @@ Built in Rust, Abyss provides:
   Chat Completions API, and Anthropic's Messages API.
 - Plugins and Rust, TypeScript, and Python SDKs for custom integrations and event delivery.
 
+## Showcase
+
+Watch a real Codex CLI run alongside the conversation, tool calls, and token usage
+captured by Abyss (15-second condensed replay).
+
+![Codex CLI fixing a bug alongside the conversation, tool calls, and token usage captured by Abyss](docs/assets/agent-observation.gif)
+
 ## Install
 
 Install the prebuilt CLI on Linux x86_64 (with systemd) or macOS ARM64:
