@@ -224,17 +224,16 @@ class HermesVerificationTests(unittest.TestCase):
                         "cache_read_tokens": 3 if request else 0,
                         "cache_write_tokens": 1 if request else 0,
                         "text": "query" if request else "marker nonce",
-                        "metadata": {
-                            "conversation": {
-                                "completeness": "complete",
-                                "messages": [
-                                    {
-                                        "role": "user" if request else "assistant",
-                                        "text": "query" if request else "marker nonce",
-                                    }
-                                ],
-                            }
+                        "conversation": {
+                            "completeness": "complete",
+                            "messages": [
+                                {
+                                    "role": "user" if request else "assistant",
+                                    "text": "query" if request else "marker nonce",
+                                }
+                            ],
                         },
+                        "metadata": {},
                     }
                 )
         self.events[1]["metadata"]["content_segments"] = [

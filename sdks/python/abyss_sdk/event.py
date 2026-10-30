@@ -106,7 +106,7 @@ class AgentEvent:
     """One fully normalized broker Agent event."""
 
     event_id: str
-    occurred_at: datetime
+    observed_at: datetime
     device: DeviceContext
     agent: AgentContext
     session_id: str
@@ -134,7 +134,7 @@ class AgentEvent:
             event,
             {
                 "event_id",
-                "occurred_at",
+                "observed_at",
                 "device",
                 "agent",
                 "session_id",
@@ -161,10 +161,10 @@ class AgentEvent:
         purpose = _optional_string(event, "purpose")
         if purpose is not None and purpose not in {"session_title", "compaction", "prewarm"}:
             raise ValueError("purpose must be session_title, compaction or prewarm")
-        occurred_at = _datetime(_string(event, "occurred_at"))
+        observed_at = _datetime(_string(event, "observed_at"))
         return cls(
             event_id=_string(event, "event_id"),
-            occurred_at=occurred_at,
+            observed_at=observed_at,
             device=_device(_mapping(event.get("device"), "AgentEvent.device")),
             agent=_agent(_mapping(event.get("agent"), "AgentEvent.agent")),
             session_id=_string(event, "session_id"),
@@ -358,7 +358,7 @@ def _datetime(value: str) -> datetime:
     try:
         return datetime.fromisoformat(value.replace("Z", "+00:00"))
     except ValueError as error:
-        raise ValueError("AgentEvent.occurred_at must be an RFC 3339 timestamp") from error
+        raise ValueError("AgentEvent.observed_at must be an RFC 3339 timestamp") from error
 
 
 def _reject_unknown(value: Mapping[str, Any], allowed: set, label: str) -> None:

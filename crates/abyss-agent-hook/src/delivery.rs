@@ -78,7 +78,7 @@ where
 pub mod tests {
     use std::{convert::Infallible, future::Future, sync::Mutex};
 
-    use abyss_plugin_protocol::event::AgentEvent;
+    use abyss_plugin_protocol::event::{AgentEvent, AgentEventSide};
 
     use super::{AgentEventDeliveryError, AgentEventSink, EventDelivery};
     use crate::{
@@ -181,7 +181,7 @@ pub mod tests {
                 provider: "openai".to_owned(),
                 model: "gpt-test".to_owned(),
             },
-            event_type: "request",
+            side: AgentEventSide::Request,
             omitted: Vec::new(),
             conversation: None,
             path: "/v1/responses".to_owned(),

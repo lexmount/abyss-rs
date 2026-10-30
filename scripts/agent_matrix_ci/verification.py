@@ -100,7 +100,7 @@ class MatrixVerifier:
         messages = [
             m
             for e in events
-            for m in e.get("metadata", {}).get("conversation", {}).get("messages", [])
+            for m in (e.get("conversation") or {}).get("messages", [])
         ]
         checks["captured_final_answer"] = any(
             m.get("role") == "assistant"
@@ -109,7 +109,7 @@ class MatrixVerifier:
             for m in messages
         )
         checks["complete_conversation"] = bool(events) and all(
-            e.get("metadata", {}).get("conversation", {}).get("completeness")
+            (e.get("conversation") or {}).get("completeness")
             == "complete"
             for e in events
         )

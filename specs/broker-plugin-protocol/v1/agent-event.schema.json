@@ -6,7 +6,7 @@
   "additionalProperties": false,
   "required": [
     "event_id",
-    "occurred_at",
+    "observed_at",
     "device",
     "agent",
     "session_id",
@@ -19,7 +19,7 @@
     "event_id": {
       "type": "string"
     },
-    "occurred_at": {
+    "observed_at": {
       "type": "string",
       "format": "date-time"
     },

@@ -2,7 +2,7 @@
 
 use std::{path::PathBuf, sync::Arc};
 
-use abyss_sdk::plugin::{AgentEvent, ImageAttachment, TokenUsage};
+use abyss_sdk::plugin::{AgentEvent, Conversation, ImageAttachment, TokenUsage};
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use tokio::{
@@ -364,6 +364,8 @@ struct IngestUsageEvent {
     turn_id: Option<String>,
     llm: LlmPayload,
     event_type: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    conversation: Option<Conversation>,
     token_usage: BackendTokenUsage,
     metadata: Value,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
@@ -383,10 +385,6 @@ impl TryFrom<AgentEvent> for IngestUsageEvent {
             metadata["omitted"] = serde_json::to_value(&event.omitted)
                 .map_err(|error| DeliveryPluginError::Translate(error.to_string()))?;
         }
-        if let Some(conversation) = event.conversation {
-            metadata["conversation"] = serde_json::to_value(conversation)
-                .map_err(|error| DeliveryPluginError::Translate(error.to_string()))?;
-        }
         // The path and headers are stored untouched; the backend reads
         // nothing from them.
         metadata["path"] = Value::String(event.path);
@@ -396,7 +394,7 @@ impl TryFrom<AgentEvent> for IngestUsageEvent {
         }
         Ok(Self {
             event_id: event.event_id,
-            observed_at: event.occurred_at.to_rfc3339(),
+            observed_at: event.observed_at.to_rfc3339(),
             device: DevicePayload {
                 host_name: event.device.host_name,
                 platform: event.device.platform,
@@ -417,6 +415,7 @@ impl TryFrom<AgentEvent> for IngestUsageEvent {
                 model: event.llm.model,
             },
             event_type: event.side.wire_name().to_owned(),
+            conversation: event.conversation,
             token_usage: BackendTokenUsage::try_from(event.token_usage)?,
             metadata,
             attachments: event
@@ -546,7 +545,7 @@ mod tests {
         assert!(ingest_event.get("text").is_none());
         assert!(ingest_event["metadata"].get("content_segments").is_none());
         assert_eq!(
-            ingest_event["metadata"]["conversation"]["entries"][2]["role"],
+            ingest_event["conversation"]["entries"][2]["role"],
             "tool_call"
         );
         assert_eq!(serialized["diagnostic_captures"], serde_json::json!([]));
@@ -571,16 +570,20 @@ mod tests {
     }
 
     #[test]
-    fn stores_the_conversation_as_backend_metadata() {
+    fn sends_the_conversation_as_a_top_level_field() {
         let event: AgentEvent = serde_json::from_str(include_str!(
             "../../../specs/broker-plugin-protocol/v1/fixtures/agent-event.json"
         ))
         .expect("fixture should decode");
+        let expected = serde_json::to_value(&event.conversation).unwrap();
         let request = IngestEventsRequest::try_from(event).expect("event should translate");
         let serialized = serde_json::to_value(request).expect("request should serialize");
-        let metadata = &serialized["events"][0]["metadata"];
+        let ingest_event = &serialized["events"][0];
+        let metadata = &ingest_event["metadata"];
 
-        let roles = metadata["conversation"]["entries"]
+        assert_eq!(ingest_event["conversation"], expected);
+        assert!(metadata.get("conversation").is_none());
+        let roles = ingest_event["conversation"]["entries"]
             .as_array()
             .expect("entries should be an array")
             .iter()
@@ -647,7 +650,7 @@ mod tests {
     fn keeps_the_backend_envelope_inside_the_delivery_plugin() {
         let event = AgentEvent {
             event_id: "event-1".to_owned(),
-            occurred_at: chrono::Utc::now(),
+            observed_at: chrono::Utc::now(),
             device: DeviceContext {
                 host_name: "host".to_owned(),
                 platform: "linux".to_owned(),
@@ -690,6 +693,7 @@ mod tests {
         let serialized: Value = serde_json::to_value(request).expect("request should serialize");
 
         assert_eq!(serialized["events"][0]["event_type"], "request");
+        assert!(serialized["events"][0].get("conversation").is_none());
         assert!(serialized["events"][0].get("text").is_none());
         assert!(
             serialized["events"][0]["metadata"]
@@ -742,7 +746,7 @@ mod tests {
         assert!(metadata.get("claude_code_billing").is_none());
         assert!(metadata.get("claude_thread").is_none());
         assert!(
-            metadata["conversation"]
+            ingest_event["conversation"]
                 .get("previous_response_id")
                 .is_none()
         );

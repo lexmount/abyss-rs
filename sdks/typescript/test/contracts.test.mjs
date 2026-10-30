@@ -143,7 +143,7 @@ test("structured events reject obsolete fields and malformed content", async () 
 test("AgentEvent decoder rejects invalid counters and unknown sides", () => {
   const base = {
     event_id: "evt-test",
-    occurred_at: "2026-08-19T10:00:00Z",
+    observed_at: "2026-08-19T10:00:00Z",
     device: { host_name: "host", platform: "linux" },
     agent: { name: "codex" },
     session_id: "session",

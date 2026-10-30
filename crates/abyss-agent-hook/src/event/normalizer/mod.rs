@@ -35,9 +35,6 @@ pub enum AgentEventConversionError {
         #[source]
         source: chrono::ParseError,
     },
-    /// The normalized event side is not part of protocol version 1.
-    #[error("unsupported Agent event side `{value}`")]
-    UnsupportedEventSide { value: &'static str },
     /// A token counter was negative before public normalization.
     #[error("{name} must be non-negative, got {value}")]
     NegativeTokenCounter { name: &'static str, value: i64 },
@@ -97,8 +94,8 @@ pub struct NormalizedUsageEvent {
     pub purpose: Option<EventPurpose>,
     /// LLM provider and model metadata.
     pub llm: LlmPayload,
-    /// Logical event side: currently `request` or `response`.
-    pub event_type: &'static str,
+    /// Request or response side represented by this event.
+    pub side: AgentEventSide,
     /// Content categories the effective policy omitted from this event.
     #[serde(skip_serializing_if = "Vec::is_empty")]
     pub omitted: Vec<ContentCategory>,
@@ -136,7 +133,7 @@ impl TryFrom<NormalizedUsageEvent> for AgentEvent {
             turn_id,
             purpose,
             llm,
-            event_type,
+            side,
             omitted,
             conversation,
             path,
@@ -145,21 +142,16 @@ impl TryFrom<NormalizedUsageEvent> for AgentEvent {
             metadata: _,
             attachments,
         } = event;
-        let occurred_at = DateTime::parse_from_rfc3339(&observed_at)
+        let observed_at = DateTime::parse_from_rfc3339(&observed_at)
             .map_err(|source| AgentEventConversionError::InvalidTimestamp {
                 value: observed_at,
                 source,
             })?
             .with_timezone(&Utc);
-        let side = match event_type {
-            "request" => AgentEventSide::Request,
-            "response" => AgentEventSide::Response,
-            value => return Err(AgentEventConversionError::UnsupportedEventSide { value }),
-        };
 
         Ok(Self {
             event_id,
-            occurred_at,
+            observed_at,
             device: DeviceContext {
                 host_name: device.host_name,
                 platform: device.platform,
@@ -396,7 +388,7 @@ struct Declared<'a> {
 }
 
 struct EventSide<'a> {
-    event_type: &'static str,
+    side: AgentEventSide,
     conversation: &'a Conversation,
     token_usage: TokenUsage,
     metadata: Value,
@@ -494,7 +486,7 @@ fn events_for_parsed_exchange(
             config,
             parts,
             EventSide {
-                event_type: "request",
+                side: AgentEventSide::Request,
                 conversation: parts.request_conversation,
                 token_usage: retained_token_usage(request_usage, content),
                 metadata: metadata.clone(),
@@ -514,7 +506,7 @@ fn events_for_parsed_exchange(
             config,
             parts,
             EventSide {
-                event_type: "response",
+                side: AgentEventSide::Response,
                 conversation: parts.response_conversation,
                 token_usage: retained_token_usage(response_usage, content),
                 metadata,
@@ -609,7 +601,7 @@ fn usage_event(
         device_event_key,
         parts.harness_name.as_str(),
         parts.session_id.as_str(),
-        side.event_type,
+        side.side.wire_name(),
         parts.response_identity.as_str(),
         content_hash.as_str(),
     ]);
@@ -635,7 +627,7 @@ fn usage_event(
                 .clone()
                 .unwrap_or_else(|| "unknown".to_owned()),
         },
-        event_type: side.event_type,
+        side: side.side,
         omitted: omitted_categories(side.content),
         conversation: Some(retained_conversation(side.conversation, side.content)),
         path: side.path.to_owned(),
@@ -716,8 +708,8 @@ fn merge_metadata(mut base: Value, extra: &Value) -> Value {
 #[cfg(test)]
 mod tests {
     use abyss_plugin_protocol::event::{
-        AgentEvent, ContentCategory, ContentCompleteness, Conversation, ConversationEntry,
-        EntryRole, EventPurpose, LlmProvider,
+        AgentEvent, AgentEventSide, ContentCategory, ContentCompleteness, Conversation,
+        ConversationEntry, EntryRole, EventPurpose, LlmProvider,
     };
 
     use crate::{
@@ -1053,7 +1045,7 @@ mod tests {
         );
 
         assert_eq!(events.len(), 1);
-        assert_eq!(events[0].event_type, "request");
+        assert_eq!(events[0].side, AgentEventSide::Request);
         assert_eq!(events[0].metadata["agent_client"], "desktop");
         assert_eq!(events[0].metadata["path_kind"], "claude_web_completion");
     }
@@ -1141,11 +1133,8 @@ mod tests {
             &ExchangePassthrough::default(),
         );
         assert_eq!(
-            events
-                .iter()
-                .map(|event| event.event_type)
-                .collect::<Vec<_>>(),
-            ["request", "response"]
+            events.iter().map(|event| event.side).collect::<Vec<_>>(),
+            [AgentEventSide::Request, AgentEventSide::Response]
         );
     }
 

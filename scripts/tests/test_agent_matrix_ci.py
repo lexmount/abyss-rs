@@ -495,9 +495,8 @@ class VerificationTests(unittest.TestCase):
                     "input_tokens": 3 if i % 2 == 0 else 0,
                     "cache_read_tokens": 2 if i % 2 == 0 else 0,
                     "output_tokens": 3 if i % 2 else 0,
-                    "metadata": {
-                        "conversation": {"completeness": "complete", "messages": []}
-                    },
+                    "conversation": {"completeness": "complete", "messages": []},
+                    "metadata": {},
                 }
             )
         self.events[1]["metadata"]["content_segments"] = [
@@ -506,7 +505,7 @@ class VerificationTests(unittest.TestCase):
         self.events[2]["metadata"]["content_segments"] = [
             {"type": "tool_result", "call_id": "call", "output": "nonce"}
         ]
-        self.events[3]["metadata"]["conversation"]["messages"] = [
+        self.events[3]["conversation"]["messages"] = [
             {"role": "assistant", "text": "marker nonce"}
         ]
 
@@ -565,7 +564,7 @@ class VerificationTests(unittest.TestCase):
         events = copy.deepcopy(self.events)
         events[2]["metadata"]["content_segments"][0]["call_id"] = "wrong"
         self.assertIn("tool_roundtrip", self.verify(events)["failed_checks"])
-        events[0]["metadata"]["conversation"]["completeness"] = "partial"
+        events[0]["conversation"]["completeness"] = "partial"
         self.assertIn("complete_conversation", self.verify(events)["failed_checks"])
 
     def test_failures_are_not_skips(self):

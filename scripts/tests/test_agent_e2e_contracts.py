@@ -118,11 +118,9 @@ def stored_event(event_id: str, session_id: str, text: str) -> dict[str, object]
     return {
         "event_id": event_id,
         "session_id": session_id,
-        "metadata": {
-            "conversation": {
-                "entries": [{"role": "user", "text": text}],
-                "completeness": "complete",
-            }
+        "conversation": {
+            "entries": [{"role": "user", "text": text}],
+            "completeness": "complete",
         },
     }
 

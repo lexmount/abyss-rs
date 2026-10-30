@@ -31,9 +31,9 @@ jq -n \
         cache_write_tokens: 1,
         reasoning_tokens: 0,
         total_tokens: 11,
+        conversation: {entries: [{role: "user", text: $marker}], completeness: "complete"},
         metadata: {
-          provider_usage: {input_tokens: 11, output_tokens: 7, total_tokens: 21},
-          conversation: {entries: [{role: "user", text: $marker}], completeness: "complete"}
+          provider_usage: {input_tokens: 11, output_tokens: 7, total_tokens: 21}
         }
       },
       {
@@ -50,11 +50,9 @@ jq -n \
         cache_write_tokens: 0,
         reasoning_tokens: 3,
         total_tokens: 7,
-        metadata: {
-          conversation: {
-            entries: [{role: "assistant", text: "response"}],
-            completeness: "complete"
-          }
+        conversation: {
+          entries: [{role: "assistant", text: "response"}],
+          completeness: "complete"
         }
       }
     ]
@@ -119,7 +117,7 @@ blackbox_assert_summary_matches_pairs "${SUMMARY_TWO_JSON}" "${TWO_PAIRS_JSON}"
 # message. The session summary must include that request, while the native
 # turn.completed usage still matches only the marker request/response pair.
 PREWARM_EVENTS_JSON="$(jq -c '.events + [(.events[0] | .event_id = "prewarm-event"
-  | .metadata.conversation.entries = [{role: "system", text: "prewarm instructions"}]
+  | .conversation.entries = [{role: "system", text: "prewarm instructions"}]
   | .input_tokens = 6 | .cache_read_tokens = 0
   | .cache_write_tokens = 0 | .total_tokens = 6
   | .metadata.purpose = "prewarm")]' "${EVENTS_FILE}")"

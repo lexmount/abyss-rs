@@ -18,7 +18,7 @@ pub struct AgentEvent {
     /// Stable event identifier assigned by the event producer.
     pub event_id: String,
     /// Time at which the broker observed the logical event.
-    pub occurred_at: DateTime<Utc>,
+    pub observed_at: DateTime<Utc>,
     /// Device context observed by the broker.
     pub device: DeviceContext,
     /// Agent product context inferred from traffic.
@@ -276,7 +276,7 @@ pub enum AgentEventSide {
 }
 
 impl AgentEventSide {
-    /// Returns the request/response name carried by backend translations.
+    /// Returns the wire name of this side: `request` or `response`.
     #[must_use]
     pub const fn wire_name(self) -> &'static str {
         match self {
@@ -523,7 +523,7 @@ mod tests {
     fn sample_event(provider: LlmProvider) -> AgentEvent {
         AgentEvent {
             event_id: "evt-test".to_owned(),
-            occurred_at: Utc
+            observed_at: Utc
                 .with_ymd_and_hms(2026, 8, 19, 10, 0, 0)
                 .single()
                 .expect("sample timestamp should be valid"),

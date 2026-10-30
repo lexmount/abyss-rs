@@ -419,18 +419,17 @@ def main():
 
                     with sqlite3.connect(temp / "events.sqlite") as database:
                         rows = database.execute(
-                            "SELECT event_id, metadata FROM llm_usage_events"
+                            "SELECT event_id, metadata, conversation FROM llm_usage_events"
                         ).fetchall()
-                    saved = {row[0]: json.loads(row[1]) for row in rows}
+                    saved = {
+                        row[0]: (json.loads(row[1]), json.loads(row[2])) for row in rows
+                    }
                     for event in events:
-                        assert (
-                            saved[event["event_id"]]["conversation"]
-                            == event["conversation"]
-                        )
-                        assert "raw_body" not in saved[event["event_id"]]
-                        assert (
-                            "payloads" not in saved[event["event_id"]]["conversation"]
-                        )
+                        metadata, conversation = saved[event["event_id"]]
+                        assert conversation == event["conversation"]
+                        assert "conversation" not in metadata
+                        assert "raw_body" not in metadata
+                        assert "payloads" not in conversation
                     send({"code": 100, "reason": "test complete"})
             print(
                 "PASS: hook -> delivery -> SQLite storage -> titles and trajectory;"

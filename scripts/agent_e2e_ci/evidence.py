@@ -178,8 +178,7 @@ class BackendEvidenceCollector:
 def _mentions(event: dict[str, Any], marker: str) -> bool:
     """Whether a conversation entry of the stored event contains the marker."""
 
-    metadata = event.get("metadata")
-    conversation = metadata.get("conversation") if isinstance(metadata, dict) else None
+    conversation = event.get("conversation")
     entries = conversation.get("entries") if isinstance(conversation, dict) else None
     if not isinstance(entries, list):
         return False

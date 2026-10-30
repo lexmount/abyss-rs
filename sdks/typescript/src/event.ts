@@ -2,7 +2,7 @@
 
 export interface AgentEvent {
   event_id: string;
-  occurred_at: string;
+  observed_at: string;
   device: DeviceContext;
   agent: AgentContext;
   session_id: string;
@@ -117,7 +117,7 @@ export function decodeAgentEvent(value: unknown): AgentEvent {
     event,
     [
       "event_id",
-      "occurred_at",
+      "observed_at",
       "device",
       "agent",
       "session_id",
@@ -139,9 +139,9 @@ export function decodeAgentEvent(value: unknown): AgentEvent {
     "AgentEvent",
   );
   stringField(event, "event_id");
-  const occurredAt = stringField(event, "occurred_at");
-  if (Number.isNaN(Date.parse(occurredAt))) {
-    throw new TypeError("AgentEvent.occurred_at must be an RFC 3339 timestamp");
+  const observedAt = stringField(event, "observed_at");
+  if (Number.isNaN(Date.parse(observedAt))) {
+    throw new TypeError("AgentEvent.observed_at must be an RFC 3339 timestamp");
   }
   decodeDevice(event.device);
   decodeAgent(event.agent);

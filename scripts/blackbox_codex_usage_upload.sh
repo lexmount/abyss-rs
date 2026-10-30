@@ -505,7 +505,7 @@ validate_codex_pair() {
   jq -e \
     --arg marker "${marker}" \
     '
-      any(.request.metadata.conversation.entries[]?;
+      any(.request.conversation.entries[]?;
         .role == "user" and (.text | contains($marker)))
       and .request.agent_name == "codex"
       and .response.agent_name == "codex"
@@ -517,7 +517,7 @@ validate_codex_pair() {
       and .request.output_tokens == 0
       and .request.total_tokens
         == (.request.input_tokens + .request.cache_read_tokens + .request.cache_write_tokens)
-      and any(.response.metadata.conversation.entries[]?;
+      and any(.response.conversation.entries[]?;
         .role == "assistant" and (.text | length > 0))
       and .response.input_tokens == 0
       and .response.output_tokens > 0

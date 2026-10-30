@@ -188,7 +188,7 @@ provider documents, and original content blocks are not part of the contract.
 ```json
 {
   "event_id": "evt-123",
-  "occurred_at": "2026-08-19T10:00:00Z",
+  "observed_at": "2026-08-19T10:00:00Z",
   "device": {
     "host_name": "developer-mac",
     "platform": "macos",
@@ -483,11 +483,13 @@ usage.
 
 ## Delivery
 
-The official delivery plugin stores the conversation as `metadata.conversation`,
-the purpose as `metadata.purpose`, the path as `metadata.path`, and the headers
-as `metadata.headers`. It sends `response_id`,
-`previous_response_id`, `subagent_id`, `parent_subagent_id`, and
-`turn_id` as top-level fields of the backend usage event. Backend
+The official delivery plugin sends `observed_at`, `conversation`,
+`response_id`, `previous_response_id`, `subagent_id`, `parent_subagent_id`, and
+`turn_id` as top-level fields of the backend usage event, each as the event
+carries it and absent where the event omits it, and sends `side` as the
+top-level `event_type` (`request` or `response`). It stores the purpose as
+`metadata.purpose`, the omitted categories as `metadata.omitted`, the path as
+`metadata.path`, and the headers as `metadata.headers`. Backend
 trajectories consume these fields without decoding provider bodies. Other plugins may translate the event for their own destinations.
 
 Rust, Python, and TypeScript SDKs all request protocol version 1 and consume this
