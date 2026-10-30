@@ -215,6 +215,86 @@ fn detail_search_and_summary_routes_preserve_backend_content() {
 }
 
 #[test]
+fn standalone_session_page_routes_preserve_backend_content() {
+    let header =
+        json!({"session_pk":ID,"session_id":"native-session","title":null,"turn_count":1_u32});
+    let streams = json!({"session_pk":ID,"segments":[{"head":"resp-1","kind":"root"}]});
+    let turns = json!({"session_pk":ID,"turns":[{"number":1_u32,"children":[]}]});
+    let segment = json!({"session_pk":ID,"segment":"resp/1","exchanges":[{"id":"resp-1"}]});
+    let found = json!({"query":"hello","texts":[{"text":"hello"}],"hits":[{"event_pk":ID,"entry_index":0_u32}],"truncated":false});
+    let preview = json!({"event_pk":ID,"completeness":"complete","entries_total":3_u32,"chunks":[{"from":2_u32,"entries":[]}],"omitted_entries":2_u32,"omitted_bytes":0_u32,"attachments":[]});
+    let location = json!({"session_pk":ID,"event_pk":ID,"segment":"resp-1","turn":1_u32,"segment_kind":"root","exchange":"resp-1"});
+    let server = Server::start(vec![
+        Response::json(&header),
+        Response::json(&streams),
+        Response::json(&turns),
+        Response::json(&segment),
+        Response::json(&found),
+        Response::json(&preview),
+        Response::json(&location),
+        Response::json(&json!({"events":[event()],"next_page_token":null})),
+    ]);
+    let cli = Harness::new();
+    cli.profile(&server.endpoint, "none");
+    assert_eq!(
+        cli.success(&["sessions", "header", ID])["data"]["turn_count"],
+        1_u32,
+        "header fields preserved"
+    );
+    assert_eq!(
+        cli.success(&["sessions", "streams", ID])["data"]["segments"][0]["kind"],
+        "root",
+        "segments preserved"
+    );
+    cli.success(&["sessions", "turns", ID]);
+    cli.success(&[
+        "sessions",
+        "segment",
+        ID,
+        "resp/1",
+        "--entries=-1",
+        "--text-preview",
+        "80",
+    ]);
+    assert_eq!(
+        cli.success(&["sessions", "search", ID, "hello"])["data"]["hits"][0]["entry_index"],
+        0_u32,
+        "in-session hits preserved"
+    );
+    assert_eq!(
+        cli.success(&["events", "conversation", ID, "--entries", "2-4"])["data"]["chunks"][0]["from"],
+        2_u32,
+        "preview chunks preserved"
+    );
+    assert_eq!(
+        cli.success(&["events", "location", ID])["data"]["turn"],
+        1_u32,
+        "flattened location preserved"
+    );
+    cli.success(&["events", "list", "--locate"]);
+    let requests = server.finish();
+    let base = "/prefix/v1/agent-usage";
+    assert_eq!(requests[0].target, format!("{base}/sessions/{ID}/header"));
+    assert_eq!(requests[1].target, format!("{base}/sessions/{ID}/streams"));
+    assert_eq!(requests[2].target, format!("{base}/sessions/{ID}/turns"));
+    assert_eq!(
+        requests[3].target,
+        format!("{base}/sessions/{ID}/segments/resp%2F1?entries=-1&text_preview=80"),
+        "segment head is one path segment"
+    );
+    assert_eq!(
+        requests[4].target,
+        format!("{base}/sessions/{ID}/search?q=hello")
+    );
+    assert_eq!(
+        requests[5].target,
+        format!("{base}/events/{ID}/conversation?entries=2-4")
+    );
+    assert_eq!(requests[6].target, format!("{base}/events/{ID}/location"));
+    assert!(requests[7].target.ends_with("&locate=true"), "locate flag");
+}
+
+#[test]
 fn errors_are_stable_sanitized_and_never_downgrade_authentication() {
     for (status, code) in [
         (401, 3_i32),

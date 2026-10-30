@@ -97,9 +97,14 @@ class Scenario:
                 "event_id": f"query-e2e-{side}", "observed_at": "2026-10-01T00:00:00Z",
                 "device": {"host_name": "query-fixture", "platform": "linux", "os_version": "test"},
                 "agent": {"name": "codex", "version": "test"}, "session_id": "query-session",
-                "stream_id": "query-stream", "response_id": "query-response",
+                "response_id": "query-response",
                 "llm": {"provider": "openai", "model": "fixture-model"},
-                "event_type": side, "text": f"queryfixture {side}",
+                "event_type": side,
+                "conversation": {
+                    "entries": [{"role": "user" if side == "request" else "assistant",
+                                 "text": f"queryfixture {side}"}],
+                    "completeness": "complete",
+                },
                 "token_usage": {"input_tokens": 2, "output_tokens": 3, "cache_read_tokens": 0,
                                 "cache_write_tokens": 0, "reasoning_tokens": 0, "total_tokens": 5},
             })
@@ -109,20 +114,35 @@ class Scenario:
         self.cli("doctor")
         sessions = self.cli("sessions", "list", "--all", "--page-size", "1")["data"]
         require(len(sessions) == 1, "one persisted session")
-        session_id = sessions[0]["session_pk"]
-        for command in ("get", "outline", "trajectory"):
-            require(self.cli("sessions", command, session_id)["data"]["session"]["session_pk"] == session_id,
+        session_pk = sessions[0]["session_pk"]
+        for command in ("header", "streams", "turns"):
+            require(self.cli("sessions", command, session_pk)["data"]["session_pk"] == session_pk,
                     f"session {command}")
-        events = self.cli("events", "list", "--all", "--limit", "1", "--full")["data"]
+        segments = self.cli("sessions", "streams", session_pk)["data"]["segments"]
+        require(len(segments) == 1, "one segment")
+        segment = self.cli("sessions", "segment", session_pk, segments[0]["head"],
+                           "--text-preview", "5")["data"]
+        require(len(segment["exchanges"]) == 1, "one exchange in the segment")
+        found = self.cli("sessions", "search", session_pk, "queryfixture")["data"]
+        require(found["hits"], "in-session search")
+        events = self.cli("events", "list", "--all", "--limit", "1", "--full", "--locate")["data"]
         require(len(events) == 2, "event offset pagination")
-        require(self.cli("events", "get", events[0]["id"])["data"]["text"].startswith("queryfixture"), "event content")
+        require(all(event["location"]["segment"] == segments[0]["head"] for event in events),
+                "listed event locations")
+        entries = self.cli("events", "get", events[0]["id"])["data"]["conversation"]["entries"]
+        require(entries[0]["text"].startswith("queryfixture"), "event content")
+        preview = self.cli("events", "conversation", events[0]["id"], "--entries", "0",
+                           "--text-preview", "5")["data"]
+        require(preview["chunks"][0]["entries"][0]["text"] == "query", "conversation preview")
+        location = self.cli("events", "location", events[0]["id"])["data"]
+        require(location["session_pk"] == session_pk, "event location")
         hits = self.cli("search", "queryfixture")["data"]
         require(len(hits) == 1 and hits[0]["matches"], "real FTS search")
         require(self.cli("usage", "summary", "--group-by", "agent_name")["data"]["rows"], "usage rows")
         self.cli("profile", "add", "anonymous", "--endpoint", self.endpoint, "--auth", "none")
         require(self.cli("--profile", "anonymous", "doctor", code=3)["error"]["http_status"] == 401,
                 "official local backend still requires authentication")
-        print("abyss-query: real SQLite ingestion, reads, FTS, pagination and authentication passed")
+        print("abyss-query: real SQLite ingestion, session page reads, previews, FTS, pagination and authentication passed")
 
 
 def main():

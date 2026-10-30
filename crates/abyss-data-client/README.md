@@ -20,8 +20,10 @@ println!("{} sessions", page.items.len());
 ```
 
 The API root is supplied by the deployment and may include a reverse-proxy
-prefix. GET operations cover `v1/agent-usage/{sessions,events,search,summary}`,
-including session detail, outline and trajectory. The client returns one page;
+prefix. GET operations cover `v1/agent-usage/{sessions,events,search,summary}`.
+Session detail, outline and trajectory are SaaS data service routes; session
+header, streams, turns, segments and in-session search, and event conversation
+previews and locations are standalone backend routes. The client returns one page;
 callers own pagination policy. Event continuation tokens are decimal offsets,
 while sessions/search use a one-based page and fixed page size.
 

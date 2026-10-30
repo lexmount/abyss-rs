@@ -82,11 +82,10 @@ disabling validation. Redirects are never followed, including during login.
 
 ## Query commands
 
+Commands shared by the SaaS data service and the standalone backend:
+
 ```sh
 abyss-query sessions list --agent codex --from 2026-10-01T00:00:00Z
-abyss-query sessions get SESSION_UUID
-abyss-query sessions outline SESSION_UUID
-abyss-query sessions trajectory SESSION_UUID
 abyss-query events list --session-pk SESSION_UUID --full
 abyss-query events get EVENT_UUID
 abyss-query search "retry timeout" --provider openai
@@ -94,12 +93,39 @@ abyss-query usage summary --group-by agent_name,llm_model
 abyss-query schema
 ```
 
+SaaS data service only:
+
+```sh
+abyss-query sessions get SESSION_UUID
+abyss-query sessions outline SESSION_UUID
+abyss-query sessions trajectory SESSION_UUID
+abyss-query events list --turn-index 3
+abyss-query usage summary --global
+```
+
+Standalone backend only:
+
+```sh
+abyss-query sessions header SESSION_UUID
+abyss-query sessions streams SESSION_UUID
+abyss-query sessions turns SESSION_UUID
+abyss-query sessions segment SESSION_UUID SEGMENT_HEAD --entries=-2 --text-preview 200
+abyss-query sessions search SESSION_UUID "retry timeout"
+abyss-query events list --session-pk SESSION_UUID --locate
+abyss-query events conversation EVENT_UUID --entries 0-3,-1 --text-preview 200
+abyss-query events location EVENT_UUID
+```
+
 `--agent`, `--provider` and `--model` repeat for OR matches within a dimension.
 `--from` is inclusive; `--to` is exclusive. Session/detail IDs are backend UUIDs;
 `events list --session-id` filters the Agent's native session ID instead.
 Event lists omit full content unless `--full` is supplied. Outline, trajectory,
-unknown fields, structured search highlights and partial-content indicators are
-preserved as returned by the backend. Missing content or usage is not invented.
+session page structure, conversation previews, unknown fields, structured search
+highlights and partial-content indicators are preserved as returned by the
+backend. Missing content or usage is not invented. `--entries` takes
+comma-separated runs (`a-b`, `-n` for the last n, `a`), validated by the
+backend; write `--entries=-n` when the value starts with `-`. `--text-preview`
+caps each entry text in UTF-16 code units.
 
 `usage summary --global` requests the SaaS global scope; the server decides
 whether the current principal is authorized. Ordinary queries do not request

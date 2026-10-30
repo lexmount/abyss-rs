@@ -127,12 +127,14 @@ pub struct EventQuery {
     pub session_ids: Vec<String>,
     /// Backend session primary key.
     pub session_pk: Option<Uuid>,
-    /// Normalized turn number.
+    /// Normalized turn number; a filter of the `SaaS` data service.
     pub turn_index: Option<i32>,
     /// Event side.
     pub side: Option<EventSide>,
     /// Projection; defaults to content-free lists.
     pub fields: EventFields,
+    /// Adds each event's current location; a standalone-backend option.
+    pub locate: bool,
     /// Page size, bounded by the client to 1000.
     pub limit: u32,
     /// Number of newest events to skip.
@@ -148,6 +150,7 @@ impl Default for EventQuery {
             turn_index: None,
             side: None,
             fields: EventFields::List,
+            locate: false,
             limit: 20,
             offset: 0,
         }
@@ -183,7 +186,33 @@ impl EventQuery {
             ("limit".into(), self.limit.to_string()),
             ("offset".into(), self.offset.to_string()),
         ]);
+        if self.locate {
+            pairs.push(("locate".into(), "true".into()));
+        }
         Ok(pairs)
+    }
+}
+
+/// Entry selection for conversation previews and segment exchanges.
+#[derive(Clone, Default)]
+pub struct PreviewQuery {
+    /// Comma-separated entry runs (`a-b`, `-n`, `a`); all entries when absent.
+    /// The backend validates the syntax.
+    pub entries: Option<String>,
+    /// Most UTF-16 code units kept of each entry text; whole texts when absent.
+    pub text_preview: Option<u32>,
+}
+
+impl PreviewQuery {
+    pub(crate) fn pairs(&self) -> Vec<(String, String)> {
+        let mut pairs = Vec::new();
+        if let Some(entries) = &self.entries {
+            pairs.push(("entries".into(), entries.clone()));
+        }
+        if let Some(limit) = self.text_preview {
+            pairs.push(("text_preview".into(), limit.to_string()));
+        }
+        pairs
     }
 }
 

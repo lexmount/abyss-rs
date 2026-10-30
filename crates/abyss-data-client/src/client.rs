@@ -8,10 +8,11 @@ use uuid::Uuid;
 use crate::{
     ApiEndpoint, DataClientError, HttpTransport,
     models::{
-        EventPage, SearchPage, SessionPage, SessionTimeline, SessionTrajectory, UsageEvent,
-        UsageSummary,
+        ConversationPreview, EventLocation, EventPage, SearchPage, Segment, SessionHeader,
+        SessionPage, SessionSearch, SessionStreams, SessionTimeline, SessionTrajectory,
+        SessionTurns, UsageEvent, UsageSummary,
     },
-    query::{EventQuery, PageQuery, SummaryQuery},
+    query::{EventQuery, PageQuery, PreviewQuery, SummaryQuery},
 };
 
 /// Transport budgets for a data client.
@@ -88,7 +89,7 @@ impl DataClient {
         self.get(&["search"], &pairs)
     }
 
-    /// Reads a complete session timeline.
+    /// Reads a complete session timeline from the `SaaS` data service.
     ///
     /// # Errors
     /// Returns transport or protocol errors.
@@ -96,7 +97,8 @@ impl DataClient {
         self.get(&["sessions", &id.to_string()], &[])
     }
 
-    /// Reads a session's compact outline, preserving omitted content.
+    /// Reads a session's compact outline from the `SaaS` data service,
+    /// preserving omitted content.
     ///
     /// # Errors
     /// Returns transport or protocol errors.
@@ -104,12 +106,69 @@ impl DataClient {
         self.get(&["sessions", &id.to_string(), "outline"], &[])
     }
 
-    /// Reads the backend's normalized trajectory.
+    /// Reads the normalized trajectory from the `SaaS` data service.
     ///
     /// # Errors
     /// Returns transport or protocol errors.
     pub fn trajectory(&self, id: Uuid) -> Result<SessionTrajectory, DataClientError> {
         self.get(&["sessions", &id.to_string(), "trajectory"], &[])
+    }
+
+    /// Reads a session page header from the standalone backend.
+    ///
+    /// # Errors
+    /// Returns transport or protocol errors.
+    pub fn session_header(&self, id: Uuid) -> Result<SessionHeader, DataClientError> {
+        self.get(&["sessions", &id.to_string(), "header"], &[])
+    }
+
+    /// Reads a session's segments from the standalone backend.
+    ///
+    /// # Errors
+    /// Returns transport or protocol errors.
+    pub fn session_streams(&self, id: Uuid) -> Result<SessionStreams, DataClientError> {
+        self.get(&["sessions", &id.to_string(), "streams"], &[])
+    }
+
+    /// Reads a session's turn tree from the standalone backend.
+    ///
+    /// # Errors
+    /// Returns transport or protocol errors.
+    pub fn session_turns(&self, id: Uuid) -> Result<SessionTurns, DataClientError> {
+        self.get(&["sessions", &id.to_string(), "turns"], &[])
+    }
+
+    /// Reads one segment's exchanges from the standalone backend.
+    ///
+    /// # Errors
+    /// Returns transport or protocol errors.
+    pub fn segment(
+        &self,
+        id: Uuid,
+        head: &str,
+        query: &PreviewQuery,
+    ) -> Result<Segment, DataClientError> {
+        if head.is_empty() {
+            return Err(DataClientError::Query("segment head must not be empty"));
+        }
+        self.get(
+            &["sessions", &id.to_string(), "segments", head],
+            &query.pairs(),
+        )
+    }
+
+    /// Searches one session's content on the standalone backend.
+    ///
+    /// # Errors
+    /// Returns query, transport or protocol errors.
+    pub fn search_session(&self, id: Uuid, text: &str) -> Result<SessionSearch, DataClientError> {
+        if text.trim().is_empty() {
+            return Err(DataClientError::Query("search text must not be empty"));
+        }
+        self.get(
+            &["sessions", &id.to_string(), "search"],
+            &[("q".into(), text.into())],
+        )
     }
 
     /// Lists persisted events, using a decimal offset as continuation token.
@@ -126,6 +185,26 @@ impl DataClient {
     /// Returns transport or protocol errors.
     pub fn event(&self, id: Uuid) -> Result<UsageEvent, DataClientError> {
         self.get(&["events", &id.to_string()], &[])
+    }
+
+    /// Previews one event's conversation entries from the standalone backend.
+    ///
+    /// # Errors
+    /// Returns transport or protocol errors.
+    pub fn conversation(
+        &self,
+        id: Uuid,
+        query: &PreviewQuery,
+    ) -> Result<ConversationPreview, DataClientError> {
+        self.get(&["events", &id.to_string(), "conversation"], &query.pairs())
+    }
+
+    /// Reads where one event sits in its session on the standalone backend.
+    ///
+    /// # Errors
+    /// Returns transport or protocol errors.
+    pub fn event_location(&self, id: Uuid) -> Result<EventLocation, DataClientError> {
+        self.get(&["events", &id.to_string(), "location"], &[])
     }
 
     /// Reads usage aggregation. Scope authorization remains server-owned.

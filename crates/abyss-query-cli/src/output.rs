@@ -88,8 +88,9 @@ impl Output {
     }
     pub fn schema() -> Self {
         use abyss_data_client::models::{
-            EventPage, SearchPage, SessionPage, SessionTimeline, SessionTrajectory, UsageEvent,
-            UsageSummary,
+            ConversationPreview, EventLocation, EventPage, SearchPage, Segment, SessionHeader,
+            SessionPage, SessionSearch, SessionStreams, SessionTimeline, SessionTrajectory,
+            SessionTurns, UsageEvent, UsageSummary,
         };
         Self::new(
             "schema",
@@ -97,7 +98,12 @@ impl Output {
                 "envelope":schemars::schema_for!(Self),
                 "session_page":schemars::schema_for!(SessionPage),"search_page":schemars::schema_for!(SearchPage),
                 "session_timeline":schemars::schema_for!(SessionTimeline),"session_trajectory":schemars::schema_for!(SessionTrajectory),
-                "event_page":schemars::schema_for!(EventPage),"event":schemars::schema_for!(UsageEvent),"summary":schemars::schema_for!(UsageSummary)
+                "session_header":schemars::schema_for!(SessionHeader),"session_streams":schemars::schema_for!(SessionStreams),
+                "session_turns":schemars::schema_for!(SessionTurns),"segment":schemars::schema_for!(Segment),
+                "session_search":schemars::schema_for!(SessionSearch),
+                "event_page":schemars::schema_for!(EventPage),"event":schemars::schema_for!(UsageEvent),
+                "conversation_preview":schemars::schema_for!(ConversationPreview),"event_location":schemars::schema_for!(EventLocation),
+                "summary":schemars::schema_for!(UsageSummary)
             }),
         )
     }
