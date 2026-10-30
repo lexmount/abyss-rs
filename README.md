@@ -45,7 +45,7 @@ Open the Abyss dashboard to explore sessions, model activity, and token usage:
 abyss dashboard
 ```
 
-![Abyss dashboard showing sessions, token usage, and activity trends with sample data](docs/assets/abyss-dashboard.png)
+<img src="docs/assets/abyss-dashboard.png" width="70%" alt="Abyss dashboard showing sessions, token usage, and activity trends with sample data" />
 
 *Dashboard preview with sample data.*
 
