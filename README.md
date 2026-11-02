@@ -47,12 +47,6 @@ Open the Abyss dashboard to explore sessions, model activity, and token usage:
 abyss dashboard
 ```
 
-<p align="center">
-  <img src="docs/assets/abyss-dashboard.png" width="70%" alt="Abyss dashboard showing sessions, token usage, and activity trends with sample data" />
-</p>
-
-*Dashboard preview with sample data.*
-
 See the [Abyss CLI guide](https://abyss.lexmount.com/docs/product/open-source-software/abyss-cli)
 for configuration, capture controls, and lifecycle commands.
 

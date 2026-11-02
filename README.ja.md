@@ -41,12 +41,6 @@ abyss run -- codex
 abyss dashboard
 ```
 
-<p align="center">
-  <img src="docs/assets/abyss-dashboard.png" width="70%" alt="サンプルデータを使って、セッション、トークン使用量、アクティビティの推移を表示した Abyss ダッシュボード" />
-</p>
-
-*ダッシュボードの表示例です。サンプルデータを使用しています。*
-
 設定方法、取得する内容の切り替え、サービスの起動・停止については、[Abyss CLI ガイド](https://abyss.lexmount.com/docs/product/open-source-software/abyss-cli)をご覧ください。
 
 ## 対応するエージェントとモデル

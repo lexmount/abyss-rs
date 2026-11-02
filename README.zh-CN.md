@@ -41,12 +41,6 @@ abyss run -- codex
 abyss dashboard
 ```
 
-<p align="center">
-  <img src="docs/assets/abyss-dashboard.png" width="70%" alt="Abyss 控制台，展示示例会话、Token 用量和活动趋势" />
-</p>
-
-*控制台预览，图中为示例数据。*
-
 配置方法、采集开关和服务管理命令详见 [Abyss CLI 使用指南](https://abyss.lexmount.cn/docs/product/open-source-software/abyss-cli)。
 
 ## 支持的 Agent 与模型
