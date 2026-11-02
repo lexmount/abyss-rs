@@ -1,6 +1,6 @@
 [English](README.md) | **简体中文** | [日本語](README.ja.md)
 
-# Abyss：无需修改代码的 AI Agent 可观测平台
+# Abyss：零侵入式 AI Agent 可观测性平台
 
 <p align="center">
   <img src="docs/assets/abyss-overview-dark.svg" width="720" alt="Abyss 通过观测 AI Agent 的网络流量，生成会话、工具调用和 Token 用量事件。" />
@@ -8,12 +8,12 @@
 
 ## 概览
 
-Abyss 是一个开源的 AI Agent 可观测平台。通过本地代理，Abyss 采集 Agent 与模型服务商之间的网络流量，帮助你了解会话内容、工具调用、Token 用量和网络故障，无需修改 Agent 源码，也无需额外埋点。
+Abyss 是一个开源的 AI Agent 可观测平台。通过本地代理，Abyss 接管 Agent 与模型服务商之间的网络流量，对会话内容、工具调用、Token 用量和网络故障进行观测和记录。
 
 Abyss 使用 Rust 构建，提供以下能力：
 
 - 支持 HTTP/HTTPS 显式代理，也可通过 macOS Network Extension 和 Windows WFP 适配器接入透明代理流量。
-- 根据策略控制 TLS 解密与内容采集，解析受支持的 Agent 协议。
+- 根据策略控制 TLS 解密与内容采集，解析模型协议。
 - 将 OpenAI Responses API、Chat Completions API、Anthropic Messages API 等模型接口的流量转换为统一的事件格式。
 - 提供插件机制，以及 Rust、TypeScript 和 Python SDK，便于对接现有系统和自定义事件处理流程。
 
@@ -28,7 +28,7 @@ curl --proto '=https' --tlsv1.2 -fsSL \
 
 ## 快速开始
 
-请先安装 Node.js 22+、npm 10+，以及要使用的 Agent。然后启动本地环境，通过 Abyss 运行 Agent：
+请先安装 Node.js 22+、npm 10+。然后部署本地环境，通过 Abyss 运行 Agent：
 
 ```bash
 abyss deploy-local start
