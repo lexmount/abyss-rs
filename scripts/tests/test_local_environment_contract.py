@@ -51,7 +51,7 @@ class LocalEnvironmentContractTests(unittest.TestCase):
         self.assertIn("abyss deploy-local start", source)
         self.assertIn("abyss run -- codex", source)
         self.assertIn(
-            "https://abyss.lexmount.cn/docs/product/open-source-software/abyss-cli",
+            "https://abyss.lexmount.com/docs/product/open-source-software/abyss-cli",
             source,
         )
         self.assertNotIn("abyss-local", source)

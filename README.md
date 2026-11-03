@@ -1,7 +1,12 @@
+**English** | [简体中文](README.zh-CN.md) | [日本語](README.ja.md)
+
 # Abyss: Non-invasive observability platform for AI Agent
 
 <p align="center">
-  <img src="docs/assets/abyss-overview-dark.svg" width="720" alt="Abyss observes AI agent traffic and publishes events for sessions, tools, and token usage." />
+  <picture>
+    <source media="(prefers-color-scheme: dark)" srcset="docs/assets/abyss-overview-dark.svg" />
+    <img src="docs/assets/abyss-overview-light.svg" width="720" alt="Abyss observes AI agent traffic and publishes events for sessions, tools, and token usage." />
+  </picture>
 </p>
 
 ## Overview
@@ -45,13 +50,7 @@ Open the Abyss dashboard to explore sessions, model activity, and token usage:
 abyss dashboard
 ```
 
-<p align="center">
-  <img src="docs/assets/abyss-dashboard.png" width="70%" alt="Abyss dashboard showing sessions, token usage, and activity trends with sample data" />
-</p>
-
-*Dashboard preview with sample data.*
-
-See the [Abyss CLI guide](https://abyss.lexmount.cn/docs/product/open-source-software/abyss-cli)
+See the [Abyss CLI guide](https://abyss.lexmount.com/docs/product/open-source-software/abyss-cli)
 for configuration, capture controls, and lifecycle commands.
 
 ## Supported Harnesses and Models
@@ -62,6 +61,7 @@ for configuration, capture controls, and lifecycle commands.
 | <picture><source media="(prefers-color-scheme: dark)" srcset="https://cdn.jsdelivr.net/npm/@lobehub/icons-static-png@2.5.0/dark/claude-color.png"><img src="https://cdn.jsdelivr.net/npm/@lobehub/icons-static-png@2.5.0/light/claude-color.png" width="20" height="20" alt=""></picture> Claude | ✅ | ✅ | ❌ |
 | <picture><source media="(prefers-color-scheme: dark)" srcset="https://cdn.jsdelivr.net/npm/@lobehub/icons-static-png@2.5.0/dark/opencode.png"><img src="https://cdn.jsdelivr.net/npm/@lobehub/icons-static-png@2.5.0/light/opencode.png" width="20" height="20" alt=""></picture> [OpenCode](docs/opencode.md) | ✅ | ✅ | ✅ |
 | <picture><source media="(prefers-color-scheme: dark)" srcset="https://cdn.jsdelivr.net/npm/@lobehub/icons-static-png@2.5.0/dark/deepseek-color.png"><img src="https://cdn.jsdelivr.net/npm/@lobehub/icons-static-png@2.5.0/light/deepseek-color.png" width="20" height="20" alt=""></picture> [DeepSeek Harness](docs/configuration.md) | ✅ | ✅ | ✅ |
+| [Hermes](docs/hermes.md) | — | ✅ | — |
 
 | Models | Supported |
 | --- | :---: |
@@ -81,7 +81,7 @@ applies TLS and capture policies, parses supported agent traffic, and publishes
 normalized events. Its local REST API exposes runtime configuration, status,
 and diagnostics for CLI and application integrations.
 
-See the [broker setup guide](https://abyss.lexmount.cn/docs/development/basics/start-abyss-broker)
+See the [broker setup guide](https://abyss.lexmount.com/docs/development/basics/start-abyss-broker)
 to install, configure, and start it independently.
 
 ## Plugin
@@ -93,7 +93,7 @@ custom exporters, audit integrations, and automation. The official
 persist failed uploads for later replay.
 
 The broker provides a live event stream; plugins own remote authentication,
-persistence, and retries. See the [plugin mechanism](https://abyss.lexmount.cn/docs/development/basics/abyss-broker-mechanism#plugins)
+persistence, and retries. See the [plugin mechanism](https://abyss.lexmount.com/docs/development/basics/abyss-broker-mechanism#plugins)
 for the integration model and protocol details.
 
 ## Data query CLI
@@ -110,9 +110,9 @@ The SDKs provide clients for the broker REST API and plugin event stream, making
 it easier to manage local policies, inspect diagnostics, and consume typed events.
 Choose the reference for your integration language:
 
-- [Rust SDK](https://abyss.lexmount.cn/docs/reference/sdk/rust)
-- [TypeScript / Node.js SDK](https://abyss.lexmount.cn/docs/reference/sdk/typescript)
-- [Python SDK](https://abyss.lexmount.cn/docs/reference/sdk/python)
+- [Rust SDK](https://abyss.lexmount.com/docs/reference/sdk/rust)
+- [TypeScript / Node.js SDK](https://abyss.lexmount.com/docs/reference/sdk/typescript)
+- [Python SDK](https://abyss.lexmount.com/docs/reference/sdk/python)
 
 ## Architecture
 
