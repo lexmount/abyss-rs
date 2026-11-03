@@ -3,7 +3,10 @@
 # Abyss: Non-invasive observability platform for AI Agent
 
 <p align="center">
-  <img src="docs/assets/abyss-overview-dark.svg" width="720" alt="Abyss observes AI agent traffic and publishes events for sessions, tools, and token usage." />
+  <picture>
+    <source media="(prefers-color-scheme: dark)" srcset="docs/assets/abyss-overview-dark.svg" />
+    <img src="docs/assets/abyss-overview-light.svg" width="720" alt="Abyss observes AI agent traffic and publishes events for sessions, tools, and token usage." />
+  </picture>
 </p>
 
 ## Overview
@@ -58,6 +61,7 @@ for configuration, capture controls, and lifecycle commands.
 | <picture><source media="(prefers-color-scheme: dark)" srcset="https://cdn.jsdelivr.net/npm/@lobehub/icons-static-png@2.5.0/dark/claude-color.png"><img src="https://cdn.jsdelivr.net/npm/@lobehub/icons-static-png@2.5.0/light/claude-color.png" width="20" height="20" alt=""></picture> Claude | ✅ | ✅ | ❌ |
 | <picture><source media="(prefers-color-scheme: dark)" srcset="https://cdn.jsdelivr.net/npm/@lobehub/icons-static-png@2.5.0/dark/opencode.png"><img src="https://cdn.jsdelivr.net/npm/@lobehub/icons-static-png@2.5.0/light/opencode.png" width="20" height="20" alt=""></picture> [OpenCode](docs/opencode.md) | ✅ | ✅ | ✅ |
 | <picture><source media="(prefers-color-scheme: dark)" srcset="https://cdn.jsdelivr.net/npm/@lobehub/icons-static-png@2.5.0/dark/deepseek-color.png"><img src="https://cdn.jsdelivr.net/npm/@lobehub/icons-static-png@2.5.0/light/deepseek-color.png" width="20" height="20" alt=""></picture> [DeepSeek Harness](docs/configuration.md) | ✅ | ✅ | ✅ |
+| [Hermes](docs/hermes.md) | — | ✅ | — |
 
 | Models | Supported |
 | --- | :---: |

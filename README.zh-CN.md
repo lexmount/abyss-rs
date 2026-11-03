@@ -3,7 +3,10 @@
 # Abyss：零侵入式 AI Agent 可观测性平台
 
 <p align="center">
-  <img src="docs/assets/abyss-overview-dark.svg" width="720" alt="Abyss 通过观测 AI Agent 的网络流量，生成会话、工具调用和 Token 用量事件。" />
+  <picture>
+    <source media="(prefers-color-scheme: dark)" srcset="docs/assets/abyss-overview-dark.svg" />
+    <img src="docs/assets/abyss-overview-light.svg" width="720" alt="Abyss 通过观测 AI Agent 的网络流量，生成会话、工具调用和 Token 用量事件。" />
+  </picture>
 </p>
 
 ## 概览
@@ -51,6 +54,7 @@ abyss dashboard
 | <picture><source media="(prefers-color-scheme: dark)" srcset="https://cdn.jsdelivr.net/npm/@lobehub/icons-static-png@2.5.0/dark/claude-color.png"><img src="https://cdn.jsdelivr.net/npm/@lobehub/icons-static-png@2.5.0/light/claude-color.png" width="20" height="20" alt=""></picture> Claude | ✅ | ✅ | ❌ |
 | <picture><source media="(prefers-color-scheme: dark)" srcset="https://cdn.jsdelivr.net/npm/@lobehub/icons-static-png@2.5.0/dark/opencode.png"><img src="https://cdn.jsdelivr.net/npm/@lobehub/icons-static-png@2.5.0/light/opencode.png" width="20" height="20" alt=""></picture> [OpenCode](docs/opencode.md) | ✅ | ✅ | ✅ |
 | <picture><source media="(prefers-color-scheme: dark)" srcset="https://cdn.jsdelivr.net/npm/@lobehub/icons-static-png@2.5.0/dark/deepseek-color.png"><img src="https://cdn.jsdelivr.net/npm/@lobehub/icons-static-png@2.5.0/light/deepseek-color.png" width="20" height="20" alt=""></picture> [DeepSeek Harness](docs/configuration.md) | ✅ | ✅ | ✅ |
+| [Hermes](docs/hermes.md) | — | ✅ | — |
 
 | 模型系列 | 是否支持 |
 | --- | :---: |
