@@ -209,6 +209,8 @@ impl LocalConfig {
             .proxy
             .listen_addr
             .unwrap_or_else(|| loopback_proxy_listen_addr(requested_port));
+        // Apply --port to an existing listener too, preserving its IP and IPv6
+        // scope/flow information. SocketAddr has no with_port builder method.
         desired.set_port(requested_port);
         if self.proxy.listen_addr == Some(desired) {
             return false;
