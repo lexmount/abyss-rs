@@ -129,7 +129,7 @@ pub fn ensure_config(paths: &CliPaths) -> Result<(), CliError> {
 fn wait_for_broker(endpoint: &BrokerEndpoint) -> Result<SocketAddr, CliError> {
     for _ in 0_u8..50_u8 {
         if let Ok(broker) = endpoint.require_owned_explicit()
-            && let Ok(proxy_addr) = broker.proxy_listen_addr()
+            && let Ok(proxy_addr) = broker.proxy_connect_addr()
         {
             return Ok(proxy_addr);
         }

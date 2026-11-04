@@ -90,7 +90,7 @@ pub struct ProxyConfig {
     /// Selected proxy ingress implementation.
     #[serde(default)]
     pub mode: ProxyIngressMode,
-    /// Optional loopback endpoint for explicit-proxy ingress.
+    /// Optional IPv4 or IPv6 endpoint for explicit-proxy ingress.
     #[serde(default)]
     pub listen_addr: Option<SocketAddr>,
     /// Unix socket used by the macOS Network Extension bridge.
@@ -311,9 +311,6 @@ impl BrokerConfig {
                 message: "proxy.socket_path must not be empty".to_owned(),
             });
         }
-        if let Some(address) = self.proxy.listen_addr {
-            validate_loopback_address(address, "proxy.listen_addr")?;
-        }
         self.proxy.validate_shape()?;
         Ok(())
     }
@@ -341,7 +338,6 @@ impl ProxyConfig {
                         .parse()
                         .expect("built-in explicit endpoint should parse")
                 });
-                validate_loopback_address(address, "proxy.listen_addr")?;
                 let endpoint = ExplicitIngressEndpoint::new(address);
                 Ok(ProxyPlan::explicit(endpoint))
             }
@@ -432,6 +428,7 @@ impl ProxyConfig {
     }
 }
 
+#[cfg(target_os = "windows")]
 fn validate_loopback_address(
     address: SocketAddr,
     label: &str,
@@ -704,6 +701,40 @@ socket_path = "run/flow.sock"
             .expect("explicit proxy should be available on every broker artifact");
 
         assert_eq!(plan.endpoint_label(), "127.0.0.1:0");
+    }
+
+    #[tokio::test]
+    async fn explicit_config_accepts_ipv4_and_ipv6_bind_addresses() {
+        for address in [
+            "0.0.0.0:8080",
+            "192.168.1.10:8080",
+            "[::]:8080",
+            "[2001:db8::1]:8080",
+        ] {
+            let config = load_temp_config(&format!(
+                "schema_version = 1\n[proxy]\nmode = \"explicit\"\nlisten_addr = \"{address}\"\n"
+            ))
+            .await
+            .expect("valid socket address should load");
+            assert_eq!(
+                config.proxy.plan().expect("explicit plan").endpoint_label(),
+                address
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn explicit_config_rejects_invalid_socket_addresses() {
+        for address in [
+            "999.0.0.1:8080",
+            "0.0.0.0:65536",
+            "localhost:8080",
+            "::1:8080",
+        ] {
+            assert!(load_temp_config(&format!(
+                "schema_version = 1\n[proxy]\nmode = \"explicit\"\nlisten_addr = \"{address}\"\n"
+            )).await.is_err(), "invalid socket address must be rejected: {address}");
+        }
     }
 
     #[cfg(target_os = "windows")]

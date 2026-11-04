@@ -1,11 +1,6 @@
 //! Bounded HTTP CONNECT negotiation with no target DNS or direct fallback.
 
-use std::{
-    io,
-    net::{IpAddr, SocketAddr},
-    sync::Arc,
-    time::Duration,
-};
+use std::{io, net::SocketAddr, sync::Arc, time::Duration};
 
 use futures_util::{StreamExt as _, stream::FuturesUnordered};
 use tokio::{
@@ -17,8 +12,8 @@ use tokio::{
 use crate::{BoxedDuplexStream, TargetAuthority, transparent::PrefixedDuplexStream};
 
 use super::{
-    ProxyConnectStage, ProxySocketInitializer, UpstreamProxyConfig, UpstreamProxyConfigError,
-    UpstreamProxyError,
+    ListenerEndpoint, ProxyConnectStage, ProxySocketInitializer, UpstreamProxyConfig,
+    UpstreamProxyConfigError, UpstreamProxyError,
 };
 
 const MAX_HEADER_BYTES: usize = 16 * 1024;
@@ -112,13 +107,18 @@ impl HttpConnectProxy {
             },
         )?;
         let addresses = self.resolve(deadline).await?;
-        if let Some(address) = addresses.iter().find(|address| {
-            excluded_endpoints
-                .iter()
-                .chain(&self.excluded_endpoints)
-                .any(|listener| same_endpoint(**address, *listener))
-        }) {
-            return Err(UpstreamProxyError::Loop { address: *address });
+        for address in &addresses {
+            for listener in excluded_endpoints.iter().chain(&self.excluded_endpoints) {
+                if ListenerEndpoint::new(*listener)
+                    .contains(*address)
+                    .map_err(|source| UpstreamProxyError::Io {
+                        stage: ProxyConnectStage::ConnectProxy,
+                        source,
+                    })?
+                {
+                    return Err(UpstreamProxyError::Loop { address: *address });
+                }
+            }
         }
         let mut stream = self.connect_tcp(&addresses, deadline).await?;
         let proxy_peer = stream
@@ -283,15 +283,4 @@ const fn handshake_io(source: io::Error) -> UpstreamProxyError {
         stage: ProxyConnectStage::Handshake,
         source,
     }
-}
-
-/// Compares loopback listener endpoints, including mapped IPv6 and wildcard IPs.
-fn same_endpoint(candidate: SocketAddr, listener: SocketAddr) -> bool {
-    let canonical = |ip| match ip {
-        IpAddr::V6(ipv6) => ipv6.to_ipv4_mapped().map_or(IpAddr::V6(ipv6), IpAddr::V4),
-        IpAddr::V4(_) => ip,
-    };
-    candidate.port() == listener.port()
-        && (canonical(candidate.ip()).is_unspecified()
-            || canonical(candidate.ip()) == canonical(listener.ip()))
 }

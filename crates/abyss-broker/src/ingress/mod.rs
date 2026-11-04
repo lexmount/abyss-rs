@@ -122,7 +122,7 @@ pub enum IngressSource {
 pub enum IngressRuntimeStatus {
     /// Local explicit HTTP proxy listener.
     ExplicitHttp {
-        /// Bound loopback TCP address.
+        /// Bound TCP address, including wildcard listeners.
         listen_addr: SocketAddr,
     },
     /// macOS Network Extension framed-flow Unix socket.

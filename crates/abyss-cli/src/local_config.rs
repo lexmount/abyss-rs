@@ -205,7 +205,11 @@ impl LocalConfig {
 
     /// Selects an explicitly requested proxy port and reports whether it changed.
     pub(crate) fn set_explicit_proxy_port(&mut self, requested_port: u16) -> bool {
-        let desired = loopback_proxy_listen_addr(requested_port);
+        let mut desired = self
+            .proxy
+            .listen_addr
+            .unwrap_or_else(|| loopback_proxy_listen_addr(requested_port));
+        desired.set_port(requested_port);
         if self.proxy.listen_addr == Some(desired) {
             return false;
         }
@@ -722,5 +726,23 @@ mod tests {
             )
         );
         assert!(!config.set_explicit_proxy_port(30123));
+    }
+
+    #[test]
+    fn changing_proxy_port_preserves_configured_bind_address() {
+        for listener in [
+            "0.0.0.0:8080",
+            "192.168.1.10:8080",
+            "[::]:8080",
+            "[fe80::1%3]:8080",
+        ] {
+            let mut config = LocalConfig::default();
+            let mut expected = listener.parse::<std::net::SocketAddr>().expect("listener");
+            config.proxy.listen_addr = Some(expected);
+            expected.set_port(30123);
+            assert!(config.set_explicit_proxy_port(30123));
+            assert_eq!(config.proxy.listen_addr, Some(expected));
+            assert!(!config.set_explicit_proxy_port(30123));
+        }
     }
 }

@@ -1485,6 +1485,10 @@ const fn broker_binary() -> &'static str {
 mod compatible_providers;
 
 #[cfg(unix)]
+#[path = "scenarios/explicit_bind.rs"]
+mod explicit_bind;
+
+#[cfg(unix)]
 #[path = "scenarios/opencode.rs"]
 mod opencode;
 
