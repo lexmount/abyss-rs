@@ -4,6 +4,13 @@ Status: proposed. This document describes a design; the configuration, APIs,
 and protocol additions below are not implemented. The source review is based on
 commit `57c29ef`.
 
+Backward compatibility with earlier configuration and plugin protocols is not a
+requirement at this rollout stage. Update the broker, delivery plugin, Rust /
+TypeScript / Python SDKs, defaults, examples, and protocol fixtures together.
+Use one current schema and wire format, without legacy decoders, migration
+aliases, parallel protocol implementations, or compatibility adapters. The
+runtime behavior specified below remains part of the design.
+
 Implement two independent capabilities at different layers:
 
 - **Network blocking** extends the existing TLS MITM policy with `Block`. It
@@ -74,7 +81,7 @@ Previously allowed requests cannot be recalled.
 | [WebSocket relay:212](../crates/abyss-mitm/src/transparent/websocket.rs#L212) | Submits an observation and forwards each client message immediately. | Await inspection before forwarding client data messages. |
 | [Agent Hook coordinator:58](../crates/abyss-agent-hook/src/hook.rs#L58) | Detects and parses a completed exchange. | Refactor the existing parsing pipeline to expose request-only results shared by inspection and observation. |
 | [Broker plugin server:65](../crates/abyss-broker/src/plugin/mod.rs#L65) | Owns local plugin sessions and broadcasts completed Agent events. | Extend this service with the request-inspection capability and broker-owned decision orchestration. |
-| [Plugin protocol v1:79](../specs/broker-plugin-protocol/v1/README.md#L79) | Best-effort, one-way live event stream; no decision replies. | Extend version negotiation and the existing connection with capability declaration and request/reply messages. |
+| [Current plugin protocol:79](../specs/broker-plugin-protocol/v1/README.md#L79) | Best-effort, one-way live event stream; no decision replies. | Update the protocol with capability declaration and typed event/request/reply messages on the existing connection. |
 
 An asynchronous `MitmHook` callback cannot enforce Agent request blocking. The
 current dispatcher may drop observations under pressure, and HTTP callbacks run
@@ -167,10 +174,10 @@ terminal network decision even when no ClientHello inspection is required.
 
 For plain HTTP handled by the broker, apply the same ordered metadata matcher
 using the validated HTTP authority/Host: a `Block` outcome denies the flow; a
-non-block outcome retains the existing plain-HTTP relay behavior. The legacy
-TLS configuration name stays compatible; this does not introduce TLS semantics
-into plaintext or add a second rule list. Scope is traffic handled by the
-broker's HTTP/TLS ingress, not OS-wide UDP, QUIC, file, or process control.
+non-block outcome retains the existing plain-HTTP relay behavior. Reuse the
+MITM policy's rule list without adding another policy or TLS processing to
+plaintext. Scope is traffic handled by the broker's HTTP/TLS ingress, not
+OS-wide UDP, QUIC, file, or process control.
 
 The following actions belong exclusively to network routing, before Agent plugin
 inspection is considered:
@@ -222,7 +229,7 @@ into context. Opaque TLS traffic never reaches this stage. Plugins return only
 allow/block decisions; they do not choose `Intercept` or `Passthrough`.
 
 Use the existing plugin connection lifecycle. A plugin connects to the broker
-and declares `agent_request` support during protocol negotiation. The SDK can
+and declares `agent_request` support during the handshake. The SDK can
 derive that declaration from registration of an `on_agent_request` handler.
 The broker then sends request context over that connection and receives an
 allow/block decision with a reason. Event-only plugins keep their existing role.
@@ -267,9 +274,10 @@ selected per request/message, so a newly connected plugin can inspect subsequent
 messages on an already intercepted WebSocket. Opaque flows still require a new
 connection and a network `Intercept` decision before inspection is possible.
 
-Old configuration keeps its existing behavior; existing v1 event-only plugins
-do not enable inspection. Old binaries reject the new `block` action or an
-unsupported plugin protocol version rather than silently accepting them.
+Event-only plugins use the same updated handshake and message format and declare
+only `agent_events`; they do not enable inspection. Update shipped configuration
+and SDK consumers directly to the current contract instead of adding migration
+or old-client support.
 
 ## Network routing and Agent request forwarding
 
@@ -589,17 +597,18 @@ into the transport engine. Connection membership, dispatch, pending replies,
 and decision aggregation belong to the broker plugin service.
 
 Keep the existing Unix socket/Named Pipe endpoint and length-prefixed JSON
-framing. Extend protocol negotiation on that same connection with version 2 and
-capability declaration. A plugin declares `agent_request` when it supplies an
+framing. Update the protocol on that same connection with capability declaration.
+A plugin declares `agent_request` when it supplies an
 inspection handler, and may also declare `agent_events` to receive observations.
 It does not need a second connection or a separate inspection endpoint.
 
 The current
 [PluginSession handshake:149](../crates/abyss-broker/src/plugin/session.rs#L149)
-uses a strict v1 hello. Dispatch hello decoding by protocol version before
-validating version-specific fields. Preserve the v1 hello and direct event
-payloads for existing SDKs. Version 2 uses a message discriminator to distinguish
-events, inspection requests/replies, and close/error messages on one connection.
+uses a strict hello followed by direct event payloads. Replace that shape with
+one current hello schema and a tagged message format for events, inspection
+requests/replies, and close/error messages. All consumers, including event-only
+plugins, adopt this format. A protocol-version field can detect a mismatched
+build; it does not select an older decoder, fallback format, or compatibility mode.
 Keep the current local endpoint access model; this feature adds no plugin token
 files, allowlist, or authorization configuration. `plugin_id` remains a diagnostic
 label, while request/reply routing is tied to the actual connected session.
@@ -607,8 +616,8 @@ label, while request/reply routing is tied to the actual connected session.
 The minimal inspection exchange is:
 
 ```text
-Plugin -> Broker: PluginHello(protocol_version=2, plugin_id, capabilities=[agent_request])
-Broker -> Plugin: BrokerHello(protocol_version=2)
+Plugin -> Broker: PluginHello(protocol_version=CURRENT_VERSION, plugin_id, capabilities=[agent_request])
+Broker -> Plugin: BrokerHello(protocol_version=CURRENT_VERSION)
 Broker -> Plugin: InspectRequest(request_id, context)
 Plugin -> Broker: InspectResponse(request_id, allow, reason?)
 ```
@@ -623,8 +632,8 @@ response values; request content has already been decoded and parsed before
 this exchange, with explicit parsing status for unsupported or invalid protocols.
 
 The existing [PluginSession:69](../crates/abyss-broker/src/plugin/session.rs#L69)
-enters a write-only event loop after its handshake. Add a reply-reading path for
-v2 sessions and one serialized writer for outbound events and inspection
+enters a write-only event loop after its handshake. Replace it with a session
+reader for replies and one serialized writer for outbound events and inspection
 requests. Reuse event delivery for observations, but send live decision requests
 through a bounded session channel instead of the best-effort event broadcast.
 Associate each pending request with a oneshot reply and its session. This permits
@@ -717,8 +726,9 @@ decision.
 
 Pass `G: RequestForwardingControl` through the relevant engine/relay methods so
 Rust monomorphizes the calls and futures. Keep the engine and unrelated control API
-structures concrete; they do not all need a new generic parameter. Preserve the
-existing public engine entry point by delegating to a streaming-only control.
+structures concrete; they do not all need a new generic parameter. Update engine
+call sites directly where needed; use a streaming-only control for callers that
+do not inspect requests, without a legacy entry-point wrapper.
 
 Use a concrete `Vec<InspectionPluginClient>` for connected inspection sessions.
 They all use the same IPC implementation; their custom logic runs in
@@ -836,9 +846,10 @@ required parts of the final feature.
    branch and local rejection writer before the first upstream request write.
    Preserve the existing upstream connection and TLS handshake order. Use a
    concrete in-process transport control to verify the forwarding boundary.
-3. **Broker plugin inspection.** Extend the existing endpoint with v2 capability
-   negotiation, connection membership, request/reply messages, protocol fixtures,
-   and SDK handlers. Implement the broker's `AgentRequestInspector` using the
+3. **Broker plugin inspection.** Update the current protocol on the existing
+   endpoint with capability declaration, connection membership, tagged messages,
+   and SDK handlers. Update all SDKs, the delivery plugin, specs, and fixtures
+   together; implement no legacy protocol path. Implement `AgentRequestInspector` using the
    shared parser and selected connected sessions. Add no plugin configuration
    section or management API.
    Add a minimal DLP plugin example; private-key detection belongs in that custom
@@ -900,13 +911,14 @@ Acceptance tests should prove the boundary, not merely check decision enums:
   process-dependent rules do not match, and destination-only or fallback blocks
   still work. Verify Agent plugins can inspect decoded requests with absent
   source-process fields.
-- Keep v1 SDK event consumers interoperable on the same endpoint. Validate v2
-  negotiation and replies across Rust, TypeScript, and Python, including a
-  session receiving events and inspection requests on one connection. Verify
+- Validate the current handshake, tagged event messages, and decision replies
+  across Rust, TypeScript, and Python, including the updated delivery plugin and
+  a session receiving events and inspection requests on one connection. Verify
   replies are matched to their request and session, including reconnects and
-  concurrent requests. Keep existing MITM/observation policy update tests;
-  plugin membership changes apply to subsequent requests/messages and cannot
-  reclassify passthrough flows.
+  concurrent requests. Check shipped configuration examples against the current
+  schema and retain MITM/observation policy update tests. No legacy-format
+  interoperability suite is required. Plugin membership changes apply to
+  subsequent requests/messages and cannot reclassify passthrough flows.
 
 Measure throughput and allocation changes with no inspectors connected,
 network block rules active, and inspectors connected. With no inspectors,
