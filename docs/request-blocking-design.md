@@ -1,198 +1,271 @@
-# Broker request blocking and inspection plugins
+# Broker network blocking and Agent request inspection
 
 Status: proposed. This document describes a design; the configuration, APIs,
 and protocol additions below are not implemented. The source review is based on
 commit `57c29ef`.
 
-Add a synchronous decision boundary before the broker sends a request to a model
-provider. Configuration rules can reject traffic using source and destination
-metadata. Configured plugins can additionally inspect the decrypted request and
-its parsed model input, then allow or block it. Existing asynchronous observation
-hooks continue to process completed exchanges.
+Implement two independent capabilities at different layers:
 
-Use separate access and TLS-decryption decisions: access determines whether a
-request may proceed; TLS policy determines whether permitted traffic is decrypted
-or passed through. Request inspection requires decryption. This avoids making
-HTTP and WebSocket blocking depend on a TLS-only action enum.
+- **Network blocking** extends the existing TLS MITM policy with `Block`. It
+  disables network flows using OS identity and destination metadata, regardless
+  of whether the caller is an Agent. It requires no model parsing or plugin.
+- **Agent request inspection** lets plugins inspect a decrypted model request
+  before it is forwarded, for example to reject a prompt containing a private
+  key. It has its own hook configuration, protocol, and decision types.
 
-Throughout this document, **Agent** means the calling client and **provider**
-means the upstream model service. A block response goes back to the Agent.
+The capabilities share flow metadata and transport utilities, but do not share
+one rule list, action enum, configuration namespace, or decision lifecycle.
+Existing asynchronous observation hooks remain a third, independent concern.
+
+**Client** means any network caller. **Agent** refers to a client in the request
+inspection path; **provider** means its upstream model service. Network blocking
+returns an error to the client when the transport permits one. Agent request
+blocking returns an error through the already decoded application transport.
 
 ## Required behavior
 
-1. Configuration can block by process name, destination host, application ID,
-   executable path, or runtime entry point, including combinations of selectors.
-2. A custom plugin receives available flow identity, HTTP or WebSocket request
-   metadata, complete decoded content, and a model-request projection. It can
-   reject a prompt containing a private key before that request reaches the
-   provider.
-3. Until all applicable checks allow a request, none of its HTTP request headers
-   or body, or its WebSocket data message, is forwarded. A rejected request is
-   never partially forwarded.
-4. The Agent receives an identifiable broker-generated rejection whenever the
+1. The existing MITM policy can block by process name, destination host,
+   application ID, executable path, or runtime entry point. Its decision is
+   exclusively based on OS/network metadata, without reading model input.
+2. Independently, a custom plugin receives available flow identity, HTTP or
+   WebSocket request metadata, complete decoded content, and a model-request
+   projection. It can reject a prompt containing a private key before that
+   request reaches the provider.
+3. In the Agent inspection path, until all applicable plugins allow a request,
+   none of its HTTP request headers or body, or its WebSocket data message, is
+   forwarded. A rejected request is never partially forwarded.
+4. The client receives an identifiable broker-generated rejection whenever the
    active transport can carry one. TLS establishment failures have the limitation
    described below.
-5. Traffic outside inspection scope retains the existing streaming path. Request
-   buffering, model parsing, and plugin RPC are paid for only when needed.
+5. Network blocking works with Agent hooks disabled and no inspection plugins
+   installed. Agent inspection works with no network `block` rules configured.
+6. TLS `Passthrough` retains its meaning: opaque traffic is relayed without
+   invoking Agent inspection. Enabling an Agent hook does not change that action.
+7. Request buffering, model parsing, and plugin RPC are paid for only on the
+   Agent inspection path. The network policy stays a concrete metadata matcher.
 
-The guarantee concerns the request being checked. Explicit CONNECT may already
-have established an upstream TCP tunnel, and a WebSocket may already have an
-upgraded provider connection. Neither establishes permission to send the pending
-model input. Previously allowed requests cannot be recalled.
+The Agent inspection guarantee concerns the request being checked. Explicit
+CONNECT may already have established an upstream TCP tunnel, and a WebSocket may
+already have an upgraded provider connection. Neither establishes permission to
+send the pending model input. Previously allowed requests cannot be recalled.
 
 ## Current implementation and change points
 
 | Existing component | Current behavior | Required change |
 | --- | --- | --- |
-| [TLS policy:18](../crates/abyss-mitm/src/transparent/decrypt_policy.rs#L18) | `Intercept` or `Passthrough`; source and destination selectors already exist. | Reuse selector semantics for a separate access policy. |
-| [Explicit ingress:146](../crates/abyss-broker/src/ingress/explicit.rs#L146) | Prepares upstream before acknowledging CONNECT; source process is absent. | Check available static metadata before upstream preparation; add local process attribution. |
+| [TLS policy:18](../crates/abyss-mitm/src/transparent/decrypt_policy.rs#L18) | `Intercept` or `Passthrough`; source and destination selectors already exist. | Add `Block` to this policy, preserving ordered rule evaluation and metadata-only decisions. |
+| [Explicit ingress:146](../crates/abyss-broker/src/ingress/explicit.rs#L146) | Prepares upstream before acknowledging CONNECT; source process is absent. | Add local process attribution; enforce the MITM policy before releasing client traffic. |
 | [HTTP request forwarding:639](../crates/abyss-mitm/src/transparent/relay.rs#L639) | Writes the request head, then streams and captures the body. | Add a buffered inspection branch before the first upstream request write. |
 | [TLS HTTP handling:123](../crates/abyss-mitm/src/transparent/tls_http.rs#L123) | Establishes provider TLS before decoding the client HTTP request. | Move provider TLS establishment after the request decision for inspected traffic. |
 | [WebSocket relay:212](../crates/abyss-mitm/src/transparent/websocket.rs#L212) | Submits an observation and forwards each client message immediately. | Await inspection before forwarding client data messages. |
 | [Agent Hook coordinator:58](../crates/abyss-agent-hook/src/hook.rs#L58) | Detects and parses a completed exchange. | Expose request-only parsing independently of response processing and audit settings. |
 | [Plugin protocol v1:79](../specs/broker-plugin-protocol/v1/README.md#L79) | Best-effort, one-way live event stream; no decision replies. | Add a separate request/reply inspection session. |
 
-An asynchronous `MitmHook` callback cannot enforce this feature. The current
-dispatcher may drop observations under pressure, and HTTP callbacks run after
-the exchange has already been relayed.
+An asynchronous `MitmHook` callback cannot enforce Agent request blocking. The
+current dispatcher may drop observations under pressure, and HTTP callbacks run
+after the exchange has already been relayed.
 
-## Policy and configuration
+## Network blocking in the existing MITM policy
 
-Add an optional `enforcement` section to `runtime-policy.toml`. Its absence means
-no access blocking and no inspection plugins. Keep the existing TLS actions.
+Add `Block` to `TlsDecryptionAction` and `TlsDecryptionDecision`, along with a
+typed network-blocked flow outcome. Keep the existing
+`mitm.tls_decryption` configuration and `GET`/`PUT /v1/mitm/config` API. A
+network block is terminal at this layer: it does not decrypt the body, detect a
+Harness, parse a model protocol, or wait for a plugin.
 
-The proposed configuration shape is:
+The proposed additions use the existing rule format:
 
 ```toml
-[enforcement]
-max_inspection_bytes = 16777216
+[mitm.tls_decryption]
+default_action = "passthrough"
+missing_sni_action = "passthrough"
 
-[[enforcement.block_rules]]
-id = "deny-codex-restricted-provider"
-process_names = ["codex"]
+[[mitm.tls_decryption.rules]]
+id = "deny-client-restricted-destination"
+action = "block"
+process_names = ["restricted-client"]
 destination_hosts = ["restricted.example", "*.restricted.example"]
 
-[[enforcement.block_rules]]
-id = "deny-application"
-application_ids = ["com.example.restricted-agent"]
-
-[[enforcement.block_rules]]
-id = "deny-runtime-entry"
-process_entry_points = ["/opt/example-agent/main.js"]
-
-[[enforcement.block_rules]]
-id = "deny-executable"
-executable_paths = ["/opt/example-agent/bin/agent"]
-
-[[enforcement.request_hooks]]
-id = "private-key-inspection"
-plugin_id = "example.dlp"
-destination_hosts = ["api.openai.com", "api.anthropic.com"]
-timeout_ms = 1000
-
-# Request hooks require an intercept decision for their TLS traffic.
-# Merge this rule with the deployment's existing TLS rules.
 [[mitm.tls_decryption.rules]]
-id = "decrypt-inspected-providers"
+id = "deny-application"
+action = "block"
+application_ids = ["com.example.restricted-client"]
+
+[[mitm.tls_decryption.rules]]
+id = "deny-runtime-entry"
+action = "block"
+process_entry_points = ["/opt/example-client/main.js"]
+
+[[mitm.tls_decryption.rules]]
+id = "deny-executable"
+action = "block"
+executable_paths = ["/opt/example-client/bin/client"]
+
+# Existing intercept and passthrough rules remain in the same ordered list.
+[[mitm.tls_decryption.rules]]
+id = "decrypt-model-api-traffic"
 action = "intercept"
 destination_hosts = ["api.openai.com", "api.anthropic.com"]
 ```
 
-The hook timeout is a configurable local-inspection budget; the example value is
-not a measured latency requirement. The inspection size limit applies separately
-to encoded body data and decoded content. Existing protocol framing limits also
-apply.
-
-Selector semantics follow the current TLS policy:
+Preserve the current TLS policy semantics:
 
 - Different populated dimensions within a rule are ANDed; values within one
-  dimension are ORed. Separate block rules provide alternatives.
+  dimension are ORed. Separate rules provide alternatives.
 - Host matching supports exact names and leading `*.` suffix patterns. Normalize
   hosts with the existing implementation and preserve its apex/subdomain rules.
 - Process names and application IDs use exact matching. Executable paths and
   runtime entry points are distinct normalized absolute-path fields. Reuse the
   platform's path comparison rules; do not infer identity from a basename.
 - An unavailable source field does not match a populated selector. An empty
-  dimension is unconstrained. Require at least one selector per configured rule
-  or hook scope so a global policy is explicit in a future extension.
-- Block rules only deny. The first matching block rule supplies the reason.
-  Applicable request hooks run in configuration order; the first block ends the
-  check, and all must allow before forwarding. A plugin cannot override a static
-  block or another plugin's rejection.
+  dimension is unconstrained. Keep the existing requirement for a populated
+  selector on an individual rule; `default_action = "block"` expresses a default
+  denial. After no rule matches, `missing_sni_action` still takes precedence when
+  neither SNI nor the destination-host fallback supplies a domain. Configure
+  that fallback as `block` too when a default denial must cover those flows.
+- The first enabled matching rule wins across **all three actions**. A preceding
+  passthrough or intercept rule can match before a later block rule. There is no
+  separate deny-list priority or plugin override. Put rules in the intended order.
 
-Use one shared selector implementation for TLS and access rules without changing
-the existing TLS configuration representation. No expression language, regex
-engine, priority system, or general rule-composition framework is required.
+Reuse the current matcher and validation code, adding an executable-path selector
+alongside the existing runtime-entry-point selector. Do not introduce a second
+access policy or a generic policy framework.
 
-Evaluate static rules as soon as the required metadata is available and before
-releasing application bytes. An early non-match with an unavailable hostname is
-not a final allow: evaluate again when the authoritative target is known. Use
-CONNECT authority for explicit target identity, SNI for TLS identity, and the
-validated request authority/Host for HTTP. Preserve existing target-consistency
-checks and retain these distinct fields in the context. Do not use reverse DNS
-or the configured next-hop proxy hostname as the logical target.
+Evaluate at the existing flow policy boundary, after reading any required
+ClientHello metadata and before forwarding client application traffic. Keep the
+existing preference for TLS SNI and destination-host fallback, plus ingress
+target-consistency checks. An early CONNECT rejection is valid only when the
+same final decision is already established: it must not skip an earlier rule
+whose SNI-dependent match is unresolved. Otherwise wait for ClientHello. No
+decrypted model request is needed to decide `Block`.
 
-A matching request hook requires a readable plaintext request. If TLS policy
-selects passthrough for that protected flow, reject it as
-`inspection_unavailable`; do not bypass the hook or silently override the TLS
-policy. Unprotected passthrough traffic retains its existing behavior.
+Update the no-SNI-peek fast path in
+[TLS routing:31](../crates/abyss-mitm/src/transparent/tls.rs#L31) as well: it
+currently enters interception directly. A default-block policy must reach a
+terminal network decision even when no ClientHello inspection is required.
 
-The following sequence shows a static block at explicit CONNECT, where the
-target is already known. Transparent ingress performs the equivalent check when
-its required metadata becomes available; its error transport depends on whether
-client TLS can be terminated.
+For plain HTTP handled by the broker, apply the same ordered metadata matcher
+using the validated HTTP authority/Host: a `Block` outcome denies the flow; a
+non-block outcome retains the existing plain-HTTP relay behavior. The legacy
+TLS configuration name stays compatible; this does not introduce TLS semantics
+into plaintext or add a second rule list. Scope is traffic handled by the
+broker's HTTP/TLS ingress, not OS-wide UDP, QUIC, file, or process control.
+
+The network-layer sequence is independent of Agent parsing and plugin state:
 
 ```mermaid
 sequenceDiagram
-    participant A as Agent
-    participant I as Explicit ingress
-    participant R as Access policy snapshot
-    participant P as Provider or next-hop proxy
-    A->>I: CONNECT target authority
-    I->>I: Resolve available source identity
-    I->>R: Match source and destination selectors
-    alt Static rule matches
-        R-->>I: Block with rule ID and reason
-        I-->>A: 403 from abyss-broker
-        Note over I,P: No target tunnel or model request is sent
-    else No static block with available metadata
-        R-->>I: Continue
-        I->>P: Establish TCP connection or CONNECT tunnel
-        P-->>I: Tunnel ready
-        I-->>A: 200 Connection Established
-        Note over A,I: Continue client TLS and request checks
-        Note over I,P: Tunnel establishment does not allow model input
+    participant C as Network client
+    participant B as Broker ingress and TLS engine
+    participant M as MITM policy snapshot
+    participant T as Remote target
+    C->>B: Accepted flow and protocol preface
+    B->>B: Obtain OS source identity and required target or SNI
+    B->>M: Evaluate existing ordered metadata rules
+    alt Block
+        M-->>B: Network block with optional rule ID
+        B-->>C: Broker error where possible, otherwise close
+        B->>B: Record network block metadata
+        Note over B,T: No client application traffic forwarded
+        Note over B,M: No model parser or Agent plugin invoked
+    else Passthrough
+        M-->>B: Passthrough
+        B->>T: Relay opaque TLS traffic
+        Note over B,T: Agent hooks do not run
+    else Intercept
+        M-->>B: Intercept
+        B->>B: Terminate client TLS and decode HTTP
+        Note over B,T: Agent inspection can independently run before request forwarding
     end
 ```
 
-Persist enforcement with the existing runtime-policy transaction and expose
-authenticated `GET`/`PUT /v1/enforcement/config`. Configuration files remain
-startup inputs rather than watched files. Validate, persist, then publish a
-snapshot through the existing transaction mechanism. New binaries accept old
-configuration with enforcement disabled; old strict decoders reject the new
-section instead of silently ignoring protection.
+## Independent Agent request hook configuration
 
-Pin the enforcement snapshot for an HTTP flow from its first policy check through
-its decision. For an intercepted WebSocket, take a fresh snapshot for each client
-data message and retain it through that decision. Updates do not retroactively
-change an outstanding check. Existing opaque passthrough connections need to be
-reopened for new inspection policy to take effect; there is no midstream TLS
-conversion or forced connection sweep in this design.
+Configure the Agent capability under `hooks.agent_request`, separate from
+`mitm.tls_decryption` and the existing `hooks.harness_usage` observer. The proposed
+shape is:
 
-## Request handling
+```toml
+[hooks.agent_request]
+enabled = true
+
+[hooks.agent_request.config]
+max_inspection_bytes = 16777216
+
+[[hooks.agent_request.config.plugins]]
+id = "example.dlp"
+timeout_ms = 1000
+```
+
+This config enables plugin invocation on decoded requests. It contains no
+process/domain deny rules and does not choose a TLS action. Plugins receive the
+complete available context and implement their own Agent-level logic, including
+any model, Harness, content, or contextual applicability decisions. Unknown
+Harnesses/protocols still reach the hook with explicit parsing status, rather
+than automatically bypassing a configured inspector.
+
+Reuse the existing `HookConfig<T>` envelope, with an explicit disabled default
+for this new hook rather than the audit hook's enabled default.
+
+Registered plugins run in configuration order. The first rejection ends the
+request check; all applicable invocations must return `Allow` to forward it.
+The timeout is a configurable inspection budget, not a measured latency promise.
+The byte limit applies separately to encoded data and decoded content, in
+addition to existing framing limits.
+
+The two capabilities compose only at the transport boundary:
+
+| Network MITM action | Agent request hook behavior |
+| --- | --- |
+| `Block` | The network flow ends. No body buffering, model parsing, or inspection RPC occurs. |
+| `Passthrough` | Opaque TLS bytes are relayed. The Agent hook cannot inspect or reject them and does not change the network decision. |
+| `Intercept`, Agent hook disabled | Existing decoded relay and any independently enabled observation hooks run. |
+| `Intercept`, Agent hook enabled | The Agent request gate waits for plugin decisions before forwarding the request. |
+
+Plain HTTP that passes the network decision is already decoded and can enter the
+Agent request gate. For HTTPS DLP, deployments explicitly configure `Intercept`
+for the traffic they want inspected. Turning on the Agent hook does not
+automatically decrypt a passthrough connection or reject it as
+`inspection_unavailable`. DLP coverage is limited to the decoded traffic reaching
+that hook. Once invoked on such traffic, plugin failure does reject the pending
+request, as described below.
+
+Use the existing authenticated `GET`/`PUT /v1/hooks/config` API for Agent hook
+configuration. Network policy continues through `/v1/mitm/config`. Both sections
+may use the same durable runtime-policy file and transaction machinery; they
+remain separate policy owners. Updating either capability preserves the other's
+configuration. Files remain startup inputs rather than watched sources.
+
+Network decisions retain the existing per-flow policy snapshot. Agent hooks take
+their own snapshot for each HTTP request or complete client WebSocket data
+message and retain it through that decision. A network rule update does not
+retroactively reclassify an established flow; an Agent hook update can affect the
+next request on an already intercepted WebSocket. Opaque flows require reconnect
+and an explicit network `Intercept` decision before Agent inspection is possible.
+
+Old configuration keeps its existing TLS behavior and defaults the new Agent
+hook to disabled. Old binaries reject the unknown `block` action or Agent hook
+section instead of silently ignoring them. Neither configuration migration
+automatically enables the other capability.
+
+## Agent request handling after the network decision
 
 ```mermaid
 flowchart TD
-    A[Accepted flow and source metadata] --> B[Static access checks]
-    B -->|Block| X[Broker rejection]
-    B -->|Continue| C[TLS decision and HTTP request head]
-    C --> D[Resolve inspection plan]
-    D -->|No inspection| E[Existing streaming relay]
-    D -->|Inspection required| F[Read complete request locally]
-    F --> G[Decode content and parse model request]
-    G --> H[Await configured plugin decisions]
-    H -->|Allow| I[Forward retained request]
-    H -->|Block or unavailable| X
+    subgraph N[OS and network layer]
+        A[Flow metadata and TLS policy] --> B{MITM action}
+        B -->|Block| X[Network rejection]
+        B -->|Passthrough| P[Opaque relay]
+        B -->|Intercept| C[Decrypt and decode HTTP]
+    end
+    subgraph R[Agent request layer]
+        C --> D{Agent request hook enabled}
+        D -->|No| E[Existing decoded relay]
+        D -->|Yes| F[Buffer and parse request]
+        F --> H[Await plugin decisions]
+        H -->|Allow| I[Forward retained request]
+        H -->|Block or unavailable| Y[Agent request rejection]
+    end
     I --> J[Relay provider response and observe exchange]
     E --> J
 ```
@@ -203,8 +276,9 @@ Introduce a prepared request representation containing the parsed head, retained
 wire bytes needed for forwarding, and the decoded inspection view. Only the
 inspection branch constructs it.
 
-1. Decode and validate the request head. Resolve static blocks and the matching
-   inspection scope before writing any request bytes upstream.
+1. Decode and validate the request head after the network decision permits this
+   decoded flow. Select the Agent hook snapshot before writing any request bytes
+   upstream; do not re-evaluate TLS rules inside this request gate.
 2. If inspection is unnecessary, use the existing streaming relay.
 3. Otherwise, read the complete request body into a bounded buffer. Preserve
    Content-Length/chunked framing and already-prefetched bytes. Extract the
@@ -223,8 +297,10 @@ inspection branch constructs it.
 Move provider TLS establishment and deferred upstream connection work after the
 decision wherever the flow lifecycle already permits it. Preserve the current
 CONNECT establishment contract for allowed explicit tunnels: a pre-established
-TCP tunnel is acceptable, but request bytes remain gated. Static blocks whose
-metadata is available at CONNECT time run before `prepare_upstream()`.
+TCP tunnel is acceptable, but request bytes remain gated. Network blocks whose
+final decision is already established at CONNECT time run before
+`prepare_upstream()`, subject to the rule-order constraint above. This is a
+network-policy optimization, independent of the Agent gate.
 
 The current `CapturedBody` may hold only an observation prefix. That is not an
 acceptable inspection result. A request exceeding the inspection limit, an
@@ -233,19 +309,20 @@ protected request before any part is forwarded. Reuse body-read/decode deadlines
 where available and add a finite request-body read deadline for this branch.
 There is no spill-to-disk inspection queue in the initial implementation.
 
-For a scoped HTTP request, the decision sequence is below. HTTPS has already
-completed Agent-side TLS at this point. The plugin interaction represents all
-matching hooks in configuration order; a block or failure stops that sequence.
+For an HTTP request with Agent inspection enabled, the sequence is below. HTTPS
+has already completed Agent-side TLS at this point. The plugin interaction
+represents all configured inspectors in order; a block or failure stops that
+sequence.
 
 ```mermaid
 sequenceDiagram
     participant A as Agent
-    participant B as Broker request gate
-    participant H as Inspection plugins
+    participant B as Broker Agent request gate
+    participant H as Agent inspection plugins
     participant P as Model provider
     participant O as Async observer
     A->>B: Request head and any prefetched body bytes
-    B->>B: Pin policy snapshot and select hooks
+    B->>B: Pin Agent hook snapshot and select plugins
     opt Expect 100-continue
         B-->>A: Local 100 Continue
     end
@@ -263,7 +340,7 @@ sequenceDiagram
         else A hook blocks
             H-->>B: Block with safe reason code and message
             B-->>A: 403 with broker identity and request ID
-            B->>B: Record block metadata locally
+            B->>B: Record Agent request block metadata
             Note over B,P: Rejected request is never forwarded
         else Plugin unavailable or deadline expires
             B->>B: Resolve failure and remove pending decision
@@ -279,11 +356,12 @@ sequenceDiagram
 
 ### WebSocket
 
-The HTTP upgrade and subsequent client data messages are separate decision
-points. Check static access policy before forwarding an upgrade. Once upgraded,
-inspect each complete client text or binary message before sending it to the
-provider, including messages that do not produce a model response. A Responses
-prewarm message can still carry sensitive input.
+The HTTP upgrade and subsequent client data messages are separate Agent decision
+points on a flow already allowed by the network policy. Apply the Agent request
+gate to the upgrade request when enabled. Once upgraded, inspect each complete
+client text or binary message before sending it to the provider, including
+messages that do not produce a model response. A Responses prewarm message can
+still carry sensitive input. Do not reinterpret TLS rules for each message.
 
 Use the WebSocket implementation's message reassembly for fragmented frames and
 apply the inspection limit during assembly. Inspect the resulting payload once;
@@ -300,8 +378,8 @@ Submit the client message to observation hooks only after it is allowed; a
 blocked message must not enter the normal response accumulator.
 
 A connection already in opaque TLS passthrough cannot expose WebSocket messages.
-The flow-level requirement for plaintext inspection prevents protected traffic
-from entering that mode.
+Inspecting it requires a new connection selected for `Intercept` by network
+policy. Agent hook configuration does not reject or reclassify opaque flows.
 
 The following sequence starts after a successful upgrade. Provider messages in
 the parallel branch may belong to an earlier allowed request; they do not imply
@@ -310,11 +388,11 @@ that the pending client message has been released.
 ```mermaid
 sequenceDiagram
     participant A as Agent
-    participant B as Broker WebSocket gate
-    participant H as Inspection plugins
+    participant B as Broker Agent WebSocket gate
+    participant H as Agent inspection plugins
     participant P as Model provider
     A->>B: Client data message, possibly fragmented
-    B->>B: Assemble within limit and pin current policy
+    B->>B: Pin Agent hook snapshot and assemble within limit
     B->>B: Parse request from complete message
     par Inspect pending client message
         B->>H: InspectRequest with message sequence and context
@@ -333,7 +411,7 @@ sequenceDiagram
     else A hook blocks
         B-->>A: Close 1008 with abyss-broker reason
         B->>P: Close provider side
-        B->>B: Record block metadata locally
+        B->>B: Record Agent request block metadata
         Note over B,P: No payload from the rejected message is sent
     else Inspection unavailable
         B-->>A: Close 1011 with abyss-broker reason
@@ -361,7 +439,7 @@ Harness detection enriches the context but does not gate inspection. An unknown,
 disabled-for-audit, or ambiguously identified Harness must still reach the
 configured request inspector. Likewise, `hooks.harness_usage.enabled` and content
 retention switches govern audit output, not the content visible to an explicitly
-configured enforcement plugin.
+configured Agent inspection plugin.
 
 The proposed inspection context contains:
 
@@ -380,7 +458,7 @@ projection is convenience data, not a complete substitute for the provider
 payload: unknown JSON fields, tool schemas, historical tool output, and system
 instructions can also carry secrets. Reuse decoded buffers and JSON values;
 materialize the IPC representation only for selected plugins. Do not repeatedly
-copy the body for each matching hook.
+copy the body for each configured inspector.
 
 Keep provider Authorization, Cookie, and proxy credentials out of the default
 plugin context. Preserve request content needed for inspection, and make any
@@ -398,12 +476,14 @@ the referenced content. Include it as such. Do not reconstruct remote history or
 download attachments as part of the broker gate. DLP implementations must account
 for this scope when choosing what they claim to inspect.
 
-### Process attribution
+## Shared source metadata, separate policy consumers
 
 The existing [SourceProcess:228](../crates/abyss-mitm/src/transparent/hook.rs#L228)
 already distinguishes executable path, application ID, and runtime entry point.
 Reuse it and keep native process identity separate from Agent-supplied HTTP
-declarations.
+declarations. The network matcher consumes OS metadata directly; the broker also
+includes that metadata in Agent plugin context. This shared data does not imply
+a shared policy or dependency on Agent parsing in the network matcher.
 
 macOS/Windows transparent ingress already supplies source metadata. Explicit
 ingress currently sets `source_process` to `None`; merely adding process
@@ -417,14 +497,14 @@ native lookup behind `sys/` and ingress/process-context modules, with static
 platform selection. Linux also needs a native process-context provider; its
 current fallback does not provide that metadata.
 
-Run this lookup when enforcement needs source identity or a selected plugin
-requests the full context. Do not walk the process table per HTTP chunk. Failed
-or ambiguous attribution remains explicitly unavailable; never guess a process
+Run this lookup when network selectors need source identity or Agent inspection
+is enabled and needs that context. Do not walk the process table per HTTP chunk.
+Failed or ambiguous attribution remains explicitly unavailable; never guess a process
 from User-Agent or from the CLI's parent PID. Fields the platform does not
 provide, including an application ID, remain absent. Process-specific coverage
 must be validated on each supported ingress/platform before it is advertised.
 
-## Inspection plugin protocol
+## Agent inspection plugin protocol
 
 Keep existing v1 event consumers unchanged. Add a v2 inspection session over the
 same Unix socket/Named Pipe transport abstractions and length-prefixed JSON
@@ -438,8 +518,9 @@ declares the inspection role and plugin ID. Broker startup configuration binds
 each permitted inspection plugin ID to a local registration-token file; the
 plugin presents that token during registration. Reuse the existing local token
 and file-permission patterns. The v1 `plugin_id`, which is only diagnostic text,
-is not sufficient authorization to answer enforcement requests. This remains a
-trusted local-plugin boundary, not isolation from arbitrary same-user processes.
+is not sufficient authorization to answer Agent inspection requests. This
+remains a trusted local-plugin boundary, not isolation from arbitrary same-user
+processes.
 
 After registration, the session exchanges typed messages:
 
@@ -454,6 +535,9 @@ Broker -> Plugin: Close(reason)
 Use an explicit message discriminator in v2. Keep request IDs scoped to a
 registered session so a late reply from a replaced connection cannot resolve a
 new request. A response is terminal for exactly one pending request.
+It grants no ability to select a TLS action, override a network block, or update
+MITM policy. A plugin may use process/domain context to decide its own Agent
+request result without becoming a network-policy rule.
 
 The broker maintains one active inspection session per configured plugin ID,
 a bounded outgoing queue, and pending request-to-oneshot mappings. Independent
@@ -469,29 +553,39 @@ retry or persisted replay of a live decision. A reconnect serves new requests;
 it does not resurrect an already rejected operation. Duplicate registrations are
 rejected rather than introducing implicit load balancing.
 
+These failures apply only after the Agent gate is invoked on decoded traffic.
+Missing inspection plugins have no effect on a network `Passthrough` decision
+or on network blocking with Agent inspection disabled.
+
 These are the required lifecycle rules for a synchronous gate. No remote plugin
 deployment service, policy-language runtime, circuit breaker, or distributed
 consensus mechanism is part of this change.
 
 ## Rust boundaries and zero-cost abstractions
 
-Keep transport gating in `abyss-mitm`, parsing in `abyss-agent-hook`, policy/plugin
-orchestration in `abyss-broker`, and language-neutral inspection messages in
-`abyss-plugin-protocol`. MITM must not import broker, Agent parsing, or a remote
-destination API. The broker supplies a concrete implementation of the gate.
+Keep the existing concrete TLS policy matcher and its `Block` branch in
+`abyss-mitm`, with network rejection handling at the relevant ingress/transport
+boundary. This path has no request-inspection trait, plugin dispatch, or Agent
+dependency. `TlsDecryptionAction` and `TlsDecryptionDecision` remain network
+types with `Intercept`, `Passthrough`, and `Block` outcomes.
+
+Separately, keep request transport gating in `abyss-mitm`, parsing in
+`abyss-agent-hook`, plugin orchestration in `abyss-broker`, and language-neutral
+inspection messages in `abyss-plugin-protocol`. MITM must not import broker,
+Agent parsing, or a remote destination API. The broker supplies a concrete
+implementation of the Agent gate using the transport interface below.
 
 The request-phase interface can have the following shape; names are illustrative:
 
 ```rust
 enum RequestPlan<P> {
     Forward,
-    Block(BlockReason),
     Inspect(P),
 }
 
-enum RequestDecision {
+enum RequestInspectionDecision {
     Allow,
-    Block(BlockReason),
+    Block(InspectionBlockReason),
 }
 
 trait RequestGate: Send + Sync {
@@ -504,15 +598,17 @@ trait RequestGate: Send + Sync {
         &'a self,
         plan: Self::Plan,
         request: RequestView<'a>,
-    ) -> impl Future<Output = Result<RequestDecision, InspectionError>> + Send + 'a;
+    ) -> impl Future<Output = Result<RequestInspectionDecision, InspectionError>> + Send + 'a;
 }
 ```
 
 `RequestView` borrows flow metadata and complete decoded content. The associated
-plan carries the broker's policy snapshot and selected plugin handles without
+plan carries the Agent hook snapshot and configured plugin handles without
 exposing those types to MITM. The WebSocket entry uses the same decision types
-with a message view and upgrade metadata. Metadata-only flow decisions use the
-shared concrete access-policy types before this request phase.
+with a message view and upgrade metadata. The request plan only chooses whether
+to inspect decoded content; it does not carry network block rules or TLS actions.
+An Agent `Allow` authorizes this request within an already intercepted/decoded
+flow, and never overrides a network decision.
 
 Pass `G: RequestGate` through the relevant engine/relay methods so Rust
 monomorphizes the calls and futures. Keep the engine and unrelated control API
@@ -525,8 +621,8 @@ separate processes. Avoid a new `Vec<Box<dyn BlockHook>>`, boxed per-call future
 an `Any` extension bag, or a callback on every body chunk.
 
 The no-inspection implementation can inline to the existing relay. A broker with
-runtime-editable policy still pays a scope/snapshot check; zero-cost abstraction
-does not eliminate that work. Active inspection necessarily pays for complete
+runtime-editable Agent hooks still pays an enabled/snapshot check; zero-cost
+abstraction does not eliminate that work. Active inspection necessarily pays for complete
 request buffering, parsing, serialization, IPC, and plugin execution. Reuse
 `Bytes` and borrowed views, decode once, and share request parsing functions with
 the observer. Do not add a global parsed-request cache merely to avoid repeating
@@ -535,48 +631,80 @@ cross-task ownership machinery.
 
 ## Rejection responses and recording
 
-The broker owns the response envelope. Plugins return `Allow` or a block reason,
-not arbitrary HTTP responses or modified provider requests.
+Keep network and Agent outcomes distinct. The broker owns both response
+envelopes and may reuse HTTP formatting helpers. Plugins return `Allow` or an
+Agent inspection block reason, not network actions, arbitrary HTTP responses,
+or modified provider requests.
 
-For an HTTP-level policy rejection, return `403 Forbidden`,
+When an HTTP transport is available, return `403 Forbidden`,
 `Content-Type: application/json`, `Server: abyss-broker`,
 `X-Abyss-Blocked: true`, `Cache-Control: no-store`, a correct Content-Length,
-and `Connection: close`. An example body is:
+and `Connection: close`. A network rejection before CONNECT succeeds, or on
+plain HTTP, identifies the flow and the matched network rule:
 
 ```json
 {
   "error": {
-    "type": "abyss_policy_violation",
-    "code": "request_blocked",
+    "type": "abyss_network_policy",
+    "code": "network_blocked",
+    "message": "Network connection blocked by abyss-broker",
+    "flow_id": "flow-example",
+    "rule_id": "deny-application"
+  }
+}
+```
+
+Omit the rule ID when `default_action` or `missing_sni_action` selected the block.
+An Agent plugin rejection uses request correlation and a separate error code:
+
+```json
+{
+  "error": {
+    "type": "abyss_agent_policy",
+    "code": "agent_request_blocked",
     "message": "Request blocked by abyss-broker: private key detected",
     "request_id": "req-example"
   }
 }
 ```
 
-Distinguish a policy rejection from inability to inspect. An unavailable plugin
-returns broker-origin `503` with `inspection_unavailable`; an oversized inspected
-request returns `413` with `inspection_limit_exceeded`. Invalid framing/content
-encoding uses an appropriate `400`/`415` error with the same broker identity and
-request correlation. None of these outcomes forwards the protected request.
+Within the Agent path, distinguish a policy rejection from inability to inspect.
+An unavailable plugin returns broker-origin `503` with `inspection_unavailable`;
+an oversized inspected request returns `413` with `inspection_limit_exceeded`.
+Invalid framing/content encoding uses an appropriate `400`/`415` error with the
+same broker identity and request correlation. None of these outcomes forwards
+the protected request.
 
-| Rejection point | Agent-visible behavior |
+| Rejection point | Client-visible behavior |
 | --- | --- |
-| Explicit CONNECT, before success | Return a CONNECT failure with the broker's HTTP error body; do not establish the target tunnel. Some clients display only the status. |
-| Plain HTTP or successfully decrypted HTTPS | Return the JSON error through the Agent-side stream, before contacting the provider with this request. |
-| Transparent TLS blocked by metadata | When TLS policy permits interception, complete Agent-side TLS locally and return the HTTP error after reading the request head; no provider request is needed. Opaque passthrough flows are terminated without an HTTP body. |
-| TLS that cannot be terminated, including untrusted MITM CA or pinning | Terminate without forwarding. A custom HTTP error cannot be delivered inside a TLS session the Agent refuses to establish. Record the block reason locally. |
-| WebSocket before upgrade | Return an HTTP rejection. |
-| WebSocket after upgrade | Send Close code `1008` for policy rejection, with a short reason such as `abyss-broker: request_blocked <id>`, then terminate the provider side. Use `1011` for inspection infrastructure failure. |
+| Network block at explicit CONNECT, before success | Return `403 network_blocked`; do not establish the target tunnel. Some clients display only the status. |
+| Network block on plain HTTP | Return `403 network_blocked` before forwarding application bytes. |
+| Network block after ClientHello, including transparent TLS and acknowledged CONNECT | Terminate before forwarding client application traffic. The client sees a TLS/socket failure, not a JSON body. Expose the typed reason through broker diagnostics and ingress control messages where available. |
+| Agent block on plain HTTP or successfully intercepted HTTPS | Return `403 agent_request_blocked` through the decoded client stream; no bytes of that provider request are sent. |
+| Failed TLS interception, including untrusted MITM CA or pinning | Agent inspection never runs. Report the transport failure; do not label it an Agent plugin rejection. |
+| Agent block before WebSocket upgrade | Return an HTTP Agent rejection. |
+| Agent block after WebSocket upgrade | Send Close code `1008` with a short reason such as `abyss-broker: agent_request_blocked <id>`, then terminate the provider side. Use `1011` for inspection infrastructure failure. |
+
+A network `Block` must not perform MITM solely to synthesize an HTTP error.
+There is no application error channel inside a TLS connection the broker has
+not established. For platform ingress, propagate `network_blocked` with flow
+correlation through existing flow-close/control facilities, such as
+[macOS FlowClosePayload:463](../crates/abyss-broker/src/ingress/macos/framed_protocol.rs#L463),
+in addition to local diagnostics. This makes the reason explicit to the adapter;
+arbitrary applications may still present only a connection error.
 
 WebSocket close reasons must fit the control-frame limit. Do not invent provider
 application events to carry a rejection. A later protocol-specific error encoder
 can improve individual Agent UX, but the initial contract guarantees an explicit
-broker reason on the wire, not identical UI presentation in every client.
+broker reason on decoded application transports, not identical UI presentation
+in every client.
 
-Represent blocking as a typed flow/request outcome, distinct from provider
-failure. Extend local network observations with decision source, rule/hook ID,
-request ID, reason code, and timing. Record that no request payload was sent.
+Represent `NetworkBlocked` and `AgentRequestBlocked` as distinct typed outcomes,
+separate from provider failures. Network records contain flow ID, MITM rule ID
+or fallback source, and available OS/target metadata. Agent records contain flow
+and request/message IDs, plugin ID, safe reason code, and inspection timing.
+Neither record requires the other capability's configuration. Record that the
+blocked flow/request's application payload was not forwarded.
 Keep transport byte counters accurate: TCP/TLS/tunnel setup traffic is distinct
 from the rejected application's request bytes.
 Reuse the existing storage and diagnostics surfaces. Do not publish a rejected
@@ -586,14 +714,18 @@ event export can be added if a consumer requires it.
 
 ## Implementation sequence and acceptance criteria
 
-Implement this as a sequence of reviewable changes, while treating HTTP and
-WebSocket protection as required parts of the final feature.
+Implement the network extension independently; it can ship without Agent
+inspection. For the Agent capability, HTTP and WebSocket protection are both
+required parts of the final feature.
 
-1. **Policy and metadata rejection.** Extract shared selectors, add access-policy
-   configuration and durable updates, implement typed block outcomes and local
-   error responses, and wire early checks into explicit and transparent ingress.
+1. **Network policy block.** Extend the existing TLS action/decision enums,
+   selectors, validation, config/API contracts, and SDK representations. Add the
+   terminal block branch, update routing fast paths, and implement ingress errors
+   and flow-close reasons. Preserve existing rule order and durable MITM updates.
    Add explicit-proxy socket-owner attribution and platform capability tests.
-2. **Request parsing and HTTP gate.** Expose response-independent Agent request
+   No Agent parser or plugin change is needed to enable this capability.
+2. **Agent parsing and HTTP gate.** Add the independent `hooks.agent_request`
+   config and hook updates. Expose response-independent Agent request
    parsing, extract reusable body framing, add the buffered branch and local
    rejection writer, and move applicable provider connection/TLS work behind the
    decision. Use a concrete in-process test gate to verify the boundary.
@@ -601,12 +733,21 @@ WebSocket protection as required parts of the final feature.
    request/reply dispatch, SDK clients, and a minimal example DLP plugin. Keep
    private-key detection in the example/custom plugin rather than embedding a
    security-rule catalog in the broker.
-4. **WebSocket enforcement and integration.** Gate all scoped client data
+4. **Agent WebSocket inspection and integration.** Gate decoded client data
    messages, preserve reverse-direction progress, add cancellation/close handling,
    and run the same plugin through real broker traffic.
 
 Acceptance tests should prove the boundary, not merely check decision enums:
 
+- Block a non-Agent network client with Agent hooks disabled and no plugins
+  installed. Exercise all three TLS actions in one ordered rule list, including
+  an earlier passthrough/intercept rule before a later block. Test default block,
+  missing-SNI fallback, destination-host fallback, and the no-SNI-peek fast path.
+  An early CONNECT optimization must not skip an unresolved earlier rule.
+- Enable Agent inspection with no network block rules and verify a private-key
+  request is rejected on an intercepted flow. Enable it on a passthrough flow
+  and verify opaque relay with no Agent parsing or RPC, even if the plugin is
+  absent. These tests establish that neither capability changes the other's role.
 - Use a mock provider that records bytes received. For a blocked HTTP request,
   assert zero provider HTTP request bytes, including the head and any prefetched
   body. Cover explicit HTTP/CONNECT and platform ingress, direct and configured
@@ -625,7 +766,7 @@ Acceptance tests should prove the boundary, not merely check decision enums:
   earlier allowed messages remain accounted for, prewarm input is checked, and
   provider responses/control traffic progress during a pending inspection.
 - Exercise unknown Harness/protocol cases and disabled audit-content settings.
-  None may silently bypass a matching inspection hook.
+  None may silently bypass an enabled Agent inspection hook on decoded traffic.
 - Exercise missing plugins, timeout, disconnect, queue saturation, malformed and
   late replies, duplicate registration, and Agent cancellation. Assert a terminal
   result, pending-state cleanup, and zero rejected-request forwarding.
@@ -634,11 +775,14 @@ Acceptance tests should prove the boundary, not merely check decision enums:
   hostname. Verify process attribution using real local child processes on each
   supported platform.
 - Keep v1 SDK event consumers interoperable. Validate new v2 fixtures across Rust,
-  TypeScript, and Python. Check policy persistence failure and request snapshots
-  during hot updates, including the documented passthrough-connection limitation.
+  TypeScript, and Python. Check policy persistence failures, independent MITM and
+  hooks updates, network snapshots retained by existing flows, and Agent hook
+  snapshots refreshed for subsequent requests/messages. Updating either section
+  must preserve the other; Agent updates cannot reclassify passthrough flows.
 
-Measure throughput and allocation changes for enforcement disabled, metadata-only
-rules, and active inspection. The disabled path should not allocate inspection
-buffers, serialize requests, or start decision workers. Report active inspection
+Measure throughput and allocation changes with Agent inspection disabled,
+network block rules active, and Agent inspection active. With Agent inspection
+disabled, network decisions must not allocate inspection buffers, serialize
+model requests, or start decision workers. Report active inspection
 latency separately from relay overhead. These measurements validate the intended
 abstraction cost without expanding this change into a new performance framework.
