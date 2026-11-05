@@ -429,6 +429,33 @@ async fn rejects_proxy_listener_loop_before_connecting() {
 }
 
 #[tokio::test]
+async fn rejects_wildcard_proxy_listener_loop_before_connecting() {
+    for (bind, local_ip) in [("0.0.0.0:0", "127.0.0.1"), ("[::]:0", "::1")] {
+        let listener = TcpListener::bind(bind).await.expect("listener");
+        let address = listener.local_addr().expect("listener address");
+        let endpoint =
+            std::net::SocketAddr::new(local_ip.parse().expect("local IP"), address.port());
+        let proxy = HttpConnectProxy::new(&config(endpoint)).expect("config");
+        let result = proxy
+            .connect(
+                &TargetAuthority::parse("target.invalid:443").expect("target"),
+                address,
+            )
+            .await;
+        assert!(
+            matches!(result, Err(UpstreamProxyError::Loop { .. })),
+            "wildcard next hop loop must be rejected"
+        );
+        assert!(
+            timeout(Duration::from_millis(25), listener.accept())
+                .await
+                .is_err(),
+            "no recursive TCP connection"
+        );
+    }
+}
+
+#[tokio::test]
 async fn failed_proxy_does_not_connect_to_reachable_target() {
     let origin = TcpListener::bind("127.0.0.1:0").await.expect("origin");
     let target = origin.local_addr().expect("origin address").to_string();

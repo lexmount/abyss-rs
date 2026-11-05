@@ -5,6 +5,29 @@ It provides an HTTP/HTTPS explicit proxy, policy-controlled TLS interception,
 AI agent protocol parsing, local diagnostics, a loopback REST API, and a local
 plugin event stream. Platform adapters can feed the same shared ingress pipeline.
 
+## Configure the explicit listener
+
+`proxy.listen_addr` accepts an IPv4 or bracketed IPv6 address and port. For example:
+
+```toml
+[proxy]
+mode = "explicit"
+listen_addr = "0.0.0.0:8080"
+```
+
+Use `0.0.0.0:8080` for all IPv4 interfaces, `[::]:8080` for an IPv6 wildcard
+listener, or a specific local interface address such as `192.168.1.10:8080`.
+IPv6 wildcard acceptance of IPv4 connections depends on the operating system.
+The operating system must be able to bind the selected address and port.
+Omitting `listen_addr` uses `127.0.0.1:0` (an automatically assigned port).
+Restart the broker after changing this startup configuration.
+
+Remote clients use the broker machine's reachable IP address; local CLI commands
+use loopback when the listener is a wildcard. HTTPS interception requires clients
+to trust the broker's CA. Explicit proxy connections do not require authentication,
+so use network access controls to restrict who can reach an exposed listener.
+The REST control API retains its separate loopback-only listener and bearer token.
+
 ## Forward through another explicit proxy
 
 Add an upstream table to `broker-config.toml` when the broker should use a

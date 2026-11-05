@@ -20,6 +20,7 @@ flate2 = "1"
 futures-util = "0.3"
 http = "1"
 httparse = "1"
+if-addrs = { version = "0.15", features = ["link-local"] }
 parking_lot.workspace = true
 rcgen = { version = "0.14", default-features = false, features = ["aws_lc_rs", "pem", "x509-parser"] }
 serde = { version = "1", features = ["derive"] }

@@ -4,7 +4,7 @@ mod endpoint;
 
 use std::{
     fs,
-    net::SocketAddr,
+    net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr},
     path::{Path, PathBuf},
     time::Duration,
 };
@@ -36,6 +36,35 @@ pub struct ProxyStatusResponse {
     /// Compatibility projection of the active Unix-socket ingress.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub socket_path: Option<PathBuf>,
+}
+
+impl ProxyStatusResponse {
+    /// Returns an address local clients can use to reach the explicit listener.
+    fn connect_addr(&self) -> Result<SocketAddr, CliError> {
+        let mode = self.mode.as_ref();
+        if !matches!(mode, Some(ProxyMode::Explicit)) {
+            return Err(CliError::InvalidConfiguration(format!(
+                "broker endpoint is not an explicit proxy (mode={})",
+                mode.map_or("unknown", ProxyMode::as_str)
+            )));
+        }
+        let mut address = self.listen_addr.ok_or_else(|| {
+            CliError::InvalidConfiguration(
+                "broker proxy is running without a TCP listener".to_owned(),
+            )
+        })?;
+        // Wildcard addresses describe binding scope, not a client destination.
+        let connect_ip = match address.ip() {
+            IpAddr::V4(ip) if ip.is_unspecified() => IpAddr::V4(Ipv4Addr::LOCALHOST),
+            IpAddr::V6(ip) if ip.is_unspecified() => IpAddr::V6(Ipv6Addr::LOCALHOST),
+            IpAddr::V6(ip) if ip.to_ipv4_mapped().is_some_and(|ip| ip.is_unspecified()) => {
+                IpAddr::V4(Ipv4Addr::LOCALHOST)
+            }
+            ip => ip,
+        };
+        address.set_ip(connect_ip);
+        Ok(address)
+    }
 }
 
 /// Proxy lifecycle values exposed by the broker REST API.
@@ -177,27 +206,9 @@ impl BrokerClient {
         self.request_json("GET", "/v1/proxy/status", None)
     }
 
-    /// Returns the loopback endpoint currently bound by the explicit proxy.
-    pub fn proxy_listen_addr(&self) -> Result<SocketAddr, CliError> {
-        let status = self.proxy_status()?;
-        let mode = status.mode.as_ref();
-        if !matches!(mode, Some(ProxyMode::Explicit)) {
-            return Err(CliError::InvalidConfiguration(format!(
-                "broker endpoint is not an explicit proxy (mode={})",
-                mode.map_or("unknown", ProxyMode::as_str)
-            )));
-        }
-        let address = status.listen_addr.ok_or_else(|| {
-            CliError::InvalidConfiguration(
-                "broker proxy is running without a TCP listener".to_owned(),
-            )
-        })?;
-        if !address.ip().is_loopback() {
-            return Err(CliError::InvalidConfiguration(
-                "broker proxy listener must use a loopback address".to_owned(),
-            ));
-        }
-        Ok(address)
+    /// Returns a usable local client endpoint for the explicit proxy.
+    pub fn proxy_connect_addr(&self) -> Result<SocketAddr, CliError> {
+        self.proxy_status()?.connect_addr()
     }
 
     /// Returns the effective broker MITM configuration.
@@ -386,6 +397,31 @@ mod tests {
             serde_json::to_value(status).expect("proxy status should serialize"),
             value
         );
+    }
+
+    #[test]
+    fn proxy_connection_address_supports_wildcard_and_interface_listeners() {
+        for (listener, expected) in [
+            ("0.0.0.0:8080", "127.0.0.1:8080"),
+            ("[::]:8080", "[::1]:8080"),
+            ("[::ffff:0.0.0.0]:8080", "127.0.0.1:8080"),
+            ("192.168.1.10:8080", "192.168.1.10:8080"),
+            ("[2001:db8::1]:8080", "[2001:db8::1]:8080"),
+        ] {
+            let status: ProxyStatusResponse = serde_json::from_value(json!({
+                "lifecycle": "running", "process_id": 42_u32, "mode": "explicit",
+                "ingresses": [], "listen_addr": listener,
+            }))
+            .expect("proxy status");
+            assert_eq!(
+                status.connect_addr().expect("connect address").to_string(),
+                expected
+            );
+            assert_eq!(
+                status.listen_addr.expect("bound address").to_string(),
+                listener
+            );
+        }
     }
 
     #[test]
