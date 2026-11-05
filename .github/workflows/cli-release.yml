@@ -26,12 +26,15 @@ permissions:
   contents: read
 
 concurrency:
-  group: cli-release-${{ github.ref }}
+  # Hold one lock across version uploads, latest promotion, and GitHub publish.
+  group: cli-release-${{ github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v') && 'publication' || github.ref }}
   cancel-in-progress: false
 
 env:
   RUSTUP_TOOLCHAIN: '1.98.0'
   CARGO_TERM_COLOR: always
+  TENCENT_COSCLI_URL: https://cosbrowser.cloud.tencent.com/software/coscli/coscli-linux-amd64
+  TENCENT_COSCLI_SHA256: a07de5ba2800147a700ed29036b0c76a4229088cee68e1682d0eae19b638a915
 
 defaults:
   run:
@@ -210,8 +213,6 @@ jobs:
     env:
       TENCENT_COS_BUCKET: ${{ vars[format('TENCENT_COS_{0}_BUCKET', matrix.site)] }}
       TENCENT_COS_REGION: ${{ vars[format('TENCENT_COS_{0}_REGION', matrix.site)] }}
-      TENCENT_COSCLI_URL: https://cosbrowser.cloud.tencent.com/software/coscli/coscli-linux-amd64
-      TENCENT_COSCLI_SHA256: a07de5ba2800147a700ed29036b0c76a4229088cee68e1682d0eae19b638a915
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
@@ -245,9 +246,6 @@ jobs:
     runs-on: ubuntu-latest
     permissions:
       contents: write
-    concurrency:
-      group: cli-release-publish
-      cancel-in-progress: false
     steps:
       - uses: actions/download-artifact@v4
         with:
@@ -272,17 +270,57 @@ jobs:
           gh release upload "$RELEASE_TAG" dist/install.sh dist/SHA256SUMS dist/*.tar.gz dist/*.zip --clobber
 
   publish:
-    name: Publish complete endpoint release
+    name: Promote broker latest and publish endpoint release
     if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')
     needs: [stage-release, publish-broker-cdn]
     runs-on: ubuntu-latest
+    timeout-minutes: 10
     permissions:
       contents: write
-    concurrency:
-      group: cli-release-publish
-      cancel-in-progress: false
     steps:
-      - name: Publish latest after both CDN origins are ready
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - uses: actions/download-artifact@v4
+        with:
+          name: broker-release
+          path: broker-dist
+      - name: Install verified Tencent COSCLI
+        run: |
+          coscli="$RUNNER_TEMP/coscli"
+          curl --fail --location --proto '=https' --proto-redir '=https' \
+            --retry 3 --output "$coscli" "$TENCENT_COSCLI_URL"
+          echo "$TENCENT_COSCLI_SHA256  $coscli" | sha256sum --check --strict -
+          chmod 700 "$coscli"
+          echo "TENCENT_COSCLI_BIN=$coscli" >> "$GITHUB_ENV"
+      - name: Read published versions before promoting latest
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+        run: |
+          gh api --paginate "repos/$GH_REPO/releases?per_page=100" \
+            --jq '.[] | select(.draft == false and .prerelease == false) | .tag_name' \
+            > published-tags.txt
+      - name: Promote latest manifests after both CDN origins are ready
+        env:
+          TENCENTCLOUD_SECRET_ID: ${{ secrets.TENCENTCLOUD_SECRET_ID }}
+          TENCENTCLOUD_SECRET_KEY: ${{ secrets.TENCENTCLOUD_SECRET_KEY }}
+          TENCENT_COS_CN_BUCKET: ${{ vars.TENCENT_COS_CN_BUCKET }}
+          TENCENT_COS_CN_REGION: ${{ vars.TENCENT_COS_CN_REGION }}
+          TENCENT_COS_COM_BUCKET: ${{ vars.TENCENT_COS_COM_BUCKET }}
+          TENCENT_COS_COM_REGION: ${{ vars.TENCENT_COS_COM_REGION }}
+          RELEASE_TAG: ${{ github.ref_name }}
+        run: |
+          for site in CN COM; do
+            bucket_var="TENCENT_COS_${site}_BUCKET"
+            region_var="TENCENT_COS_${site}_REGION"
+            TENCENT_COS_BUCKET="${!bucket_var}" TENCENT_COS_REGION="${!region_var}" \
+              python scripts/ci/publish_broker_cos.py --source broker-dist \
+                --tag "$RELEASE_TAG" --coscli "$TENCENT_COSCLI_BIN" \
+                --latest-only --published-tags published-tags.txt
+          done
+      - name: Publish GitHub latest after both manifests are ready
         env:
           GH_TOKEN: ${{ github.token }}
           GH_REPO: ${{ github.repository }}

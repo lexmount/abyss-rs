@@ -106,15 +106,17 @@ uses local release assets as the download transport.
    ensure its registry token and release prerequisites are ready.
 4. The publication job waits for the assembled release, verifies its checksums,
    creates a draft GitHub Release, and uploads every GitHub asset. Both CN and COM
-   broker CDN uploads must then succeed before the release is published as latest.
+   broker CDN uploads must then succeed. A final job promotes both latest manifests
+   before publishing the GitHub Release as latest.
    Its `GITHUB_TOKEN` needs `contents: write`; the CDN credentials and repository
    variables below must also be configured. Windows executables are published without
    product signing; no signing certificate or hardware token is needed here.
 
 A failed upload leaves the release as a draft, allowing the original workflow
 run to be retried. Published releases are never overwritten by the workflow;
-source changes require a new version and tag. Serialize release tag pushes and
-wait for each release to finish before starting another version.
+source changes require a new version and tag. Tag workflows share one concurrency
+lock across build, upload, promotion, and publication. Push release tags in version
+order and wait for each release to finish before starting another version.
 
 ## Broker CDN publication
 
@@ -133,12 +135,109 @@ broker/v1.0.0/
   abyss-broker-v1.0.0-x86_64-unknown-linux-musl.tar.gz
   abyss-broker-v1.0.0-x86_64-pc-windows-msvc.zip
   SHA256SUMS
+broker/latest/
+  manifest.json
 ```
 
 The existing CDN domains must use those buckets as their origins and preserve
 the object path. Downloads then use `<CDN base URL>/broker/v<version>/<filename>`.
-Only versioned paths are published; there is no mutable `broker/latest` alias or
-CDN cache-purge step. The existing seven GitHub Release assets are unchanged.
+Archive paths remain versioned. `broker/latest/manifest.json` is the fixed discovery
+URL for automatic downloads; it points to those archives instead of uploading
+another copy of every binary. The existing seven GitHub Release assets are unchanged.
+
+### Download the latest broker
+
+Fetch `<CDN base URL>/broker/latest/manifest.json`. Schema version 1 contains:
+
+| Field | Meaning |
+| --- | --- |
+| `schema_version` | `1` |
+| `version` | Stable version, such as `1.0.0` |
+| `tag` | Corresponding release tag, such as `v1.0.0` |
+| `artifacts` | Map keyed by `aarch64-apple-darwin`, `x86_64-unknown-linux-musl`, and `x86_64-pc-windows-msvc` |
+| `artifacts[target].path` | Root-relative path on the same CDN host, such as `/broker/v1.0.0/abyss-broker-v1.0.0-x86_64-unknown-linux-musl.tar.gz` |
+| `artifacts[target].sha256` | SHA-256 of the complete archive |
+| `artifacts[target].size` | Archive size in bytes |
+
+Read the manifest once per update, select the target, resolve `path` against the
+manifest URL, and verify both size and SHA-256 before unpacking. Keep the same
+manifest snapshot for the whole download. Even if a new release appears during
+the transfer, that snapshot pins the archive and digest to one version.
+
+For example, this downloads a Linux archive using Python 3 (replace the example
+CDN host with your deployment's domain):
+
+```sh
+python3 - 'https://downloads.example.com/broker/latest/manifest.json' \
+  x86_64-unknown-linux-musl <<'PY'
+import hashlib
+import json
+from pathlib import Path
+import sys
+from urllib.parse import urljoin
+from urllib.request import urlopen
+
+manifest_url, target = sys.argv[1:]
+with urlopen(manifest_url, timeout=30) as response:
+    manifest = json.load(response)
+if manifest['schema_version'] != 1:
+    raise SystemExit('Unsupported broker manifest schema')
+asset = manifest['artifacts'][target]
+if not asset['path'].startswith(f"/broker/{manifest['tag']}/"):
+    raise SystemExit('Unexpected broker archive path')
+with urlopen(urljoin(manifest_url, asset['path']), timeout=120) as response:
+    archive = response.read()
+if (len(archive) != asset['size']
+        or hashlib.sha256(archive).hexdigest() != asset['sha256']):
+    raise SystemExit('Broker archive checksum or size mismatch')
+destination = Path(asset['path']).name
+Path(destination).write_bytes(archive)
+print(destination)
+PY
+```
+
+### Latest publication and caching
+
+Versioned uploads finish with `SHA256SUMS`. Only after **both CN and COM** upload
+jobs succeed does the final job replace each origin's latest manifest with one
+object upload. A client sees a complete old or new manifest, and both reference
+complete versioned artifacts. There is no transaction across the two origins:
+if promotion fails midway, they may temporarily advertise different complete
+versions. Retry the failed final job to finish promotion and publish the GitHub
+Release; it does not re-upload the binary archives.
+
+The final job fetches all published, non-prerelease GitHub release tags and rejects
+promotion when a newer stable version already exists. This prevents a delayed old
+tag run from rolling back an already published release's latest entry. Repeating
+the same version produces the same manifest bytes.
+
+The manifest is uploaded with `Content-Type: application/json; charset=utf-8` and
+`Cache-Control: no-cache, no-store, max-age=0, must-revalidate`. Configure **both CDN
+domains** so `/broker/latest/manifest.json` follows the origin's cache headers or
+has a highest-priority **do not cache** rule. Forced edge caching or a browser
+cache rule must not override this header. Tencent's
+[cache rule documentation](https://cloud.tencent.com/document/product/228/47672)
+explains that forced caching can override `no-store`. Versioned archive paths can
+retain normal long-lived caching. The workflow does not need CDN purge credentials.
+
+For manual recovery, first verify that both origins have the complete versioned
+release. Fetch the published tag list and run the following promotion command
+once for each origin with its bucket/region environment variables configured:
+
+```sh
+gh api --paginate 'repos/lexmount/abyss-rs/releases?per_page=100' \
+  --jq '.[] | select(.draft == false and .prerelease == false) | .tag_name' \
+  > published-tags.txt
+python3 scripts/ci/publish_broker_cos.py --source broker-dist \
+  --tag v1.0.0 --coscli /path/to/coscli \
+  --latest-only --published-tags published-tags.txt
+```
+
+Use the actual release tag and original `broker-release` Actions artifact. Keep
+manual recovery serialized with tag workflows. For a newly introduced discovery
+URL, an operator can promote the current published release without rebuilding it.
+
+### Credentials and verification
 
 Under **Settings → Secrets and variables → Actions**, configure these repository
 secrets (or allow this repository to use equivalent organization secrets):
@@ -157,7 +256,8 @@ Configure these non-secret repository **Variables** for the two CDN origins:
 | `TENCENT_COS_COM_BUCKET` | COM bucket name including its numeric APPID suffix |
 | `TENCENT_COS_COM_REGION` | COM bucket region, for example `ap-hongkong` |
 
-The credentials must permit COSCLI uploads to `broker/*` in both buckets,
+The credentials must permit COSCLI uploads to `broker/*` (including
+`broker/latest/manifest.json`) in both buckets,
 including multipart uploads. Tencent's [COSCLI cp documentation](https://cloud.tencent.com/document/product/436/63669)
 lists the required bucket checks and object/multipart actions: `HeadBucket`,
 `GetBucket`, `HeadObject`, `InitiateMultipartUpload`, `UploadPart`,
@@ -177,7 +277,9 @@ configuration or connectivity; successful matrix jobs need not be repeated.
 PR and manual workflow runs only build and validate Actions artifacts.
 
 Run `python3 scripts/tests/test_release_broker_cos.py` for offline publisher
-tests. `test_release_artifacts.py` also checks broker packaging, provenance,
+tests, including manifest paths and hashes, cache metadata, idempotent promotion,
+failure cleanup, and protection against promoting an older published version.
+`test_release_artifacts.py` also checks broker packaging, provenance,
 reproducibility, corrupted inputs, and missing platforms.
 
 For a local packaging rehearsal after compiling the three release binaries:

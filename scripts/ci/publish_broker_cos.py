@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Upload a complete broker release to a deployment-configured Tencent COS origin."""
+"""Upload broker releases and promote a small, version-pinned latest manifest."""
 
 from __future__ import annotations
 
@@ -16,9 +16,14 @@ from package_broker import broker_archive_name
 from package_cli import TARGETS
 
 
-def release_files(source: Path, tag: str) -> list[Path]:
+def stable_version(tag: str) -> tuple[int, ...]:
     if not re.fullmatch(r"v[0-9]+\.[0-9]+\.[0-9]+", tag):
         raise ValueError("broker CDN publication requires a stable v<version> tag")
+    return tuple(int(part) for part in tag[1:].split("."))
+
+
+def release_files(source: Path, tag: str) -> list[Path]:
+    stable_version(tag)
     names = sorted(broker_archive_name(tag, target) for target in TARGETS)
     if {path.name for path in source.iterdir()} != {*names, "SHA256SUMS"}:
         raise ValueError(
@@ -36,12 +41,54 @@ def release_files(source: Path, tag: str) -> list[Path]:
     return files
 
 
-def publish(source: Path, tag: str, bucket: str, region: str, coscli: Path) -> None:
+def check_promotion(tag: str, published_tags: list[str] | None) -> None:
+    """Prevent a delayed tag run from replacing a newer published release."""
+    version = stable_version(tag)
+    if published_tags is None:
+        raise ValueError("latest promotion requires the published stable release tags")
+    for published in published_tags:
+        if re.fullmatch(r"v[0-9]+\.[0-9]+\.[0-9]+", published):
+            if stable_version(published) > version:
+                raise ValueError(f"refusing to promote {tag}: {published} is published")
+
+
+def latest_manifest(files: list[Path], tag: str) -> dict:
+    """Pin all platform paths and archive digests in one replaceable object."""
+    archives = {path.name: path for path in files[:-1]}
+    artifacts = {}
+    for target in sorted(TARGETS):
+        name = broker_archive_name(tag, target)
+        archive = archives[name]
+        artifacts[target] = {
+            "path": f"/broker/{tag}/{name}",
+            "sha256": hashlib.sha256(archive.read_bytes()).hexdigest(),
+            "size": archive.stat().st_size,
+        }
+    return {
+        "schema_version": 1,
+        "version": tag[1:],
+        "tag": tag,
+        "artifacts": artifacts,
+    }
+
+
+def publish(
+    source: Path,
+    tag: str,
+    bucket: str,
+    region: str,
+    coscli: Path,
+    *,
+    latest_only: bool = False,
+    published_tags: list[str] | None = None,
+) -> None:
     if not re.fullmatch(r"[a-z0-9][a-z0-9-]*-[0-9]+", bucket):
         raise ValueError("TENCENT_COS_BUCKET must include the COS APPID suffix")
     if not re.fullmatch(r"[a-z0-9][a-z0-9-]*", region):
         raise ValueError("TENCENT_COS_REGION is required and must be a COS region")
     files = release_files(source, tag)
+    if latest_only:
+        check_promotion(tag, published_tags)
     credentials = {}
     for name in ("TENCENTCLOUD_SECRET_ID", "TENCENTCLOUD_SECRET_KEY"):
         if not os.environ.get(name):
@@ -79,9 +126,29 @@ def publish(source: Path, tag: str, bucket: str, region: str, coscli: Path) -> N
                 },
                 stream,
             )
-        # SHA256SUMS is the completion marker and is always uploaded last.
-        for asset in files:
-            destination = f"cos://{bucket}/broker/{tag}/{asset.name}"
+        # Versioned uploads finish with SHA256SUMS. Promotion is a separate job
+        # gated on BOTH origins, and changes only a single small JSON object.
+        uploads = [(asset, f"broker/{tag}/{asset.name}", []) for asset in files]
+        if latest_only:
+            manifest = Path(temporary) / "manifest.json"
+            manifest.write_text(
+                json.dumps(latest_manifest(files, tag), indent=2, sort_keys=True)
+                + "\n",
+                encoding="utf-8",
+            )
+            uploads = [
+                (
+                    manifest,
+                    "broker/latest/manifest.json",
+                    [
+                        "--meta",
+                        "Content-Type:application/json; charset=utf-8#"
+                        "Cache-Control:no-cache, no-store, max-age=0, must-revalidate",
+                    ],
+                )
+            ]
+        for asset, key, metadata in uploads:
+            destination = f"cos://{bucket}/{key}"
             subprocess.run(
                 [
                     str(coscli),
@@ -97,6 +164,7 @@ def publish(source: Path, tag: str, bucket: str, region: str, coscli: Path) -> N
                     "--disable-log=true",
                     "--process-log=false",
                     "--fail-output=false",
+                    *metadata,
                 ],
                 env=child_env,
                 check=True,
@@ -109,13 +177,31 @@ def main() -> None:
     parser.add_argument("--source", type=Path, required=True)
     parser.add_argument("--tag", required=True)
     parser.add_argument("--coscli", type=Path, required=True)
+    parser.add_argument(
+        "--latest-only",
+        action="store_true",
+        help="promote the manifest only, after both versioned origins are complete",
+    )
+    parser.add_argument(
+        "--published-tags",
+        type=Path,
+        help="all published stable release tags, one per line; required for promotion",
+    )
     args = parser.parse_args()
+    if args.latest_only and args.published_tags is None:
+        parser.error("--latest-only requires --published-tags")
     publish(
         args.source,
         args.tag,
         os.environ.get("TENCENT_COS_BUCKET", ""),
         os.environ.get("TENCENT_COS_REGION", ""),
         args.coscli,
+        latest_only=args.latest_only,
+        published_tags=(
+            args.published_tags.read_text().splitlines()
+            if args.published_tags is not None
+            else None
+        ),
     )
 
 
