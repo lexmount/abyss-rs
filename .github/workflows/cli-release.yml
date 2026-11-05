@@ -8,6 +8,8 @@ on:
       - 'scripts/ci/package_cli.py'
       - 'scripts/ci/verify_release.py'
       - 'scripts/ci/assemble_release.py'
+      - 'scripts/ci/package_broker.py'
+      - 'scripts/ci/publish_broker_cos.py'
       - 'scripts/tests/*release*'
       - 'crates/**'
       - 'Cargo.toml'
@@ -90,7 +92,9 @@ jobs:
           CLI_TARGET: ${{ matrix.target }}
         run: rustup toolchain install "$RUSTUP_TOOLCHAIN" --profile minimal --target "$CLI_TARGET"
       - name: Test release packaging and assembly
-        run: python scripts/tests/test_release_artifacts.py
+        run: |
+          python scripts/tests/test_release_artifacts.py
+          python scripts/tests/test_release_broker_cos.py
       - name: Test piped download installer
         if: runner.os != 'Windows'
         run: |
@@ -178,6 +182,8 @@ jobs:
         run: |
           python scripts/ci/assemble_release.py --artifacts artifacts \
             --output dist --revision "$RELEASE_REVISION"
+          python scripts/ci/package_broker.py --release dist \
+            --output broker-dist --revision "$RELEASE_REVISION"
           cd dist
           sha256sum --check SHA256SUMS
       - uses: actions/upload-artifact@v4
@@ -185,9 +191,55 @@ jobs:
           name: endpoint-release
           path: dist/*
           if-no-files-found: error
+      - uses: actions/upload-artifact@v4
+        with:
+          name: broker-release
+          path: broker-dist/*
+          if-no-files-found: error
 
-  publish:
-    name: Publish complete endpoint release
+  publish-broker-cdn:
+    name: Publish broker to ${{ matrix.site }} CDN origin
+    if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')
+    needs: [assemble, stage-release]
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix:
+        site: [CN, COM]
+    env:
+      TENCENT_COS_BUCKET: ${{ vars[format('TENCENT_COS_{0}_BUCKET', matrix.site)] }}
+      TENCENT_COS_REGION: ${{ vars[format('TENCENT_COS_{0}_REGION', matrix.site)] }}
+      TENCENT_COSCLI_URL: https://cosbrowser.cloud.tencent.com/software/coscli/coscli-linux-amd64
+      TENCENT_COSCLI_SHA256: a07de5ba2800147a700ed29036b0c76a4229088cee68e1682d0eae19b638a915
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - uses: actions/download-artifact@v4
+        with:
+          name: broker-release
+          path: broker-dist
+      - name: Install verified Tencent COSCLI
+        run: |
+          coscli="$RUNNER_TEMP/coscli"
+          curl --fail --location --proto '=https' --proto-redir '=https' \
+            --retry 3 --output "$coscli" "$TENCENT_COSCLI_URL"
+          echo "$TENCENT_COSCLI_SHA256  $coscli" | sha256sum --check --strict -
+          chmod 700 "$coscli"
+          echo "TENCENT_COSCLI_BIN=$coscli" >> "$GITHUB_ENV"
+      - name: Upload broker archives and checksums
+        env:
+          TENCENTCLOUD_SECRET_ID: ${{ secrets.TENCENTCLOUD_SECRET_ID }}
+          TENCENTCLOUD_SECRET_KEY: ${{ secrets.TENCENTCLOUD_SECRET_KEY }}
+          RELEASE_TAG: ${{ github.ref_name }}
+        run: |
+          python scripts/ci/publish_broker_cos.py --source broker-dist \
+            --tag "$RELEASE_TAG" --coscli "$TENCENT_COSCLI_BIN"
+
+  stage-release:
+    name: Stage complete endpoint release
     if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')
     needs: assemble
     runs-on: ubuntu-latest
@@ -218,4 +270,22 @@ jobs:
               --title "Abyss $RELEASE_TAG" --generate-notes
           fi
           gh release upload "$RELEASE_TAG" dist/install.sh dist/SHA256SUMS dist/*.tar.gz dist/*.zip --clobber
+
+  publish:
+    name: Publish complete endpoint release
+    if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')
+    needs: [stage-release, publish-broker-cdn]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    concurrency:
+      group: cli-release-publish
+      cancel-in-progress: false
+    steps:
+      - name: Publish latest after both CDN origins are ready
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          RELEASE_TAG: ${{ github.ref_name }}
+        run: |
           gh release edit "$RELEASE_TAG" --draft=false --latest
