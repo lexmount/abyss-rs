@@ -11,11 +11,17 @@ Implement two independent capabilities at different layers:
   of whether the caller is an Agent. It requires no model parsing or plugin.
 - **Agent request inspection** lets plugins inspect a decrypted model request
   before it is forwarded, for example to reject a prompt containing a private
-  key. It has its own hook configuration, protocol, and decision types.
+  key. It is a broker plugin capability built on request parsing from
+  `abyss-agent-hook`, with broker-owned configuration and decision handling.
 
 The capabilities share flow metadata and transport utilities, but do not share
 one rule list, action enum, configuration namespace, or decision lifecycle.
 Existing asynchronous observation hooks remain a third, independent concern.
+
+The downstream customization point belongs to `abyss-broker`'s plugin API.
+`abyss-agent-hook` supplies the shared Agent parsing and request projection;
+`abyss-mitm` supplies only the transport boundary needed to wait before forwarding.
+An inspection plugin does not implement or register an `abyss-mitm::MitmHook`.
 
 **Client** means any network caller. **Agent** refers to a client in the request
 inspection path; **provider** means its upstream model service. Network blocking
@@ -38,10 +44,11 @@ blocking returns an error through the already decoded application transport.
 4. The client receives an identifiable broker-generated rejection whenever the
    active transport can carry one. TLS establishment failures have the limitation
    described below.
-5. Network blocking works with Agent hooks disabled and no inspection plugins
-   installed. Agent inspection works with no network `block` rules configured.
+5. Network blocking works with plugin inspection disabled and no inspection
+   plugins installed. Agent inspection works with no network `block` rules configured.
 6. TLS `Passthrough` retains its meaning: opaque traffic is relayed without
-   invoking Agent inspection. Enabling an Agent hook does not change that action.
+   invoking Agent inspection. Enabling plugin inspection does not change that
+   action.
 7. Request buffering, model parsing, and plugin RPC are paid for only on the
    Agent inspection path. The network policy stays a concrete metadata matcher.
 8. Agent inspection preserves the existing upstream connection and TLS handshake
@@ -62,7 +69,8 @@ Previously allowed requests cannot be recalled.
 | [HTTP request forwarding:639](../crates/abyss-mitm/src/transparent/relay.rs#L639) | Writes the request head, then streams and captures the body. | Add a buffered inspection branch before the first upstream request write. |
 | [TLS HTTP handling:123](../crates/abyss-mitm/src/transparent/tls_http.rs#L123) | Establishes provider TLS before decoding the client HTTP request. | Preserve the handshake order; gate HTTP request writes in the relay after decoding and inspection. |
 | [WebSocket relay:212](../crates/abyss-mitm/src/transparent/websocket.rs#L212) | Submits an observation and forwards each client message immediately. | Await inspection before forwarding client data messages. |
-| [Agent Hook coordinator:58](../crates/abyss-agent-hook/src/hook.rs#L58) | Detects and parses a completed exchange. | Expose request-only parsing independently of response processing and audit settings. |
+| [Agent Hook coordinator:58](../crates/abyss-agent-hook/src/hook.rs#L58) | Detects and parses a completed exchange. | Refactor the existing parsing pipeline to expose request-only results shared by inspection and observation. |
+| [Broker plugin server:65](../crates/abyss-broker/src/plugin/mod.rs#L65) | Owns local plugin sessions and broadcasts completed Agent events. | Extend this service with the request-inspection capability and broker-owned decision orchestration. |
 | [Plugin protocol v1:79](../specs/broker-plugin-protocol/v1/README.md#L79) | Best-effort, one-way live event stream; no decision replies. | Add a separate request/reply inspection session. |
 
 An asynchronous `MitmHook` callback cannot enforce Agent request blocking. The
@@ -181,7 +189,7 @@ sequenceDiagram
     else Passthrough
         M-->>B: Passthrough
         B->>T: Relay opaque TLS traffic
-        Note over B,T: Agent hooks do not run
+        Note over B,T: Agent inspection plugins do not run
     else Intercept
         M-->>B: Intercept
         B->>B: Terminate client TLS and decode HTTP
@@ -189,20 +197,19 @@ sequenceDiagram
     end
 ```
 
-## Independent Agent request hook configuration
+## Broker plugin configuration for Agent request inspection
 
-Configure the Agent capability under `hooks.agent_request`, separate from
-`mitm.tls_decryption` and the existing `hooks.harness_usage` observer. The proposed
-shape is:
+Configure this capability under the broker-owned `plugins.agent_request`
+section. Keep `mitm.tls_decryption` for network policy and
+`hooks.harness_usage` for the existing observation pipeline. The proposed shape
+is:
 
 ```toml
-[hooks.agent_request]
+[plugins.agent_request]
 enabled = true
-
-[hooks.agent_request.config]
 max_inspection_bytes = 16777216
 
-[[hooks.agent_request.config.plugins]]
+[[plugins.agent_request.inspectors]]
 id = "example.dlp"
 timeout_ms = 1000
 ```
@@ -214,8 +221,10 @@ any model, Harness, content, or contextual applicability decisions. Unknown
 Harnesses/protocols still reach the hook with explicit parsing status, rather
 than automatically bypassing a configured inspector.
 
-Reuse the existing `HookConfig<T>` envelope, with an explicit disabled default
-for this new hook rather than the audit hook's enabled default.
+The broker plugin service owns this configuration and defaults inspection to
+disabled. Do not add an Agent blocking hook to MITM's `HookDispatcher`, or place
+plugin IDs, sessions, and timeouts in `abyss-agent-hook::HooksConfig`.
+`abyss-agent-hook` exposes reusable parsing APIs without owning plugin invocation.
 
 Registered plugins run in configuration order. The first rejection ends the
 request check; all applicable invocations must return `Allow` to forward it.
@@ -225,36 +234,38 @@ addition to existing framing limits.
 
 The two capabilities compose only at the transport boundary:
 
-| Network MITM action | Agent request hook behavior |
+| Network MITM action | Broker plugin inspection behavior |
 | --- | --- |
 | `Block` | The network flow ends. No body buffering, model parsing, or inspection RPC occurs. |
-| `Passthrough` | Opaque TLS bytes are relayed. The Agent hook cannot inspect or reject them and does not change the network decision. |
-| `Intercept`, Agent hook disabled | Existing decoded relay and any independently enabled observation hooks run. |
-| `Intercept`, Agent hook enabled | The Agent request gate waits for plugin decisions before forwarding the request. |
+| `Passthrough` | Opaque TLS bytes are relayed. Agent inspection cannot inspect or reject them and does not change the network decision. |
+| `Intercept`, plugin inspection disabled | Existing decoded relay and any independently enabled observation hooks run. |
+| `Intercept`, plugin inspection enabled | The relay waits for the broker's plugin decision before forwarding the request. |
 
 Plain HTTP that passes the network decision is already decoded and can enter the
 Agent request gate. For HTTPS DLP, deployments explicitly configure `Intercept`
-for the traffic they want inspected. Turning on the Agent hook does not
+for the traffic they want inspected. Turning on plugin inspection does not
 automatically decrypt a passthrough connection or reject it as
 `inspection_unavailable`. DLP coverage is limited to the decoded traffic reaching
-that hook. Once invoked on such traffic, plugin failure does reject the pending
-request, as described below.
+the broker inspection path. Once invoked on such traffic, plugin failure does
+reject the pending request, as described below.
 
-Use the existing authenticated `GET`/`PUT /v1/hooks/config` API for Agent hook
-configuration. Network policy continues through `/v1/mitm/config`. Both sections
-may use the same durable runtime-policy file and transaction machinery; they
-remain separate policy owners. Updating either capability preserves the other's
-configuration. Files remain startup inputs rather than watched sources.
+Extend the broker's durable runtime-policy transaction with a typed plugin
+configuration section, exposed through a proposed authenticated
+`GET`/`PUT /v1/plugins/config` API. Keep `/v1/hooks/config` for observation and
+`/v1/mitm/config` for network policy. These sections use the same runtime-policy
+file and transaction machinery, with separate owners. Updating one section
+preserves the others. Files remain startup inputs rather than watched sources.
 
-Network decisions retain the existing per-flow policy snapshot. Agent hooks take
-their own snapshot for each HTTP request or complete client WebSocket data
-message and retain it through that decision. A network rule update does not
-retroactively reclassify an established flow; an Agent hook update can affect the
-next request on an already intercepted WebSocket. Opaque flows require reconnect
-and an explicit network `Intercept` decision before Agent inspection is possible.
+Network decisions retain the existing per-flow policy snapshot. The broker takes
+an inspection configuration snapshot for each HTTP request or client WebSocket
+data message and retains it through that decision. A network rule update does
+not retroactively reclassify an established flow; a plugin configuration update
+can affect the next request on an already intercepted WebSocket. Opaque flows
+require reconnect and an explicit network `Intercept` decision before Agent
+inspection is possible.
 
-Old configuration keeps its existing TLS behavior and defaults the new Agent
-hook to disabled. Old binaries reject the unknown `block` action or Agent hook
+Old configuration keeps its existing TLS behavior and defaults plugin inspection
+to disabled. Old binaries reject the unknown `block` action or plugin policy
 section instead of silently ignoring them. Neither configuration migration
 automatically enables the other capability.
 
@@ -268,11 +279,12 @@ flowchart TD
         B -->|Passthrough| P[Opaque relay]
         B -->|Intercept| C[Decrypt and decode HTTP]
     end
-    subgraph R[Agent request layer]
-        C --> D{Agent request hook enabled}
+    subgraph R[Broker Agent plugin capability]
+        C --> D{Plugin inspection enabled}
         D -->|No| E[Existing decoded relay]
-        D -->|Yes| F[Buffer and parse request]
-        F --> H[Await plugin decisions]
+        D -->|Yes| F[MITM retains complete request]
+        F --> G[Broker calls abyss-agent-hook request parser]
+        G --> H[Broker awaits plugin decisions]
         H -->|Allow| I[Forward retained request]
         H -->|Block or unavailable| Y[Agent request rejection]
     end
@@ -287,8 +299,8 @@ wire bytes needed for forwarding, and the decoded inspection view. Only the
 inspection branch constructs it.
 
 1. Decode and validate the request head after the network decision permits this
-   decoded flow. Select the Agent hook snapshot before writing any request bytes
-   upstream; do not re-evaluate TLS rules inside this request gate.
+   decoded flow. Select the broker plugin snapshot before writing any request
+   bytes upstream; do not re-evaluate TLS rules inside this request gate.
 2. If inspection is unnecessary, use the existing streaming relay.
 3. Otherwise, read the complete request body into a bounded buffer. Preserve
    Content-Length/chunked framing and already-prefetched bytes. Extract the
@@ -296,7 +308,9 @@ inspection branch constructs it.
 4. For `Expect: 100-continue`, send the interim response locally to obtain the
    body. This is permission to upload to the broker, not permission to forward.
    Keep the existing removal of the locally handled `Expect` header upstream.
-5. Decode content encodings, parse the request, and await the decision.
+5. Decode content encodings and pass the complete request to the broker. The
+   broker calls `abyss-agent-hook` to parse it, invokes inspection plugins, and
+   returns a forwarding or rejection result to the relay.
 6. On allow, replay the retained request using the existing forwarding rules.
    Preserve its body and content encoding; do not serialize the normalized model
    projection back into a provider request. Continue normal response forwarding
@@ -313,9 +327,9 @@ provider TLS setup behind the plugin decision or add deferred connection
 machinery for Agent inspection. This keeps connection setup out of the work
 that must run after the hook allows the request.
 
-Network blocks whose final decision is already established at CONNECT time run before
-`prepare_upstream()`, subject to the rule-order constraint above. This is a
-network-policy optimization, independent of the Agent gate.
+Network blocks whose final decision is already established at CONNECT time run
+before `prepare_upstream()`, subject to the rule-order constraint above. This is
+a network-policy optimization, independent of the Agent gate.
 
 The current `CapturedBody` may hold only an observation prefix. That is not an
 acceptable inspection result. A request exceeding the inspection limit, an
@@ -332,46 +346,55 @@ or failure stops that sequence.
 ```mermaid
 sequenceDiagram
     participant A as Agent
-    participant B as Broker Agent request gate
-    participant H as Agent inspection plugins
+    participant M as MITM relay
+    participant B as Broker plugin service
+    participant R as abyss-agent-hook parser
+    participant H as Inspection plugins
     participant P as Model provider
-    participant O as Async observer
     opt HTTPS setup before request inspection
-        A->>B: Client TLS handshake
-        B-->>A: Client TLS established
-        B->>P: Provider TLS handshake
-        P-->>B: Provider TLS established
+        A->>M: Client TLS handshake
+        M-->>A: Client TLS established
+        M->>P: Provider TLS handshake
+        P-->>M: Provider TLS established
     end
-    A->>B: Request head and any prefetched body bytes
-    B->>B: Pin Agent hook snapshot and select plugins
+    A->>M: Request head and any prefetched body bytes
+    M->>B: Select forwarding plan
+    B->>B: Pin plugin inspection snapshot
+    B-->>M: Buffer with byte limit and opaque broker state
     opt Expect 100-continue
-        B-->>A: Local 100 Continue
+        M-->>A: Local 100 Continue
     end
-    A->>B: Remaining request body
-    B->>B: Buffer full request, decode content, parse model input
-    Note over B,P: Zero request headers or body forwarded so far
+    A->>M: Remaining request body
+    M->>M: Retain full request and decode content
+    Note over M,P: Zero HTTP request headers or body forwarded so far
     alt Complete content available
-        B->>H: InspectRequest with request ID and context
-        alt Every applicable hook allows
+        M->>B: Await before-forward result with request view
+        B->>R: Parse request metadata and complete content
+        R-->>B: Request projection and parsing status
+        B->>H: InspectRequest with parsed request and context
+        alt Every applicable plugin allows
             H-->>B: Allow
-            B->>P: Forward retained request headers and body
-            P-->>B: Provider response
-            B-->>A: Relay provider response
-            B--)O: Submit completed exchange
-        else A hook blocks
+            B-->>M: Forward
+            M->>P: Forward retained request headers and body
+            P-->>M: Provider response
+            M-->>A: Relay provider response
+            Note over M,R: Existing completed-exchange observation follows
+        else A plugin blocks
             H-->>B: Block with safe reason code and message
-            B-->>A: 403 with broker identity and request ID
             B->>B: Record Agent request block metadata
-            Note over B,P: Rejected request is never forwarded
+            B-->>M: Reject with broker HTTP error
+            M-->>A: 403 with broker identity and request ID
+            Note over M,P: Rejected request is never forwarded
         else Plugin unavailable or deadline expires
             B->>B: Resolve failure and remove pending decision
-            B-->>A: 503 inspection_unavailable
-            Note over B,P: No forwarding and no decision retry
+            B-->>M: Reject inspection_unavailable
+            M-->>A: 503 inspection_unavailable
+            Note over M,P: No forwarding and no decision retry
         end
     else Body incomplete, oversized, or undecodable
-        B-->>A: Broker-origin 400, 413, or 415
-        Note over B,H: No allow decision from a partial body
-        Note over B,P: No request bytes forwarded
+        M-->>A: Broker-origin 400, 413, or 415
+        Note over M,H: No allow decision from a partial body
+        Note over M,P: No request bytes forwarded
     end
 ```
 
@@ -400,7 +423,7 @@ blocked message must not enter the normal response accumulator.
 
 A connection already in opaque TLS passthrough cannot expose WebSocket messages.
 Inspecting it requires a new connection selected for `Intercept` by network
-policy. Agent hook configuration does not reject or reclassify opaque flows.
+policy. Plugin inspection configuration does not reject or reclassify opaque flows.
 
 The following sequence starts after a successful upgrade. Provider messages in
 the parallel branch may belong to an earlier allowed request; they do not imply
@@ -409,12 +432,14 @@ that the pending client message has been released.
 ```mermaid
 sequenceDiagram
     participant A as Agent
-    participant B as Broker Agent WebSocket gate
+    participant B as Broker with WebSocket relay
+    participant R as abyss-agent-hook parser
     participant H as Agent inspection plugins
     participant P as Model provider
     A->>B: Client data message, possibly fragmented
-    B->>B: Pin Agent hook snapshot and assemble within limit
-    B->>B: Parse request from complete message
+    B->>B: Pin plugin inspection snapshot and assemble within limit
+    B->>R: Parse request from complete message
+    R-->>B: Request projection and parsing status
     par Inspect pending client message
         B->>H: InspectRequest with message sequence and context
         alt Decision arrives
@@ -426,10 +451,10 @@ sequenceDiagram
         P-->>B: Earlier response or control traffic
         B-->>A: Continue forwarding reverse traffic
     end
-    alt Every applicable hook allows
+    alt Every applicable plugin allows
         B->>P: Send the checked message payload
         Note over A,B: Read and check the next client data message
-    else A hook blocks
+    else A plugin blocks
         B-->>A: Close 1008 with abyss-broker reason
         B->>P: Close provider side
         B->>B: Record Agent request block metadata
@@ -443,9 +468,12 @@ sequenceDiagram
 
 ## Request-only Agent parsing and plugin context
 
-Expose a public request parser from `abyss-agent-hook` that accepts decoded HTTP
-requests or client WebSocket messages without requiring an `HttpExchange` or a
-provider response. Reuse the existing request projections, including
+Refactor `abyss-agent-hook` to expose its existing parsing capability at the
+request stage. An illustrative `AgentRequestParser` accepts decoded HTTP
+requests or client WebSocket messages and produces a `ParsedAgentRequest`
+without requiring an `HttpExchange` or a provider response. Both names describe
+APIs within the existing crate, not a second Agent parsing implementation in the
+broker or MITM crate. Reuse the existing request projections, including
 [ResponsesRequest:24](../crates/abyss-agent-hook/src/protocol/openai/responses/request.rs#L24),
 [ChatRequest:18](../crates/abyss-agent-hook/src/protocol/openai/chat_completions/request.rs#L18),
 and the Anthropic request parser currently called by
@@ -456,11 +484,34 @@ exchange parsing call the same request functions. Cover the existing Responses,
 Chat Completions, Anthropic Messages, and Claude Web completion request dialects,
 plus Responses client WebSocket messages. Preserve raw content for other routes.
 
+The current
+[ProtocolDetector:36](../crates/abyss-agent-hook/src/protocol/detection.rs#L36)
+accepts an exchange even though its HTTP selection uses request fields. Extract
+that input boundary, along with request-side Harness declarations, provider/model
+identification, conversation projection, and tool/image extraction. For
+WebSocket, reuse the request branch of the existing frame parser without waiting
+for the response accumulator to complete a turn.
+
+Reuse the event model's request-side primitives, such as `Conversation`, tool
+calls/results, and attachment representations, wherever their semantics match.
+The completed audit `AgentEvent` is not the inspection input: normalization can
+depend on response-derived identity, usage, and audit retention settings. The
+request projection contains only facts known before forwarding; it does not
+invent a response, token usage, or a completed event to fit that existing schema.
+The broker combines this projection with raw content and flow context for the
+inspection protocol. Later observation continues to produce normal Agent events
+from the same underlying parsing functions.
+
 Harness detection enriches the context but does not gate inspection. An unknown,
 disabled-for-audit, or ambiguously identified Harness must still reach the
 configured request inspector. Likewise, `hooks.harness_usage.enabled` and content
 retention switches govern audit output, not the content visible to an explicitly
 configured Agent inspection plugin.
+Separate Harness evidence matching from the current audit-enabled filtering in
+[HarnessRegistry:36](../crates/abyss-agent-hook/src/harness/registry/mod.rs#L36)
+so reusing detection does not make inspection depend on an audit switch. Keep
+this refactoring inside `abyss-agent-hook`; the broker does not duplicate
+protocol detection or normalize model payloads itself.
 
 The proposed inspection context contains:
 
@@ -521,13 +572,23 @@ Agent-declared identity separate from OS source metadata.
 
 ## Agent inspection plugin protocol
 
+Extend the existing broker
+[PluginServer:65](../crates/abyss-broker/src/plugin/mod.rs#L65) and SDK with an
+Agent request-inspection capability. The downstream extension point is an SDK
+handler such as `on_agent_request(context) -> Allow | Block`; the broker calls
+it through the plugin protocol. It is not a Rust `MitmHook` implementation loaded
+into the transport engine. Plugin registration, configuration, dispatch,
+deadlines, and decision aggregation all belong to the broker plugin service.
+
 Keep existing v1 event consumers unchanged. Add a v2 inspection session over the
 same Unix socket/Named Pipe transport abstractions and length-prefixed JSON
 framing. Use a separate endpoint and connection for inspection, advertised in
 startup info and SDK discovery. Existing v1 endpoint names and event framing stay
-valid. A plugin may open both connections if it also consumes audit events.
+valid. Both endpoints belong to the same broker plugin service; this does not
+introduce a second plugin framework. A plugin may open both connections if it
+also consumes audit events.
 
-The broker binds the inspection endpoint when inspection hooks are configured
+The broker binds the inspection endpoint when inspection plugins are configured
 and keeps its lifecycle independent of event subscribers. The v2 handshake
 declares the inspection role and plugin ID. Broker startup configuration binds
 each permitted inspection plugin ID to a local registration-token file; the
@@ -586,57 +647,79 @@ types with `Intercept`, `Passthrough`, and `Block` outcomes.
 
 Separately, keep request transport gating in `abyss-mitm`, parsing in
 `abyss-agent-hook`, plugin orchestration in `abyss-broker`, and language-neutral
-inspection messages in `abyss-plugin-protocol`. MITM must not import broker,
-Agent parsing, or a remote destination API. The broker supplies a concrete
-implementation of the Agent gate using the transport interface below.
+inspection messages in `abyss-plugin-protocol`:
 
-The request-phase interface can have the following shape; names are illustrative:
+| Owner | Responsibility |
+| --- | --- |
+| `abyss-agent-hook` | Shared Harness/protocol detection and request parsing, with both pre-forward request projections and existing observation consumers. |
+| `abyss-broker` | Agent inspection configuration, parser invocation, plugin sessions and calls, decision aggregation, and broker error mapping. |
+| `abyss-plugin-protocol` and SDKs | Typed inspection context/replies and the downstream custom handler contract. |
+| `abyss-mitm` | Existing TLS/network decisions, HTTP/WS framing, request retention, and the mechanical wait/forward/reject boundary. |
+
+MITM must not import broker, Agent parsing, or plugin protocol types. It does not
+know which model or plugin is being inspected. The broker's concrete
+`AgentRequestInspector` connects transport input to `abyss-agent-hook` and the
+plugin service, then maps the plugin decision into a transport result.
+
+The relay still needs a point at which its caller can await a result before
+writing upstream. Keep that a narrow transport integration interface, separate
+from `MitmHook` and its asynchronous observation dispatcher. Do not add an Agent
+plugin registry or a blocking callback to the existing MITM hook chain.
+
+The transport interface can have the following shape; names are illustrative:
 
 ```rust
-enum RequestPlan<P> {
+enum ForwardingPlan<P> {
+    Stream,
+    Buffer { max_bytes: usize, state: P },
+}
+
+enum ForwardingDecision {
     Forward,
-    Inspect(P),
+    Reject(LocalRejection),
 }
 
-enum RequestInspectionDecision {
-    Allow,
-    Block(InspectionBlockReason),
-}
-
-trait RequestGate: Send + Sync {
+trait RequestForwardingControl: Send + Sync {
     type Plan: Send;
 
     fn plan(&self, flow: &FlowContext, head: &Request<()>)
-        -> RequestPlan<Self::Plan>;
+        -> ForwardingPlan<Self::Plan>;
 
-    fn inspect<'a>(
+    fn before_forward<'a>(
         &'a self,
         plan: Self::Plan,
         request: RequestView<'a>,
-    ) -> impl Future<Output = Result<RequestInspectionDecision, InspectionError>> + Send + 'a;
+    ) -> impl Future<Output = Result<ForwardingDecision, ForwardingError>> + Send + 'a;
 }
 ```
 
 `RequestView` borrows flow metadata and complete decoded content. The associated
-plan carries the Agent hook snapshot and configured plugin handles without
-exposing those types to MITM. The WebSocket entry uses the same decision types
-with a message view and upgrade metadata. The request plan only chooses whether
-to inspect decoded content; it does not carry network block rules or TLS actions.
-An Agent `Allow` authorizes this request within an already intercepted/decoded
-flow, and never overrides a network decision.
+plan carries the broker's inspection snapshot and configured plugin handles
+without exposing those types to MITM. The WebSocket entry uses the same decision types
+with a message view and upgrade metadata. `LocalRejection` contains only the
+transport response/close information needed by the relay; the broker owns the
+Agent rejection code and message. The transport plan chooses streaming or
+buffering, without Agent concepts, network block rules, or plugin IDs.
 
-Pass `G: RequestGate` through the relevant engine/relay methods so Rust
-monomorphizes the calls and futures. Keep the engine and unrelated control API
+`AgentRequestInspector::before_forward` calls the shared Agent request parser,
+builds plugin context, awaits the configured plugin clients, and maps their
+`Allow`/`Block` result to `Forward`/`Reject`. It does not call the observer's
+`on_http_exchange` with a fabricated response. An Agent `Allow` authorizes this
+request within an already intercepted/decoded flow and never overrides a network
+decision.
+
+Pass `G: RequestForwardingControl` through the relevant engine/relay methods so
+Rust monomorphizes the calls and futures. Keep the engine and unrelated control API
 structures concrete; they do not all need a new generic parameter. Preserve the
-existing public engine entry point by delegating to a no-inspection gate.
+existing public engine entry point by delegating to a streaming-only control.
 
 Use a concrete `Vec<InspectionPluginClient>` for runtime-configured external
 plugins. They all use the same IPC implementation; their custom logic runs in
 separate processes. Avoid a new `Vec<Box<dyn BlockHook>>`, boxed per-call futures,
 an `Any` extension bag, or a callback on every body chunk.
 
-The no-inspection implementation can inline to the existing relay. A broker with
-runtime-editable Agent hooks still pays an enabled/snapshot check; zero-cost
+The streaming-only implementation can inline to the existing relay. A broker with
+runtime-editable inspection plugins still pays an enabled/snapshot check; zero-cost
 abstraction does not eliminate that work. Active inspection necessarily pays for complete
 request buffering, parsing, serialization, IPC, and plugin execution. Reuse
 `Bytes` and borrowed views, decode once, and share request parsing functions with
@@ -740,23 +823,25 @@ required parts of the final feature.
    Preserve existing ingress metadata, including absent explicit-proxy process
    information; add no process discovery.
    No Agent parser or plugin change is needed to enable this capability.
-2. **Agent parsing and HTTP gate.** Add the independent `hooks.agent_request`
-   config and hook updates. Expose response-independent Agent request
-   parsing, extract reusable body framing, add the buffered branch and local
-   rejection writer before the first upstream request write. Preserve the
-   existing upstream connection and TLS handshake order. Use a concrete
-   in-process test gate to verify the forwarding boundary.
-3. **Inspection plugin sessions.** Add v2 protocol/schema fixtures, registration,
-   request/reply dispatch, SDK clients, and a minimal example DLP plugin. Keep
-   private-key detection in the example/custom plugin rather than embedding a
-   security-rule catalog in the broker.
+2. **Shared Agent parsing and HTTP forwarding boundary.** Refactor request-side
+   detection and projection in `abyss-agent-hook` for use by both inspection and
+   completed-exchange observation. Extract reusable body framing, add the buffered
+   branch and local rejection writer before the first upstream request write.
+   Preserve the existing upstream connection and TLS handshake order. Use a
+   concrete in-process transport control to verify the forwarding boundary.
+3. **Broker plugin inspection.** Extend the existing plugin service with
+   `plugins.agent_request` configuration and durable updates, v2 protocol/schema
+   fixtures, registration, request/reply dispatch, and SDK handlers. Implement
+   the broker's `AgentRequestInspector` using the shared parser and plugin clients.
+   Add a minimal DLP plugin example; private-key detection belongs in that custom
+   plugin rather than a broker or MITM security-rule catalog.
 4. **Agent WebSocket inspection and integration.** Gate decoded client data
    messages, preserve reverse-direction progress, add cancellation/close handling,
    and run the same plugin through real broker traffic.
 
 Acceptance tests should prove the boundary, not merely check decision enums:
 
-- Block a non-Agent network client with Agent hooks disabled and no plugins
+- Block a non-Agent network client with plugin inspection disabled and no plugins
   installed. Exercise all three TLS actions in one ordered rule list, including
   an earlier passthrough/intercept rule before a later block. Test default block,
   missing-SNI fallback, destination-host fallback, and the no-SNI-peek fast path.
@@ -772,6 +857,11 @@ Acceptance tests should prove the boundary, not merely check decision enums:
 - For intercepted HTTPS, verify provider TLS still completes before Agent
   inspection runs. While the hook is pending and after a rejection, the provider
   must receive zero HTTP request bytes even though its TLS connection exists.
+- Reuse Agent parser fixtures to compare request conversation, instructions,
+  tools, model identity, and attachments between the request-only parser and
+  completed-exchange parsing. Verify inspection needs no fabricated response or
+  completed usage event, and its custom handler registers with the broker plugin
+  service rather than the MITM observation hook chain.
 - Place a private-key-shaped fixture near the end of a request, across chunk
   boundaries, in compressed JSON, instructions, tool output, and unknown JSON
   fields. The inspector must see the full relevant content before any forwarding.
@@ -786,7 +876,7 @@ Acceptance tests should prove the boundary, not merely check decision enums:
   earlier allowed messages remain accounted for, prewarm input is checked, and
   provider responses/control traffic progress during a pending inspection.
 - Exercise unknown Harness/protocol cases and disabled audit-content settings.
-  None may silently bypass an enabled Agent inspection hook on decoded traffic.
+  None may silently bypass enabled broker plugin inspection on decoded traffic.
 - Exercise missing plugins, timeout, disconnect, queue saturation, malformed and
   late replies, duplicate registration, and Agent cancellation. Assert a terminal
   result, pending-state cleanup, and zero rejected-request forwarding.
@@ -798,10 +888,11 @@ Acceptance tests should prove the boundary, not merely check decision enums:
   still work. Verify Agent plugins can inspect decoded requests with absent
   source-process fields.
 - Keep v1 SDK event consumers interoperable. Validate new v2 fixtures across Rust,
-  TypeScript, and Python. Check policy persistence failures, independent MITM and
-  hooks updates, network snapshots retained by existing flows, and Agent hook
-  snapshots refreshed for subsequent requests/messages. Updating either section
-  must preserve the other; Agent updates cannot reclassify passthrough flows.
+  TypeScript, and Python. Check policy persistence failures, independent MITM,
+  observation, and plugin configuration updates, network snapshots retained by
+  existing flows, and plugin inspection snapshots refreshed for subsequent
+  requests/messages. Updating one section must preserve the others; plugin
+  updates cannot reclassify passthrough flows.
 
 Measure throughput and allocation changes with Agent inspection disabled,
 network block rules active, and Agent inspection active. With Agent inspection
