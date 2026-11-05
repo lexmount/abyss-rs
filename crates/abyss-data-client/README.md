@@ -21,9 +21,14 @@ println!("{} sessions", page.items.len());
 
 The API root is supplied by the deployment and may include a reverse-proxy
 prefix. GET operations cover `v1/agent-usage/{sessions,events,search,summary}`.
-Session detail, outline and trajectory are SaaS data service routes; session
-header, streams, turns, segments and in-session search, and event conversation
-previews and locations are standalone backend routes. The client returns one page;
+Session header, streams, turns, segments, and event conversation previews and
+locations are shared reads. In-session literal search requires server support
+(currently standalone SQLite). The removed `session`, `outline`, and `trajectory`
+methods have no shape-compatible replacement: use `events` with `EventFields::Full`
+and `session_pk` to page through all observations, structure methods for overview,
+and `segment` with the default `PreviewQuery` for complete available exchange
+content. The client performs no trajectory assembly or turn derivation and no
+longer sends the removed `turn_index` event filter. The client returns one page;
 callers own pagination policy. Event continuation tokens are decimal offsets,
 while sessions/search use a one-based page and fixed page size.
 

@@ -93,34 +93,45 @@ abyss-query usage summary --group-by agent_name,llm_model
 abyss-query schema
 ```
 
-SaaS data service only:
-
-```sh
-abyss-query sessions get SESSION_UUID
-abyss-query sessions outline SESSION_UUID
-abyss-query sessions trajectory SESSION_UUID
-abyss-query events list --turn-index 3
-abyss-query usage summary --global
-```
-
-Standalone backend only:
+Session structure and content reads:
 
 ```sh
 abyss-query sessions header SESSION_UUID
 abyss-query sessions streams SESSION_UUID
 abyss-query sessions turns SESSION_UUID
-abyss-query sessions segment SESSION_UUID SEGMENT_HEAD --entries=-2 --text-preview 200
-abyss-query sessions search SESSION_UUID "retry timeout"
+abyss-query sessions segment SESSION_UUID SEGMENT_HEAD
+abyss-query events list --session-pk SESSION_UUID --full --all
 abyss-query events list --session-pk SESSION_UUID --locate
 abyss-query events conversation EVENT_UUID --entries 0-3,-1 --text-preview 200
 abyss-query events location EVENT_UUID
 ```
 
+The former `sessions get`, `sessions outline`, `sessions trajectory` commands and
+`events list --turn-index` filter have been removed. Choose reads by purpose:
+
+- For every persisted observation, use `events list --session-pk UUID --full --all`.
+  Events retain complete reported conversations, including repeated history.
+  Check `meta.truncated` and resume from `meta.next` if a pagination bound is reached.
+- For a session overview and its structure, read `header`, `turns` and `streams`.
+  Turn membership comes from the server; a turn may be null.
+- For ordered exchange content, take segment heads from `streams` or `turns` and
+  read `segment` for each head. Omit `--entries` and `--text-preview` for all
+  available entries and complete texts; use them when only a preview is needed.
+
+These are different response shapes from the removed timeline and trajectory.
+The CLI forwards the backend's structure and content without assembling another
+trajectory or inferring turn membership. Attachment files remain distinct from
+segment placement; removed placement fields are not synthesized.
+
+Literal in-session search is available when the backend supports it (currently
+standalone SQLite): `abyss-query sessions search SESSION_UUID "retry timeout"`.
+Administrative SaaS summaries use `abyss-query usage summary --global`.
+
 `--agent`, `--provider` and `--model` repeat for OR matches within a dimension.
 `--from` is inclusive; `--to` is exclusive. Session/detail IDs are backend UUIDs;
 `events list --session-id` filters the Agent's native session ID instead.
-Event lists omit full content unless `--full` is supplied. Outline, trajectory,
-session page structure, conversation previews, unknown fields, structured search
+Event lists omit full content unless `--full` is supplied. Session page structure,
+conversation previews, unknown fields, structured search
 highlights and partial-content indicators are preserved as returned by the
 backend. Missing content or usage is not invented. `--entries` takes
 comma-separated runs (`a-b`, `-n` for the last n, `a`), validated by the
