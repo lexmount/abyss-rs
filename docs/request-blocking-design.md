@@ -66,6 +66,9 @@ blocking returns an error through the already decoded application transport.
 9. Streaming and inspected requests compose the same reusable transport pipeline.
    Inspection adds retention and a decision stage; it must not create a second
    implementation of request forwarding, response relay, or observation.
+10. Request inspection and completed-exchange observation use one shared Agent
+    parsing pipeline. Request-only access exposes reusable stages of the existing
+    parser; it must not introduce a separate set of detection or extraction rules.
 
 The Agent inspection guarantee concerns the request being checked. Upstream TCP
 and TLS setup may already be complete, explicit CONNECT may already have
@@ -536,31 +539,53 @@ sequenceDiagram
     end
 ```
 
-## Request-only Agent parsing and plugin context
+## Shared Agent parsing pipeline and plugin context
 
-Refactor `abyss-agent-hook` to expose its existing parsing capability at the
-request stage. An illustrative `AgentRequestParser` accepts decoded HTTP
-requests or client WebSocket messages and produces a `ParsedAgentRequest`
-without requiring an `HttpExchange` or a provider response. Both names describe
-APIs within the existing crate, not a second Agent parsing implementation in the
-broker or MITM crate. Reuse the existing request projections, including
+Expose request-only parsing by composing reusable stages of the existing
+`abyss-agent-hook` pipeline. The request inspector and completed-exchange
+observer must call the same detection, extraction, and projection code. An
+illustrative `AgentRequestParser` is a facade over those stages, not a new
+security-specific parser. Its `ParsedAgentRequest` is the shared request result
+that can be consumed before any provider response exists.
+
+First extract the common stages and make the existing observer use them; then
+expose their request-only composition to the broker:
+
+| Stage | Shared implementation | Composition boundary |
+| --- | --- | --- |
+| Input adaptation | Borrow flow metadata, HTTP/upgrade headers, path, decoded body/JSON, and completeness information. | Live HTTP, `HttpExchange.request`, and client WebSocket messages supply the same request input shape. Transport adapters do not repeat model-field extraction. |
+| Recognition | Reuse Harness evidence matching, protocol detection, and provider identification. | Audit enablement is applied by the observation consumer, not by an independent inspection detector. |
+| Request projection | Reuse conversation/instructions, requested model, declarations, tools, and attachment extraction. | Both consumers receive the same request-side representation and parsing status for the same input. |
+| Consumer completion | Keep response parsing, exchange assembly, and event normalization as reusable later stages. | Inspection builds context from the request result. Observation combines that result with response data and applies audit retention. |
+
+The compositions are:
+
+```text
+Inspection:  request input -> shared request stages -> plugin context and decision
+Observation: request input -> shared request stages -> response stages -> audit events
+```
+
+Reuse the existing protocol-specific request projections, including
 [ResponsesRequest:24](../crates/abyss-agent-hook/src/protocol/openai/responses/request.rs#L24),
 [ChatRequest:18](../crates/abyss-agent-hook/src/protocol/openai/chat_completions/request.rs#L18),
 and the Anthropic request parser currently called by
 [exchange parsing:42](../crates/abyss-agent-hook/src/protocol/anthropic/messages/exchange.rs#L42).
 
-Extract protocol detection to operate on request metadata/body, and let completed
-exchange parsing call the same request functions. Cover the existing Responses,
-Chat Completions, Anthropic Messages, and Claude Web completion request dialects,
-plus Responses client WebSocket messages. Preserve raw content for other routes.
+Existing exchange parsers become compositions of request and response stages;
+they must not retain a parallel copy of request extraction after the new facade
+is introduced. Cover Responses, Chat Completions, Anthropic Messages, Claude Web
+completion, and Responses client WebSocket messages. Add any missing request
+fields, such as tool definitions, to the shared protocol projection rather than
+an inspection-only extractor. Preserve raw content for other routes.
 
 The current
 [ProtocolDetector:36](../crates/abyss-agent-hook/src/protocol/detection.rs#L36)
-accepts an exchange even though its HTTP selection uses request fields. Extract
-that input boundary, along with request-side Harness declarations, provider/model
-identification, conversation projection, and tool/image extraction. For
-WebSocket, reuse the request branch of the existing frame parser without waiting
-for the response accumulator to complete a turn.
+accepts an exchange even though its HTTP selection uses request fields. Change
+that input boundary to accept the common borrowed request view. The request-side
+parts currently embedded in exchange assembly must move into the shared request
+stage. For WebSocket, both inspection and the observer's accumulator consume the
+same client-message projection; only response accumulation waits for a completed
+turn. Keep server-message parsing in its existing response stage.
 
 Reuse the event model's request-side primitives, such as `Conversation`, tool
 calls/results, and attachment representations, wherever their semantics match.
@@ -569,8 +594,17 @@ depend on response-derived identity, usage, and audit retention settings. The
 request projection contains only facts known before forwarding; it does not
 invent a response, token usage, or a completed event to fit that existing schema.
 The broker combines this projection with raw content and flow context for the
-inspection protocol. Later observation continues to produce normal Agent events
-from the same underlying parsing functions.
+inspection protocol. Response-derived model identity, correlation, and usage are
+added by the later response/exchange stages using the existing precedence rules;
+they do not change what was known in the request projection.
+
+Reuse decoded bytes and JSON values already available to the request stage.
+All selected inspection plugins consume the same parsed result. If the result
+is already retained in request-local state for later observation, pass it onward
+rather than parse it again. Without such a result, observation invokes the same
+shared stages on its captured request, preserving incomplete/truncated input
+status. No global parse cache or new cross-task ownership framework is needed
+solely to force result reuse.
 
 Harness detection enriches the context but does not gate inspection. An unknown,
 disabled-for-audit, or ambiguously identified Harness must still reach the
@@ -579,9 +613,11 @@ retention switches govern audit output, not the content visible to a connected
 plugin that declared request inspection support.
 Separate Harness evidence matching from the current audit-enabled filtering in
 [HarnessRegistry:36](../crates/abyss-agent-hook/src/harness/registry/mod.rs#L36)
-so reusing detection does not make inspection depend on an audit switch. Keep
-this refactoring inside `abyss-agent-hook`; the broker does not duplicate
-protocol detection or normalize model payloads itself.
+so reusing detection does not make inspection depend on an audit switch. Apply
+audit retention to the observation output rather than mutating shared request
+data used by inspection. Keep this refactoring inside `abyss-agent-hook`; the
+broker assembles context and invokes plugins without duplicating protocol
+detection, field extraction, or model normalization.
 
 The proposed inspection context contains:
 
@@ -807,9 +843,11 @@ still checks connected inspection sessions and retains the selected handles;
 zero-cost abstraction does not eliminate that work. Active inspection pays for complete
 request buffering, parsing, serialization, IPC, and plugin execution. Reuse
 `Bytes` and borrowed views, decode once, and share request parsing functions with
-the observer. Do not add a global parsed-request cache merely to avoid repeating
-a projection in later asynchronous observation; measure that cost before adding
-cross-task ownership machinery.
+the observer. Compose shared parser stages using concrete types and ordinary
+function calls, just as for the transport pipeline. Reuse request-local parsed
+results when their ownership is already available; do not add a global cache,
+boxed parser-stage list, or cross-task framework to enforce one parse across
+otherwise independent asynchronous consumers.
 
 ## Rejection responses and recording
 
@@ -908,9 +946,10 @@ required parts of the final feature.
    information; add no process discovery.
    No Agent parser or plugin change is needed to enable this capability.
 2. **Shared Agent parsing and HTTP forwarding boundary.** Refactor request-side
-   detection and projection in `abyss-agent-hook` for use by both inspection and
-   completed-exchange observation. Extract the common request preparation,
-   framing reader, writer, and completion stages. Compose streaming input or
+   detection, extraction, and projection into common stages in `abyss-agent-hook`.
+   Route existing exchange/WebSocket observation through those stages, then expose
+   the request-only composition for inspection. Extract the common request
+   preparation, framing reader, writer, and completion stages. Compose streaming input or
    buffered inspection into those stages, with local rejection before the first
    upstream request write. Do not duplicate the existing relay implementation.
    Preserve the existing upstream connection and TLS handshake order. Use a
@@ -949,11 +988,16 @@ Acceptance tests should prove the boundary, not merely check decision enums:
 - For intercepted HTTPS, verify provider TLS still completes before Agent
   inspection runs. While the hook is pending and after a rejection, the provider
   must receive zero HTTP request bytes even though its TLS connection exists.
-- Reuse Agent parser fixtures to compare request conversation, instructions,
-  tools, model identity, and attachments between the request-only parser and
-  completed-exchange parsing. Verify inspection needs no fabricated response or
-  completed usage event, and its custom handler registers with the broker plugin
-  service rather than the MITM observation hook chain.
+- Use one set of Agent parser fixtures and expected request projections for
+  request-only inspection, completed-exchange parsing, and applicable client
+  WebSocket messages. Compare conversation/instructions, tools, requested model,
+  declarations, attachments, and parsing status across the entry points. Include
+  unknown fields and incomplete observation captures. Verify audit filtering
+  leaves the shared request projection unchanged and does not affect inspection
+  invocation. Response-derived fields appear only in the later response/exchange
+  stages. Inspection needs no
+  fabricated response or completed usage event; its custom handler registers
+  with the broker plugin service rather than the MITM observation hook chain.
 - Place a private-key-shaped fixture near the end of a request, across chunk
   boundaries, in compressed JSON, instructions, tool output, and unknown JSON
   fields. The inspector must see the full relevant content before any forwarding.
