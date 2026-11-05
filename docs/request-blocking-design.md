@@ -44,11 +44,14 @@ blocking returns an error through the already decoded application transport.
    invoking Agent inspection. Enabling an Agent hook does not change that action.
 7. Request buffering, model parsing, and plugin RPC are paid for only on the
    Agent inspection path. The network policy stays a concrete metadata matcher.
+8. Agent inspection preserves the existing upstream connection and TLS handshake
+   order. The awaited hook gates application request writes, not connection setup.
 
-The Agent inspection guarantee concerns the request being checked. Explicit
-CONNECT may already have established an upstream TCP tunnel, and a WebSocket may
-already have an upgraded provider connection. Neither establishes permission to
-send the pending model input. Previously allowed requests cannot be recalled.
+The Agent inspection guarantee concerns the request being checked. Upstream TCP
+and TLS setup may already be complete, explicit CONNECT may already have
+established a tunnel, and a WebSocket may already have an upgraded provider
+connection. None establishes permission to send the pending model input.
+Previously allowed requests cannot be recalled.
 
 ## Current implementation and change points
 
@@ -57,7 +60,7 @@ send the pending model input. Previously allowed requests cannot be recalled.
 | [TLS policy:18](../crates/abyss-mitm/src/transparent/decrypt_policy.rs#L18) | `Intercept` or `Passthrough`; source and destination selectors already exist. | Add `Block` to this policy, preserving ordered rule evaluation and metadata-only decisions. |
 | [Explicit ingress:146](../crates/abyss-broker/src/ingress/explicit.rs#L146) | Prepares upstream before acknowledging CONNECT; source process is absent. | Preserve the existing metadata; enforce the MITM policy, including `Block`, before releasing client application traffic. |
 | [HTTP request forwarding:639](../crates/abyss-mitm/src/transparent/relay.rs#L639) | Writes the request head, then streams and captures the body. | Add a buffered inspection branch before the first upstream request write. |
-| [TLS HTTP handling:123](../crates/abyss-mitm/src/transparent/tls_http.rs#L123) | Establishes provider TLS before decoding the client HTTP request. | Move provider TLS establishment after the request decision for inspected traffic. |
+| [TLS HTTP handling:123](../crates/abyss-mitm/src/transparent/tls_http.rs#L123) | Establishes provider TLS before decoding the client HTTP request. | Preserve the handshake order; gate HTTP request writes in the relay after decoding and inspection. |
 | [WebSocket relay:212](../crates/abyss-mitm/src/transparent/websocket.rs#L212) | Submits an observation and forwards each client message immediately. | Await inspection before forwarding client data messages. |
 | [Agent Hook coordinator:58](../crates/abyss-agent-hook/src/hook.rs#L58) | Detects and parses a completed exchange. | Expose request-only parsing independently of response processing and audit settings. |
 | [Plugin protocol v1:79](../specs/broker-plugin-protocol/v1/README.md#L79) | Best-effort, one-way live event stream; no decision replies. | Add a separate request/reply inspection session. |
@@ -301,11 +304,16 @@ inspection branch constructs it.
 7. On block, send a local error and close the request connection. Do not create a
    fabricated provider response or token-usage event.
 
-Move provider TLS establishment and deferred upstream connection work after the
-decision wherever the flow lifecycle already permits it. Preserve the current
-CONNECT establishment contract for allowed explicit tunnels: a pre-established
-TCP tunnel is acceptable, but request bytes remain gated. Network blocks whose
-final decision is already established at CONNECT time run before
+Preserve the existing TCP connection, CONNECT tunnel, and TLS handshake order.
+For intercepted HTTPS, the broker still completes client TLS and provider TLS
+before decoding the HTTP request. Buffer and inspect the request before the
+relay's first upstream request write; an established provider TLS stream does
+not imply that any HTTP headers or body have been forwarded. Do not move
+provider TLS setup behind the plugin decision or add deferred connection
+machinery for Agent inspection. This keeps connection setup out of the work
+that must run after the hook allows the request.
+
+Network blocks whose final decision is already established at CONNECT time run before
 `prepare_upstream()`, subject to the rule-order constraint above. This is a
 network-policy optimization, independent of the Agent gate.
 
@@ -316,10 +324,10 @@ protected request before any part is forwarded. Reuse body-read/decode deadlines
 where available and add a finite request-body read deadline for this branch.
 There is no spill-to-disk inspection queue in the initial implementation.
 
-For an HTTP request with Agent inspection enabled, the sequence is below. HTTPS
-has already completed Agent-side TLS at this point. The plugin interaction
-represents all configured inspectors in order; a block or failure stops that
-sequence.
+For an HTTP request with Agent inspection enabled, the sequence is below. The
+HTTPS setup illustrates the existing handshake order, which remains unchanged.
+The plugin interaction represents all configured inspectors in order; a block
+or failure stops that sequence.
 
 ```mermaid
 sequenceDiagram
@@ -328,6 +336,12 @@ sequenceDiagram
     participant H as Agent inspection plugins
     participant P as Model provider
     participant O as Async observer
+    opt HTTPS setup before request inspection
+        A->>B: Client TLS handshake
+        B-->>A: Client TLS established
+        B->>P: Provider TLS handshake
+        P-->>B: Provider TLS established
+    end
     A->>B: Request head and any prefetched body bytes
     B->>B: Pin Agent hook snapshot and select plugins
     opt Expect 100-continue
@@ -729,8 +743,9 @@ required parts of the final feature.
 2. **Agent parsing and HTTP gate.** Add the independent `hooks.agent_request`
    config and hook updates. Expose response-independent Agent request
    parsing, extract reusable body framing, add the buffered branch and local
-   rejection writer, and move applicable provider connection/TLS work behind the
-   decision. Use a concrete in-process test gate to verify the boundary.
+   rejection writer before the first upstream request write. Preserve the
+   existing upstream connection and TLS handshake order. Use a concrete
+   in-process test gate to verify the forwarding boundary.
 3. **Inspection plugin sessions.** Add v2 protocol/schema fixtures, registration,
    request/reply dispatch, SDK clients, and a minimal example DLP plugin. Keep
    private-key detection in the example/custom plugin rather than embedding a
@@ -754,6 +769,9 @@ Acceptance tests should prove the boundary, not merely check decision enums:
   assert zero provider HTTP request bytes, including the head and any prefetched
   body. Cover explicit HTTP/CONNECT and platform ingress, direct and configured
   upstream routing. Separately account for permitted TCP/TLS/tunnel handshakes.
+- For intercepted HTTPS, verify provider TLS still completes before Agent
+  inspection runs. While the hook is pending and after a rejection, the provider
+  must receive zero HTTP request bytes even though its TLS connection exists.
 - Place a private-key-shaped fixture near the end of a request, across chunk
   boundaries, in compressed JSON, instructions, tool output, and unknown JSON
   fields. The inspector must see the full relevant content before any forwarding.
