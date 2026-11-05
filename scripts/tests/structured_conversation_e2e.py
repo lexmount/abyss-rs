@@ -12,6 +12,7 @@ import tempfile
 import time
 import urllib.error
 import urllib.request
+from urllib.parse import quote
 from pathlib import Path
 
 ROLES = {
@@ -72,15 +73,15 @@ def assert_structured(events):
         # Both events of an exchange carry its response identity.
         assert request["response_id"] == reply["response_id"] == f"resp_{turn}", request
         assert "previous_response_id" not in request, request
-    # Responses `instructions` is the leading system entry.
+    # Responses `instructions` is the leading developer entry.
     assert entries(first_request) == [
-        ("system", "system rules"),
+        ("developer", "system rules"),
         ("user", "continue"),
     ]
     # Repeated user prompts stay separate entries in request history, and a
     # replayed output item keeps the id its response gave it.
     assert entries(second_request) == [
-        ("system", "system rules"),
+        ("developer", "system rules"),
         ("user", "continue"),
         ("assistant", "working"),
         ("user", "continue"),
@@ -330,57 +331,46 @@ def main():
                             assert by_id[event["event_id"]].get(field) == event.get(
                                 field
                             ), (field, event["event_id"])
-                    # Items as (kind, role, stream); roles are the conversation's
-                    # own strings.
-                    for session, expected in [
-                        # Both exchanges share the declared thread. The first
-                        # request shows its instructions and prompt; the second
-                        # repeats the same instructions and replays the history,
-                        # so only its new user message is added. Each reply adds
-                        # its assistant message.
-                        (
-                            "structured-e2e-openai",
-                            [
-                                ("message", "developer", 0),
-                                ("message", "user", 0),
-                                ("message", "assistant", 0),
-                                ("message", "user", 0),
-                                ("message", "assistant", 0),
-                            ],
-                        ),
-                        # Reasoning and the reply stay separate messages with
-                        # their own roles. The naming call names no stream and
-                        # continues no response, so it opens a stream of its own.
-                        (
-                            "structured-e2e-anthropic",
-                            [
-                                ("message", "system", 0),
-                                ("message", "user", 0),
-                                ("message", "reasoning", 0),
-                                ("message", "assistant", 0),
-                                ("message", "system", 1),
-                                ("message", "user", 1),
-                                ("message", "assistant", 1),
-                            ],
-                        ),
-                    ]:
+                    # Read server-owned structure and each segment's full event
+                    # conversations, without assembling a second trajectory.
+                    for session in ("structured-e2e-openai", "structured-e2e-anthropic"):
                         selected = get(
-                            "/v1/agent-usage/events?session_id=" + session + "&limit=10"
+                            "/v1/agent-usage/events?session_id=" + session
+                            + "&limit=10&fields=full"
                         )
+                        observed = {e["id"]: e for e in selected["events"]}
                         pk = selected["events"][0]["session_pk"]
-                        trajectory = get(
-                            "/v1/agent-usage/sessions/" + pk + "/trajectory"
-                        )
-                        assert [
-                            (item["kind"], item.get("role"), item["stream"])
-                            for item in trajectory["items"]
-                        ] == expected, trajectory
-                        outline = get("/v1/agent-usage/sessions/" + pk + "/outline")
-                        assert outline["session"]["title"] == (
-                            "continue" if "openai" in session else "Greeting"
-                        ), outline
+                        prefix = "/v1/agent-usage/sessions/" + pk
+                        header = get(prefix + "/header")
+                        assert header["session_id"] == session, header
+                        assert header["title"]["text"] == (
+                            "continue" if "openai" in session else "hello"
+                        ), header
+                        streams = get(prefix + "/streams")
+                        turns = get(prefix + "/turns")
+                        segments = [
+                            get(prefix + "/segments/" + quote(item["head"], safe=""))
+                            for item in streams["segments"]
+                        ]
+                        seen = set()
+                        for segment in segments:
+                            for exchange in segment["exchanges"]:
+                                for side in ("request", "response"):
+                                    preview = exchange[side]
+                                    if preview is None:
+                                        continue
+                                    event_pk = preview["event_pk"]
+                                    seen.add(event_pk)
+                                    content = [
+                                        entry for chunk in preview["chunks"]
+                                        for entry in chunk["entries"]
+                                    ]
+                                    assert content == observed[event_pk]["conversation"]["entries"]
+                                    assert preview["entries_total"] == len(content), preview
+                        assert seen == set(observed), (seen, observed)
                         (args.artifacts / (session + ".json")).write_text(
-                            json.dumps(trajectory, indent=2)
+                            json.dumps({"header": header, "streams": streams,
+                                        "turns": turns, "segments": segments}, indent=2)
                         )
                     # Check exact structured persistence without raw content.
                     import sqlite3
@@ -400,7 +390,7 @@ def main():
                         assert "payloads" not in conversation
                     send({"code": 100, "reason": "test complete"})
             print(
-                "PASS: hook -> delivery -> SQLite storage -> titles and trajectory;"
+                "PASS: hook -> delivery -> SQLite storage -> header, structure and full segment content;"
                 " role-aware messages, deterministic ids, no raw content"
             )
         finally:

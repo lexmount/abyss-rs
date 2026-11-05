@@ -115,18 +115,29 @@ class Scenario:
         sessions = self.cli("sessions", "list", "--all", "--page-size", "1")["data"]
         require(len(sessions) == 1, "one persisted session")
         session_pk = sessions[0]["session_pk"]
+        prefix = f"/v1/agent-usage/sessions/{session_pk}"
         for command in ("header", "streams", "turns"):
-            require(self.cli("sessions", command, session_pk)["data"]["session_pk"] == session_pk,
-                    f"session {command}")
+            require(self.cli("sessions", command, session_pk)["data"]
+                    == self.http(f"{prefix}/{command}"), f"session {command} forwarded intact")
         segments = self.cli("sessions", "streams", session_pk)["data"]["segments"]
         require(len(segments) == 1, "one segment")
         segment = self.cli("sessions", "segment", session_pk, segments[0]["head"],
                            "--text-preview", "5")["data"]
         require(len(segment["exchanges"]) == 1, "one exchange in the segment")
+        require(all("attached_to" not in item and "attached_by" not in item
+                    for item in segments + segment["exchanges"]), "dropped placement fields stay absent")
+        full_segment = self.cli("sessions", "segment", session_pk, segments[0]["head"])["data"]
+        for side in ("request", "response"):
+            preview = full_segment["exchanges"][0][side]
+            require(preview["chunks"][0]["entries"][0]["text"] == f"queryfixture {side}",
+                    "segment default retains full content")
         found = self.cli("sessions", "search", session_pk, "queryfixture")["data"]
         require(found["hits"], "in-session search")
-        events = self.cli("events", "list", "--all", "--limit", "1", "--full", "--locate")["data"]
+        events = self.cli("events", "list", "--all", "--limit", "1", "--full", "--locate",
+                          "--session-pk", session_pk)["data"]
         require(len(events) == 2, "event offset pagination")
+        direct = self.http(f"/v1/agent-usage/events?session_pk={session_pk}&fields=full&locate=true&limit=100")["events"]
+        require(events == direct, "full session observations forwarded without regrouping")
         require(all(event["location"]["segment"] == segments[0]["head"] for event in events),
                 "listed event locations")
         entries = self.cli("events", "get", events[0]["id"])["data"]["conversation"]["entries"]

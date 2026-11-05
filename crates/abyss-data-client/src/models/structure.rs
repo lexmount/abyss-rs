@@ -1,5 +1,4 @@
-//! Session page structure and event content previews served by the
-//! standalone backend: header, streams, turns, segments, in-session search,
+//! Session page structure and event content previews: header, streams, turns, segments, in-session search,
 //! conversation previews and event locations.
 
 use super::Extensions;

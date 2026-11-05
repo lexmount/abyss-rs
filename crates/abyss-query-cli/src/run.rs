@@ -48,18 +48,6 @@ pub fn execute(cli: &Cli) -> Result<Output, Error> {
         Command::Search { query, page } => SessionPages::new(&client).fetch(page, Some(query)),
         Command::Sessions { command } => match command {
             SessionCommand::List(page) => SessionPages::new(&client).fetch(page, None),
-            SessionCommand::Get { id } => Ok(Output::new(
-                "sessions.get",
-                serde_json::to_value(client.session(*id)?)?,
-            )),
-            SessionCommand::Outline { id } => Ok(Output::new(
-                "sessions.outline",
-                serde_json::to_value(client.outline(*id)?)?,
-            )),
-            SessionCommand::Trajectory { id } => Ok(Output::new(
-                "sessions.trajectory",
-                serde_json::to_value(client.trajectory(*id)?)?,
-            )),
             SessionCommand::Header { id } => Ok(Output::new(
                 "sessions.header",
                 serde_json::to_value(client.session_header(*id)?)?,

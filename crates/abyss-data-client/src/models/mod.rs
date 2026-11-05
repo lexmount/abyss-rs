@@ -9,9 +9,7 @@ mod structure;
 mod summary;
 
 pub use events::{EventPage, UsageEvent};
-pub use sessions::{
-    SearchPage, SearchSession, Session, SessionPage, SessionTimeline, SessionTrajectory, Turn,
-};
+pub use sessions::{SearchPage, SearchSession, Session, SessionPage};
 pub use structure::{
     ConversationPreview, EventLocation, Segment, SessionHeader, SessionSearch, SessionStreams,
     SessionTurns,

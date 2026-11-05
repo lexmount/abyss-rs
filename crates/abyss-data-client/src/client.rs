@@ -9,8 +9,7 @@ use crate::{
     ApiEndpoint, DataClientError, HttpTransport,
     models::{
         ConversationPreview, EventLocation, EventPage, SearchPage, Segment, SessionHeader,
-        SessionPage, SessionSearch, SessionStreams, SessionTimeline, SessionTrajectory,
-        SessionTurns, UsageEvent, UsageSummary,
+        SessionPage, SessionSearch, SessionStreams, SessionTurns, UsageEvent, UsageSummary,
     },
     query::{EventQuery, PageQuery, PreviewQuery, SummaryQuery},
 };
@@ -89,32 +88,7 @@ impl DataClient {
         self.get(&["search"], &pairs)
     }
 
-    /// Reads a complete session timeline from the `SaaS` data service.
-    ///
-    /// # Errors
-    /// Returns transport or protocol errors.
-    pub fn session(&self, id: Uuid) -> Result<SessionTimeline, DataClientError> {
-        self.get(&["sessions", &id.to_string()], &[])
-    }
-
-    /// Reads a session's compact outline from the `SaaS` data service,
-    /// preserving omitted content.
-    ///
-    /// # Errors
-    /// Returns transport or protocol errors.
-    pub fn outline(&self, id: Uuid) -> Result<SessionTimeline, DataClientError> {
-        self.get(&["sessions", &id.to_string(), "outline"], &[])
-    }
-
-    /// Reads the normalized trajectory from the `SaaS` data service.
-    ///
-    /// # Errors
-    /// Returns transport or protocol errors.
-    pub fn trajectory(&self, id: Uuid) -> Result<SessionTrajectory, DataClientError> {
-        self.get(&["sessions", &id.to_string(), "trajectory"], &[])
-    }
-
-    /// Reads a session page header from the standalone backend.
+    /// Reads a session page header.
     ///
     /// # Errors
     /// Returns transport or protocol errors.
@@ -122,7 +96,7 @@ impl DataClient {
         self.get(&["sessions", &id.to_string(), "header"], &[])
     }
 
-    /// Reads a session's segments from the standalone backend.
+    /// Reads a session's segments.
     ///
     /// # Errors
     /// Returns transport or protocol errors.
@@ -130,7 +104,7 @@ impl DataClient {
         self.get(&["sessions", &id.to_string(), "streams"], &[])
     }
 
-    /// Reads a session's turn tree from the standalone backend.
+    /// Reads a session's turn tree.
     ///
     /// # Errors
     /// Returns transport or protocol errors.
@@ -138,7 +112,7 @@ impl DataClient {
         self.get(&["sessions", &id.to_string(), "turns"], &[])
     }
 
-    /// Reads one segment's exchanges from the standalone backend.
+    /// Reads one segment's exchanges.
     ///
     /// # Errors
     /// Returns transport or protocol errors.
@@ -157,7 +131,7 @@ impl DataClient {
         )
     }
 
-    /// Searches one session's content on the standalone backend.
+    /// Searches one session's content when the server supports literal search.
     ///
     /// # Errors
     /// Returns query, transport or protocol errors.
@@ -187,7 +161,7 @@ impl DataClient {
         self.get(&["events", &id.to_string()], &[])
     }
 
-    /// Previews one event's conversation entries from the standalone backend.
+    /// Previews one event's conversation entries.
     ///
     /// # Errors
     /// Returns transport or protocol errors.
@@ -199,7 +173,7 @@ impl DataClient {
         self.get(&["events", &id.to_string(), "conversation"], &query.pairs())
     }
 
-    /// Reads where one event sits in its session on the standalone backend.
+    /// Reads where one event sits in its session.
     ///
     /// # Errors
     /// Returns transport or protocol errors.

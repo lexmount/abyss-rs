@@ -89,15 +89,13 @@ impl Output {
     pub fn schema() -> Self {
         use abyss_data_client::models::{
             ConversationPreview, EventLocation, EventPage, SearchPage, Segment, SessionHeader,
-            SessionPage, SessionSearch, SessionStreams, SessionTimeline, SessionTrajectory,
-            SessionTurns, UsageEvent, UsageSummary,
+            SessionPage, SessionSearch, SessionStreams, SessionTurns, UsageEvent, UsageSummary,
         };
         Self::new(
             "schema",
             json!({
                 "envelope":schemars::schema_for!(Self),
                 "session_page":schemars::schema_for!(SessionPage),"search_page":schemars::schema_for!(SearchPage),
-                "session_timeline":schemars::schema_for!(SessionTimeline),"session_trajectory":schemars::schema_for!(SessionTrajectory),
                 "session_header":schemars::schema_for!(SessionHeader),"session_streams":schemars::schema_for!(SessionStreams),
                 "session_turns":schemars::schema_for!(SessionTurns),"segment":schemars::schema_for!(Segment),
                 "session_search":schemars::schema_for!(SessionSearch),

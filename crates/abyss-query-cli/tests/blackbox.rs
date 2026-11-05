@@ -167,34 +167,17 @@ fn events_follow_decimal_offsets_and_reject_cycles() {
 
 #[test]
 fn detail_search_and_summary_routes_preserve_backend_content() {
-    let timeline = json!({"session":session(),"turns":[{"turn_pk":ID,"turn_index":1_u32,"events":[{"preview":"content","text_chars":7_u32}]}]});
-    let trajectory = json!({"session":session(),"items":[{"kind":"tool_call","input":{"command":"hello"}}],"events":[]});
     let mut hit = session();
     hit["matches"] = json!([{"segments":[{"text":"hello","highlight":true}]}]);
     let search = json!({"query":"hello","total_sessions":1_u32,"page":1_u32,"page_size":20_u32,"has_more":false,"items":[hit]});
     let summary = json!({"group_by":["agent_name"],"rows":[{"agent_name":"codex","input_tokens":10_u32}],"next_page_token":null});
     let server = Server::start(vec![
-        Response::json(&timeline),
-        Response::json(&timeline),
-        Response::json(&trajectory),
         Response::json(&event()),
         Response::json(&search),
         Response::json(&summary),
     ]);
     let cli = Harness::new();
     cli.profile(&server.endpoint, "none");
-    cli.success(&["sessions", "get", ID]);
-    assert!(
-        cli.success(&["sessions", "outline", ID])["data"]["turns"][0]["events"][0]
-            .get("text")
-            .is_none(),
-        "outline does not invent full content"
-    );
-    assert_eq!(
-        cli.success(&["sessions", "trajectory", ID])["data"]["items"][0]["kind"],
-        "tool_call",
-        "trajectory preserved"
-    );
     cli.success(&["events", "get", ID]);
     assert_eq!(
         cli.success(&["search", "hello"])["data"][0]["matches"][0]["segments"][0]["highlight"],
@@ -203,23 +186,18 @@ fn detail_search_and_summary_routes_preserve_backend_content() {
     );
     cli.success(&["usage", "summary", "--group-by", "agent_name", "--global"]);
     let requests = server.finish();
-    assert!(requests[1].target.ends_with("/outline"), "outline route");
     assert!(
-        requests[2].target.ends_with("/trajectory"),
-        "trajectory route"
-    );
-    assert!(
-        requests[5].target.contains("scope=global"),
+        requests[2].target.contains("scope=global"),
         "explicit scope"
     );
 }
 
 #[test]
-fn standalone_session_page_routes_preserve_backend_content() {
+fn session_page_routes_preserve_backend_content() {
     let header =
         json!({"session_pk":ID,"session_id":"native-session","title":null,"turn_count":1_u32});
-    let streams = json!({"session_pk":ID,"segments":[{"head":"resp-1","kind":"root"}]});
-    let turns = json!({"session_pk":ID,"turns":[{"number":1_u32,"children":[]}]});
+    let streams = json!({"session_pk":ID,"segments":[{"head":"resp-1","kind":"root","turn":null,"turn_id":null,"parent":null,"forked_from":null}]});
+    let turns = json!({"session_pk":ID,"turns":[{"turn":null,"turn_id":null,"executors":[{"subagent_id":null,"main":["resp-1"],"side":[]}]}]});
     let segment = json!({"session_pk":ID,"segment":"resp/1","exchanges":[{"id":"resp-1"}]});
     let found = json!({"query":"hello","texts":[{"text":"hello"}],"hits":[{"event_pk":ID,"entry_index":0_u32}],"truncated":false});
     let preview = json!({"event_pk":ID,"completeness":"complete","entries_total":3_u32,"chunks":[{"from":2_u32,"entries":[]}],"omitted_entries":2_u32,"omitted_bytes":0_u32,"attachments":[]});
@@ -242,11 +220,15 @@ fn standalone_session_page_routes_preserve_backend_content() {
         "header fields preserved"
     );
     assert_eq!(
-        cli.success(&["sessions", "streams", ID])["data"]["segments"][0]["kind"],
-        "root",
-        "segments preserved"
+        cli.success(&["sessions", "streams", ID])["data"],
+        streams,
+        "null turns and absence of dropped placement fields preserved"
     );
-    cli.success(&["sessions", "turns", ID]);
+    assert_eq!(
+        cli.success(&["sessions", "turns", ID])["data"],
+        turns,
+        "turn structure forwarded without client derivation"
+    );
     cli.success(&[
         "sessions",
         "segment",
@@ -393,7 +375,7 @@ fn formats_and_schema_work_without_interactive_queries() {
             .is_some(),
         "offline schema"
     );
-    let invalid = clean.run(&["sessions", "get", TOKEN]);
+    let invalid = clean.run(&["sessions", "header", TOKEN]);
     assert_eq!(invalid.status.code(), Some(2_i32), "invalid arguments");
     assert!(
         !String::from_utf8_lossy(&invalid.stderr).contains(TOKEN),
@@ -514,4 +496,26 @@ fn terminal_login_pkce_persists_bound_private_credentials_and_revokes() {
         requests[3].authorization.is_some() && requests[4].authorization.is_some(),
         "read and revocation use stored bearer"
     );
+}
+
+#[test]
+fn removed_commands_and_filter_are_rejected_without_a_profile() {
+    let cli = Harness::new();
+    for arguments in [
+        vec!["sessions", "get", ID],
+        vec!["sessions", "outline", ID],
+        vec!["sessions", "trajectory", ID],
+        vec!["events", "list", "--turn-index", "1"],
+    ] {
+        let result = cli.run(&arguments);
+        assert_eq!(
+            result.status.code(),
+            Some(2_i32),
+            "removed API is not dispatched"
+        );
+        assert!(result.stdout.is_empty(), "no partial result");
+    }
+    let schema = cli.success(&["schema"]);
+    assert!(schema["data"].get("session_timeline").is_none());
+    assert!(schema["data"].get("session_trajectory").is_none());
 }

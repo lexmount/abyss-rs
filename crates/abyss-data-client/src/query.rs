@@ -127,13 +127,11 @@ pub struct EventQuery {
     pub session_ids: Vec<String>,
     /// Backend session primary key.
     pub session_pk: Option<Uuid>,
-    /// Normalized turn number; a filter of the `SaaS` data service.
-    pub turn_index: Option<i32>,
     /// Event side.
     pub side: Option<EventSide>,
     /// Projection; defaults to content-free lists.
     pub fields: EventFields,
-    /// Adds each event's current location; a standalone-backend option.
+    /// Adds each event's current location.
     pub locate: bool,
     /// Page size, bounded by the client to 1000.
     pub limit: u32,
@@ -147,7 +145,6 @@ impl Default for EventQuery {
             filters: Filters::default(),
             session_ids: Vec::new(),
             session_pk: None,
-            turn_index: None,
             side: None,
             fields: EventFields::List,
             locate: false,
@@ -170,9 +167,6 @@ impl EventQuery {
         }
         if let Some(id) = self.session_pk {
             pairs.push(("session_pk".into(), id.to_string()));
-        }
-        if let Some(index) = self.turn_index {
-            pairs.push(("turn_index".into(), index.to_string()));
         }
         if let Some(side) = self.side {
             pairs.push(("event_type".into(), side.as_str().into()));
