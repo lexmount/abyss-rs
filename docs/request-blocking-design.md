@@ -25,8 +25,9 @@ blocking returns an error through the already decoded application transport.
 ## Required behavior
 
 1. The existing MITM policy can block by process name, destination host,
-   application ID, executable path, or runtime entry point. Its decision is
-   exclusively based on OS/network metadata, without reading model input.
+   application ID, executable path, or runtime entry point where the existing
+   ingress provides those fields. Its decision uses available OS/network
+   metadata, without reading model input or adding process attribution.
 2. Independently, a custom plugin receives available flow identity, HTTP or
    WebSocket request metadata, complete decoded content, and a model-request
    projection. It can reject a prompt containing a private key before that
@@ -54,7 +55,7 @@ send the pending model input. Previously allowed requests cannot be recalled.
 | Existing component | Current behavior | Required change |
 | --- | --- | --- |
 | [TLS policy:18](../crates/abyss-mitm/src/transparent/decrypt_policy.rs#L18) | `Intercept` or `Passthrough`; source and destination selectors already exist. | Add `Block` to this policy, preserving ordered rule evaluation and metadata-only decisions. |
-| [Explicit ingress:146](../crates/abyss-broker/src/ingress/explicit.rs#L146) | Prepares upstream before acknowledging CONNECT; source process is absent. | Add local process attribution; enforce the MITM policy before releasing client traffic. |
+| [Explicit ingress:146](../crates/abyss-broker/src/ingress/explicit.rs#L146) | Prepares upstream before acknowledging CONNECT; source process is absent. | Preserve the existing metadata; enforce the MITM policy, including `Block`, before releasing client application traffic. |
 | [HTTP request forwarding:639](../crates/abyss-mitm/src/transparent/relay.rs#L639) | Writes the request head, then streams and captures the body. | Add a buffered inspection branch before the first upstream request write. |
 | [TLS HTTP handling:123](../crates/abyss-mitm/src/transparent/tls_http.rs#L123) | Establishes provider TLS before decoding the client HTTP request. | Move provider TLS establishment after the request decision for inspected traffic. |
 | [WebSocket relay:212](../crates/abyss-mitm/src/transparent/websocket.rs#L212) | Submits an observation and forwards each client message immediately. | Await inspection before forwarding client data messages. |
@@ -131,6 +132,12 @@ Reuse the current matcher and validation code, adding an executable-path selecto
 alongside the existing runtime-entry-point selector. Do not introduce a second
 access policy or a generic policy framework.
 
+Explicit ingress retains `source_process = None`. Rules requiring process name,
+application ID, executable path, or entry point do not match that ingress;
+evaluation continues to later rules and the configured fallback. Destination-only
+rules and fallback actions can still select `Block` using the existing metadata.
+This change does not add local process discovery for explicit proxy clients.
+
 Evaluate at the existing flow policy boundary, after reading any required
 ClientHello metadata and before forwarding client application traffic. Keep the
 existing preference for TLS SNI and destination-host fallback, plus ingress
@@ -160,7 +167,7 @@ sequenceDiagram
     participant M as MITM policy snapshot
     participant T as Remote target
     C->>B: Accepted flow and protocol preface
-    B->>B: Obtain OS source identity and required target or SNI
+    B->>B: Use existing ingress metadata and required target or SNI
     B->>M: Evaluate existing ordered metadata rules
     alt Block
         M-->>B: Network block with optional rule ID
@@ -446,7 +453,7 @@ The proposed inspection context contains:
 | Group | Fields and semantics |
 | --- | --- |
 | Correlation | Decision request ID, flow ID, HTTP request or WebSocket message sequence. IDs identify the broker operation, not an invented Agent turn. |
-| Source | PID and process incarnation where available, process name, executable path, application ID, runtime entry point, working directory, and attribution source. |
+| Source | Existing ingress metadata where available: PID and process incarnation, process name, executable path, application ID, runtime entry point, working directory, and attribution source. Explicit ingress keeps source-process fields absent. |
 | Destination | Original destination address, logical target authority, TLS SNI, HTTP authority/Host, ingress type, and configured upstream route metadata without credentials. |
 | Request | Method, URI/path, business headers, transport, WebSocket message type and sequence, and upgrade metadata when applicable. |
 | Content | Complete content-decoded bytes, an optional complete JSON value, and explicit decoding/parsing status. Binary bytes have a defined wire encoding. Original encoding metadata describes the retained encoded representation, not the decoded view. |
@@ -485,24 +492,18 @@ declarations. The network matcher consumes OS metadata directly; the broker also
 includes that metadata in Agent plugin context. This shared data does not imply
 a shared policy or dependency on Agent parsing in the network matcher.
 
-macOS/Windows transparent ingress already supplies source metadata. Explicit
-ingress currently sets `source_process` to `None`; merely adding process
-selectors would leave those rules ineffective for `abyss run`.
+Preserve each ingress's current metadata capabilities. macOS/Windows transparent
+ingress already supplies source metadata; explicit ingress keeps
+`source_process = None`, including for local clients and `abyss run`. No
+socket-owner lookup or new platform process-context provider is part of either
+blocking capability.
 
-Include local socket-owner attribution in the implementation scope for explicit
-ingress: resolve the accepted connection's local tuple to its originating
-process, then enrich the result through platform process APIs. Resolve once per
-connection and preserve process-incarnation information where available. Put
-native lookup behind `sys/` and ingress/process-context modules, with static
-platform selection. Linux also needs a native process-context provider; its
-current fallback does not provide that metadata.
-
-Run this lookup when network selectors need source identity or Agent inspection
-is enabled and needs that context. Do not walk the process table per HTTP chunk.
-Failed or ambiguous attribution remains explicitly unavailable; never guess a process
-from User-Agent or from the CLI's parent PID. Fields the platform does not
-provide, including an application ID, remain absent. Process-specific coverage
-must be validated on each supported ingress/platform before it is advertised.
+Network rules requiring an unavailable source field continue not to match, as
+they do today. Other matching rules or fallback actions still decide the flow.
+Agent plugins receive the same absent source fields alongside available target,
+request, and model content; absent process identity alone is not an inspection
+failure. A plugin can inspect the content without process identity. Keep any
+Agent-declared identity separate from OS source metadata.
 
 ## Agent inspection plugin protocol
 
@@ -722,7 +723,8 @@ required parts of the final feature.
    selectors, validation, config/API contracts, and SDK representations. Add the
    terminal block branch, update routing fast paths, and implement ingress errors
    and flow-close reasons. Preserve existing rule order and durable MITM updates.
-   Add explicit-proxy socket-owner attribution and platform capability tests.
+   Preserve existing ingress metadata, including absent explicit-proxy process
+   information; add no process discovery.
    No Agent parser or plugin change is needed to enable this capability.
 2. **Agent parsing and HTTP gate.** Add the independent `hooks.agent_request`
    config and hook updates. Expose response-independent Agent request
@@ -772,8 +774,11 @@ Acceptance tests should prove the boundary, not merely check decision enums:
   result, pending-state cleanup, and zero rejected-request forwarding.
 - Test selector AND/OR semantics, unavailable source metadata, executable versus
   entry-point identity, SNI/Host/CONNECT consistency, and next-hop versus target
-  hostname. Verify process attribution using real local child processes on each
-  supported platform.
+  hostname. Verify process rules against metadata already supplied by platform
+  ingress. For explicit ingress, verify source-process fields remain absent,
+  process-dependent rules do not match, and destination-only or fallback blocks
+  still work. Verify Agent plugins can inspect decoded requests with absent
+  source-process fields.
 - Keep v1 SDK event consumers interoperable. Validate new v2 fixtures across Rust,
   TypeScript, and Python. Check policy persistence failures, independent MITM and
   hooks updates, network snapshots retained by existing flows, and Agent hook
