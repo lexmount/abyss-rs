@@ -1,4 +1,4 @@
-//! Loopback HTTP explicit-proxy ingress.
+//! Configurable IPv4 and IPv6 HTTP explicit-proxy ingress.
 //!
 //! This adapter accepts opt-in proxy clients, decodes their initial proxy
 //! request, connects directly or negotiates the configured next-hop tunnel, then
@@ -7,7 +7,7 @@
 
 use std::{
     io,
-    net::{IpAddr, SocketAddr},
+    net::{Ipv4Addr, Ipv6Addr, SocketAddr},
     time::Duration,
 };
 
@@ -27,7 +27,7 @@ use super::{
     Ingress, IngressConnection, IngressError, IngressFactory, IngressRuntimeStatus, PlatformFlow,
     PlatformFlowMetadata, StartedIngress,
 };
-use abyss_mitm::outbound::{HttpConnectProxy, UpstreamProxyError};
+use abyss_mitm::outbound::{HttpConnectProxy, ListenerEndpoint, UpstreamProxyError};
 
 use crate::network_config::NetworkRuntime;
 
@@ -41,7 +41,7 @@ pub struct ExplicitIngressEndpoint {
 }
 
 impl ExplicitIngressEndpoint {
-    /// Creates an endpoint. Startup performs defense-in-depth loopback validation.
+    /// Creates an endpoint. The operating system validates the address at bind time.
     #[must_use]
     pub const fn new(listen_addr: SocketAddr) -> Self {
         Self { listen_addr }
@@ -73,12 +73,6 @@ impl IngressFactory for ExplicitIngressFactory {
     type Ingress = ExplicitIngress;
 
     async fn start(self) -> Result<StartedIngress<Self::Ingress>, IngressError> {
-        if !self.listen_addr.ip().is_loopback() {
-            return Err(ExplicitIngressError::NonLoopbackListener {
-                listen_addr: self.listen_addr,
-            }
-            .into());
-        }
         let listener = TcpListener::bind(self.listen_addr)
             .await
             .map_err(|source| ExplicitIngressError::Bind {
@@ -90,7 +84,7 @@ impl IngressFactory for ExplicitIngressFactory {
             .map_err(|source| ExplicitIngressError::ListenerAddress { source })?;
         if let Some(proxy) = self.network.snapshot().proxy()
             && let Some(ip) = proxy.endpoint().host().as_ip_addr()
-            && same_endpoint(SocketAddr::new(ip, proxy.endpoint().port()), listen_addr)
+            && same_endpoint(SocketAddr::new(ip, proxy.endpoint().port()), listen_addr)?
         {
             return Err(ExplicitIngressError::SelfTarget {
                 target: proxy.endpoint().authority(),
@@ -144,6 +138,10 @@ pub struct ExplicitConnection {
 
 impl IngressConnection for ExplicitConnection {
     async fn into_flow(mut self) -> Result<PlatformFlow, IngressError> {
+        let local_addr = self
+            .client
+            .local_addr()
+            .map_err(|source| ExplicitIngressError::ListenerAddress { source })?;
         let decoded = match ExplicitRequestDecoder::default()
             .decode(&mut self.client)
             .await
@@ -185,7 +183,7 @@ impl IngressConnection for ExplicitConnection {
         };
         let metadata = PlatformFlowMetadata::from_destination_parts(
             Some(self.peer_addr),
-            Some(self.listen_addr),
+            Some(local_addr),
             destination,
             destination_host,
             None,
@@ -209,12 +207,19 @@ impl ExplicitConnection {
         target: &TargetAuthority,
     ) -> Result<PreparedExplicitUpstream, ExplicitIngressError> {
         if let Some(proxy) = &self.upstream {
-            if target.host().as_ip_addr().is_some_and(|ip| {
-                same_endpoint(SocketAddr::new(ip, target.port()), self.listen_addr)
-            }) || target
-                .host()
-                .as_dns_name()
-                .is_some_and(|host| host == "localhost" && target.port() == self.listen_addr.port())
+            let targets_listener = match target.host().as_ip_addr() {
+                Some(ip) => same_endpoint(SocketAddr::new(ip, target.port()), self.listen_addr)?,
+                None => false,
+            };
+            if targets_listener
+                || (target.host().as_dns_name() == Some("localhost")
+                    && (same_endpoint(
+                        SocketAddr::from((Ipv4Addr::LOCALHOST, target.port())),
+                        self.listen_addr,
+                    )? || same_endpoint(
+                        SocketAddr::from((Ipv6Addr::LOCALHOST, target.port())),
+                        self.listen_addr,
+                    )?))
             {
                 return Err(ExplicitIngressError::SelfTarget {
                     target: target.authority(),
@@ -242,15 +247,13 @@ impl ExplicitConnection {
             });
         }
         let resolved = self.resolve_target(target).await?;
-        if resolved
-            .iter()
-            .copied()
-            .any(|address| same_endpoint(address, self.listen_addr))
-        {
-            return Err(ExplicitIngressError::SelfTarget {
-                target: target.authority(),
-                listen_addr: self.listen_addr,
-            });
+        for address in &resolved {
+            if same_endpoint(*address, self.listen_addr)? {
+                return Err(ExplicitIngressError::SelfTarget {
+                    target: target.authority(),
+                    listen_addr: self.listen_addr,
+                });
+            }
         }
         let upstream = self.connect_target(target, &resolved).await?;
         let upstream_addr =
@@ -447,9 +450,6 @@ pub enum ExplicitIngressError {
         #[source]
         source: UpstreamProxyError,
     },
-    /// Explicit proxy listeners are intentionally restricted to loopback.
-    #[error("explicit proxy listener `{listen_addr}` must use a loopback address")]
-    NonLoopbackListener { listen_addr: SocketAddr },
     /// Binding the explicit listener failed.
     #[error("bind explicit proxy listener at {listen_addr}: {source}")]
     Bind {
@@ -457,9 +457,15 @@ pub enum ExplicitIngressError {
         #[source]
         source: io::Error,
     },
-    /// Reading the listener's bound address failed.
-    #[error("read explicit proxy listener address: {source}")]
+    /// Reading the listener or accepted socket's local address failed.
+    #[error("read explicit proxy local address: {source}")]
     ListenerAddress {
+        #[source]
+        source: io::Error,
+    },
+    /// Local interface discovery failed while checking for a proxy loop.
+    #[error("inspect explicit proxy listener interfaces: {source}")]
+    ListenerInterfaces {
         #[source]
         source: io::Error,
     },
@@ -538,17 +544,13 @@ impl ExplicitIngressError {
     }
 }
 
-fn same_endpoint(candidate: SocketAddr, listener: SocketAddr) -> bool {
-    candidate.port() == listener.port()
-        && (candidate.ip().is_unspecified()
-            || canonical_ip(candidate.ip()) == canonical_ip(listener.ip()))
-}
-
-fn canonical_ip(ip: IpAddr) -> IpAddr {
-    match ip {
-        IpAddr::V6(ipv6) => ipv6.to_ipv4_mapped().map_or(IpAddr::V6(ipv6), IpAddr::V4),
-        IpAddr::V4(_) => ip,
-    }
+fn same_endpoint(
+    candidate: SocketAddr,
+    listener: SocketAddr,
+) -> Result<bool, ExplicitIngressError> {
+    ListenerEndpoint::new(listener)
+        .contains(candidate)
+        .map_err(|source| ExplicitIngressError::ListenerInterfaces { source })
 }
 
 #[cfg(test)]
@@ -560,7 +562,7 @@ mod tests {
         net::TcpStream,
     };
 
-    use super::{ExplicitIngressEndpoint, ProxyResponse, same_endpoint};
+    use super::{ExplicitIngressEndpoint, ProxyResponse};
     use crate::ingress::{Ingress as _, IngressConnection as _, IngressFactory as _};
 
     fn test_network() -> crate::network_config::NetworkRuntime {
@@ -569,41 +571,20 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn startup_rejects_non_loopback_listener() {
-        let error = ExplicitIngressEndpoint::new(SocketAddr::from(([0, 0, 0, 0], 0)))
-            .into_factory(test_network())
-            .start()
-            .await
-            .err()
-            .expect("wildcard explicit listener should fail");
-
-        assert!(error.to_string().contains("loopback"));
-    }
-
-    #[test]
-    fn self_target_comparison_normalizes_ipv4_mapped_ipv6() {
-        assert!(same_endpoint(
-            "[::ffff:127.0.0.1]:28999"
-                .parse()
-                .expect("mapped address should parse"),
-            "127.0.0.1:28999"
-                .parse()
-                .expect("IPv4 address should parse")
-        ));
-        assert!(same_endpoint(
-            "0.0.0.0:28999"
-                .parse()
-                .expect("unspecified IPv4 address should parse"),
-            "127.0.0.1:28999"
-                .parse()
-                .expect("IPv4 address should parse")
-        ));
-        assert!(same_endpoint(
-            "[::]:28999"
-                .parse()
-                .expect("unspecified IPv6 address should parse"),
-            "[::1]:28999".parse().expect("IPv6 address should parse")
-        ));
+    async fn startup_accepts_ipv4_and_ipv6_wildcard_listeners() {
+        for address in ["0.0.0.0:0", "[::]:0"] {
+            let requested: SocketAddr = address.parse().expect("listener");
+            let started = ExplicitIngressEndpoint::new(requested)
+                .into_factory(test_network())
+                .start()
+                .await
+                .expect("wildcard listener should bind");
+            let (ingress, status) = started.into_parts();
+            let actual = status.listen_addr().expect("bound address");
+            assert_eq!(actual.ip(), requested.ip());
+            assert_ne!(actual.port(), 0);
+            ingress.shutdown().await;
+        }
     }
 
     #[tokio::test]
@@ -631,7 +612,17 @@ mod tests {
 
     #[tokio::test]
     async fn request_targeting_listener_receives_forbidden() {
-        let endpoint = ExplicitIngressEndpoint::new(SocketAddr::from((Ipv4Addr::LOCALHOST, 0)));
+        for (listener, client_ip) in [
+            ("127.0.0.1:0", "127.0.0.1"),
+            ("0.0.0.0:0", "127.0.0.1"),
+            ("[::]:0", "::1"),
+        ] {
+            assert_self_target_forbidden(listener, client_ip).await;
+        }
+    }
+
+    async fn assert_self_target_forbidden(listener: &str, client_ip: &str) {
+        let endpoint = ExplicitIngressEndpoint::new(listener.parse().expect("listener"));
         let started = endpoint
             .into_factory(test_network())
             .start()
@@ -641,7 +632,9 @@ mod tests {
         let listen_addr = status
             .listen_addr()
             .expect("explicit listener should report address");
-        let mut client = TcpStream::connect(listen_addr)
+        let connect_addr =
+            SocketAddr::new(client_ip.parse().expect("client IP"), listen_addr.port());
+        let mut client = TcpStream::connect(connect_addr)
             .await
             .expect("test client should connect");
         let accepted = ingress
@@ -650,17 +643,21 @@ mod tests {
             .expect("listener should accept client");
         client
             .write_all(
-                format!("CONNECT {listen_addr} HTTP/1.1\r\nHost: {listen_addr}\r\n\r\n").as_bytes(),
+                format!("CONNECT {connect_addr} HTTP/1.1\r\nHost: {connect_addr}\r\n\r\n")
+                    .as_bytes(),
             )
             .await
             .expect("CONNECT should write");
 
         let worker = tokio::spawn(async move { accepted.into_flow().await });
         let mut response = Vec::new();
-        client
-            .read_to_end(&mut response)
-            .await
-            .expect("forbidden response should read");
+        tokio::time::timeout(
+            std::time::Duration::from_secs(2),
+            client.read_to_end(&mut response),
+        )
+        .await
+        .expect("self target should be rejected promptly")
+        .expect("forbidden response should read");
         let error = match worker.await.expect("worker should join") {
             Ok(_flow) => panic!("self target should fail"),
             Err(error) => error,

@@ -5,12 +5,14 @@
 
 mod config;
 mod http_connect;
+mod listener;
 
 #[cfg(test)]
 mod tests;
 
 pub use config::{UpstreamProxyConfig, UpstreamProxyConfigError, UpstreamProxyProtocol};
 pub use http_connect::{ConnectedTunnel, HttpConnectProxy};
+pub use listener::ListenerEndpoint;
 
 use std::{io, net::SocketAddr, time::Duration};
 
