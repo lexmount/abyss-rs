@@ -63,6 +63,9 @@ blocking returns an error through the already decoded application transport.
    Agent inspection path. The network policy stays a concrete metadata matcher.
 8. Agent inspection preserves the existing upstream connection and TLS handshake
    order. The awaited hook gates application request writes, not connection setup.
+9. Streaming and inspected requests compose the same reusable transport pipeline.
+   Inspection adds retention and a decision stage; it must not create a second
+   implementation of request forwarding, response relay, or observation.
 
 The Agent inspection guarantee concerns the request being checked. Upstream TCP
 and TLS setup may already be complete, explicit CONNECT may already have
@@ -289,42 +292,87 @@ flowchart TD
         B -->|Passthrough| P[Opaque relay]
         B -->|Intercept| C[Decrypt and decode HTTP]
     end
-    subgraph R[Broker Agent plugin capability]
-        C --> D{Inspection-capable plugins connected}
-        D -->|No| E[Existing decoded relay]
-        D -->|Yes| F[MITM retains complete request]
+    subgraph R[Shared decoded request pipeline]
+        C --> Q[Shared request preparation]
+        Q --> D{Inspection-capable plugins connected}
+        D -->|No| E[Streaming request body source]
+        D -->|Yes| F[Retain complete request using shared body reader]
         F --> G[Broker calls abyss-agent-hook request parser]
         G --> H[Broker awaits plugin decisions]
-        H -->|Allow| I[Forward retained request]
+        H -->|Allow| I[Retained request body source]
         H -->|Block or unavailable| Y[Agent request rejection]
+        E --> W[Shared request writer]
+        I --> W
     end
-    I --> J[Relay provider response and observe exchange]
-    E --> J
+    W --> J[Shared response relay, observation, and completion]
 ```
+
+### Shared pipeline composition
+
+The branches above select how to prepare a request for forwarding. They are not
+two complete relay implementations. Compose a single flow from reusable stages,
+with the inspection stage present only when a request has selected plugin sessions:
+
+| Stage | Shared responsibility | Mode-specific behavior |
+| --- | --- | --- |
+| Request preparation | Decode/validate the head and target, preserve prefetched bytes, determine framing, and prepare the existing header transformations. | Select streaming or inspection from the connected-session snapshot. |
+| Body consumption | One framing reader owns Content-Length/chunk boundaries, trailers, completion, and captured payload extraction. | Stream validated wire bytes onward, or retain them completely within inspection limits. |
+| Before-forward decision | Use the narrow transport control interface. | Streaming proceeds directly. Inspection decodes retained content, uses the shared Agent parser, and awaits broker plugin decisions. |
+| Request writing | One writer emits the prepared head and original encoded body, applies existing flush/error handling, and accounts for actual upstream writes. | Consume a live body source or an allowed retained body source. |
+| Response and completion | One response decoder/relay, capture and observation path, upgrade handling, accounting, and shutdown lifecycle. | Successful streaming and inspected requests rejoin this same path. Rejected requests end before request writing. |
+
+Extract these stages from the existing relay rather than copying it into
+`streaming_relay` and `inspected_relay`. In particular,
+[forward_body:880](../crates/abyss-mitm/src/transparent/relay.rs#L880) currently
+combines framing, capture, and writes. Separate framing consumption from its
+output destination so the same parser can feed either forwarding or retention.
+Keep the existing chunk/trailer validation in one implementation. Retained wire
+bytes can be replayed without running the framing parser or model parser again
+merely to send them.
+
+Both modes use the same head transformation and local `100 Continue` helper.
+Invoke the helper at the appropriate point for each mode, emitting it once:
+inspection needs the body before any upstream request write. Request retention
+does not count as upstream traffic, and replay must not duplicate capture or
+observation. Reuse request-local buffers and capture metadata when available.
+
+Keep the successful completion path represented by
+[forward_http_response_and_submit:217](../crates/abyss-mitm/src/transparent/relay.rs#L217)
+shared, including a WebSocket upgrade declined with a normal HTTP response.
+HTTP/HTTPS share this pipeline after their existing transport setup; HTTP bodies
+and WebSocket messages retain their own framing implementations.
+
+Composition must preserve the ordinary streaming path. Do not buffer a complete
+request, build an inspection projection, or impose the inspection size limit
+when no inspection session was selected. Ordinary audit capture may still be
+bounded or truncated without preventing forwarding; the inspected path requires
+complete content. Sharing stages does not make those two retention policies equal.
 
 ### HTTP and HTTPS
 
-Introduce a prepared request representation containing the parsed head, retained
-wire bytes needed for forwarding, and the decoded inspection view. Only the
-inspection branch constructs it.
+Use one prepared request head and a body source consumed by the shared writer.
+The source is either live streaming input or retained wire bytes. Only the
+inspection branch constructs the complete retained body and decoded inspection
+view; request metadata and common forwarding logic are shared.
 
 1. Decode and validate the request head after the network decision permits this
    decoded flow. Select the connected inspection sessions before writing any
    request bytes upstream; do not re-evaluate TLS rules inside this request gate.
-2. If inspection is unnecessary, use the existing streaming relay.
+2. If inspection is unnecessary, compose the shared writer with the streaming
+   body source, then continue through the common response/completion stages.
 3. Otherwise, read the complete request body into a bounded buffer. Preserve
-   Content-Length/chunked framing and already-prefetched bytes. Extract the
-   framing reader from the current relay so both branches use the same parser.
+   Content-Length/chunked framing and already-prefetched bytes. The shared
+   framing reader consumes the body for either streaming or retention.
 4. For `Expect: 100-continue`, send the interim response locally to obtain the
    body. This is permission to upload to the broker, not permission to forward.
    Keep the existing removal of the locally handled `Expect` header upstream.
 5. Decode content encodings and pass the complete request to the broker. The
    broker calls `abyss-agent-hook` to parse it, invokes inspection plugins, and
    returns a forwarding or rejection result to the relay.
-6. On allow, replay the retained request using the existing forwarding rules.
-   Preserve its body and content encoding; do not serialize the normalized model
-   projection back into a provider request. Continue normal response forwarding
-   and asynchronous observation.
+6. On allow, pass the retained body source to the same request writer used by
+   streaming requests. Preserve its body and content encoding; do not serialize
+   the normalized model projection back into a provider request. Continue through
+   the shared response forwarding and asynchronous observation stages.
 7. On block, send a local error and close the request connection. Do not create a
    fabricated provider response or token-usage event.
 
@@ -390,7 +438,7 @@ sequenceDiagram
         alt Every applicable plugin allows
             H-->>B: allow=true
             B-->>M: Forward
-            M->>P: Forward retained request headers and body
+            M->>P: Shared writer forwards retained request
             P-->>M: Provider response
             M-->>A: Relay provider response
             Note over M,R: Existing completed-exchange observation follows
@@ -427,6 +475,12 @@ Use the WebSocket implementation's message reassembly for fragmented frames and
 apply the inspection limit during assembly. Inspect the resulting payload once;
 do not forward fragments while accumulating it. Ping, Pong, and Close remain
 transport control messages rather than model-input checks.
+
+Keep one WebSocket upgrade path and one relay lifecycle. The client-to-provider
+message path composes shared message reading/reassembly, an optional broker
+decision, and the same message writer and observation submission. Do not create
+separate normal and inspected WebSocket relay loops. Both modes share reverse
+traffic handling, message ordering, counters, and close/cancellation logic.
 
 Awaiting a plugin must not stop provider-to-Agent response/control traffic. Split
 the two relay directions so the client-to-provider path waits for its current
@@ -717,6 +771,12 @@ transport response/close information needed by the relay; the broker owns the
 Agent rejection code and message. The transport plan chooses streaming or
 buffering, without Agent concepts, network block rules, or plugin IDs.
 
+Interpret `ForwardingPlan` at request preparation and body consumption, rather
+than branching into two full relay functions. Compose the shared request writer
+with a live or retained body source, then call the same response/completion
+stages. The plan's only inspection-specific work is retaining full content and
+awaiting the broker's before-forward result.
+
 `AgentRequestInspector::before_forward` calls the shared Agent request parser,
 builds plugin context, awaits the selected plugin sessions, and maps their
 `Allow`/`Block` result to `Forward`/`Reject`. It does not call the observer's
@@ -729,6 +789,13 @@ Rust monomorphizes the calls and futures. Keep the engine and unrelated control 
 structures concrete; they do not all need a new generic parameter. Update engine
 call sites directly where needed; use a streaming-only control for callers that
 do not inspect requests, without a legacy entry-point wrapper.
+
+Implement stages as concrete structs with `impl` methods and shared functions;
+use static generics where stream/body-source behavior varies. This is composition
+of the existing transport operations, not a new pipeline framework. Avoid a
+runtime list of boxed stages, type-erased stage context, or a generic workflow
+graph. Keep HTTP and WebSocket framing concrete while reusing broker decision
+orchestration and shared transport helpers.
 
 Use a concrete `Vec<InspectionPluginClient>` for connected inspection sessions.
 They all use the same IPC implementation; their custom logic runs in
@@ -842,8 +909,10 @@ required parts of the final feature.
    No Agent parser or plugin change is needed to enable this capability.
 2. **Shared Agent parsing and HTTP forwarding boundary.** Refactor request-side
    detection and projection in `abyss-agent-hook` for use by both inspection and
-   completed-exchange observation. Extract reusable body framing, add the buffered
-   branch and local rejection writer before the first upstream request write.
+   completed-exchange observation. Extract the common request preparation,
+   framing reader, writer, and completion stages. Compose streaming input or
+   buffered inspection into those stages, with local rejection before the first
+   upstream request write. Do not duplicate the existing relay implementation.
    Preserve the existing upstream connection and TLS handshake order. Use a
    concrete in-process transport control to verify the forwarding boundary.
 3. **Broker plugin inspection.** Update the current protocol on the existing
@@ -854,9 +923,10 @@ required parts of the final feature.
    section or management API.
    Add a minimal DLP plugin example; private-key detection belongs in that custom
    plugin rather than a broker or MITM security-rule catalog.
-4. **Agent WebSocket inspection and integration.** Gate decoded client data
-   messages, preserve reverse-direction progress, add cancellation/close handling,
-   and run the same plugin through real broker traffic.
+4. **Agent WebSocket inspection and integration.** Add the optional decision
+   stage to the common client-message pipeline. Reuse message writing, observation,
+   reverse-direction progress, and cancellation/close handling for both modes,
+   then run the same plugin through real broker traffic.
 
 Acceptance tests should prove the boundary, not merely check decision enums:
 
@@ -893,6 +963,14 @@ Acceptance tests should prove the boundary, not merely check decision enums:
 - For allowed requests, verify the provider receives the original payload under
   the existing relay transformations and the Agent receives its normal response.
   Existing capture/token-usage behavior must remain valid.
+- Run the same forwarding fixtures through streaming and inspected-allow modes.
+  Compare provider-visible headers/body, client-visible response, wire byte counts,
+  capture completeness, and normalized content/usage. Cover Content-Length,
+  chunked trailers, prefetch, `Expect: 100-continue`, compression, and successful
+  or declined WebSocket upgrades. Assert one observation per completed exchange
+  or allowed message, with no duplicate capture/accounting from retained replay.
+  Separately verify that ordinary audit capture limits still permit streaming
+  requests larger than the inspection limit.
 - For WebSocket, block a fragmented data message and a later request on an
   already-used connection. Assert no bytes from that message reach the provider,
   earlier allowed messages remain accounted for, prewarm input is checked, and
