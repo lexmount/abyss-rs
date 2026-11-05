@@ -105,15 +105,80 @@ uses local release assets as the download transport.
    commit. This also triggers the existing crates.io publication workflow;
    ensure its registry token and release prerequisites are ready.
 4. The publication job waits for the assembled release, verifies its checksums,
-   creates a draft GitHub Release, uploads every asset, and only then publishes
-   it as latest. Its `GITHUB_TOKEN` needs `contents: write`; no new secret is
-   required for endpoint assets. Windows executables are published without
+   creates a draft GitHub Release, and uploads every GitHub asset. Both CN and COM
+   broker CDN uploads must then succeed before the release is published as latest.
+   Its `GITHUB_TOKEN` needs `contents: write`; the CDN credentials and repository
+   variables below must also be configured. Windows executables are published without
    product signing; no signing certificate or hardware token is needed here.
 
 A failed upload leaves the release as a draft, allowing the original workflow
 run to be retried. Published releases are never overwritten by the workflow;
 source changes require a new version and tag. Serialize release tag pushes and
 wait for each release to finish before starting another version.
+
+## Broker CDN publication
+
+The same tag workflow derives three broker-only archives from the verified
+endpoint release. It reuses the native-tested broker bytes; it does not rebuild
+or sign them. Each archive contains `abyss-broker` (or `abyss-broker.exe`),
+`LICENSE`, `VERSION`, and `broker-artifact.json`. The metadata records the public
+source repository, full commit revision, version, target, and payload SHA-256
+digests. Archive output is reproducible for the same input release.
+
+Both deployment-configured Tencent COS buckets receive this layout:
+
+```text
+broker/v1.0.0/
+  abyss-broker-v1.0.0-aarch64-apple-darwin.tar.gz
+  abyss-broker-v1.0.0-x86_64-unknown-linux-musl.tar.gz
+  abyss-broker-v1.0.0-x86_64-pc-windows-msvc.zip
+  SHA256SUMS
+```
+
+The existing CDN domains must use those buckets as their origins and preserve
+the object path. Downloads then use `<CDN base URL>/broker/v<version>/<filename>`.
+Only versioned paths are published; there is no mutable `broker/latest` alias or
+CDN cache-purge step. The existing seven GitHub Release assets are unchanged.
+
+Under **Settings → Secrets and variables → Actions**, configure these repository
+secrets (or allow this repository to use equivalent organization secrets):
+
+| Secret | Value |
+| --- | --- |
+| `TENCENTCLOUD_SECRET_ID` | Tencent Cloud CAM credential SecretId, as used by AbyssApp |
+| `TENCENTCLOUD_SECRET_KEY` | Matching SecretKey |
+
+Configure these non-secret repository **Variables** for the two CDN origins:
+
+| Variable | Value |
+| --- | --- |
+| `TENCENT_COS_CN_BUCKET` | CN bucket name including its numeric APPID suffix |
+| `TENCENT_COS_CN_REGION` | CN bucket region, for example `ap-nanjing` |
+| `TENCENT_COS_COM_BUCKET` | COM bucket name including its numeric APPID suffix |
+| `TENCENT_COS_COM_REGION` | COM bucket region, for example `ap-hongkong` |
+
+The credentials must permit COSCLI uploads to `broker/*` in both buckets,
+including multipart uploads. Tencent's [COSCLI cp documentation](https://cloud.tencent.com/document/product/436/63669)
+lists the required bucket checks and object/multipart actions: `HeadBucket`,
+`GetBucket`, `HeadObject`, `InitiateMultipartUpload`, `UploadPart`,
+`CompleteMultipartUpload`, `ListMultipartUploads`, `ListParts`, `PutObject`, and
+`AbortMultipartUpload`. Restrict object permissions to `broker/*`; bucket-level
+checks apply to the selected buckets. Credentials already scoped only to
+AbyssApp's `releases/*` or `skills/*` need the additional broker prefix.
+No CDN-management credentials or product-signing secrets are used.
+
+The workflow pins the COSCLI download SHA-256, matching AbyssApp's verified
+uploader. Credentials are written to a private temporary config, excluded from
+command arguments and the COSCLI child environment, and removed on exit. The
+publisher verifies the complete three-platform checksum set before uploading and
+uploads `SHA256SUMS` last. An upload failure fails that site's job and keeps the
+GitHub Release in draft. Re-run failed jobs from the original tag run after fixing
+configuration or connectivity; successful matrix jobs need not be repeated.
+PR and manual workflow runs only build and validate Actions artifacts.
+
+Run `python3 scripts/tests/test_release_broker_cos.py` for offline publisher
+tests. `test_release_artifacts.py` also checks broker packaging, provenance,
+reproducibility, corrupted inputs, and missing platforms.
 
 For a local packaging rehearsal after compiling the three release binaries:
 

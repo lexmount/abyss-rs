@@ -70,6 +70,7 @@ test-install-cli:
 	python3 scripts/tests/test_install_cli.py
 	python3 scripts/tests/test_release_installer.py
 	python3 scripts/tests/test_release_artifacts.py
+	python3 scripts/tests/test_release_broker_cos.py
 
 test-blackbox-local:
 	bash scripts/tests/blackbox_local_environment.sh
