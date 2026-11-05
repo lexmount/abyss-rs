@@ -172,6 +172,19 @@ TLS configuration name stays compatible; this does not introduce TLS semantics
 into plaintext or add a second rule list. Scope is traffic handled by the
 broker's HTTP/TLS ingress, not OS-wide UDP, QUIC, file, or process control.
 
+The following actions belong exclusively to network routing, before Agent plugin
+inspection is considered:
+
+| Network MITM action | Network routing outcome |
+| --- | --- |
+| `Block` | End the flow without model parsing or inspection RPC. |
+| `Passthrough` | Relay opaque TLS bytes; this flow never enters Agent plugin inspection. |
+| `Intercept` | Terminate TLS and decode requests. The broker can then inspect those requests through connected plugins. |
+
+Plain HTTP that passes network policy is already readable and can enter the same
+decoded request path. HTTPS inspection requires an explicit `Intercept` decision.
+Connecting a plugin does not change network routing or enable TLS decryption.
+
 The network-layer sequence is independent of Agent parsing and plugin state:
 
 ```mermaid
@@ -201,6 +214,12 @@ sequenceDiagram
 ```
 
 ## Agent inspection through connected plugins
+
+This stage starts with decoded HTTP or WebSocket content. Before invoking a
+plugin, the broker uses `abyss-agent-hook` to parse the request and combines the
+request-side Agent projection, complete decoded content, and available metadata
+into context. Opaque TLS traffic never reaches this stage. Plugins return only
+allow/block decisions; they do not choose `Intercept` or `Passthrough`.
 
 Use the existing plugin connection lifecycle. A plugin connects to the broker
 and declares `agent_request` support during protocol negotiation. The SDK can
@@ -241,20 +260,6 @@ Use a finite broker-side default decision deadline so a lost reply cannot leave
 a request waiting indefinitely. These are transport implementation limits, not
 a new set of per-plugin configuration options.
 
-The two capabilities compose only at the transport boundary:
-
-| Network MITM action | Broker plugin inspection behavior |
-| --- | --- |
-| `Block` | The network flow ends. No body buffering, model parsing, or inspection RPC occurs. |
-| `Passthrough` | Opaque TLS bytes are relayed. Connected inspection plugins do not change that decision. |
-| `Intercept`, no inspection-capable plugin connected | Existing decoded relay and independently enabled observation hooks run. |
-| `Intercept`, inspection-capable plugins connected | The relay waits for their decisions before forwarding the request. |
-
-Plain HTTP that passes network policy can enter the same request path. For HTTPS
-DLP, deployments explicitly configure `Intercept` for the traffic they want
-inspected. Connecting a plugin does not decrypt or reject a passthrough flow.
-Inspection covers only decoded traffic reaching the broker's forwarding boundary.
-
 Keep `/v1/mitm/config` and its durable policy transaction for network decisions,
 and `/v1/hooks/config` for observation. Neither stores inspection plugin membership.
 Network decisions retain their existing per-flow snapshot. Plugin membership is
@@ -266,7 +271,7 @@ Old configuration keeps its existing behavior; existing v1 event-only plugins
 do not enable inspection. Old binaries reject the new `block` action or an
 unsupported plugin protocol version rather than silently accepting them.
 
-## Agent request handling after the network decision
+## Network routing and Agent request forwarding
 
 ```mermaid
 flowchart TD
@@ -613,7 +618,9 @@ safe reason, or a generic broker rejection if no reason is supplied. The SDK can
 expose a typed `Allow` / `Block { reason }` enum while
 the wire carries the boolean and optional reason. The broker owns the stable
 `agent_request_blocked` error code and response envelope. A missing or invalid
-decision is not an implicit `true`.
+decision is not an implicit `true`. `Passthrough` and `Intercept` are not plugin
+response values; request content has already been decoded and parsed before
+this exchange, with explicit parsing status for unsupported or invalid protocols.
 
 The existing [PluginSession:69](../crates/abyss-broker/src/plugin/session.rs#L69)
 enters a write-only event loop after its handshake. Add a reply-reading path for
