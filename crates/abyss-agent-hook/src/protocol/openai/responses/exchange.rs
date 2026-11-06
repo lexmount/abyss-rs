@@ -2,9 +2,7 @@
 
 use abyss_mitm::HttpExchange;
 
-use super::{
-    request::ResponsesRequest, response::ResponsesResponse, tools::extract_request_tool_events,
-};
+use super::{request::ResponsesRequest, response::ResponsesResponse};
 use crate::protocol::openai::shared::{
     exchange::ParsedOpenAiExchange, http::OpenAiHttpExchange, images::extract_openai_request_images,
 };
@@ -19,9 +17,7 @@ pub fn parse_responses_exchange(exchange: &HttpExchange) -> Option<ParsedOpenAiE
         ResponsesResponse::assemble(&decoded.documents.values, decoded.documents.incomplete);
     decoded.finish(
         request.conversation(),
-        request.texts(),
         payload.map_or_else(Vec::new, extract_openai_request_images),
-        payload.map_or_else(Vec::new, extract_request_tool_events),
         &response,
     )
 }

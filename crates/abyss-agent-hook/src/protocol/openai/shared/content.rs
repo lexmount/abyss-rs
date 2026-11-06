@@ -1,69 +1,75 @@
-//! OpenAI-family content parts and item projection; protocol state lives in each dialect.
+//! OpenAI-family content parts, shared by both dialects; items, messages, and
+//! tool calls belong to each dialect.
 
-use abyss_plugin_protocol::event::MessageRole;
+use abyss_plugin_protocol::event::{ConversationEntry, EntryRole};
 use serde_json::Value;
 
 use crate::protocol::{
-    model::conversation::{ConversationProjection, MessageDraft},
-    shared::text::{MAX_PARSE_DEPTH, visible_text},
+    model::conversation::ConversationProjection,
+    shared::text::{self, MAX_PARSE_DEPTH, json_to_text},
 };
 
-/// OpenAI-specific text, tool-item, and message-item rules.
-pub struct OpenAiContent;
-
-impl OpenAiContent {
-    /// Returns the visible text of a content value, skipping tool items.
-    #[must_use]
-    pub fn text(value: &Value, depth: usize) -> Option<String> {
-        visible_text(value, depth, Self::is_tool_item)
+/// The entry of one message content part, by the part-to-role table: text
+/// parts take the message's role, a refusal is the assistant's, a tool part
+/// yields none, and any other part keeps its visible text in the message's
+/// role.
+pub fn part_entry(part: &Value, role: EntryRole) -> Option<ConversationEntry> {
+    if let Value::String(text) = part {
+        return Some(ConversationProjection::text(role, text));
     }
-
-    /// Whether an item or part type carries tool calls or tool results.
-    #[must_use]
-    pub fn is_tool_item(item_type: &str) -> bool {
-        matches!(item_type, "tool_call" | "tool_result" | "tool_use")
-            || item_type.ends_with("_call")
-            || item_type.ends_with("_call_output")
-    }
-
-    /// Role of one request or response item.
-    pub fn item_role(item: &Value, default_role: MessageRole) -> MessageRole {
-        match item.get("type").and_then(Value::as_str) {
-            Some("reasoning") => MessageRole::Reasoning,
-            Some(kind) if Self::is_tool_item(kind) => MessageRole::Tool,
-            _ => item
-                .get("role")
-                .and_then(Value::as_str)
-                .map_or(default_role, ConversationProjection::role),
+    match part.get("type").and_then(Value::as_str) {
+        Some("input_text" | "output_text" | "text" | "summary_text" | "reasoning_text") => {
+            Some(ConversationProjection::text(
+                role,
+                &ConversationProjection::field(part, "text").unwrap_or_default(),
+            ))
         }
-    }
-
-    /// Projects one request item; content parts stay separate fragments.
-    pub fn request_item(item: &Value, default_role: MessageRole) -> MessageDraft {
-        let role = Self::item_role(item, default_role);
-        let mut draft = MessageDraft::new(role, item_id(item));
-        let content = if role == MessageRole::Reasoning {
-            item.get("content").or_else(|| item.get("summary"))
-        } else {
-            item.get("content")
-        };
-        match (role, content) {
-            (MessageRole::Tool, _) => {}
-            (_, Some(Value::Array(parts))) => {
-                for part in parts {
-                    draft.push_part(
-                        &Self::text(part, MAX_PARSE_DEPTH.saturating_sub(1)).unwrap_or_default(),
-                    );
-                }
-            }
-            (MessageRole::Reasoning, _) => {}
-            _ => draft.push_part(&Self::text(item, MAX_PARSE_DEPTH).unwrap_or_default()),
-        }
-        draft
+        Some("refusal") => Some(ConversationProjection::text(
+            EntryRole::Assistant,
+            &ConversationProjection::field(part, "refusal").unwrap_or_default(),
+        )),
+        _ => visible_text(part).map(|text| ConversationProjection::text(role, &text)),
     }
 }
 
-/// Returns the text of one response part, excluding refusals and tools.
+/// Whether a part or item type carries a tool call or result.
+pub fn is_tool_type(kind: &str) -> bool {
+    matches!(kind, "tool_call" | "tool_result" | "tool_use")
+        || kind.ends_with("_call")
+        || kind.ends_with("_call_output")
+}
+
+/// The visible text of a value, skipping tool parts and items.
+pub fn visible_text(value: &Value) -> Option<String> {
+    text::visible_text(value, MAX_PARSE_DEPTH, is_tool_type)
+}
+
+/// Appends the entries of a message's `content`: one entry for a string, one
+/// per part for an array.
+pub fn content_entries(
+    content: Option<&Value>,
+    role: EntryRole,
+    entries: &mut Vec<ConversationEntry>,
+) {
+    match content {
+        Some(Value::String(text)) => entries.push(ConversationProjection::text(role, text)),
+        Some(Value::Array(parts)) => {
+            entries.extend(parts.iter().filter_map(|part| part_entry(part, role)));
+        }
+        _ => {}
+    }
+}
+
+/// A tool output: a string as sent, otherwise its text parts or its JSON.
+pub fn output_text(output: &Value) -> String {
+    match output {
+        Value::String(text) => text.clone(),
+        value => json_to_text(value, MAX_PARSE_DEPTH)
+            .unwrap_or_else(|| ConversationProjection::verbatim(value)),
+    }
+}
+
+/// The text of one response part, excluding refusals and tools.
 pub fn response_part_text(part: &Value) -> Option<&str> {
     match part {
         Value::String(text) => Some(text),
@@ -83,10 +89,6 @@ pub fn response_part_text(part: &Value) -> Option<&str> {
         }
         _ => None,
     }
-}
-
-pub fn item_id(item: &Value) -> Option<String> {
-    item.get("id").and_then(Value::as_str).map(str::to_owned)
 }
 
 pub fn slot_index(position: usize) -> u64 {

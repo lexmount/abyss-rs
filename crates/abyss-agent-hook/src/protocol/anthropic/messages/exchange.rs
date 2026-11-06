@@ -9,13 +9,12 @@ use crate::protocol::{
         conversation::{AnthropicRequest, AnthropicResponse},
         images::extract_anthropic_request_images,
         metadata::first_model,
-        tools::{extract_request_tool_events, extract_response_tool_events},
         usage::best_usage,
     },
     shared::{
         digest::sha256_hex,
-        http::{flow_server_name, header, request_host, transport_name},
-        json::{event_types, string_field},
+        http::{flow_server_name, request_host},
+        json::string_field,
         sse::ResponseDocuments,
     },
 };
@@ -39,13 +38,13 @@ pub fn parse_anthropic_messages_exchange(
     };
     let headers = exchange.request.headers();
 
-    let request = AnthropicRequest::parse(request_json, exchange.request.body().truncated());
-    let request_texts = request.texts();
+    let request_conversation =
+        AnthropicRequest::parse(request_json, exchange.request.body().truncated()).conversation();
     let request_images = extract_anthropic_request_images(request_json);
-    let request_tool_events = extract_request_tool_events(request_json);
     // Bootstrap, registry, and telemetry calls are useful transport evidence but
-    // not dialogue turns. Upload only exchanges with model-visible input.
-    if request_texts.is_empty() && request_images.is_empty() && request_tool_events.is_empty() {
+    // not dialogue turns. Upload only exchanges whose request carries content:
+    // a conversation entry or an image.
+    if request_conversation.entries.is_empty() && request_images.is_empty() {
         log_parse_skip(exchange, Some(&host), path, "no_dialogue_request_text");
         return None;
     }
@@ -53,8 +52,6 @@ pub fn parse_anthropic_messages_exchange(
     let response_documents = ResponseDocuments::decode(exchange.response.body());
     let response_values = response_documents.values;
     let response = AnthropicResponse::assemble(&response_values, response_documents.incomplete);
-    let response_texts = response.texts();
-    let response_tool_events = extract_response_tool_events(&response_values);
     let usage = best_usage(&response_values)
         .or_else(|| best_usage(std::slice::from_ref(request_json)))
         .unwrap_or_default();
@@ -68,7 +65,6 @@ pub fn parse_anthropic_messages_exchange(
         path,
         String::from_utf8_lossy(exchange.request.body().bytes())
     ));
-    let session = anthropic_session_id(headers, request_json, &host);
     let previous_response_id = request_json
         .get("thread")
         .filter(|thread| string_field(thread, "type") == Some("continue"))
@@ -76,26 +72,15 @@ pub fn parse_anthropic_messages_exchange(
         .map(str::to_owned);
 
     Some(ParsedAnthropicMessagesExchange {
-        host,
-        path: path.to_owned(),
-        method: exchange.request.method().to_string(),
-        transport: transport_name(&exchange.flow.protocol),
-        session_id: session.id,
-        session_id_source: session.source,
+        session_id: anthropic_session_id(headers, request_json, &host),
         request_hash,
-        request_conversation: request.conversation(),
+        request_conversation,
         response_conversation: response.conversation(),
-        request_texts,
         request_images,
         previous_response_id,
-        request_tool_events,
-        response_tool_events,
-        response_texts,
         usage,
         message_id,
         model,
-        anthropic_version: header(headers, "anthropic-version").map(str::to_owned),
-        event_types: response_values.iter().flat_map(event_types).collect(),
     })
 }
 

@@ -2,5 +2,7 @@
 
 mod identifier;
 pub mod normalizer;
+mod passthrough;
 
 pub use normalizer::*;
+pub use passthrough::ExchangePassthrough;

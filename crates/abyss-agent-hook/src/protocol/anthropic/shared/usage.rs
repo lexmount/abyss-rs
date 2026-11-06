@@ -1,11 +1,9 @@
 //! Anthropic token accounting and Claude Web visible-content estimates.
 
+use abyss_plugin_protocol::event::{Conversation, EntryRole};
 use serde_json::Value;
 
-use crate::protocol::{
-    model::{tool::ParsedToolEvent, usage::TokenUsage},
-    shared::text::MAX_PARSE_DEPTH,
-};
+use crate::protocol::{model::usage::TokenUsage, shared::text::MAX_PARSE_DEPTH};
 
 pub fn best_usage(values: &[Value]) -> Option<TokenUsage> {
     let usage = values
@@ -98,33 +96,29 @@ impl UsageCounters {
     }
 }
 
+/// Estimates token usage from the visible content of both conversations:
+/// one token per four bytes of trimmed entry text, tool names included.
 pub fn estimated_visible_usage(
-    request_texts: &[String],
-    request_tool_events: &[ParsedToolEvent],
-    response_texts: &[String],
-    response_tool_events: &[ParsedToolEvent],
+    request_conversation: &Conversation,
+    response_conversation: &Conversation,
 ) -> TokenUsage {
-    let input_tokens = estimate_visible_tokens(request_texts, request_tool_events);
-    let output_tokens = estimate_visible_tokens(response_texts, response_tool_events);
+    let input_tokens = estimate_visible_tokens(request_conversation);
+    let output_tokens = estimate_visible_tokens(response_conversation);
     TokenUsage::from_parts(input_tokens, 0, 0, output_tokens, 0)
 }
 
-fn estimate_visible_tokens(texts: &[String], tool_events: &[ParsedToolEvent]) -> i64 {
-    let text_byte_count = texts
+fn estimate_visible_tokens(conversation: &Conversation) -> i64 {
+    let byte_count = conversation
+        .entries
         .iter()
-        .map(|text| text.trim().len())
-        .fold(0_usize, usize::saturating_add);
-    let tool_byte_count = tool_events
-        .iter()
-        .map(|event| match event {
-            ParsedToolEvent::ToolCall { name, input, .. } => name
-                .as_deref()
-                .map_or(0, str::len)
-                .saturating_add(input.trim().len()),
-            ParsedToolEvent::ToolResult { output, .. } => output.trim().len(),
+        .map(|entry| {
+            let name = match entry.role {
+                EntryRole::ToolCall => entry.name.as_deref().map_or(0, str::len),
+                _ => 0,
+            };
+            name.saturating_add(entry.text.trim().len())
         })
         .fold(0_usize, usize::saturating_add);
-    let byte_count = text_byte_count.saturating_add(tool_byte_count);
     if byte_count == 0 {
         return 0;
     }

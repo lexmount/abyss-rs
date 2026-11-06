@@ -6,19 +6,20 @@
   "additionalProperties": false,
   "required": [
     "event_id",
-    "occurred_at",
+    "observed_at",
     "device",
     "agent",
     "session_id",
     "llm",
     "side",
+    "path",
     "token_usage"
   ],
   "properties": {
     "event_id": {
       "type": "string"
     },
-    "occurred_at": {
+    "observed_at": {
       "type": "string",
       "format": "date-time"
     },
@@ -31,19 +32,19 @@
     "session_id": {
       "type": "string"
     },
-    "turn_id": {
-      "type": "string"
-    },
-    "naming_thread": {
-      "type": "boolean"
-    },
-    "stream_id": {
-      "type": "string"
-    },
     "response_id": {
       "type": "string"
     },
     "previous_response_id": {
+      "type": "string"
+    },
+    "subagent_id": {
+      "type": "string"
+    },
+    "parent_subagent_id": {
+      "type": "string"
+    },
+    "turn_id": {
       "type": "string"
     },
     "purpose": {
@@ -52,9 +53,6 @@
         "compaction",
         "prewarm"
       ]
-    },
-    "session_title": {
-      "type": "string"
     },
     "llm": {
       "$ref": "#/$defs/llmContext"
@@ -65,23 +63,8 @@
         "response"
       ]
     },
-    "text": {
-      "type": "string"
-    },
     "token_usage": {
       "$ref": "#/$defs/tokenUsage"
-    },
-    "tool_calls": {
-      "type": "array",
-      "items": {
-        "$ref": "#/$defs/toolCall"
-      }
-    },
-    "tool_results": {
-      "type": "array",
-      "items": {
-        "$ref": "#/$defs/toolResult"
-      }
     },
     "attachments": {
       "type": "array",
@@ -89,8 +72,28 @@
         "$ref": "#/$defs/imageAttachment"
       }
     },
+    "omitted": {
+      "type": "array",
+      "items": {
+        "enum": [
+          "token_usage",
+          "conversation_text",
+          "tool_content",
+          "images"
+        ]
+      }
+    },
     "conversation": {
       "$ref": "#/$defs/conversation"
+    },
+    "path": {
+      "type": "string"
+    },
+    "headers": {
+      "type": "array",
+      "items": {
+        "$ref": "#/$defs/httpHeader"
+      }
     }
   },
   "$defs": {
@@ -182,50 +185,6 @@
         }
       }
     },
-    "toolCall": {
-      "type": "object",
-      "additionalProperties": false,
-      "required": [
-        "call_id",
-        "name",
-        "input",
-        "input_sha256"
-      ],
-      "properties": {
-        "call_id": {
-          "type": "string"
-        },
-        "name": {
-          "type": "string"
-        },
-        "input": {
-          "type": "string"
-        },
-        "input_sha256": {
-          "type": "string"
-        }
-      }
-    },
-    "toolResult": {
-      "type": "object",
-      "additionalProperties": false,
-      "required": [
-        "call_id",
-        "output",
-        "output_sha256"
-      ],
-      "properties": {
-        "call_id": {
-          "type": "string"
-        },
-        "output": {
-          "type": "string"
-        },
-        "output_sha256": {
-          "type": "string"
-        }
-      }
-    },
     "imageAttachment": {
       "type": "object",
       "additionalProperties": false,
@@ -266,20 +225,15 @@
       "type": "object",
       "additionalProperties": false,
       "required": [
-        "messages",
-        "instructions_present",
-        "completeness",
-        "policy_omitted"
+        "entries",
+        "completeness"
       ],
       "properties": {
-        "messages": {
+        "entries": {
           "type": "array",
           "items": {
-            "$ref": "#/$defs/conversationMessage"
+            "$ref": "#/$defs/conversationEntry"
           }
-        },
-        "instructions_present": {
-          "type": "boolean"
         },
         "completeness": {
           "enum": [
@@ -287,27 +241,17 @@
             "partial",
             "unsupported"
           ]
-        },
-        "policy_omitted": {
-          "type": "boolean"
         }
       }
     },
-    "conversationMessage": {
+    "conversationEntry": {
       "type": "object",
       "additionalProperties": false,
       "required": [
-        "id",
         "role",
         "text"
       ],
       "properties": {
-        "id": {
-          "type": [
-            "string",
-            "null"
-          ]
-        },
         "role": {
           "enum": [
             "system",
@@ -315,14 +259,55 @@
             "user",
             "assistant",
             "reasoning",
-            "tool",
+            "tool_call",
+            "tool_result",
             "unknown"
           ]
         },
         "text": {
           "type": "string"
+        },
+        "call_id": {
+          "type": "string"
+        },
+        "name": {
+          "type": "string"
+        },
+        "item_id": {
+          "type": "string"
         }
       }
+    },
+    "httpHeader": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "name"
+      ],
+      "properties": {
+        "name": {
+          "type": "string"
+        },
+        "value": {
+          "type": "string"
+        },
+        "value_base64": {
+          "type": "string",
+          "contentEncoding": "base64"
+        }
+      },
+      "oneOf": [
+        {
+          "required": [
+            "value"
+          ]
+        },
+        {
+          "required": [
+            "value_base64"
+          ]
+        }
+      ]
     }
   }
 }

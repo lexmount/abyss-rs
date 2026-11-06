@@ -2,7 +2,7 @@
 
 use std::{path::PathBuf, sync::Arc};
 
-use abyss_sdk::plugin::{AgentEvent, ImageAttachment, TokenUsage, ToolCall, ToolResult};
+use abyss_sdk::plugin::{AgentEvent, Conversation, ImageAttachment, TokenUsage};
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use tokio::{
@@ -353,18 +353,19 @@ struct IngestUsageEvent {
     agent: AgentPayload,
     session_id: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    turn_id: Option<String>,
-    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
-    naming_thread: bool,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    stream_id: Option<String>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
     response_id: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     previous_response_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    subagent_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    parent_subagent_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    turn_id: Option<String>,
     llm: LlmPayload,
     event_type: String,
-    text: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    conversation: Option<Conversation>,
     token_usage: BackendTokenUsage,
     metadata: Value,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
@@ -375,21 +376,25 @@ impl TryFrom<AgentEvent> for IngestUsageEvent {
     type Error = DeliveryPluginError;
 
     fn try_from(event: AgentEvent) -> Result<Self, Self::Error> {
-        let mut metadata = tool_activity_metadata(event.tool_calls, event.tool_results);
+        let mut metadata = json!({});
         if let Some(purpose) = event.purpose {
             metadata["purpose"] = serde_json::to_value(purpose)
                 .map_err(|error| DeliveryPluginError::Translate(error.to_string()))?;
         }
-        if let Some(title) = event.session_title {
-            metadata["session_title"] = Value::String(title);
+        if !event.omitted.is_empty() {
+            metadata["omitted"] = serde_json::to_value(&event.omitted)
+                .map_err(|error| DeliveryPluginError::Translate(error.to_string()))?;
         }
-        if let Some(conversation) = event.conversation {
-            metadata["conversation"] = serde_json::to_value(conversation)
+        // The path and headers are stored untouched; the backend reads
+        // nothing from them.
+        metadata["path"] = Value::String(event.path);
+        if !event.headers.is_empty() {
+            metadata["headers"] = serde_json::to_value(event.headers)
                 .map_err(|error| DeliveryPluginError::Translate(error.to_string()))?;
         }
         Ok(Self {
             event_id: event.event_id,
-            observed_at: event.occurred_at.to_rfc3339(),
+            observed_at: event.observed_at.to_rfc3339(),
             device: DevicePayload {
                 host_name: event.device.host_name,
                 platform: event.device.platform,
@@ -400,17 +405,17 @@ impl TryFrom<AgentEvent> for IngestUsageEvent {
                 version: event.agent.version,
             },
             session_id: event.session_id,
-            turn_id: event.turn_id,
-            naming_thread: event.naming_thread,
-            stream_id: event.stream_id,
             response_id: event.response_id,
             previous_response_id: event.previous_response_id,
+            subagent_id: event.subagent_id,
+            parent_subagent_id: event.parent_subagent_id,
+            turn_id: event.turn_id,
             llm: LlmPayload {
                 provider: event.llm.provider.wire_name().to_owned(),
                 model: event.llm.model,
             },
             event_type: event.side.wire_name().to_owned(),
-            text: event.text,
+            conversation: event.conversation,
             token_usage: BackendTokenUsage::try_from(event.token_usage)?,
             metadata,
             attachments: event
@@ -517,106 +522,93 @@ fn token_counter(name: &str, value: u64) -> Result<i64, DeliveryPluginError> {
     })
 }
 
-fn tool_activity_metadata(tool_calls: Vec<ToolCall>, tool_results: Vec<ToolResult>) -> Value {
-    let capacity = tool_calls.len().saturating_add(tool_results.len());
-    let mut segments = Vec::with_capacity(capacity);
-    segments.extend(tool_calls.into_iter().map(|call| {
-        json!({
-            "type": "tool_call",
-            "call_id": call.call_id,
-            "name": call.name,
-            "input": call.input,
-            "input_sha256": call.input_sha256,
-        })
-    }));
-    segments.extend(tool_results.into_iter().map(|result| {
-        json!({
-            "type": "tool_result",
-            "call_id": result.call_id,
-            "output": result.output,
-            "output_sha256": result.output_sha256,
-        })
-    }));
-    if segments.is_empty() {
-        json!({})
-    } else {
-        json!({"content_segments": segments})
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use abyss_sdk::plugin::{
-        AgentContext, AgentEvent, AgentEventSide, DeviceContext, LlmContext, LlmProvider,
-        TokenUsage, ToolCall,
+        AgentContext, AgentEvent, AgentEventSide, DeviceContext, HttpHeader, HttpHeaderValue,
+        LlmContext, LlmProvider, TokenUsage,
     };
     use serde_json::Value;
 
-    use super::{IngestEventsRequest, SpoolRecord};
+    use super::IngestEventsRequest;
 
     #[test]
-    fn translates_public_tool_types_into_backend_metadata() {
+    fn uploads_tool_activity_only_inside_the_conversation() {
         let event: AgentEvent = serde_json::from_str(include_str!(
             "../../../specs/broker-plugin-protocol/v1/fixtures/agent-event.json"
         ))
         .expect("fixture should decode");
         let request = IngestEventsRequest::try_from(event).expect("event should translate");
         let serialized = serde_json::to_value(request).expect("request should serialize");
+        let ingest_event = &serialized["events"][0];
 
+        assert!(ingest_event.get("text").is_none());
+        assert!(ingest_event["metadata"].get("content_segments").is_none());
         assert_eq!(
-            serialized["events"][0]["metadata"]["content_segments"][0]["type"],
+            ingest_event["conversation"]["entries"][2]["role"],
             "tool_call"
         );
         assert_eq!(serialized["diagnostic_captures"], serde_json::json!([]));
     }
 
     #[test]
-    fn stores_the_conversation_as_backend_metadata() {
+    fn sends_the_declared_ids_as_top_level_fields() {
         let event: AgentEvent = serde_json::from_str(include_str!(
             "../../../specs/broker-plugin-protocol/v1/fixtures/agent-event.json"
         ))
         .expect("fixture should decode");
         let request = IngestEventsRequest::try_from(event).expect("event should translate");
         let serialized = serde_json::to_value(request).expect("request should serialize");
-        let metadata = &serialized["events"][0]["metadata"];
+        let ingest_event = &serialized["events"][0];
 
-        let roles = metadata["conversation"]["messages"]
-            .as_array()
-            .expect("messages should be an array")
-            .iter()
-            .map(|message| message["role"].as_str().expect("role should be a string"))
-            .collect::<Vec<_>>();
-        assert_eq!(roles, ["reasoning", "assistant", "tool"]);
+        assert_eq!(ingest_event["subagent_id"], "agent-2");
+        assert_eq!(ingest_event["parent_subagent_id"], "agent-1");
+        assert_eq!(ingest_event["turn_id"], "turn-1");
+        for field in ["subagent_id", "parent_subagent_id", "turn_id"] {
+            assert!(ingest_event["metadata"].get(field).is_none(), "{field}");
+        }
     }
 
     #[test]
-    fn reads_spooled_events_written_before_attachments_were_added() {
+    fn sends_the_conversation_as_a_top_level_field() {
         let event: AgentEvent = serde_json::from_str(include_str!(
             "../../../specs/broker-plugin-protocol/v1/fixtures/agent-event.json"
         ))
         .expect("fixture should decode");
+        let expected = serde_json::to_value(&event.conversation).unwrap();
         let request = IngestEventsRequest::try_from(event).expect("event should translate");
-        let mut request = serde_json::to_value(request).expect("request should serialize");
-        let legacy_event = request["events"][0]
-            .as_object_mut()
-            .expect("event should be an object");
-        legacy_event.remove("attachments");
-        // Older spools also carry the collector-counted turn number.
-        legacy_event.insert("turn_index".to_owned(), 3_u32.into());
-        let legacy_record = serde_json::json!({
-            "reason": "delivery destination returned HTTP 401 Unauthorized",
-            "request": request,
-        });
+        let serialized = serde_json::to_value(request).expect("request should serialize");
+        let ingest_event = &serialized["events"][0];
+        let metadata = &ingest_event["metadata"];
 
-        let record: SpoolRecord =
-            serde_json::from_value(legacy_record).expect("legacy spool record should decode");
-        let serialized = serde_json::to_value(record).expect("record should serialize");
+        assert_eq!(ingest_event["conversation"], expected);
+        assert!(metadata.get("conversation").is_none());
+        let roles = ingest_event["conversation"]["entries"]
+            .as_array()
+            .expect("entries should be an array")
+            .iter()
+            .map(|entry| entry["role"].as_str().expect("role should be a string"))
+            .collect::<Vec<_>>();
+        assert_eq!(roles, ["reasoning", "assistant", "tool_call"]);
+        assert!(metadata.get("omitted").is_none());
+    }
 
-        assert!(serialized["request"]["events"][0]["attachments"].is_null());
-        assert!(
-            serialized["request"]["events"][0]
-                .get("turn_index")
-                .is_none()
+    #[test]
+    fn stores_the_omitted_categories_as_backend_metadata() {
+        let mut event: AgentEvent = serde_json::from_str(include_str!(
+            "../../../specs/broker-plugin-protocol/v1/fixtures/agent-event.json"
+        ))
+        .expect("fixture should decode");
+        event.omitted = vec![
+            abyss_sdk::plugin::ContentCategory::ConversationText,
+            abyss_sdk::plugin::ContentCategory::Images,
+        ];
+        let request = IngestEventsRequest::try_from(event).expect("event should translate");
+        let serialized = serde_json::to_value(request).expect("request should serialize");
+
+        assert_eq!(
+            serialized["events"][0]["metadata"]["omitted"],
+            serde_json::json!(["conversation_text", "images"])
         );
     }
 
@@ -624,7 +616,7 @@ mod tests {
     fn keeps_the_backend_envelope_inside_the_delivery_plugin() {
         let event = AgentEvent {
             event_id: "event-1".to_owned(),
-            occurred_at: chrono::Utc::now(),
+            observed_at: chrono::Utc::now(),
             device: DeviceContext {
                 host_name: "host".to_owned(),
                 platform: "linux".to_owned(),
@@ -635,20 +627,24 @@ mod tests {
                 version: None,
             },
             session_id: "session".to_owned(),
-            turn_id: Some("turn-1".to_owned()),
-            naming_thread: true,
-            stream_id: Some("thread-1".to_owned()),
             response_id: Some("resp-1".to_owned()),
             previous_response_id: None,
+            subagent_id: None,
+            parent_subagent_id: None,
+            turn_id: None,
             purpose: None,
-            session_title: None,
             llm: LlmContext {
                 provider: LlmProvider::OpenAi,
                 model: "gpt".to_owned(),
             },
             side: AgentEventSide::Request,
-            text: None,
+            omitted: Vec::new(),
             conversation: None,
+            path: "/v1/responses?stream=true".to_owned(),
+            headers: vec![HttpHeader {
+                name: "request-id".to_owned(),
+                value: HttpHeaderValue::Text("req_1".to_owned()),
+            }],
             token_usage: TokenUsage {
                 input_tokens: 1,
                 output_tokens: 0,
@@ -657,66 +653,71 @@ mod tests {
                 reasoning_tokens: 0,
                 total_tokens: 1,
             },
-            tool_calls: vec![ToolCall {
-                call_id: "call-1".to_owned(),
-                name: "exec".to_owned(),
-                input: "pwd".to_owned(),
-                input_sha256: "hash".to_owned(),
-            }],
-            tool_results: Vec::new(),
             attachments: Vec::new(),
         };
         let request = IngestEventsRequest::try_from(event).expect("event should translate");
         let serialized: Value = serde_json::to_value(request).expect("request should serialize");
 
         assert_eq!(serialized["events"][0]["event_type"], "request");
-        assert_eq!(
-            serialized["events"][0]["metadata"]["content_segments"][0]["name"],
-            "exec"
+        assert!(serialized["events"][0].get("conversation").is_none());
+        assert!(serialized["events"][0].get("text").is_none());
+        assert!(
+            serialized["events"][0]["metadata"]
+                .get("content_segments")
+                .is_none()
         );
-        assert_eq!(serialized["events"][0]["turn_id"], "turn-1");
-        assert_eq!(serialized["events"][0]["naming_thread"], true);
-        assert_eq!(serialized["events"][0]["stream_id"], "thread-1");
         assert_eq!(serialized["events"][0]["response_id"], "resp-1");
         assert!(
             serialized["events"][0]
                 .get("previous_response_id")
                 .is_none()
         );
+        for field in ["subagent_id", "parent_subagent_id", "turn_id"] {
+            assert!(
+                serialized["events"][0].get(field).is_none(),
+                "an undeclared {field} is omitted"
+            );
+        }
         assert!(serialized["events"][0]["metadata"].get("turn_id").is_none());
         assert!(serialized["events"][0].get("turn_index").is_none());
+        assert_eq!(
+            serialized["events"][0]["metadata"]["path"],
+            "/v1/responses?stream=true"
+        );
+        assert!(serialized["events"][0].get("path").is_none());
+        assert_eq!(
+            serialized["events"][0]["metadata"]["headers"],
+            serde_json::json!([{"name": "request-id", "value": "req_1"}])
+        );
     }
 
     #[test]
-    fn carries_exchange_placement_and_omits_an_absent_turn_identity() {
+    fn carries_exchange_placement() {
         let mut event: AgentEvent = serde_json::from_str(include_str!(
             "../../../specs/broker-plugin-protocol/v1/fixtures/agent-event.json"
         ))
         .expect("fixture should decode");
         event.agent.name = "claude-code".to_owned();
-        event.turn_id = None;
-        event.naming_thread = false;
 
         let request = IngestEventsRequest::try_from(event).expect("event should translate");
         let serialized: Value = serde_json::to_value(request).expect("request should serialize");
         let ingest_event = &serialized["events"][0];
         let metadata = &ingest_event["metadata"];
 
-        assert!(ingest_event.get("turn_id").is_none());
-        assert!(ingest_event.get("naming_thread").is_none());
-        assert_eq!(ingest_event["stream_id"], "thread-123");
+        assert_eq!(ingest_event["turn_id"], "turn-1");
+        assert!(ingest_event.get("stream_id").is_none());
         assert_eq!(ingest_event["response_id"], "resp-123");
         assert_eq!(ingest_event["previous_response_id"], "resp-122");
         assert!(metadata.get("claude_turn_id").is_none());
         assert!(metadata.get("claude_code_billing").is_none());
         assert!(metadata.get("claude_thread").is_none());
         assert!(
-            metadata["conversation"]
+            ingest_event["conversation"]
                 .get("previous_response_id")
                 .is_none()
         );
         assert_eq!(metadata["purpose"], "session_title");
-        assert_eq!(metadata["session_title"], "Repository overview");
+        assert!(metadata.get("session_title").is_none());
     }
 
     #[test]
@@ -726,7 +727,6 @@ mod tests {
         ))
         .expect("fixture should decode");
         event.purpose = Some(abyss_sdk::plugin::EventPurpose::Prewarm);
-        event.session_title = None;
         let expected_usage = serde_json::to_value(&event.token_usage).unwrap();
         let request = IngestEventsRequest::try_from(event).expect("event should translate");
         let serialized = serde_json::to_value(request).unwrap();

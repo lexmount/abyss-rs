@@ -37,15 +37,23 @@ test(
     const event = {
       ...fixture,
       agent: { name: "codex" },
-      text: context,
-      tool_results: [
-        {
-          call_id: "demo-call",
-          output: "demo tool output",
-          output_sha256: "sha",
-        },
-      ],
+      conversation: {
+        entries: [
+          ...fixture.conversation.entries.map((entry) =>
+            entry.role === "assistant" ? { ...entry, text: context } : entry,
+          ),
+          {
+            role: "tool_result",
+            text: "demo tool output",
+            call_id: "demo-call",
+          },
+        ],
+        completeness: "complete",
+      },
     };
+    const toolCall = event.conversation.entries.find(
+      (entry) => entry.role === "tool_call",
+    );
     const broker = socketServer((socket) => {
       sockets.add(socket);
       socket.on("error", () => {});
@@ -56,7 +64,10 @@ test(
             frame({
               ...event,
               agent: { name: "claude-code" },
-              text: "SKIP_THIS",
+              conversation: {
+                entries: [{ role: "user", text: "SKIP_THIS" }],
+                completeness: "complete",
+              },
             }),
             frame(event),
             frame({ code: 100, reason: "demo complete" }),
@@ -120,8 +131,9 @@ test(
     );
     const text = messages.map((message) => message.text).join("");
     assert.ok(text.includes(context));
-    assert.ok(text.includes(event.tool_calls[0].input));
-    assert.ok(text.includes(event.tool_results[0].output));
+    assert.ok(text.includes(`Tool: ${toolCall.name}\n${toolCall.text}`));
+    assert.ok(text.includes("Result: demo-call\ndemo tool output"));
+    assert.ok(!text.includes(fixture.conversation.entries[0].text));
     assert.ok(!text.includes("SKIP_THIS"));
     assert.ok(
       messages.every(

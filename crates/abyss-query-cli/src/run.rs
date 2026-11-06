@@ -48,17 +48,25 @@ pub fn execute(cli: &Cli) -> Result<Output, Error> {
         Command::Search { query, page } => SessionPages::new(&client).fetch(page, Some(query)),
         Command::Sessions { command } => match command {
             SessionCommand::List(page) => SessionPages::new(&client).fetch(page, None),
-            SessionCommand::Get { id } => Ok(Output::new(
-                "sessions.get",
-                serde_json::to_value(client.session(*id)?)?,
+            SessionCommand::Header { id } => Ok(Output::new(
+                "sessions.header",
+                serde_json::to_value(client.session_header(*id)?)?,
             )),
-            SessionCommand::Outline { id } => Ok(Output::new(
-                "sessions.outline",
-                serde_json::to_value(client.outline(*id)?)?,
+            SessionCommand::Streams { id } => Ok(Output::new(
+                "sessions.streams",
+                serde_json::to_value(client.session_streams(*id)?)?,
             )),
-            SessionCommand::Trajectory { id } => Ok(Output::new(
-                "sessions.trajectory",
-                serde_json::to_value(client.trajectory(*id)?)?,
+            SessionCommand::Turns { id } => Ok(Output::new(
+                "sessions.turns",
+                serde_json::to_value(client.session_turns(*id)?)?,
+            )),
+            SessionCommand::Segment { id, head, preview } => Ok(Output::new(
+                "sessions.segment",
+                serde_json::to_value(client.segment(*id, head, &preview.query())?)?,
+            )),
+            SessionCommand::Search { id, query } => Ok(Output::new(
+                "sessions.search",
+                serde_json::to_value(client.search_session(*id, query)?)?,
             )),
         },
         Command::Events { command } => match command {
@@ -66,6 +74,14 @@ pub fn execute(cli: &Cli) -> Result<Output, Error> {
             EventCommand::Get { id } => Ok(Output::new(
                 "events.get",
                 serde_json::to_value(client.event(*id)?)?,
+            )),
+            EventCommand::Conversation { id, preview } => Ok(Output::new(
+                "events.conversation",
+                serde_json::to_value(client.conversation(*id, &preview.query())?)?,
+            )),
+            EventCommand::Location { id } => Ok(Output::new(
+                "events.location",
+                serde_json::to_value(client.event_location(*id)?)?,
             )),
         },
         Command::Usage {

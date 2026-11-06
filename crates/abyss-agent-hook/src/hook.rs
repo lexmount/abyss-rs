@@ -9,7 +9,7 @@ use http::{HeaderMap, header::HOST};
 use crate::{
     config::{HarnessUsageHookConfig, HooksRuntimeConfig},
     delivery::{AgentEventSink, EventDelivery},
-    event::{NormalizableExchange, NormalizedUsageEvent, normalize_exchange},
+    event::{ExchangePassthrough, NormalizableExchange, NormalizedUsageEvent, normalize_exchange},
     harness::{AgentDeclaration, DeclarationSource, HarnessDetection, HarnessRegistry},
     protocol::{
         AnthropicProtocol, ClaudeWebProtocol, LlmProtocol, OpenAiProtocol, ProtocolDetector,
@@ -72,24 +72,40 @@ where
             .harness_usage
             .config
             .content_for_harness(detection.harness_id.as_str());
+        let passthrough = || {
+            ExchangePassthrough::new(
+                exchange.request.uri(),
+                exchange.request.headers(),
+                exchange.response.headers(),
+            )
+        };
 
         match protocol {
             LlmProtocol::OpenAi(protocol) => {
                 parse_openai_exchange(exchange, protocol).map(|parsed| {
-                    let declaration = http_declaration(
+                    let declaration =
+                        http_declaration(&detection, exchange, parsed.client_metadata.as_ref());
+                    self.normalize(
+                        &parsed,
+                        &content,
                         &detection,
-                        exchange,
-                        parsed.client_metadata.as_ref(),
-                        &parsed.response_texts,
-                    );
-                    self.normalize(&parsed, &content, &detection, &provider, &declaration)
+                        &provider,
+                        &declaration,
+                        &passthrough(),
+                    )
                 })
             }
             LlmProtocol::Anthropic(AnthropicProtocol::Messages) => {
                 parse_anthropic_messages_exchange(exchange).map(|parsed| {
-                    let declaration =
-                        http_declaration(&detection, exchange, None, &parsed.response_texts);
-                    self.normalize(&parsed, &content, &detection, &provider, &declaration)
+                    let declaration = http_declaration(&detection, exchange, None);
+                    self.normalize(
+                        &parsed,
+                        &content,
+                        &detection,
+                        &provider,
+                        &declaration,
+                        &passthrough(),
+                    )
                 })
             }
             LlmProtocol::Anthropic(AnthropicProtocol::ClaudeWeb(
@@ -97,12 +113,15 @@ where
             )) => parse_claude_web_exchange(exchange).map(|mut parsed| {
                 self.claude_web_context
                     .attach_referenced_images(&mut parsed);
-                // The claude.ai completion protocol names its own turn.
-                let declaration = AgentDeclaration {
-                    turn_id: parsed.protocol_turn_id.clone(),
-                    ..http_declaration(&detection, exchange, None, &parsed.response_texts)
-                };
-                self.normalize(&parsed, &content, &detection, &provider, &declaration)
+                let declaration = http_declaration(&detection, exchange, None);
+                self.normalize(
+                    &parsed,
+                    &content,
+                    &detection,
+                    &provider,
+                    &declaration,
+                    &passthrough(),
+                )
             }),
         }
         .unwrap_or_default()
@@ -115,6 +134,7 @@ where
         detection: &HarnessDetection,
         provider: &LlmProvider,
         declaration: &AgentDeclaration,
+        passthrough: &ExchangePassthrough,
     ) -> Vec<NormalizedUsageEvent>
     where
         E: NormalizableExchange,
@@ -126,6 +146,7 @@ where
             detection,
             provider,
             declaration,
+            passthrough,
         )
     }
 
@@ -150,17 +171,31 @@ where
             return Vec::new();
         };
         let provider = ProviderResolver::resolve(&websocket_host(message), protocol);
-        // Frames after the upgrade carry no headers of their own.
+        // Frames after the upgrade carry no headers of their own; every turn
+        // of the connection carries those of its upgrade request and `101`
+        // response, and declares what its upgrade request names for the whole
+        // connection.
         let declaration = HarnessRegistry::declare(
             &detection.harness_id,
             &DeclarationSource {
                 headers: None,
-                body: None,
+                connection_headers: Some(message.upgrade_request.headers()),
                 client_metadata: parsed.client_metadata.as_ref(),
-                response_texts: &parsed.response_texts,
             },
         );
-        self.normalize(&parsed, &content, &detection, &provider, &declaration)
+        let passthrough = ExchangePassthrough::new(
+            message.upgrade_request.uri(),
+            message.upgrade_request.headers(),
+            message.upgrade_response.headers(),
+        );
+        self.normalize(
+            &parsed,
+            &content,
+            &detection,
+            &provider,
+            &declaration,
+            &passthrough,
+        )
     }
 }
 
@@ -202,15 +237,13 @@ fn http_declaration(
     detection: &HarnessDetection,
     exchange: &HttpExchange,
     client_metadata: Option<&serde_json::Value>,
-    response_texts: &[String],
 ) -> AgentDeclaration {
     HarnessRegistry::declare(
         &detection.harness_id,
         &DeclarationSource {
             headers: Some(exchange.request.headers()),
-            body: exchange.request.body().json(),
+            connection_headers: None,
             client_metadata,
-            response_texts,
         },
     )
 }
@@ -252,9 +285,7 @@ mod tests {
         CapturedBody, FlowContext, HttpExchange, MitmHook, OriginalDestination, SourceProcess,
         TransparentProtocol,
     };
-    use abyss_plugin_protocol::event::{
-        AgentEvent, ContentCompleteness, EventPurpose, MessageRole,
-    };
+    use abyss_plugin_protocol::event::{AgentEvent, ContentCompleteness, EntryRole, EventPurpose};
     use http::{Request, Response};
 
     use crate::{
@@ -376,8 +407,16 @@ mod tests {
                 .all(|event| event.llm.provider.wire_name() == "gateway.example")
         );
         for pair in events.chunks(2) {
-            assert_eq!(pair[0].text.as_deref(), Some("hello"));
-            assert_eq!(pair[1].text.as_deref(), Some("hi"));
+            for (event, text) in pair.iter().zip(["hello", "hi"]) {
+                let entries = &event.conversation.as_ref().unwrap().entries;
+                assert_eq!(
+                    entries
+                        .iter()
+                        .map(|entry| entry.text.as_str())
+                        .collect::<Vec<_>>(),
+                    [text]
+                );
+            }
         }
         assert_eq!(events[2].token_usage.input_tokens, 7);
         assert_eq!(events[3].token_usage.output_tokens, 2);
@@ -412,22 +451,24 @@ mod tests {
             let request = events[0].conversation.as_ref().unwrap();
             assert_eq!(
                 request
-                    .messages
+                    .entries
                     .iter()
-                    .map(|message| (message.role, message.text.as_str()))
+                    .map(|entry| (entry.role, entry.text.as_str()))
                     .collect::<Vec<_>>(),
                 vec![
-                    (MessageRole::Developer, "instructions"),
-                    (MessageRole::User, "continue"),
-                    (MessageRole::User, "continue"),
+                    (EntryRole::Developer, "instructions"),
+                    (EntryRole::User, "continue"),
+                    (EntryRole::User, "continue"),
                 ]
             );
             let reply = events[1].conversation.as_ref().unwrap();
-            assert_eq!(reply.messages.len(), 1);
-            assert_eq!(reply.messages[0].role, MessageRole::Assistant);
-            assert_eq!(reply.messages[0].text, "hi");
+            assert_eq!(reply.entries.len(), 1);
+            assert_eq!(reply.entries[0].role, EntryRole::Assistant);
+            assert_eq!(reply.entries[0].text, "hi");
             assert_eq!(reply.completeness, ContentCompleteness::Complete);
-            assert_eq!(events[1].text.as_deref(), Some("hi"));
+            // Both events carry the request's path.
+            assert_eq!(events[0].path, "/v1/responses");
+            assert_eq!(events[1].path, "/v1/responses");
             drop(events);
         }
     }
@@ -456,10 +497,33 @@ mod tests {
         use abyss_mitm::{WebSocketDirection, WebSocketMessage};
         let sink = Arc::new(RecordingSink::default());
         let hook = hook(Arc::clone(&sink));
-        let exchange = openai_exchange("acme-agent");
+        // Codex, whose `x-codex-*` upgrade headers identify it.
+        let exchange = openai_exchange("codex");
         let (parts, _) = exchange.request.into_parts();
-        let upgrade = Request::from_parts(parts, ());
-        let request = " {\"type\":\"response.create\",\"response\":{\"model\":\"test\",\"input\":[{\"role\":\"user\",\"content\":\"hello\"}]}}\n";
+        let mut upgrade = Request::from_parts(parts, ());
+        *upgrade.uri_mut() = "/backend-api/codex/responses".parse().unwrap();
+        upgrade
+            .headers_mut()
+            .insert("authorization", "Bearer secret".parse().unwrap());
+        for (name, value) in [
+            ("session-id", "ws-session"),
+            ("thread-id", "ws-thread"),
+            ("x-codex-parent-thread-id", "ws-parent"),
+            // The connection's first turn, not the turn of a later frame.
+            (
+                "x-codex-turn-metadata",
+                r#"{"root_turn_id":"ws-first-turn"}"#,
+            ),
+        ] {
+            upgrade.headers_mut().insert(name, value.parse().unwrap());
+        }
+        let upgrade_response = Response::builder()
+            .status(101)
+            .header("x-request-id", "req-ws")
+            .body(())
+            .unwrap();
+        // The frame declares its own turn in `client_metadata`.
+        let request = " {\"type\":\"response.create\",\"response\":{\"model\":\"test\",\"client_metadata\":{\"x-codex-turn-metadata\":\"{\\\"root_turn_id\\\":\\\"ws-turn\\\"}\"},\"input\":[{\"role\":\"user\",\"content\":\"hello\"}]}}\n";
         let created = "{\"type\":\"response.created\",\"response\":{\"id\":\"resp-1\"}}";
         let delta = "{\"type\":\"response.output_text.delta\",\"output_index\":0,\"content_index\":0,\"delta\":\"hi\"}";
         let terminal = "{\"type\":\"response.completed\",\"response\":{\"id\":\"resp-1\",\"output\":[{\"id\":\"msg-1\",\"role\":\"assistant\",\"content\":[{\"type\":\"output_text\",\"text\":\"hi there\"}]}],\"usage\":{\"input_tokens\":1,\"output_tokens\":2,\"total_tokens\":3}}}";
@@ -473,6 +537,7 @@ mod tests {
             hook.on_websocket_message(&WebSocketMessage::new(
                 exchange.flow.clone(),
                 upgrade.clone(),
+                upgrade_response.clone(),
                 direction,
                 sequence,
                 Some(body.to_owned()),
@@ -484,15 +549,42 @@ mod tests {
         let events = sink.events.lock().unwrap();
         assert_eq!(events.len(), 2);
         let request_content = events[0].conversation.as_ref().unwrap();
-        assert_eq!(request_content.messages[0].role, MessageRole::User);
-        assert_eq!(request_content.messages[0].text, "hello");
+        assert_eq!(request_content.entries[0].role, EntryRole::User);
+        assert_eq!(request_content.entries[0].text, "hello");
         assert_eq!(request_content.completeness, ContentCompleteness::Complete);
         let response_content = events[1].conversation.as_ref().unwrap();
-        assert_eq!(response_content.messages.len(), 1);
-        assert_eq!(response_content.messages[0].id.as_deref(), Some("msg-1"));
-        assert_eq!(response_content.messages[0].text, "hi there");
+        assert_eq!(response_content.entries.len(), 1);
+        assert_eq!(
+            response_content.entries[0].item_id.as_deref(),
+            Some("msg-1")
+        );
+        assert_eq!(response_content.entries[0].text, "hi there");
         assert_eq!(response_content.completeness, ContentCompleteness::Partial);
-        assert_eq!(events[1].text.as_deref(), Some("hi there"));
+        // Every turn of the connection carries the upgrade request's path and
+        // headers, the `101` response's headers, and the ids the upgrade
+        // request declares.
+        for event in events.iter() {
+            assert_eq!(event.path, "/backend-api/codex/responses");
+            assert_eq!(event.subagent_id.as_deref(), Some("ws-thread"));
+            assert_eq!(event.parent_subagent_id.as_deref(), Some("ws-parent"));
+            assert_eq!(event.turn_id.as_deref(), Some("ws-turn"));
+        }
+        assert_eq!(
+            serde_json::to_value(&events[0].headers).unwrap(),
+            serde_json::json!([
+                {"name": "host", "value": "gateway.example"},
+                {"name": "content-type", "value": "application/json"},
+                {"name": "authorization", "value": "<redacted>"},
+                {"name": "session-id", "value": "ws-session"},
+                {"name": "thread-id", "value": "ws-thread"},
+                {"name": "x-codex-parent-thread-id", "value": "ws-parent"},
+                {"name": "x-codex-turn-metadata", "value": "{\"root_turn_id\":\"ws-first-turn\"}"}
+            ])
+        );
+        assert_eq!(
+            serde_json::to_value(&events[1].headers).unwrap(),
+            serde_json::json!([{"name": "x-request-id", "value": "req-ws"}])
+        );
         drop(events);
     }
 
@@ -544,6 +636,7 @@ mod tests {
                     hook.on_websocket_message(&WebSocketMessage::new(
                         exchange.flow.clone(),
                         upgrade.clone(),
+                        Response::builder().status(101).body(()).unwrap(),
                         direction,
                         sequence,
                         Some(payload.to_string()),
@@ -559,7 +652,7 @@ mod tests {
                 assert_eq!(events[0].purpose, expected);
                 assert_eq!(events[0].token_usage.input_tokens, 11);
                 assert_eq!(
-                    events[0].conversation.as_ref().unwrap().messages[0].text,
+                    events[0].conversation.as_ref().unwrap().entries[0].text,
                     "rules"
                 );
                 assert!(events[1..].iter().all(|event| event.purpose.is_none()));
@@ -595,8 +688,7 @@ mod tests {
         assert_eq!(request.completeness, ContentCompleteness::Complete);
         let reply = events[1].conversation.as_ref().unwrap();
         assert_eq!(reply.completeness, ContentCompleteness::Partial);
-        assert_eq!(reply.messages[0].text, "hi");
-        assert_eq!(events[1].text.as_deref(), Some("hi"));
+        assert_eq!(reply.entries[0].text, "hi");
         drop(events);
     }
 
@@ -693,52 +785,50 @@ mod tests {
         let events = sink.events.lock().unwrap();
         assert_eq!(events.len(), requests.len() * 2);
         let expected = [
-            (Some("p1"), Some("session-1"), None, None),
-            (Some("p1"), Some("session-1"), Some("msg_1"), None),
-            (Some("p1"), Some("agent-a"), None, None),
-            (Some("p1"), Some("agent-b"), Some("msg_b"), None),
+            (None, None, None, Some("p1")),
+            (Some("msg_1"), None, None, Some("p1")),
+            (None, None, Some("agent-a"), Some("p1")),
+            (Some("msg_b"), None, Some("agent-b"), Some("p1")),
             (None, None, None, None),
-            (None, None, None, Some(EventPurpose::Compaction)),
+            (None, Some(EventPurpose::Compaction), None, None),
+            // The billing header in the body is not a declaration.
             (None, None, None, None),
         ];
-        for (exchange_events, (turn, stream, previous, purpose)) in events.chunks(2).zip(expected) {
+        for (exchange_events, (previous, purpose, subagent, root_turn)) in
+            events.chunks(2).zip(expected)
+        {
             for event in exchange_events {
                 assert_eq!(event.agent.name, "claude-code");
-                assert_eq!(event.turn_id.as_deref(), turn);
-                assert_eq!(event.stream_id.as_deref(), stream);
                 assert_eq!(event.previous_response_id.as_deref(), previous);
                 assert_eq!(event.purpose, purpose);
                 assert_eq!(event.response_id.as_deref(), Some("msg_test"));
-                assert!(!event.naming_thread);
+                // The declared ids are carried verbatim on both events.
+                assert_eq!(event.subagent_id.as_deref(), subagent);
+                assert_eq!(event.parent_subagent_id, None);
+                assert_eq!(event.turn_id.as_deref(), root_turn);
             }
         }
-        drop(events);
-    }
-
-    #[tokio::test]
-    async fn other_anthropic_clients_carry_no_turn_id() {
-        let sink = Arc::new(RecordingSink::default());
-        let hook = hook(Arc::clone(&sink));
-        let request = serde_json::json!({
-            "messages": [
-                {"role": "user", "content": "hello"},
-                {"role": "assistant", "content": "hi"},
-                {"role": "user", "content": [
-                    {"type": "tool_result", "tool_use_id": "toolu_1", "content": "ok"}
-                ]}
+        // The request event carries the request headers in capture order, the
+        // response event the response headers.
+        let names = events[0]
+            .headers
+            .iter()
+            .map(|header| header.name.as_str())
+            .collect::<Vec<_>>();
+        assert_eq!(
+            names,
+            [
+                "host",
+                "content-type",
+                "x-claude-code-session-id",
+                "x-claude-code-request-class",
+                "x-claude-code-prompt-id",
             ]
-        });
-
-        hook.on_http_exchange(&anthropic_exchange("acme-agent"))
-            .await
-            .unwrap();
-        hook.on_http_exchange(&anthropic_exchange_with_request("acme-agent", &request))
-            .await
-            .unwrap();
-
-        let events = sink.events.lock().unwrap();
-        assert_eq!(events.len(), 4);
-        assert!(events.iter().all(|event| event.turn_id.is_none()));
+        );
+        assert_eq!(
+            serde_json::to_value(&events[1].headers).unwrap(),
+            serde_json::json!([{"name": "content-type", "value": "application/json"}])
+        );
         drop(events);
     }
 

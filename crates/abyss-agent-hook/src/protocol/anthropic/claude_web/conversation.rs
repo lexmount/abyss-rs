@@ -3,104 +3,51 @@
 //! This module understands the Claude Web wire dialect only. Harness identity
 //! (Claude Desktop or another client) is resolved before protocol parsing.
 
-use std::fmt;
-
 use abyss_mitm::HttpExchange;
 use http::Method;
-use serde::Serialize;
 
-use super::metadata::{claude_web_file_uuids, turn_message_uuids};
+use super::metadata::{assistant_message_uuid, claude_web_file_uuids};
 use crate::protocol::{
     anthropic::shared::{
         conversation::{AnthropicRequest, AnthropicResponse},
         images::extract_anthropic_request_images,
-        metadata::{first_model, first_stop_reason},
-        tools::{extract_request_tool_events, extract_response_tool_events},
+        metadata::first_model,
         usage::{best_usage, estimated_visible_usage},
     },
-    model::{
-        image::ParsedImageAttachment,
-        tool::ParsedToolEvent,
-        usage::{TokenUsage, TokenUsageSource},
-    },
+    model::{image::ParsedImageAttachment, usage::TokenUsage},
     shared::{
         digest::sha256_hex,
-        http::{flow_server_name, request_host, transport_name},
-        json::{event_types, string_field},
+        http::{flow_server_name, request_host},
+        json::string_field,
         sse::ResponseDocuments,
         text::non_empty_trimmed,
     },
 };
 
-/// Source used to derive the Claude Web session id.
-#[derive(Debug, Clone, Copy, Serialize)]
-#[non_exhaustive]
-#[serde(rename_all = "snake_case")]
-pub enum ClaudeWebSessionIdSource {
-    /// Conversation id parsed from the private Claude Web path.
-    ConversationPath,
-}
-
-impl fmt::Display for ClaudeWebSessionIdSource {
-    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match self {
-            Self::ConversationPath => formatter.write_str("conversation_path"),
-        }
-    }
-}
-
 /// Wire-level values extracted from one Claude Web completion interaction.
 #[derive(Debug, Clone)]
 #[non_exhaustive]
 pub struct ParsedClaudeWebExchange {
-    /// Normalized request host.
-    pub host: String,
-    /// Claude Web conversation-completion path.
-    pub path: String,
-    /// HTTP method.
-    pub method: String,
-    /// Transport observed by `abyss-mitm`: `http`, `https`, or `unknown`.
-    pub transport: &'static str,
     /// Conversation id used to group turns.
     pub session_id: String,
-    /// Source used to derive `session_id`.
-    pub session_id_source: ClaudeWebSessionIdSource,
     /// Hash of method, host, path, and request body for event correlation.
     pub request_hash: String,
     /// Structured request messages decoded from the request body.
     pub request_conversation: abyss_plugin_protocol::event::Conversation,
     /// Structured response messages assembled from the response documents.
     pub response_conversation: abyss_plugin_protocol::event::Conversation,
-    /// User-visible prompt fragments derived from the request messages.
-    pub request_texts: Vec<String>,
     /// Validated image attachments embedded in user request content.
     pub request_images: Vec<ParsedImageAttachment>,
     /// File UUIDs referencing images uploaded through the Claude Web file API.
     pub request_file_uuids: Vec<String>,
-    /// Stable logical turn id supplied by Claude Web.
-    pub protocol_turn_id: Option<String>,
-    /// Tool results submitted on the request side of this provider call.
-    pub request_tool_events: Vec<ParsedToolEvent>,
-    /// Tool calls and results streamed on the response side.
-    pub response_tool_events: Vec<ParsedToolEvent>,
-    /// Assistant response fragments derived from the response messages.
-    pub response_texts: Vec<String>,
     /// Provider token counters or a visible-content estimate when absent.
     pub usage: TokenUsage,
-    /// Whether token counters were provider-reported or estimated.
-    pub usage_source: TokenUsageSource,
     /// Anthropic message id when present.
     pub message_id: Option<String>,
     /// Provider model name.
     pub model: Option<String>,
-    /// Human message UUID supplied by the request.
-    pub human_message_uuid: Option<String>,
     /// Assistant message UUID supplied by the request.
     pub assistant_message_uuid: Option<String>,
-    /// Response stop reason when the SSE stream exposes one.
-    pub stop_reason: Option<String>,
-    /// Provider event type strings found in response JSON/SSE payloads.
-    pub event_types: Vec<String>,
 }
 
 /// Parses one Claude Web private conversation-completion exchange.
@@ -115,15 +62,13 @@ pub fn parse_claude_web_exchange(exchange: &HttpExchange) -> Option<ParsedClaude
     let path = exchange.request.uri().path();
     let conversation_id = completion_conversation_id(path)?;
     let request_json = exchange.request.body().json()?;
-    let request = AnthropicRequest::parse(request_json, exchange.request.body().truncated());
-    let request_texts = request.texts();
+    let request_conversation =
+        AnthropicRequest::parse(request_json, exchange.request.body().truncated()).conversation();
     let request_images = extract_anthropic_request_images(request_json);
     let request_file_uuids = claude_web_file_uuids(request_json);
-    let request_tool_events = extract_request_tool_events(request_json);
-    if request_texts.is_empty()
+    if request_conversation.entries.is_empty()
         && request_images.is_empty()
         && request_file_uuids.is_empty()
-        && request_tool_events.is_empty()
     {
         return None;
     }
@@ -131,32 +76,11 @@ pub fn parse_claude_web_exchange(exchange: &HttpExchange) -> Option<ParsedClaude
     let response_documents = ResponseDocuments::decode(exchange.response.body());
     let response_values = response_documents.values;
     let response = AnthropicResponse::assemble(&response_values, response_documents.incomplete);
-    let response_texts = response.texts();
-    let response_tool_events = extract_response_tool_events(&response_values);
-    let (usage, usage_source) = best_usage(&response_values)
+    let response_conversation = response.conversation();
+    let usage = best_usage(&response_values)
         .or_else(|| best_usage(std::slice::from_ref(request_json)))
-        .map_or_else(
-            || {
-                let usage = estimated_visible_usage(
-                    &request_texts,
-                    &request_tool_events,
-                    &response_texts,
-                    &response_tool_events,
-                );
-                let source = if usage.is_empty() {
-                    TokenUsageSource::Absent
-                } else {
-                    TokenUsageSource::EstimatedVisibleContent
-                };
-                (usage, source)
-            },
-            |usage| (usage, TokenUsageSource::ProviderReported),
-        );
-    let turn_message_uuids = turn_message_uuids(request_json);
-    let protocol_turn_id = turn_message_uuids
-        .assistant
-        .clone()
-        .or_else(|| turn_message_uuids.human.clone());
+        .unwrap_or_else(|| estimated_visible_usage(&request_conversation, &response_conversation));
+    let assistant_message_uuid = assistant_message_uuid(request_json);
     let request_hash = sha256_hex(&format!(
         "{}\0{}\0{}\0{}",
         exchange.request.method(),
@@ -166,34 +90,20 @@ pub fn parse_claude_web_exchange(exchange: &HttpExchange) -> Option<ParsedClaude
     ));
 
     Some(ParsedClaudeWebExchange {
-        host,
-        path: path.to_owned(),
-        method: exchange.request.method().to_string(),
-        transport: transport_name(&exchange.flow.protocol),
         session_id: conversation_id.to_owned(),
-        session_id_source: ClaudeWebSessionIdSource::ConversationPath,
         request_hash,
-        request_conversation: request.conversation(),
-        response_conversation: response.conversation(),
-        request_texts,
+        request_conversation,
+        response_conversation,
         request_images,
         request_file_uuids,
-        protocol_turn_id,
-        request_tool_events,
-        response_tool_events,
-        response_texts,
         usage,
-        usage_source,
         message_id: response
             .id()
             .map(str::to_owned)
-            .or_else(|| turn_message_uuids.assistant.clone()),
+            .or_else(|| assistant_message_uuid.clone()),
         model: first_model(&response_values)
             .or_else(|| string_field(request_json, "model").map(str::to_owned)),
-        human_message_uuid: turn_message_uuids.human,
-        assistant_message_uuid: turn_message_uuids.assistant,
-        stop_reason: first_stop_reason(&response_values),
-        event_types: response_values.iter().flat_map(event_types).collect(),
+        assistant_message_uuid,
     })
 }
 
@@ -223,10 +133,11 @@ mod tests {
     use abyss_mitm::{
         CapturedBody, FlowContext, HttpExchange, OriginalDestination, TransparentProtocol,
     };
+    use abyss_plugin_protocol::event::EntryRole;
     use http::{Request, Response};
     use serde_json::json;
 
-    use crate::protocol::model::usage::TokenUsageSource;
+    use crate::protocol::model::conversation::role_texts;
 
     use super::parse_claude_web_exchange;
 
@@ -252,14 +163,38 @@ mod tests {
         let parsed = parse_claude_web_exchange(&exchange).expect("Claude Web exchange");
 
         assert_eq!(parsed.session_id, "conversation-1");
-        assert_eq!(parsed.request_texts, vec!["hello desktop"]);
-        assert_eq!(parsed.response_texts, vec!["hello user"]);
+        assert_eq!(
+            role_texts(&parsed.request_conversation),
+            [(EntryRole::User, "hello desktop")]
+        );
+        assert_eq!(
+            role_texts(&parsed.response_conversation),
+            [(EntryRole::Assistant, "hello user")]
+        );
         assert_eq!(parsed.request_file_uuids, vec!["file-1"]);
-        assert_eq!(parsed.protocol_turn_id.as_deref(), Some("assistant-1"));
-        assert!(matches!(
-            parsed.usage_source,
-            TokenUsageSource::EstimatedVisibleContent
-        ));
+        // One token per four bytes of trimmed entry text.
+        assert_eq!(parsed.usage.input_tokens, 4);
+        assert_eq!(parsed.usage.output_tokens, 3);
+    }
+
+    #[test]
+    fn estimates_usage_from_every_entry_and_tool_names() {
+        let exchange = completion_exchange(
+            "POST",
+            &json!({"prompt": "hi"}),
+            concat!(
+                "data: {\"type\":\"content_block_start\",\"index\":0,\"content_block\":",
+                "{\"type\":\"thinking\",\"thinking\":\"plan\"}}\n\n",
+                "data: {\"type\":\"content_block_start\",\"index\":1,\"content_block\":",
+                "{\"type\":\"tool_use\",\"id\":\"t1\",\"name\":\"web\",\"input\":{\"q\":1}}}\n\n"
+            ),
+        );
+
+        let parsed = parse_claude_web_exchange(&exchange).expect("Claude Web exchange");
+
+        assert_eq!(parsed.usage.input_tokens, 1);
+        // `plan` (4) + `web` (3) + `{"q":1}` (7) bytes.
+        assert_eq!(parsed.usage.output_tokens, 4);
     }
 
     #[test]
@@ -279,10 +214,6 @@ mod tests {
         let parsed = parse_claude_web_exchange(&exchange).expect("Claude Web exchange");
 
         assert_eq!(parsed.usage.total_tokens, 5);
-        assert!(matches!(
-            parsed.usage_source,
-            TokenUsageSource::ProviderReported
-        ));
     }
 
     #[test]

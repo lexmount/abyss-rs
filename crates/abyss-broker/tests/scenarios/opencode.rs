@@ -169,6 +169,16 @@ impl OpenCodeScenario {
     }
 }
 
+/// The first conversation entry of `event` in `role`.
+fn entry<'a>(event: &'a Value, role: &str) -> &'a Value {
+    event["conversation"]["entries"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|entry| entry["role"] == role)
+        .unwrap_or_else(|| panic!("the event must carry a {role} entry"))
+}
+
 #[test]
 fn opencode_streaming_tools_and_resumed_sessions_reach_plugin() {
     let mut scenario = OpenCodeScenario::start();
@@ -182,8 +192,9 @@ fn opencode_streaming_tools_and_resumed_sessions_reach_plugin() {
         &json!({"role": "assistant", "tool_calls": [{"index": 0_i32,
             "id": call["id"], "type": "function", "function": call["function"]}]}),
     );
-    assert_eq!(first[1]["tool_calls"][0]["call_id"], "call-read");
-    assert_eq!(first[1]["tool_calls"][0]["name"], "read");
+    let tool_call = entry(&first[1], "tool_call");
+    assert_eq!(tool_call["call_id"], "call-read");
+    assert_eq!(tool_call["name"], "read");
     let followup = scenario.exchange(
         "session-a",
         "reply-followup",
@@ -193,9 +204,9 @@ fn opencode_streaming_tools_and_resumed_sessions_reach_plugin() {
         ]),
         &json!({"role": "assistant", "content": "The file contains fixture contents."}),
     );
-    assert_eq!(followup[0]["tool_results"][0]["call_id"], "call-read");
+    assert_eq!(entry(&followup[0], "tool_result")["call_id"], "call-read");
     assert!(
-        followup[1]["text"]
+        entry(&followup[1], "assistant")["text"]
             .as_str()
             .unwrap()
             .contains("fixture contents")

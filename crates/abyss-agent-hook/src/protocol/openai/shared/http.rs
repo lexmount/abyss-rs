@@ -10,10 +10,10 @@ use super::{
     usage::best_usage,
 };
 use crate::protocol::{
-    model::{image::ParsedImageAttachment, tool::ParsedToolEvent},
+    model::image::ParsedImageAttachment,
     shared::{
         digest::sha256_hex,
-        http::{request_host, transport_name},
+        http::request_host,
         json::{event_types, string_field},
         sse::ResponseDocuments,
     },
@@ -33,15 +33,12 @@ impl<'a> OpenAiHttpExchange<'a> {
     pub fn finish(
         self,
         request_conversation: Conversation,
-        request_texts: Vec<String>,
         request_images: Vec<ParsedImageAttachment>,
-        request_tool_events: Vec<ParsedToolEvent>,
         response: &OpenAiResponse,
     ) -> Option<ParsedOpenAiExchange> {
         let host = request_host(self.exchange.request.headers(), self.exchange.request.uri())?;
         let path = self.exchange.request.uri().path();
-        let response_texts = response.texts();
-        let response_tool_events = response.tool_calls();
+        let response_conversation = response.conversation();
         // Providers usually report token usage on the final response event. Some
         // request styles may include useful usage-like fields on the request, so use
         // those as a fallback only when response usage is absent.
@@ -50,7 +47,8 @@ impl<'a> OpenAiHttpExchange<'a> {
         // turns may therefore arrive here with a truncated, non-JSON request body
         // while the response may also be truncated before the final usage event.
         // Treat truncation itself as evidence that an audit-relevant exchange
-        // occurred, even when the retained prefixes do not parse into text or usage.
+        // occurred, even when the retained prefixes do not parse into entries or
+        // usage.
         let usage = best_usage(&self.documents.values).unwrap_or_else(|| {
             self.exchange
                 .request
@@ -61,11 +59,9 @@ impl<'a> OpenAiHttpExchange<'a> {
         });
         let body_was_truncated =
             self.exchange.request.body().truncated() || self.exchange.response.body().truncated();
-        if request_texts.is_empty()
+        if request_conversation.entries.is_empty()
             && request_images.is_empty()
-            && request_tool_events.is_empty()
-            && response_texts.is_empty()
-            && response_tool_events.is_empty()
+            && response_conversation.entries.is_empty()
             && usage.is_empty()
             && !body_was_truncated
         {
@@ -98,18 +94,12 @@ impl<'a> OpenAiHttpExchange<'a> {
 
         Some(ParsedOpenAiExchange {
             generates_output: None,
-            host,
-            path: path.to_owned(),
-            method: self.exchange.request.method().to_string(),
-            transport: transport_name(&self.exchange.flow.protocol),
             session_id: session_id(headers)
                 .unwrap_or_else(|| format!("flow-{}", &request_hash[..16])),
             request_hash,
             request_conversation,
-            response_conversation: response.conversation(),
-            request_texts,
+            response_conversation,
             request_images,
-            response_texts,
             usage,
             response_id,
             previous_response_id,
@@ -119,8 +109,6 @@ impl<'a> OpenAiHttpExchange<'a> {
                 .body()
                 .json()
                 .and_then(|json| json.get("client_metadata").cloned()),
-            request_tool_events,
-            response_tool_events,
             model,
             event_types: self.documents.values.iter().flat_map(event_types).collect(),
         })

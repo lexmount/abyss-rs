@@ -505,21 +505,23 @@ validate_codex_pair() {
   jq -e \
     --arg marker "${marker}" \
     '
-      (.request.text | type == "string" and contains($marker))
-      and .request.agent_name == "codex"
-      and .response.agent_name == "codex"
-      and .request.llm_provider == "openai"
-      and .response.llm_provider == "openai"
-      and (.request.llm_model | type == "string" and length > 0 and . != "unknown")
-      and .response.llm_model == .request.llm_model
-      and (.request.input_tokens + .request.cache_read_tokens + .request.cache_write_tokens) > 0
-      and .request.output_tokens == 0
-      and .request.total_tokens
-        == (.request.input_tokens + .request.cache_read_tokens + .request.cache_write_tokens)
-      and (.response.text | type == "string" and length > 0)
-      and .response.input_tokens == 0
-      and .response.output_tokens > 0
-      and .response.total_tokens == .response.output_tokens
+      any(.request.conversation.entries[]?;
+        .role == "user" and (.text | contains($marker)))
+      and .request.agent.name == "codex"
+      and .response.agent.name == "codex"
+      and .request.llm.provider == "openai"
+      and .response.llm.provider == "openai"
+      and (.request.llm.model | type == "string" and length > 0 and . != "unknown")
+      and .response.llm.model == .request.llm.model
+      and (.request.token_usage.input_tokens + .request.token_usage.cache_read_tokens + .request.token_usage.cache_write_tokens) > 0
+      and .request.token_usage.output_tokens == 0
+      and .request.token_usage.total_tokens
+        == (.request.token_usage.input_tokens + .request.token_usage.cache_read_tokens + .request.token_usage.cache_write_tokens)
+      and any(.response.conversation.entries[]?;
+        .role == "assistant" and (.text | length > 0))
+      and .response.token_usage.input_tokens == 0
+      and .response.token_usage.output_tokens > 0
+      and .response.token_usage.total_tokens == .response.token_usage.output_tokens
     ' <<<"${pair_json}" >/dev/null \
     || fail "Codex event pair for ${marker} failed structured event checks"
 
@@ -546,7 +548,7 @@ validate_codex_summary() {
     # marker pair, whose native Codex usage is checked separately above.
     events_json="$(jq -c --arg session_id "${session_id}" \
       '[.events[] | select(.session_id == $session_id
-        and .agent_name == "codex" and .llm_provider == "openai")]' \
+        and .agent.name == "codex" and .llm.provider == "openai")]' \
       "${EVENTS_RESPONSE}")"
     summary_json="$(blackbox_fetch_summary \
       "${BACKEND_BASE_URL}" \

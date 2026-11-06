@@ -188,7 +188,7 @@ provider documents, and original content blocks are not part of the contract.
 ```json
 {
   "event_id": "evt-123",
-  "occurred_at": "2026-08-19T10:00:00Z",
+  "observed_at": "2026-08-19T10:00:00Z",
   "device": {
     "host_name": "developer-mac",
     "platform": "macos",
@@ -199,19 +199,17 @@ provider documents, and original content blocks are not part of the contract.
     "version": "1.2.3"
   },
   "session_id": "session-123",
-  "turn_id": "turn-123",
-  "naming_thread": true,
-  "stream_id": "thread-123",
   "response_id": "resp-123",
   "previous_response_id": "resp-122",
+  "subagent_id": "agent-2",
+  "parent_subagent_id": "agent-1",
+  "turn_id": "turn-1",
   "purpose": "session_title",
-  "session_title": "Repository overview",
   "llm": {
     "provider": "openai",
     "model": "gpt-5"
   },
   "side": "response",
-  "text": "I will inspect the repository.",
   "token_usage": {
     "input_tokens": 0,
     "output_tokens": 12,
@@ -220,14 +218,6 @@ provider documents, and original content blocks are not part of the contract.
     "reasoning_tokens": 4,
     "total_tokens": 12
   },
-  "tool_calls": [
-    {
-      "call_id": "call-123",
-      "name": "exec",
-      "input": "pwd",
-      "input_sha256": "0000000000000000000000000000000000000000000000000000000000000000"
-    }
-  ],
   "attachments": [
     {
       "position": 0,
@@ -238,34 +228,51 @@ provider documents, and original content blocks are not part of the contract.
     }
   ],
   "conversation": {
-    "messages": [
+    "entries": [
       {
-        "id": "rs-123",
         "role": "reasoning",
-        "text": "The user wants an overview of the repository."
+        "text": "The user wants an overview of the repository.",
+        "item_id": "rs-123"
       },
       {
-        "id": "msg-123",
         "role": "assistant",
-        "text": "I will inspect the repository."
+        "text": "I will inspect the repository.",
+        "item_id": "msg-123"
       },
       {
-        "id": "fc-123",
-        "role": "tool",
-        "text": ""
+        "role": "tool_call",
+        "text": "pwd",
+        "call_id": "call-123",
+        "name": "exec",
+        "item_id": "fc-123"
       }
     ],
-    "instructions_present": false,
-    "completeness": "complete",
-    "policy_omitted": false
-  }
+    "completeness": "complete"
+  },
+  "path": "/v1/responses",
+  "headers": [
+    {
+      "name": "content-type",
+      "value": "text/event-stream"
+    },
+    {
+      "name": "x-request-id",
+      "value": "req-123"
+    },
+    {
+      "name": "set-cookie",
+      "value": "<redacted>"
+    }
+  ]
 }
 ```
 
 There is no event kind discriminator or nested payload enum. `side` identifies
 whether content and token usage belong to the Agent request or provider response.
-Tool arguments and results use `tool_calls` and `tool_results`, and images use
-`attachments`; the event has no arbitrary `metadata` object.
+`conversation` entries are the only carrier of the side's content: text,
+reasoning, tool calls, and tool results appear in position as entries, with no
+flattened text or tool-call summary beside them; images use `attachments`.
+The event has no arbitrary `metadata` object.
 
 `token_usage` counters are disjoint regardless of how the provider reports
 them. `input_tokens` counts input neither read from nor written into a provider
@@ -278,94 +285,94 @@ counters, so summing both sides of one exchange never double-counts a token.
 
 ## Conversation
 
-`conversation.messages` lists provider messages and standalone items in provider
-order. Each message has exactly three fields:
+`conversation` has two fields:
 
-- `id`: the provider message or item identifier, or `null` when none was sent.
+- `entries`: one entry per protocol block or item, in provider order. Blocks
+  are never merged or split.
+- `completeness`: whether the captured body was decoded completely
+  (`complete`), only partly because capture or decoding was incomplete
+  (`partial`), or not at all because no supported structured document was
+  found (`unsupported`). It is independent of whether the provider call
+  succeeded.
+
+Each entry has:
+
 - `role`: one of the roles below.
-- `text`: the message's text projection.
+- `text`: the visible text. A `tool_call` carries its arguments or input as
+  sent; a `tool_result` carries its output.
+- `call_id`: on `tool_call` and `tool_result` entries, the identifier that
+  pairs a call with its result, when the protocol supplies one.
+- `name`: on `tool_call` entries, the tool name, when the protocol supplies
+  one.
+- `item_id`: the identity of the item the entry belongs to, when the protocol
+  supplies one. A model output keeps the identity its provider assigned when a
+  later request sends it back as history, so the request entry carries the
+  same value as the response entry that produced it.
+  - OpenAI Responses: the `id` of the input or output item, verbatim (`msg_…`,
+    `rs_…`, `fc_…`, `ctc_…`, and so on). All entries of an item that yields
+    several, such as a message with several content parts, carry the same
+    value.
+  - Anthropic: on a `thinking` block, `thinking:` followed by the lowercase
+    hex SHA-256 of the block's `signature` (for a streamed block, its
+    `signature_delta` fragments joined in order); on a `redacted_thinking`
+    block, the same over its `data`. A block without a signature has none, and
+    no other block carries one; tool blocks pair by `call_id`.
+  - Chat Completions: none.
 
-| Role | Meaning |
-| --- | --- |
-| `system` | Provider system prompt, such as Anthropic `system`. |
-| `developer` | Developer instructions, including OpenAI `instructions`. |
-| `user` | End-user input. |
-| `assistant` | Model-visible assistant output. |
-| `reasoning` | Model reasoning, such as OpenAI reasoning summaries or Anthropic thinking. |
-| `tool` | A tool call or tool result item, kept in position. |
-| `unknown` | The provider did not declare a role. |
+The role of an entry follows from the protocol structure alone:
 
-`text` never contains tool arguments or results; those are carried only by
-`tool_calls` and `tool_results`. Images are carried only by `attachments`.
+| Role | Anthropic | OpenAI Responses | Chat Completions |
+| --- | --- | --- | --- |
+| `system` | each block of the top-level `system`; text blocks of a `role: "system"` message | `role: "system"` messages | `system` |
+| `developer` | — | `instructions`; each content part of a `role: "developer"` message | `developer` |
+| `user` | `text` blocks of user messages | `input_text` of user messages | `user` |
+| `assistant` | `text` blocks of assistant messages | `output_text`, `refusal` | assistant `content`, `refusal` |
+| `reasoning` | `thinking`, `redacted_thinking` | `reasoning` (its content, else its summary) | assistant `reasoning_content` |
+| `tool_call` | `tool_use`, `server_tool_use`, `mcp_tool_use` | every `*_call` item | each assistant `tool_calls[]` |
+| `tool_result` | `tool_result`, every `*_tool_result` | every `*_output` item | `tool` |
+| `unknown` | — | an item without a recognized `role`, such as `agent_message` | a message without a recognized `role` |
 
-A request event carries the history as the agent sent it. Repeated messages,
-such as the same user prompt sent twice, are retained as separate messages and
-are not deduplicated. A response event carries the provider's output after the
-collector assembles streamed fragments; a streamed reply appears as one message
-with its complete text, never as per-delta fragments.
+Any other block or content part keeps its visible text in the role of its
+enclosing message, and any other Responses item in its own `role`; a tool part
+inside message content, such as a `tool_result` part, contributes nothing.
+A `thinking` or `redacted_thinking` block or a `reasoning` item produces its
+entry even when it carries no readable text, such as a reasoning item with only
+`encrypted_content`; the entry's `text` is then empty. A block, part, or item
+that carries no text, such as an image or a tool definition, produces no entry;
+images are carried by `attachments`. Chat Completions `reasoning_content`
+precedes the content of its message.
+Responses use the same table: Anthropic response content blocks and OpenAI
+output items become entries the same way, after the collector assembles
+streamed fragments, so a streamed block appears as one entry with its complete
+text. A request event carries the history as the agent sent it; repeated
+blocks are not deduplicated.
 
-OpenAI reasoning items and Anthropic thinking blocks both become `reasoning`
-messages. An Anthropic response message that contains thinking and text blocks
-is split into `reasoning` and `assistant` messages that share the Anthropic
-message id and keep the provider's block order.
+The leading `system` and `developer` entries of a request are its system
+prompt; no separate flag marks them. A tool result pairs with its call by
+`call_id`, and model output replayed as history matches the response that
+produced it by `item_id`.
 
-`instructions_present` reports whether the request
-carried explicit instructions or a system prompt, including an explicitly empty
-one.
+## Omitted content
 
-`completeness` reports whether the captured content was decoded completely
-(`complete`), only partly because capture or decoding was incomplete
-(`partial`), or not at all because no supported structured document was found
-(`unsupported`). It is independent of whether the provider call succeeded.
+`omitted` lists the content categories the active content policy left out of
+the event, in the order `token_usage`, `conversation_text`, `tool_content`,
+`images`; it is omitted when everything was kept. An omitted category keeps
+the structure and empties the content, so consumers can tell "not present"
+from "not retained":
 
-`policy_omitted` is `true` only when the conversation-text content policy
-omitted messages. Tool, image, and token policies govern `tool_calls`,
-`tool_results`, `attachments`, and `token_usage` independently; they never change
-`conversation` or set `policy_omitted`.
+- `conversation_text`: entries other than `tool_call` and `tool_result` keep
+  their role and `item_id` with empty `text`.
+- `tool_content`: `tool_call` and `tool_result` entries keep their role,
+  `call_id`, `name`, and `item_id` with empty `text`.
+- `images`: no attachment is carried.
+- `token_usage`: every counter is zero.
 
-## Turns
+## Continuation
 
-There is no collector-counted `turn_index`. The collector keeps no turn state. `turn_id` names
-the user turn a request works for, as the Agent declares it in its own request
-headers. It is unique within the session and opaque to consumers, who number
-turns themselves:
+Two optional fields link one exchange to the responses around it. Both events
+of the exchange carry the same values, and each is omitted when the traffic
+declares none:
 
-- Codex: `root_turn_id` from `x-codex-turn-metadata`. On the main thread it
-  equals the request's own `turn_id`; on a thread Codex opens for that turn,
-  such as a guardian review, it names the user turn that thread works for.
-- Claude Code: the `x-claude-code-prompt-id` header. Main-loop requests and the
-  subagents they start carry the same value.
-- Otherwise absent: the request works for no particular user turn. Examples are
-  Claude Code auxiliary requests (recaps, input suggestions, naming calls, quota
-  probes) and compaction, and other Anthropic clients. Consumers place such
-  requests by their own rules.
-
-A provider call identity is never substituted for a turn, so `turn_id` always
-names a turn and never a single call.
-
-## Naming threads
-
-`naming_thread` is `true` when the request comes from a thread the Agent opened
-only to name another session. Codex names a task from a separate session whose
-`x-codex-turn-metadata` declares `thread_source` `thread_title`; the collector
-reports those requests with `naming_thread` and does not forward the Agent's own
-value. The field is omitted when `false`.
-
-## Streams and continuation
-
-Three optional fields place one exchange among the conversations of a session.
-Both events of the exchange carry the same values, and each is omitted when
-the traffic declares none:
-
-- `stream_id`: the thread that sent the request, as the Agent declares it.
-  Requests with the same value continue one conversation.
-  - Codex: `thread_id` from `x-codex-turn-metadata`. The main thread's value
-    equals the session id; a thread Codex opens for a turn, such as a guardian
-    review, has its own value.
-  - Claude Code: by `x-claude-code-request-class`, the session id
-    (`x-claude-code-session-id`) for `main` requests and the subagent instance
-    (`x-claude-code-agent-id`) for `subagent` requests. Other Claude Code
-    requests carry none.
 - `response_id`: the provider identity of the response the exchange produced:
   the OpenAI response id (`resp_…`) or the Anthropic message id (`msg_…`).
   Later requests name it to continue after that response.
@@ -374,15 +381,66 @@ the traffic declares none:
   - Anthropic: `previous_message_id` of a `thread` `continue` request.
   - OpenAI: the request's `previous_response_id`.
 
-## Call purpose and session title
+## Declared subagent and root turn
+
+Three optional fields carry what a client declares about its subagents and
+turns. Each is read only from the request headers (the upgrade request for a
+WebSocket connection), taken verbatim, and omitted when the request declares
+none; the collector never substitutes a value. Both events of an exchange
+carry the same values, and none enters the event id.
+
+| Field | Meaning | Claude Code | Codex |
+| --- | --- | --- | --- |
+| `subagent_id` | The subagent the exchange belongs to; absent for the main agent and for side requests. | `x-claude-code-agent-id` | `thread-id`, only when the request carries `x-codex-parent-thread-id` |
+| `parent_subagent_id` | The subagent that spawned it; absent when the main agent spawned it. | `x-claude-code-parent-agent-id` | `x-codex-parent-thread-id`, unless it equals the `session-id` header, which names the main thread |
+| `turn_id` | The root turn the client declares: the user input the exchange ultimately works for. A subagent's exchanges carry the value of the turn that spawned it; an exchange the client makes for no turn carries none. | `x-claude-code-prompt-id` | the `root_turn_id` string of the `x-codex-turn-metadata` JSON object |
+
+A header counts when its value is non-empty and valid UTF-8. A Codex
+`turn_id` is read only when `x-codex-turn-metadata` is a JSON object whose
+`root_turn_id` is a non-empty string. Cursor, Hermes, WorkBuddy, and OpenCode
+declare only `turn_id`, each from one header of the request itself: Cursor
+`x-request-id`, Hermes `x-hermes-turn-id`, WorkBuddy
+`x-conversation-request-id`, and OpenCode `x-opencode-request`. Other clients
+declare none of the fields. The headers themselves remain in `headers`.
+
+## Path
+
+`path` is the exchange's request target: its path and query exactly as the
+request line named them, for example `/v1/messages?beta=true`. A WebSocket
+connection names its target only on its handshake, so every event of the
+connection carries the upgrade request's path. Both events of an exchange
+carry it. The value is verbatim: the query is not redacted, and the content
+policy does not govern it.
+
+## Headers
+
+`headers` lists the captured headers of the event's side: the request headers
+on a request event and the response headers on a response event. A WebSocket
+connection has headers only on its handshake, so every request event of the
+connection carries the upgrade request's headers, and every response event
+carries the `101 Switching Protocols` response's headers.
+
+Each entry is `{"name", "value"}`, or `{"name", "value_base64"}` with the
+standard base64 encoding of the bytes when the value is not valid UTF-8;
+exactly one of the two is present. Entries follow the order of the captured
+header map, which groups repeated names together in first-seen order, and
+keep every duplicate. Names are lowercase, as the captured header map stores
+them.
+
+The values are verbatim except for credential redaction, applied once by the
+collector: the values of `authorization`, `proxy-authorization`, `cookie`,
+`set-cookie`, `api-key`, `x-api-key`, `x-goog-api-key`, `anthropic-api-key`,
+`chatgpt-account-id`, and of any header whose name contains `token`, become
+`<redacted>` and the names are kept. The content policy does not govern
+headers. The list is omitted when empty.
+
+## Call purpose
 
 `purpose` states what the Agent made a provider call for, when its traffic
 says so. Both events of the call carry it. Values:
 
 - `session_title`: the Agent asks the model to name the session the call
-  belongs to. Claude Code makes such a call with the naming instruction in its
-  system prompt (`You are naming a coding session…`) and the billing header
-  present.
+  belongs to.
 - `compaction`: the Agent asks the model to summarize the conversation so far,
   to continue from the summary instead of the full history. Codex declares it
   as `request_kind` `compaction` in `x-codex-turn-metadata`, Claude Code as
@@ -400,41 +458,41 @@ event order, empty replies, missing turn ids, or token differences. For comparis
 with Codex, add Abyss's disjoint input/cache-read/cache-write counters to obtain
 inclusive input; reasoning is already included in output and is not added again.
 
-`session_title` is the title from the response side of a `session_title` call,
-read only when the reply is a single `{"title": "…"}` object. It names the
-event's own session. Like `text`, it is model output and is omitted when the
-content policy drops conversation text.
-
-For title generation, Codex uses a separate thread whose requests do not say
-which session they name. Those naming events carry `naming_thread` instead of
-`purpose: session_title` and `session_title`; Codex compaction calls can still
-carry `purpose: compaction`.
-
-The official delivery plugin stores both fields under the same names in the
-usage-event metadata. The broker forwards them unchanged.
+The official delivery plugin stores it as `metadata.purpose` in the usage-event
+metadata. The broker forwards it unchanged.
 
 ## Event identity and emission
 
 Event ids are deterministic. The collector derives an id from the device,
 agent, session, event side, provider response identity, and a content digest,
 so observing the same exchange again yields the same id and ingestion stays
-idempotent. Distinct provider calls produce distinct ids.
+idempotent. Distinct provider calls produce distinct ids. The content digest
+covers the side's conversation entries before the content policy applies, so
+the policy does not change an id: every entry's `role`, `text`, `call_id`,
+`name`, and `item_id` in order, followed by the digests of the side's
+attachments. `completeness`, the declared subagent and root turn ids, the
+path, and the headers do not enter the id.
 
 The broker emits events only for exchanges its Agent protocol parser accepted.
-An exchange the parser rejects produces no event.
+An exchange the parser rejects produces no event. Within an exchange that
+produces events, a side produces one when its conversation has at least one
+entry, even with empty text, when it carries an image, or when it has token
+usage.
 
 ## Delivery
 
-The official delivery plugin stores the conversation as `metadata.conversation`
-and the purpose and title as `metadata.purpose` and `metadata.session_title`.
-It sends `turn_id`, `naming_thread`, `stream_id`, `response_id`, and
-`previous_response_id` as top-level fields of the backend usage event.
-Backend titles and trajectories consume these fields without decoding provider
-bodies. Other plugins may translate the event for their own destinations.
+The official delivery plugin sends `observed_at`, `conversation`,
+`response_id`, `previous_response_id`, `subagent_id`, `parent_subagent_id`, and
+`turn_id` as top-level fields of the backend usage event, each as the event
+carries it and absent where the event omits it, and sends `side` as the
+top-level `event_type` (`request` or `response`). It stores the purpose as
+`metadata.purpose`, the omitted categories as `metadata.omitted`, the path as
+`metadata.path`, and the headers as `metadata.headers`. Backend
+trajectories consume these fields without decoding provider bodies. Other plugins may translate the event for their own destinations.
 
 Rust, Python, and TypeScript SDKs all request protocol version 1 and consume this
 same event shape with the same 64 MiB JSON frame limit. The broker forwards the
-structured event without a legacy projection or a synthetic turn counter.
+structured event unchanged.
 
 The complete event schema is in
 [`agent-event.schema.json`](agent-event.schema.json).

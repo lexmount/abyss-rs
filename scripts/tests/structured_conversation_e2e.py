@@ -12,9 +12,20 @@ import tempfile
 import time
 import urllib.error
 import urllib.request
+from urllib.parse import quote
 from pathlib import Path
 
-ROLES = {"system", "developer", "user", "assistant", "reasoning", "tool", "unknown"}
+ROLES = {
+    "system",
+    "developer",
+    "user",
+    "assistant",
+    "reasoning",
+    "tool_call",
+    "tool_result",
+    "unknown",
+}
+ENTRY_FIELDS = {"role", "text", "call_id", "name", "item_id"}
 
 
 def replay(binary, fixtures):
@@ -28,8 +39,12 @@ def replay(binary, fixtures):
     return [json.loads(line) for line in completed.stdout.splitlines()]
 
 
-def messages(event):
-    return [(m["role"], m["text"]) for m in event["conversation"]["messages"]]
+def entries(event):
+    return [(e["role"], e["text"]) for e in event["conversation"]["entries"]]
+
+
+def item_ids(event):
+    return [e.get("item_id") for e in event["conversation"]["entries"]]
 
 
 def assert_structured(events):
@@ -37,58 +52,63 @@ def assert_structured(events):
     assert len({event["event_id"] for event in events}) == len(events), events
     for event in events:
         assert "raw_body" not in event, event
+        # Content is carried only by the conversation entries.
+        for field in ("text", "tool_calls", "tool_results"):
+            assert field not in event, event
         conversation = event["conversation"]
         assert "payloads" not in conversation, event
-        for message in conversation["messages"]:
-            assert set(message) == {"id", "role", "text"}, message
-            assert message["role"] in ROLES, message
+        assert set(conversation) == {"entries", "completeness"}, event
+        for entry in conversation["entries"]:
+            assert {"role", "text"} <= set(entry) <= ENTRY_FIELDS, entry
+            assert entry["role"] in ROLES, entry
         assert conversation["completeness"] == "complete", event
-        assert conversation["policy_omitted"] is False, event
+        assert "omitted" not in event, event
+        # The collector infers no thread, naming thread, or title.
+        for field in ("naming_thread", "stream_id", "session_title"):
+            assert field not in event, (field, event)
     first_request, first_reply, second_request, second_reply = events[:4]
-    # Codex declares the user turn each request works for as `root_turn_id`.
     for turn, (request, reply) in enumerate(
         [(first_request, first_reply), (second_request, second_reply)]
     ):
-        assert request["turn_id"] == reply["turn_id"] == f"turn-{turn}", request
-        assert "naming_thread" not in request, request
-        # Both events of an exchange carry its thread and response identity.
-        assert request["stream_id"] == reply["stream_id"] == "codex-thread", request
+        # Both events of an exchange carry its response identity.
         assert request["response_id"] == reply["response_id"] == f"resp_{turn}", request
         assert "previous_response_id" not in request, request
-    assert first_request["conversation"]["instructions_present"] is True
-    assert messages(first_request) == [
+    # Responses `instructions` is the leading developer entry.
+    assert entries(first_request) == [
         ("developer", "system rules"),
         ("user", "continue"),
     ]
-    # Repeated user prompts stay separate messages in request history.
-    assert messages(second_request) == [
+    # Repeated user prompts stay separate entries in request history, and a
+    # replayed output item keeps the id its response gave it.
+    assert entries(second_request) == [
         ("developer", "system rules"),
         ("user", "continue"),
         ("assistant", "working"),
         ("user", "continue"),
     ]
-    # Streamed deltas are assembled into one complete assistant message.
+    assert item_ids(second_request) == [None, None, "m0", None], second_request
+    # Streamed deltas are assembled into one complete assistant entry.
     for turn, reply in enumerate([first_reply, second_reply]):
-        assert messages(reply) == [("assistant", "working")], reply
-        assert reply["conversation"]["messages"][0]["id"] == f"m{turn}", reply
+        assert entries(reply) == [("assistant", "working")], reply
+        assert item_ids(reply) == [f"m{turn}"], reply
     anthropic_request, anthropic_reply = events[4:]
-    # A plain Anthropic client declares no thread; the message id is the
-    # response identity.
-    assert "stream_id" not in anthropic_request, anthropic_request
+    # The message id is the response identity.
     assert (
         anthropic_request["response_id"]
         == anthropic_reply["response_id"]
         == "msg_anthropic"
     ), anthropic_request
-    assert messages(anthropic_request) == [
+    assert entries(anthropic_request) == [
         ("system", "system rules"),
         ("user", "hello"),
     ]
-    # Anthropic thinking is a separate reasoning message sharing the message id.
-    assert messages(anthropic_reply) == [("reasoning", "plan"), ("assistant", "hi")]
-    assert {m["id"] for m in anthropic_reply["conversation"]["messages"]} == {
-        "msg_anthropic"
-    }
+    # Each Anthropic block is one entry; a thinking block is identified by
+    # the digest of its signature.
+    assert entries(anthropic_reply) == [("reasoning", "plan"), ("assistant", "hi")]
+    assert item_ids(anthropic_reply) == [
+        "thinking:" + hashlib.sha256(b"sig").hexdigest(),
+        None,
+    ], anthropic_reply
 
 
 def main():
@@ -187,45 +207,9 @@ def main():
             },
         }
     )
-    # Claude Code names its session from a dedicated call.
-    fixtures.append(
-        {
-            "path": "/v1/messages",
-            "session_id": "structured-e2e-anthropic",
-            "process": "claude",
-            "request": {
-                "model": "test-model",
-                "system": [
-                    {
-                        "type": "text",
-                        "text": "x-anthropic-billing-header: cc_version=2.1.296.172; cc_entrypoint=cli;",
-                    },
-                    {"type": "text", "text": "You are naming a coding session."},
-                ],
-                "messages": [
-                    {"role": "user", "content": "<session>\nhello\n</session>"}
-                ],
-            },
-            "response": {
-                "id": "msg_title",
-                "model": "test-model",
-                "content": [{"type": "text", "text": '{"title": "Greeting"}'}],
-                "usage": {"input_tokens": 3, "output_tokens": 1},
-            },
-        }
-    )
     events = replay(args.replay_binary, fixtures)
-    assert len(events) == 8, events
-    assert_structured(events[:6])
-    naming_request, naming_reply = events[6:]
-    assert naming_request["purpose"] == naming_reply["purpose"] == "session_title"
-    # The naming call carries no prompt id, so it works for no user turn.
-    assert "turn_id" not in naming_request and "turn_id" not in naming_reply
-    # Without a turn index it is not a main-loop request, so it names no stream.
-    assert "stream_id" not in naming_request and "stream_id" not in naming_reply
-    assert naming_request["response_id"] == "msg_title"
-    assert "session_title" not in naming_request
-    assert naming_reply["session_title"] == "Greeting"
+    assert len(events) == 6, events
+    assert_structured(events)
     # Re-observing the same exchanges yields the same deterministic event ids.
     replayed = replay(args.replay_binary, fixtures)
     assert [e["event_id"] for e in replayed] == [e["event_id"] for e in events]
@@ -340,85 +324,73 @@ def main():
                     else:
                         raise AssertionError("delivery did not persist all events")
                     # The backend keeps each exchange's placement as sent.
-                    placement = ("stream_id", "response_id", "previous_response_id")
+                    placement = ("response_id", "previous_response_id")
                     by_id = {e["event_id"]: e for e in stored["events"]}
                     for event in events:
                         for field in placement:
                             assert by_id[event["event_id"]].get(field) == event.get(
                                 field
                             ), (field, event["event_id"])
-                    # Items as (kind, role, stream); roles are the conversation's
-                    # own strings.
-                    for session, expected in [
-                        # Both exchanges share the declared thread. The first
-                        # request shows its instructions and prompt; the second
-                        # repeats the same instructions and replays the history,
-                        # so only its new user message is added. Each reply adds
-                        # its assistant message.
-                        (
-                            "structured-e2e-openai",
-                            [
-                                ("message", "developer", 0),
-                                ("message", "user", 0),
-                                ("message", "assistant", 0),
-                                ("message", "user", 0),
-                                ("message", "assistant", 0),
-                            ],
-                        ),
-                        # Reasoning and the reply stay separate messages with
-                        # their own roles. The naming call names no stream and
-                        # continues no response, so it opens a stream of its own.
-                        (
-                            "structured-e2e-anthropic",
-                            [
-                                ("message", "system", 0),
-                                ("message", "user", 0),
-                                ("message", "reasoning", 0),
-                                ("message", "assistant", 0),
-                                ("message", "system", 1),
-                                ("message", "user", 1),
-                                ("message", "assistant", 1),
-                            ],
-                        ),
-                    ]:
+                    # Read server-owned structure and each segment's full event
+                    # conversations, without assembling a second trajectory.
+                    for session in ("structured-e2e-openai", "structured-e2e-anthropic"):
                         selected = get(
-                            "/v1/agent-usage/events?session_id=" + session + "&limit=10"
+                            "/v1/agent-usage/events?session_id=" + session
+                            + "&limit=10&fields=full"
                         )
+                        observed = {e["id"]: e for e in selected["events"]}
                         pk = selected["events"][0]["session_pk"]
-                        trajectory = get(
-                            "/v1/agent-usage/sessions/" + pk + "/trajectory"
-                        )
-                        assert [
-                            (item["kind"], item.get("role"), item["stream"])
-                            for item in trajectory["items"]
-                        ] == expected, trajectory
-                        outline = get("/v1/agent-usage/sessions/" + pk + "/outline")
-                        assert outline["session"]["title"] == (
-                            "continue" if "openai" in session else "Greeting"
-                        ), outline
+                        prefix = "/v1/agent-usage/sessions/" + pk
+                        header = get(prefix + "/header")
+                        assert header["session_id"] == session, header
+                        assert header["title"]["text"] == (
+                            "continue" if "openai" in session else "hello"
+                        ), header
+                        streams = get(prefix + "/streams")
+                        turns = get(prefix + "/turns")
+                        segments = [
+                            get(prefix + "/segments/" + quote(item["head"], safe=""))
+                            for item in streams["segments"]
+                        ]
+                        seen = set()
+                        for segment in segments:
+                            for exchange in segment["exchanges"]:
+                                for side in ("request", "response"):
+                                    preview = exchange[side]
+                                    if preview is None:
+                                        continue
+                                    event_pk = preview["event_pk"]
+                                    seen.add(event_pk)
+                                    content = [
+                                        entry for chunk in preview["chunks"]
+                                        for entry in chunk["entries"]
+                                    ]
+                                    assert content == observed[event_pk]["conversation"]["entries"]
+                                    assert preview["entries_total"] == len(content), preview
+                        assert seen == set(observed), (seen, observed)
                         (args.artifacts / (session + ".json")).write_text(
-                            json.dumps(trajectory, indent=2)
+                            json.dumps({"header": header, "streams": streams,
+                                        "turns": turns, "segments": segments}, indent=2)
                         )
                     # Check exact structured persistence without raw content.
                     import sqlite3
 
                     with sqlite3.connect(temp / "events.sqlite") as database:
                         rows = database.execute(
-                            "SELECT event_id, metadata FROM llm_usage_events"
+                            "SELECT event_id, metadata, conversation FROM llm_usage_events"
                         ).fetchall()
-                    saved = {row[0]: json.loads(row[1]) for row in rows}
+                    saved = {
+                        row[0]: (json.loads(row[1]), json.loads(row[2])) for row in rows
+                    }
                     for event in events:
-                        assert (
-                            saved[event["event_id"]]["conversation"]
-                            == event["conversation"]
-                        )
-                        assert "raw_body" not in saved[event["event_id"]]
-                        assert (
-                            "payloads" not in saved[event["event_id"]]["conversation"]
-                        )
+                        metadata, conversation = saved[event["event_id"]]
+                        assert conversation == event["conversation"]
+                        assert "conversation" not in metadata
+                        assert "raw_body" not in metadata
+                        assert "payloads" not in conversation
                     send({"code": 100, "reason": "test complete"})
             print(
-                "PASS: hook -> delivery -> SQLite storage -> titles and trajectory;"
+                "PASS: hook -> delivery -> SQLite storage -> header, structure and full segment content;"
                 " role-aware messages, deterministic ids, no raw content"
             )
         finally:

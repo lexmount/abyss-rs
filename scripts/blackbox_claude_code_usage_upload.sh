@@ -611,21 +611,23 @@ validate_claude_pair() {
     --arg marker "${marker}" \
     --arg expected_provider "${EXPECTED_LLM_PROVIDER}" \
     '
-      (.request.text | type == "string" and contains($marker))
-      and .request.agent_name == "claude-code"
-      and .response.agent_name == "claude-code"
-      and .request.llm_provider == $expected_provider
-      and .response.llm_provider == $expected_provider
-      and (.request.llm_model | type == "string" and length > 0 and . != "unknown")
-      and .response.llm_model == .request.llm_model
-      and (.request.input_tokens + .request.cache_read_tokens + .request.cache_write_tokens) > 0
-      and .request.output_tokens == 0
-      and .request.total_tokens
-        == (.request.input_tokens + .request.cache_read_tokens + .request.cache_write_tokens)
-      and (.response.text | type == "string" and length > 0)
-      and .response.input_tokens == 0
-      and .response.output_tokens > 0
-      and .response.total_tokens == .response.output_tokens
+      any(.request.conversation.entries[]?;
+        .role == "user" and (.text | contains($marker)))
+      and .request.agent.name == "claude-code"
+      and .response.agent.name == "claude-code"
+      and .request.llm.provider == $expected_provider
+      and .response.llm.provider == $expected_provider
+      and (.request.llm.model | type == "string" and length > 0 and . != "unknown")
+      and .response.llm.model == .request.llm.model
+      and (.request.token_usage.input_tokens + .request.token_usage.cache_read_tokens + .request.token_usage.cache_write_tokens) > 0
+      and .request.token_usage.output_tokens == 0
+      and .request.token_usage.total_tokens
+        == (.request.token_usage.input_tokens + .request.token_usage.cache_read_tokens + .request.token_usage.cache_write_tokens)
+      and any(.response.conversation.entries[]?;
+        .role == "assistant" and (.text | length > 0))
+      and .response.token_usage.input_tokens == 0
+      and .response.token_usage.output_tokens > 0
+      and .response.token_usage.total_tokens == .response.token_usage.output_tokens
     ' <<<"${pair_json}" >/dev/null \
     || fail "Claude Code event pair for ${marker} failed structured event checks"
 }

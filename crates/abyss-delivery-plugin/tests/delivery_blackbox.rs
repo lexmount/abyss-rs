@@ -78,12 +78,22 @@ fn real_plugin_process_delivers_a_broker_event_to_the_configured_destination() {
     assert_eq!(payload["events"][0]["event_id"], "evt-123");
     assert_eq!(payload["events"][0]["event_type"], "response");
     assert_eq!(
-        payload["events"][0]["metadata"]["conversation"],
+        payload["events"][0]["conversation"],
         serde_json::to_value(fixture_agent_event().conversation).unwrap()
     );
-    assert_eq!(
-        payload["events"][0]["metadata"]["content_segments"][0]["name"],
-        "exec"
+    assert!(
+        payload["events"][0]["metadata"]
+            .get("conversation")
+            .is_none()
+    );
+    assert!(payload["events"][0].get("text").is_none());
+    assert_eq!(payload["events"][0]["subagent_id"], "agent-2");
+    assert_eq!(payload["events"][0]["parent_subagent_id"], "agent-1");
+    assert_eq!(payload["events"][0]["turn_id"], "turn-1");
+    assert!(
+        payload["events"][0]["metadata"]
+            .get("content_segments")
+            .is_none()
     );
     assert_eq!(payload["diagnostic_captures"], serde_json::json!([]));
 

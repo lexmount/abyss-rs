@@ -4,9 +4,7 @@
 use abyss_mitm::FlowContext;
 use http::HeaderMap;
 
-use crate::harness::{
-    AgentDeclaration, BuiltInHarness, DeclarationSource, HarnessDetection, HarnessEvidence,
-};
+use crate::harness::{AgentDeclaration, BuiltInHarness, DeclarationSource, HarnessDetection};
 
 use super::{HarnessDetector, client_version, header};
 
@@ -15,7 +13,7 @@ pub(super) struct CursorDetector;
 impl HarnessDetector for CursorDetector {
     fn detect(
         &self,
-        flow: &FlowContext,
+        _flow: &FlowContext,
         headers: &HeaderMap,
         _path: &str,
     ) -> Option<HarnessDetection> {
@@ -25,9 +23,7 @@ impl HarnessDetector for CursorDetector {
         }
         Some(HarnessDetection {
             harness_id: BuiltInHarness::Cursor.into(),
-            evidence: vec![HarnessEvidence::Header("user-agent")],
             version: client_version(user_agent, &["cursor-cli/"]),
-            working_directory: flow.source_working_directory().map(str::to_owned),
         })
     }
 }

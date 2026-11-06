@@ -1,142 +1,120 @@
-//! Chat Completions tool calls and results, independent of Harness identity.
-//! Streamed inputs are assembled per tool index within one choice. Request
-//! results preserve every tool message, including repeated history, in wire order.
+//! Chat Completions tool calls and results. A call is a `function` call with
+//! `arguments` or a `custom` call with `input`; streamed inputs are assembled
+//! per tool index within one choice.
 
 use std::collections::BTreeMap;
 
+use abyss_plugin_protocol::event::ConversationEntry;
 use serde_json::Value;
 
-use crate::protocol::model::tool::ParsedToolEvent;
+use crate::protocol::{
+    model::conversation::ConversationProjection,
+    openai::shared::{
+        content::{output_text, slot_index},
+        output::CallSlot,
+    },
+};
 
-/// Tool calls belonging to one Chat Completions choice.
+/// The entry of a `tool` message: the result of one call.
+pub fn tool_message_entry(message: &Value) -> ConversationEntry {
+    ConversationProjection::tool_result(
+        ConversationProjection::field(message, "tool_call_id"),
+        message.get("content").map(output_text).unwrap_or_default(),
+    )
+}
+
+/// One tool-call entry per element of a message's `tool_calls`, as sent.
+pub fn message_call_entries(message: &Value) -> impl Iterator<Item = ConversationEntry> + '_ {
+    message
+        .get("tool_calls")
+        .and_then(Value::as_array)
+        .into_iter()
+        .flatten()
+        .map(|call| {
+            ConversationProjection::tool_call(
+                ConversationProjection::field(call, "id"),
+                call_name(call).map(str::to_owned),
+                call_input(call)
+                    .map(ConversationProjection::verbatim)
+                    .unwrap_or_default(),
+            )
+        })
+}
+
+/// Tool calls belonging to one choice, by tool index.
 #[derive(Default)]
-pub(super) struct ChatToolCalls {
-    calls: BTreeMap<u64, ChatToolCall>,
+pub struct ChatToolCalls {
+    calls: BTreeMap<u64, CallSlot>,
 }
 
 impl ChatToolCalls {
-    /// Accumulates input fragments, without decoding incomplete JSON arguments.
+    /// Accumulates one streamed `delta.tool_calls` array. Compatible streams
+    /// repeat an empty `id` and `name` on argument-only fragments.
     pub fn apply_delta(&mut self, delta: &Value) {
-        let Some(calls) = delta.get("tool_calls").and_then(Value::as_array) else {
-            return;
-        };
-        for call in calls {
-            if let Some(index) = call.get("index").and_then(Value::as_u64) {
-                self.calls.entry(index).or_default().apply(call);
+        for call in delta
+            .get("tool_calls")
+            .and_then(Value::as_array)
+            .into_iter()
+            .flatten()
+        {
+            let slot = self
+                .calls
+                .entry(call["index"].as_u64().unwrap_or(0))
+                .or_default();
+            if let Some(id) = ConversationProjection::field(call, "id").filter(|id| !id.is_empty())
+            {
+                slot.call_id = Some(id);
+            }
+            if let Some(name) = call_name(call).filter(|name| !name.is_empty()) {
+                slot.name = Some(name.to_owned());
+            }
+            if let Some(input) = call_input(call).and_then(Value::as_str) {
+                slot.streamed.push_str(input);
             }
         }
     }
 
-    /// Replaces streamed calls with an authoritative non-streaming snapshot.
+    /// Replaces streamed calls with an authoritative message snapshot.
     pub fn reconcile(&mut self, message: &Value) {
         let Some(calls) = message.get("tool_calls").and_then(Value::as_array) else {
             return;
         };
-        self.calls.clear();
-        for (index, call) in calls.iter().enumerate() {
-            let mut slot = ChatToolCall::default();
-            slot.apply(call);
-            self.calls
-                .insert(u64::try_from(index).unwrap_or(u64::MAX), slot);
-        }
-    }
-
-    pub fn events(&self) -> impl Iterator<Item = ParsedToolEvent> + '_ {
-        self.calls.values().filter_map(ChatToolCall::event)
-    }
-
-    /// Observes every tool result the request carries without inferring freshness.
-    pub fn request_results(payload: &Value) -> Vec<ParsedToolEvent> {
-        let Some(messages) = payload.get("messages").and_then(Value::as_array) else {
-            return Vec::new();
-        };
-        messages
+        self.calls = calls
             .iter()
-            .filter(|message| message.get("role").and_then(Value::as_str) == Some("tool"))
-            .filter_map(|message| {
-                let call_id = message.get("tool_call_id")?.as_str()?;
-                let content = message.get("content")?;
-                let output = match content {
-                    Value::String(text) => text.clone(),
-                    Value::Array(parts) => parts
-                        .iter()
-                        .filter(|part| part.get("type").and_then(Value::as_str) == Some("text"))
-                        .filter_map(|part| part.get("text").and_then(Value::as_str))
-                        .collect::<Vec<_>>()
-                        .join("\n"),
-                    _ => return None,
+            .enumerate()
+            .map(|(position, call)| {
+                let slot = CallSlot {
+                    call_id: ConversationProjection::field(call, "id"),
+                    name: call_name(call).map(str::to_owned),
+                    input: call_input(call)
+                        .map(ConversationProjection::verbatim)
+                        .unwrap_or_default(),
+                    streamed: String::new(),
                 };
-                Some(ParsedToolEvent::ToolResult {
-                    call_id: Some(call_id.to_owned()),
-                    output,
-                })
+                (slot_index(position), slot)
             })
-            .collect()
+            .collect();
+    }
+
+    pub fn entries(&self) -> impl Iterator<Item = ConversationEntry> + '_ {
+        self.calls.values().map(CallSlot::entry)
     }
 }
 
-enum ChatToolKind {
-    Function,
-    Custom,
+/// The `function` or `custom` payload of one call, with its input key.
+fn call_payload(call: &Value) -> Option<(&Value, &'static str)> {
+    call.get("function")
+        .map(|function| (function, "arguments"))
+        .or_else(|| call.get("custom").map(|custom| (custom, "input")))
 }
 
-impl ChatToolKind {
-    fn payload<'a>(&self, call: &'a Value) -> Option<(&'a Value, &'static str)> {
-        match self {
-            Self::Function => Some((call.get("function")?, "arguments")),
-            Self::Custom => Some((call.get("custom")?, "input")),
-        }
-    }
+fn call_name(call: &Value) -> Option<&str> {
+    let (payload, _) = call_payload(call)?;
+    payload.get("name").and_then(Value::as_str)
 }
 
-#[derive(Default)]
-struct ChatToolCall {
-    id: Option<String>,
-    name: Option<String>,
-    kind: Option<ChatToolKind>,
-    input: Option<String>,
-}
-
-impl ChatToolCall {
-    fn apply(&mut self, call: &Value) {
-        match call.get("type").and_then(Value::as_str) {
-            Some("function") => self.kind = Some(ChatToolKind::Function),
-            Some("custom") => self.kind = Some(ChatToolKind::Custom),
-            Some(_) => return,
-            None => {}
-        }
-        // Compatible streams may repeat empty metadata on argument-only chunks.
-        if let Some(id) = call
-            .get("id")
-            .and_then(Value::as_str)
-            .filter(|id| !id.is_empty())
-        {
-            self.id = Some(id.to_owned());
-        }
-        let Some((payload, input_key)) = self.kind.as_ref().and_then(|kind| kind.payload(call))
-        else {
-            return;
-        };
-        if let Some(name) = payload
-            .get("name")
-            .and_then(Value::as_str)
-            .filter(|name| !name.is_empty())
-        {
-            self.name = Some(name.to_owned());
-        }
-        if let Some(fragment) = payload.get(input_key).and_then(Value::as_str) {
-            self.input
-                .get_or_insert_with(String::new)
-                .push_str(fragment);
-        }
-    }
-
-    fn event(&self) -> Option<ParsedToolEvent> {
-        Some(ParsedToolEvent::ToolCall {
-            item_id: None,
-            call_id: self.id.clone(),
-            name: self.name.clone(),
-            input: self.input.clone()?,
-        })
-    }
+/// The `arguments` of a function call or the `input` of a custom call.
+fn call_input(call: &Value) -> Option<&Value> {
+    let (payload, key) = call_payload(call)?;
+    payload.get(key)
 }

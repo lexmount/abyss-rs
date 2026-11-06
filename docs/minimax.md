@@ -96,7 +96,7 @@ the MiniMax website or arbitrary subdomains. Compatible gateways need their own
 explicit host rule.
 
 The shared parsers preserve Chat Completions `reasoning_content`, Responses
-`reasoning_text` content, and Messages `thinking` blocks as reasoning messages.
+`reasoning_text` content, and Messages `thinking` blocks as reasoning entries.
 Cache reads are disjoint from uncached input; reasoning tokens are a subset of
 output and do not inflate totals. Streamed tool arguments retain their call ID
 so the following tool result can be correlated.

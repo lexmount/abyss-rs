@@ -1,6 +1,6 @@
 {
   "event_id": "evt-123",
-  "occurred_at": "2026-08-19T10:00:00Z",
+  "observed_at": "2026-08-19T10:00:00Z",
   "device": {
     "host_name": "developer-mac",
     "platform": "macos",
@@ -11,19 +11,17 @@
     "version": "1.2.3"
   },
   "session_id": "session-123",
-  "turn_id": "turn-123",
-  "naming_thread": true,
-  "stream_id": "thread-123",
   "response_id": "resp-123",
   "previous_response_id": "resp-122",
+  "subagent_id": "agent-2",
+  "parent_subagent_id": "agent-1",
+  "turn_id": "turn-1",
   "purpose": "session_title",
-  "session_title": "Repository overview",
   "llm": {
     "provider": "openai",
     "model": "gpt-5"
   },
   "side": "response",
-  "text": "I will inspect the repository.",
   "token_usage": {
     "input_tokens": 0,
     "output_tokens": 12,
@@ -32,14 +30,6 @@
     "reasoning_tokens": 4,
     "total_tokens": 12
   },
-  "tool_calls": [
-    {
-      "call_id": "call-123",
-      "name": "exec",
-      "input": "pwd",
-      "input_sha256": "0000000000000000000000000000000000000000000000000000000000000000"
-    }
-  ],
   "attachments": [
     {
       "position": 0,
@@ -50,25 +40,40 @@
     }
   ],
   "conversation": {
-    "messages": [
+    "entries": [
       {
-        "id": "rs-123",
         "role": "reasoning",
-        "text": "The user wants an overview of the repository."
+        "text": "The user wants an overview of the repository.",
+        "item_id": "rs-123"
       },
       {
-        "id": "msg-123",
         "role": "assistant",
-        "text": "I will inspect the repository."
+        "text": "I will inspect the repository.",
+        "item_id": "msg-123"
       },
       {
-        "id": "fc-123",
-        "role": "tool",
-        "text": ""
+        "role": "tool_call",
+        "text": "pwd",
+        "call_id": "call-123",
+        "name": "exec",
+        "item_id": "fc-123"
       }
     ],
-    "instructions_present": false,
-    "completeness": "complete",
-    "policy_omitted": false
-  }
+    "completeness": "complete"
+  },
+  "path": "/v1/responses",
+  "headers": [
+    {
+      "name": "content-type",
+      "value": "text/event-stream"
+    },
+    {
+      "name": "x-request-id",
+      "value": "req-123"
+    },
+    {
+      "name": "set-cookie",
+      "value": "<redacted>"
+    }
+  ]
 }

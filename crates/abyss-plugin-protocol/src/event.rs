@@ -9,7 +9,7 @@
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Deserializer, Serialize, Serializer};
 mod conversation;
-pub use conversation::{ContentCompleteness, Conversation, ConversationMessage, MessageRole};
+pub use conversation::{ContentCompleteness, Conversation, ConversationEntry, EntryRole};
 
 /// One event decoded with the contract defined by the active plugin protocol.
 #[derive(Debug, Deserialize, Serialize)]
@@ -18,27 +18,13 @@ pub struct AgentEvent {
     /// Stable event identifier assigned by the event producer.
     pub event_id: String,
     /// Time at which the broker observed the logical event.
-    pub occurred_at: DateTime<Utc>,
+    pub observed_at: DateTime<Utc>,
     /// Device context observed by the broker.
     pub device: DeviceContext,
     /// Agent product context inferred from traffic.
     pub agent: AgentContext,
     /// Provider or collector session identifier.
     pub session_id: String,
-    /// The user turn this request works for, as the Agent declares it in its
-    /// request headers; unique within the session. Absent when the request
-    /// works for no particular turn.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub turn_id: Option<String>,
-    /// Whether the request comes from a thread the Agent opened only to name
-    /// another session.
-    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
-    pub naming_thread: bool,
-    /// The thread that sent this exchange's request, as the Agent declares it.
-    /// Requests with the same value continue one conversation. Absent when
-    /// the Agent declares none.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub stream_id: Option<String>,
     /// Provider identity of the response this exchange produced. Both events
     /// of the exchange carry it, and later requests continue after it by this
     /// value.
@@ -48,34 +34,133 @@ pub struct AgentEvent {
     /// carries only the messages added since that response.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub previous_response_id: Option<String>,
+    /// Id of the subagent this exchange belongs to, as the client declared it;
+    /// absent for the main agent and for side requests.
+    ///
+    /// Each declared id is read only from the request headers (for a WebSocket
+    /// connection, its upgrade request's), taken verbatim, and absent when no
+    /// header declares it; no value is substituted. Both events of an exchange
+    /// carry it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub subagent_id: Option<String>,
+    /// Id of the subagent that spawned this exchange's subagent, declared like
+    /// `subagent_id`; absent when the main agent spawned it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub parent_subagent_id: Option<String>,
+    /// Root turn the client declares, like `subagent_id`: the user input this
+    /// exchange ultimately works for. A subagent's exchanges carry the value
+    /// of the turn that spawned it; an exchange the client makes for no turn
+    /// carries none.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub turn_id: Option<String>,
     /// What the Agent made this provider call for, when its traffic says so.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub purpose: Option<EventPurpose>,
-    /// Title the Agent generated for the session this event belongs to;
-    /// response side of a [`EventPurpose::SessionTitle`] call only.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub session_title: Option<String>,
     /// Provider and model context.
     pub llm: LlmContext,
     /// Request or response side represented by this event.
     pub side: AgentEventSide,
-    /// Policy-retained request or response text.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub text: Option<String>,
-    /// Role-aware request or response messages.
+    /// Content categories the effective content policy omitted from this
+    /// event; empty when everything was retained.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub omitted: Vec<ContentCategory>,
+    /// Role-aware request or response entries, one per protocol block or
+    /// item; the only carrier of the side's content.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub conversation: Option<Conversation>,
+    /// The exchange's request target: its path and query as the request named
+    /// them (for a WebSocket connection, its upgrade request's), verbatim.
+    /// Both events of an exchange carry it.
+    pub path: String,
+    /// Captured headers of this event's side: request headers on a request
+    /// event, response headers on a response event. In capture order,
+    /// duplicates kept, verbatim except that credential values are redacted.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub headers: Vec<HttpHeader>,
     /// Token counters attributed to this event side.
     pub token_usage: TokenUsage,
-    /// Normalized tool calls associated with this event side.
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub tool_calls: Vec<ToolCall>,
-    /// Normalized tool results associated with this event side.
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub tool_results: Vec<ToolResult>,
     /// Policy-retained image attachments.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub attachments: Vec<ImageAttachment>,
+}
+
+/// A category of captured content the content policy can omit.
+#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "snake_case")]
+#[non_exhaustive]
+pub enum ContentCategory {
+    /// Token counters; when omitted every counter is zero.
+    TokenUsage,
+    /// Text of non-tool conversation entries; when omitted those entries keep
+    /// their role and `item_id` with empty text.
+    ConversationText,
+    /// Tool arguments and results; when omitted tool entries keep their
+    /// `call_id`, `name`, and `item_id` with empty text.
+    ToolContent,
+    /// Image attachments; when omitted no attachment is carried.
+    Images,
+}
+
+/// One captured request or response header.
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(try_from = "HttpHeaderWire", into = "HttpHeaderWire")]
+pub struct HttpHeader {
+    /// Header name as captured.
+    pub name: String,
+    /// Header value as captured.
+    pub value: HttpHeaderValue,
+}
+
+/// Captured header value bytes.
+#[derive(Clone, Debug, Eq, PartialEq)]
+#[non_exhaustive]
+pub enum HttpHeaderValue {
+    /// The value bytes are valid UTF-8; carried as `value`.
+    Text(String),
+    /// The value bytes are not valid UTF-8; carried base64-encoded as
+    /// `value_base64`.
+    Base64(String),
+}
+
+/// Wire shape of [`HttpHeader`]: exactly one of `value` and `value_base64`.
+#[derive(Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
+struct HttpHeaderWire {
+    name: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    value: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    value_base64: Option<String>,
+}
+
+impl TryFrom<HttpHeaderWire> for HttpHeader {
+    type Error = &'static str;
+
+    fn try_from(wire: HttpHeaderWire) -> Result<Self, Self::Error> {
+        let value = match (wire.value, wire.value_base64) {
+            (Some(value), None) => HttpHeaderValue::Text(value),
+            (None, Some(value)) => HttpHeaderValue::Base64(value),
+            _ => return Err("a header carries exactly one of `value` and `value_base64`"),
+        };
+        Ok(Self {
+            name: wire.name,
+            value,
+        })
+    }
+}
+
+impl From<HttpHeader> for HttpHeaderWire {
+    fn from(header: HttpHeader) -> Self {
+        let (value, value_base64) = match header.value {
+            HttpHeaderValue::Text(value) => (Some(value), None),
+            HttpHeaderValue::Base64(value) => (None, Some(value)),
+        };
+        Self {
+            name: header.name,
+            value,
+            value_base64,
+        }
+    }
 }
 
 /// Agent-declared reason for a provider call.
@@ -191,7 +276,7 @@ pub enum AgentEventSide {
 }
 
 impl AgentEventSide {
-    /// Returns the request/response name carried by backend translations.
+    /// Returns the wire name of this side: `request` or `response`.
     #[must_use]
     pub const fn wire_name(self) -> &'static str {
         match self {
@@ -199,32 +284,6 @@ impl AgentEventSide {
             Self::Response => "response",
         }
     }
-}
-
-/// One normalized model-requested tool invocation.
-#[derive(Debug, Deserialize, Serialize)]
-#[serde(deny_unknown_fields)]
-pub struct ToolCall {
-    /// Broker-normalized identifier shared with the corresponding tool result.
-    pub call_id: String,
-    /// Broker-normalized tool name, such as `Bash`, `Read`, or `exec`.
-    pub name: String,
-    /// Complete provider-visible tool input normalized as text by the broker.
-    pub input: String,
-    /// Lowercase SHA-256 digest of `input`.
-    pub input_sha256: String,
-}
-
-/// One normalized result submitted back to the model after a tool call.
-#[derive(Debug, Deserialize, Serialize)]
-#[serde(deny_unknown_fields)]
-pub struct ToolResult {
-    /// Broker-normalized identifier shared with the originating tool call.
-    pub call_id: String,
-    /// Provider-visible result normalized as text by the broker.
-    pub output: String,
-    /// Lowercase SHA-256 digest of `output`.
-    pub output_sha256: String,
 }
 
 /// Normalized non-negative token counters.
@@ -299,8 +358,8 @@ impl ImageMediaType {
 #[cfg(test)]
 mod tests {
     use super::{
-        AgentContext, AgentEvent, AgentEventSide, DeviceContext, LlmContext, LlmProvider,
-        TokenUsage, ToolCall, ToolResult,
+        AgentContext, AgentEvent, AgentEventSide, ContentCategory, DeviceContext, HttpHeader,
+        HttpHeaderValue, LlmContext, LlmProvider, TokenUsage,
     };
     use chrono::{TimeZone as _, Utc};
 
@@ -325,19 +384,16 @@ mod tests {
             serialized.get("metadata").is_none(),
             "the public event must not expose an unstructured metadata object"
         );
-        assert!(
-            serialized.get("text").is_none(),
-            "absent optional content should be omitted"
-        );
         for field in [
-            "turn_id",
-            "naming_thread",
-            "stream_id",
             "response_id",
             "previous_response_id",
+            "subagent_id",
+            "parent_subagent_id",
+            "turn_id",
             "purpose",
-            "session_title",
+            "omitted",
             "conversation",
+            "headers",
         ] {
             assert!(
                 serialized.get(field).is_none(),
@@ -347,26 +403,72 @@ mod tests {
     }
 
     #[test]
-    fn tool_activity_serializes_as_named_structures() {
-        let mut event = sample_event(LlmProvider::OpenAi);
-        event.tool_calls.push(ToolCall {
-            call_id: "call-1".to_owned(),
-            name: "exec".to_owned(),
-            input: "pwd".to_owned(),
-            input_sha256: "call-hash".to_owned(),
-        });
-        event.tool_results.push(ToolResult {
-            call_id: "call-1".to_owned(),
-            output: "/workspace".to_owned(),
-            output_sha256: "result-hash".to_owned(),
-        });
-
+    fn declared_ids_serialize_verbatim_when_present() {
+        let mut event = sample_event(LlmProvider::Anthropic);
+        event.subagent_id = Some("agent-2".to_owned());
+        event.parent_subagent_id = Some("agent-1".to_owned());
+        event.turn_id = Some(" turn {1} ".to_owned());
         let serialized = serde_json::to_value(event).expect("Agent event should serialize");
 
-        assert_eq!(serialized["tool_calls"][0]["name"], "exec");
-        assert_eq!(serialized["tool_calls"][0]["input"], "pwd");
-        assert_eq!(serialized["tool_results"][0]["call_id"], "call-1");
-        assert_eq!(serialized["tool_results"][0]["output"], "/workspace");
+        assert_eq!(serialized["subagent_id"], "agent-2");
+        assert_eq!(serialized["parent_subagent_id"], "agent-1");
+        assert_eq!(serialized["turn_id"], " turn {1} ");
+        let decoded: AgentEvent =
+            serde_json::from_value(serialized).expect("declared ids should round-trip");
+        assert_eq!(decoded.turn_id.as_deref(), Some(" turn {1} "));
+    }
+
+    #[test]
+    fn request_headers_carry_exactly_one_value_form() {
+        let mut event = sample_event(LlmProvider::OpenAi);
+        event.headers = vec![
+            HttpHeader {
+                name: "session-id".to_owned(),
+                value: HttpHeaderValue::Text("s-1".to_owned()),
+            },
+            HttpHeader {
+                name: "x-binary".to_owned(),
+                value: HttpHeaderValue::Base64("//4=".to_owned()),
+            },
+        ];
+        let serialized = serde_json::to_value(event).expect("Agent event should serialize");
+
+        assert_eq!(
+            serialized["headers"],
+            serde_json::json!([
+                {"name": "session-id", "value": "s-1"},
+                {"name": "x-binary", "value_base64": "//4="}
+            ])
+        );
+        let decoded: AgentEvent =
+            serde_json::from_value(serialized.clone()).expect("headers should round-trip");
+        assert_eq!(decoded.headers.len(), 2);
+        for invalid in [
+            serde_json::json!({"name": "a"}),
+            serde_json::json!({"name": "a", "value": "v", "value_base64": "dg=="}),
+            serde_json::json!({"name": "a", "value": "v", "raw": true}),
+        ] {
+            let mut event = serialized.clone();
+            event["headers"] = serde_json::json!([invalid]);
+            assert!(serde_json::from_value::<AgentEvent>(event).is_err());
+        }
+    }
+
+    #[test]
+    fn omitted_categories_use_snake_case_names() {
+        let mut event = sample_event(LlmProvider::OpenAi);
+        event.omitted = vec![
+            ContentCategory::TokenUsage,
+            ContentCategory::ConversationText,
+            ContentCategory::ToolContent,
+            ContentCategory::Images,
+        ];
+        let serialized = serde_json::to_value(event).expect("Agent event should serialize");
+
+        assert_eq!(
+            serialized["omitted"],
+            serde_json::json!(["token_usage", "conversation_text", "tool_content", "images"])
+        );
     }
 
     #[test]
@@ -382,6 +484,24 @@ mod tests {
             error.to_string().contains("unknown field `metadata`"),
             "error should identify metadata as outside the public contract"
         );
+    }
+
+    #[test]
+    fn content_outside_conversation_entries_is_rejected() {
+        let serialized = serde_json::to_value(sample_event(LlmProvider::OpenAi))
+            .expect("event should serialize");
+        for (field, value) in [
+            ("text", serde_json::json!("hello")),
+            ("tool_calls", serde_json::json!([])),
+            ("tool_results", serde_json::json!([])),
+        ] {
+            let mut event = serialized.clone();
+            event[field] = value;
+            assert!(
+                serde_json::from_value::<AgentEvent>(event).is_err(),
+                "{field} is carried only by conversation entries"
+            );
+        }
     }
 
     #[test]
@@ -403,7 +523,7 @@ mod tests {
     fn sample_event(provider: LlmProvider) -> AgentEvent {
         AgentEvent {
             event_id: "evt-test".to_owned(),
-            occurred_at: Utc
+            observed_at: Utc
                 .with_ymd_and_hms(2026, 8, 19, 10, 0, 0)
                 .single()
                 .expect("sample timestamp should be valid"),
@@ -417,20 +537,21 @@ mod tests {
                 version: None,
             },
             session_id: "session-1".to_owned(),
-            turn_id: None,
-            naming_thread: false,
-            stream_id: None,
             response_id: None,
             previous_response_id: None,
+            subagent_id: None,
+            parent_subagent_id: None,
+            turn_id: None,
             purpose: None,
-            session_title: None,
             llm: LlmContext {
                 provider,
                 model: "gpt-test".to_owned(),
             },
             side: AgentEventSide::Request,
-            text: None,
+            omitted: Vec::new(),
             conversation: None,
+            path: "/v1/responses".to_owned(),
+            headers: Vec::new(),
             token_usage: TokenUsage {
                 input_tokens: 10,
                 output_tokens: 0,
@@ -439,8 +560,6 @@ mod tests {
                 reasoning_tokens: 0,
                 total_tokens: 10,
             },
-            tool_calls: Vec::new(),
-            tool_results: Vec::new(),
             attachments: Vec::new(),
         }
     }

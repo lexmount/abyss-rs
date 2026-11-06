@@ -216,8 +216,14 @@ impl StreamScenario<'_> {
         let request = read_plugin_frame(&mut plugin);
         let response = read_plugin_frame(&mut plugin);
         self.verify_events(&request, &response);
+        let call = response["conversation"]["entries"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|entry| entry["role"] == "tool_call")
+            .expect("the tool call must survive delivery");
         assert_eq!(
-            response["tool_calls"][0]["call_id"], self.call_id,
+            call["call_id"], self.call_id,
             "empty argument-only metadata must not erase the tool call ID"
         );
         broker.shutdown();
@@ -324,23 +330,27 @@ impl StreamScenario<'_> {
             }),
             "reasoning tokens must not inflate output totals"
         );
+        let entries = &response["conversation"]["entries"];
         assert_eq!(
-            response["conversation"]["messages"][0]["role"], "reasoning",
+            entries[0]["role"], "reasoning",
             "thinking must have its own conversation role"
         );
         assert_eq!(
-            response["conversation"]["messages"][0]["text"], self.thinking,
+            entries[0]["text"], self.thinking,
             "thinking fragments must be assembled once"
         );
+        let call = entries
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|entry| entry["role"] == "tool_call")
+            .expect("the tool call must survive delivery");
         assert_eq!(
-            response["tool_calls"][0]["name"], self.tool_name,
+            call["name"], self.tool_name,
             "tool name must survive delivery"
         );
         assert_eq!(
-            serde_json::from_str::<serde_json::Value>(
-                response["tool_calls"][0]["input"].as_str().unwrap()
-            )
-            .unwrap(),
+            serde_json::from_str::<serde_json::Value>(call["text"].as_str().unwrap()).unwrap(),
             json!({"path": "probe.txt"}),
             "tool arguments must be assembled into the original JSON"
         );

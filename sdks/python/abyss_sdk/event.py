@@ -5,28 +5,47 @@ from dataclasses import dataclass
 from datetime import datetime
 from typing import Any, Literal, Optional, cast
 
-MessageRole = Literal["system", "developer", "user", "assistant", "reasoning", "tool", "unknown"]
+EntryRole = Literal[
+    "system",
+    "developer",
+    "user",
+    "assistant",
+    "reasoning",
+    "tool_call",
+    "tool_result",
+    "unknown",
+]
 ContentCompleteness = Literal["complete", "partial", "unsupported"]
+ContentCategory = Literal["token_usage", "conversation_text", "tool_content", "images"]
 EventPurpose = Literal["session_title", "compaction", "prewarm"]
 
 
 @dataclass(frozen=True)
-class ConversationMessage:
-    """One ordered message; tool arguments and results use the event's tool fields."""
+class ConversationEntry:
+    """One protocol block or item; tool entries carry their arguments or output."""
 
-    id: Optional[str]
-    role: MessageRole
+    role: EntryRole
     text: str
+    call_id: Optional[str]
+    name: Optional[str]
+    item_id: Optional[str]
 
 
 @dataclass(frozen=True)
 class Conversation:
-    """Role-aware content and its capture and content-policy status."""
+    """Role-aware entries, one per protocol block or item, and the capture status."""
 
-    messages: tuple[ConversationMessage, ...]
-    instructions_present: bool
+    entries: tuple[ConversationEntry, ...]
     completeness: ContentCompleteness
-    policy_omitted: bool
+
+
+@dataclass(frozen=True)
+class HttpHeader:
+    """One captured header; ``value_base64`` carries a value that is not UTF-8."""
+
+    name: str
+    value: Optional[str]
+    value_base64: Optional[str]
 
 
 @dataclass(frozen=True)
@@ -72,25 +91,6 @@ class TokenUsage:
 
 
 @dataclass(frozen=True)
-class ToolCall:
-    """One normalized model-requested tool invocation."""
-
-    call_id: str
-    name: str
-    input: str
-    input_sha256: str
-
-
-@dataclass(frozen=True)
-class ToolResult:
-    """One normalized tool result returned to the model."""
-
-    call_id: str
-    output: str
-    output_sha256: str
-
-
-@dataclass(frozen=True)
 class ImageAttachment:
     """One policy-retained image attachment."""
 
@@ -106,24 +106,23 @@ class AgentEvent:
     """One fully normalized broker Agent event."""
 
     event_id: str
-    occurred_at: datetime
+    observed_at: datetime
     device: DeviceContext
     agent: AgentContext
     session_id: str
-    turn_id: Optional[str]
-    naming_thread: bool
-    stream_id: Optional[str]
     response_id: Optional[str]
     previous_response_id: Optional[str]
+    subagent_id: Optional[str]
+    parent_subagent_id: Optional[str]
+    turn_id: Optional[str]
     purpose: Optional[EventPurpose]
-    session_title: Optional[str]
     llm: LlmContext
     side: str
-    text: Optional[str]
+    omitted: tuple[ContentCategory, ...]
     conversation: Optional[Conversation]
+    path: str
+    headers: tuple[HttpHeader, ...]
     token_usage: TokenUsage
-    tool_calls: tuple[ToolCall, ...]
-    tool_results: tuple[ToolResult, ...]
     attachments: tuple[ImageAttachment, ...]
 
     @classmethod
@@ -135,24 +134,23 @@ class AgentEvent:
             event,
             {
                 "event_id",
-                "occurred_at",
+                "observed_at",
                 "device",
                 "agent",
                 "session_id",
-                "turn_id",
-                "naming_thread",
-                "stream_id",
                 "response_id",
                 "previous_response_id",
+                "subagent_id",
+                "parent_subagent_id",
+                "turn_id",
                 "purpose",
-                "session_title",
                 "llm",
                 "side",
-                "text",
+                "omitted",
                 "conversation",
+                "path",
+                "headers",
                 "token_usage",
-                "tool_calls",
-                "tool_results",
                 "attachments",
             },
             "AgentEvent",
@@ -163,37 +161,35 @@ class AgentEvent:
         purpose = _optional_string(event, "purpose")
         if purpose is not None and purpose not in {"session_title", "compaction", "prewarm"}:
             raise ValueError("purpose must be session_title, compaction or prewarm")
-        occurred_at = _datetime(_string(event, "occurred_at"))
+        observed_at = _datetime(_string(event, "observed_at"))
         return cls(
             event_id=_string(event, "event_id"),
-            occurred_at=occurred_at,
+            observed_at=observed_at,
             device=_device(_mapping(event.get("device"), "AgentEvent.device")),
             agent=_agent(_mapping(event.get("agent"), "AgentEvent.agent")),
             session_id=_string(event, "session_id"),
-            turn_id=_optional_string(event, "turn_id"),
-            naming_thread=_boolean(event, "naming_thread") if "naming_thread" in event else False,
-            stream_id=_optional_string(event, "stream_id"),
             response_id=_optional_string(event, "response_id"),
             previous_response_id=_optional_string(event, "previous_response_id"),
+            subagent_id=_optional_string(event, "subagent_id"),
+            parent_subagent_id=_optional_string(event, "parent_subagent_id"),
+            turn_id=_optional_string(event, "turn_id"),
             purpose=cast(Optional[EventPurpose], purpose),
-            session_title=_optional_string(event, "session_title"),
             llm=_llm(_mapping(event.get("llm"), "AgentEvent.llm")),
             side=side,
-            text=_optional_string(event, "text"),
+            omitted=tuple(
+                _content_category(item)
+                for item in _list(event.get("omitted", []), "AgentEvent.omitted")
+            ),
             conversation=(
                 _conversation(event["conversation"])
                 if event.get("conversation") is not None
                 else None
             ),
+            path=_string(event, "path"),
+            headers=tuple(
+                _header(item) for item in _list(event.get("headers", []), "AgentEvent.headers")
+            ),
             token_usage=_token_usage(_mapping(event.get("token_usage"), "AgentEvent.token_usage")),
-            tool_calls=tuple(
-                _tool_call(item)
-                for item in _list(event.get("tool_calls", []), "AgentEvent.tool_calls")
-            ),
-            tool_results=tuple(
-                _tool_result(item)
-                for item in _list(event.get("tool_results", []), "AgentEvent.tool_results")
-            ),
             attachments=tuple(
                 _attachment(item)
                 for item in _list(event.get("attachments", []), "AgentEvent.attachments")
@@ -201,36 +197,62 @@ class AgentEvent:
         )
 
 
+def _content_category(value: Any) -> ContentCategory:
+    if value not in {"token_usage", "conversation_text", "tool_content", "images"}:
+        raise ValueError(f"unsupported omitted content category {value}")
+    return cast(ContentCategory, value)
+
+
 def _conversation(value: Any) -> Conversation:
     item = _mapping(value, "AgentEvent.conversation")
-    _reject_unknown(
-        item, {"messages", "instructions_present", "completeness", "policy_omitted"}, "conversation"
-    )
+    _reject_unknown(item, {"entries", "completeness"}, "conversation")
     completeness = _string(item, "completeness")
     if completeness not in {"complete", "partial", "unsupported"}:
         raise ValueError("completeness must be complete, partial, or unsupported")
     return Conversation(
-        messages=tuple(
-            _conversation_message(message)
-            for message in _list(item.get("messages"), "conversation.messages")
+        entries=tuple(
+            _conversation_entry(entry)
+            for entry in _list(item.get("entries"), "conversation.entries")
         ),
-        instructions_present=_boolean(item, "instructions_present"),
         completeness=cast(ContentCompleteness, completeness),
-        policy_omitted=_boolean(item, "policy_omitted"),
     )
 
 
-def _conversation_message(value: Any) -> ConversationMessage:
-    item = _mapping(value, "conversation.messages[]")
-    _reject_unknown(item, {"id", "role", "text"}, "conversation message")
-    if "id" not in item:
-        raise ValueError("conversation message must include id (string or null)")
+def _conversation_entry(value: Any) -> ConversationEntry:
+    item = _mapping(value, "conversation.entries[]")
+    _reject_unknown(item, {"role", "text", "call_id", "name", "item_id"}, "conversation entry")
     role = _string(item, "role")
-    if role not in {"system", "developer", "user", "assistant", "reasoning", "tool", "unknown"}:
+    if role not in {
+        "system",
+        "developer",
+        "user",
+        "assistant",
+        "reasoning",
+        "tool_call",
+        "tool_result",
+        "unknown",
+    }:
         raise ValueError(f"unsupported conversation role {role}")
-    return ConversationMessage(
-        id=_optional_string(item, "id"), role=cast(MessageRole, role), text=_string(item, "text")
+    return ConversationEntry(
+        role=cast(EntryRole, role),
+        text=_string(item, "text"),
+        call_id=_optional_string(item, "call_id"),
+        name=_optional_string(item, "name"),
+        item_id=_optional_string(item, "item_id"),
     )
+
+
+def _header(value: Any) -> HttpHeader:
+    item = _mapping(value, "AgentEvent.headers[]")
+    _reject_unknown(item, {"name", "value", "value_base64"}, "header")
+    header = HttpHeader(
+        name=_string(item, "name"),
+        value=_optional_string(item, "value"),
+        value_base64=_optional_string(item, "value_base64"),
+    )
+    if (header.value is None) == (header.value_base64 is None):
+        raise ValueError("a header carries exactly one of value and value_base64")
+    return header
 
 
 def _device(value: Mapping[str, Any]) -> DeviceContext:
@@ -272,27 +294,6 @@ def _token_usage(value: Mapping[str, Any]) -> TokenUsage:
             raise ValueError(f"AgentEvent.token_usage.{field} must not be negative")
         counters[field] = counter
     return TokenUsage(**counters)
-
-
-def _tool_call(value: Any) -> ToolCall:
-    item = _mapping(value, "AgentEvent.tool_calls[]")
-    _reject_unknown(item, {"call_id", "name", "input", "input_sha256"}, "tool call")
-    return ToolCall(
-        call_id=_string(item, "call_id"),
-        name=_string(item, "name"),
-        input=_string(item, "input"),
-        input_sha256=_string(item, "input_sha256"),
-    )
-
-
-def _tool_result(value: Any) -> ToolResult:
-    item = _mapping(value, "AgentEvent.tool_results[]")
-    _reject_unknown(item, {"call_id", "output", "output_sha256"}, "tool result")
-    return ToolResult(
-        call_id=_string(item, "call_id"),
-        output=_string(item, "output"),
-        output_sha256=_string(item, "output_sha256"),
-    )
 
 
 def _attachment(value: Any) -> ImageAttachment:
@@ -346,13 +347,6 @@ def _optional_string(value: Mapping[str, Any], field: str) -> Optional[str]:
     return result
 
 
-def _boolean(value: Mapping[str, Any], field: str) -> bool:
-    result = value.get(field)
-    if not isinstance(result, bool):
-        raise TypeError(f"{field} must be a boolean")
-    return result
-
-
 def _integer(value: Mapping[str, Any], field: str) -> int:
     result = value.get(field)
     if isinstance(result, bool) or not isinstance(result, int):
@@ -364,7 +358,7 @@ def _datetime(value: str) -> datetime:
     try:
         return datetime.fromisoformat(value.replace("Z", "+00:00"))
     except ValueError as error:
-        raise ValueError("AgentEvent.occurred_at must be an RFC 3339 timestamp") from error
+        raise ValueError("AgentEvent.observed_at must be an RFC 3339 timestamp") from error
 
 
 def _reject_unknown(value: Mapping[str, Any], allowed: set, label: str) -> None:

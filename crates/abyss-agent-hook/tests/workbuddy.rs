@@ -11,7 +11,7 @@ use abyss_mitm::{
     CapturedBody, FlowContext, HttpExchange, MitmHook, OriginalDestination, SourceProcess,
     TransparentProtocol,
 };
-use abyss_plugin_protocol::event::AgentEvent;
+use abyss_plugin_protocol::event::{AgentEvent, EntryRole};
 use http::{Request, Response};
 use parking_lot::Mutex;
 use serde_json::{Value, json};
@@ -137,7 +137,17 @@ async fn multi_turn_and_tool_continuation_preserve_session_and_turn_on_both_side
                 assert_eq!(event.session_id, session);
                 assert_eq!(event.turn_id.as_deref(), Some(turn));
                 assert_eq!(event.response_id.as_deref(), Some(message));
-                assert_eq!(event.text.is_some(), conversation_text);
+                assert_eq!(
+                    event
+                        .conversation
+                        .iter()
+                        .flat_map(|conversation| &conversation.entries)
+                        .filter(|entry| {
+                            !matches!(entry.role, EntryRole::ToolCall | EntryRole::ToolResult)
+                        })
+                        .any(|entry| !entry.text.is_empty()),
+                    conversation_text
+                );
             }
         }
     }

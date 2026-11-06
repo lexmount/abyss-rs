@@ -45,11 +45,3 @@ pub fn opencode_session_id(headers: &HeaderMap) -> Option<&str> {
             header(headers, "x-session-id")
         })
 }
-
-pub const fn transport_name(protocol: &TransparentProtocol) -> &'static str {
-    match protocol {
-        TransparentProtocol::PlainHttp => "http",
-        TransparentProtocol::TlsHttp { .. } => "https",
-        _ => "unknown",
-    }
-}

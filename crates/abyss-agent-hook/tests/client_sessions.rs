@@ -11,7 +11,7 @@ use abyss_mitm::{
     CapturedBody, FlowContext, HttpExchange, MitmHook, OriginalDestination, SourceProcess,
     TransparentProtocol, WebSocketDirection, WebSocketMessage,
 };
-use abyss_plugin_protocol::event::AgentEvent;
+use abyss_plugin_protocol::event::{AgentEvent, ContentCategory};
 use http::{Request, Response};
 use parking_lot::Mutex;
 use serde_json::{Value, json};
@@ -178,10 +178,21 @@ async fn opencode_obeys_harness_and_content_policy() {
         }
         assert_eq!(events.len(), 2);
         for event in events.iter() {
-            assert!(event.text.is_none());
+            assert_eq!(
+                event.omitted,
+                [
+                    ContentCategory::ConversationText,
+                    ContentCategory::ToolContent,
+                    ContentCategory::Images,
+                ]
+            );
             let conversation = event.conversation.as_ref().unwrap();
-            assert!(conversation.policy_omitted);
-            assert!(conversation.messages.is_empty());
+            assert!(
+                conversation
+                    .entries
+                    .iter()
+                    .all(|entry| entry.text.is_empty())
+            );
             assert_eq!(event.session_id, "session-a");
             assert!(event.token_usage.total_tokens > 0);
         }
@@ -317,6 +328,7 @@ impl Scenario {
                     .on_websocket_message(&WebSocketMessage::new(
                         flow.clone(),
                         upgrade.clone(),
+                        Response::builder().status(101).body(()).unwrap(),
                         direction,
                         u64::try_from(index).unwrap(),
                         Some(body.to_string()),
@@ -548,7 +560,13 @@ async fn header_detection_uses_protocol_fallback_and_respects_policy() {
         assert_eq!(events.len(), if enabled { 4 } else { 0 });
         for event in events.iter() {
             assert_eq!(event.agent.name, harness);
-            assert!(event.text.is_none());
+            assert!(
+                event
+                    .conversation
+                    .iter()
+                    .flat_map(|conversation| &conversation.entries)
+                    .all(|entry| entry.text.is_empty())
+            );
         }
     }
 }
@@ -617,7 +635,13 @@ async fn compatibility_identity_and_policy_cannot_relabel_a_client() {
             assert_eq!(events.len(), if enabled { 2 } else { 0 });
             for event in events.iter() {
                 assert_eq!(event.agent.name, harness);
-                assert!(event.text.is_none());
+                assert!(
+                    event
+                        .conversation
+                        .iter()
+                        .flat_map(|conversation| &conversation.entries)
+                        .all(|entry| entry.text.is_empty())
+                );
             }
         }
     }

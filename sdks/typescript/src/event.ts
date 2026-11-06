@@ -2,54 +2,71 @@
 
 export interface AgentEvent {
   event_id: string;
-  occurred_at: string;
+  observed_at: string;
   device: DeviceContext;
   agent: AgentContext;
   session_id: string;
-  /** User turn declared by the Agent; absent when no turn was declared. */
-  turn_id?: string;
-  naming_thread?: boolean;
-  stream_id?: string;
   response_id?: string;
   previous_response_id?: string;
+  /** Subagent the client declared in its request headers, verbatim. */
+  subagent_id?: string;
+  /** Subagent that spawned it; absent when the main agent spawned it. */
+  parent_subagent_id?: string;
+  /** Turn opened by input from outside the agent loop that this works for. */
+  turn_id?: string;
   purpose?: EventPurpose;
-  session_title?: string;
   llm: LlmContext;
   side: AgentEventSide;
-  text?: string;
+  /** Content categories the content policy omitted; absent when none were. */
+  omitted?: ContentCategory[];
+  /** The side's content, one entry per protocol block or item. */
   conversation?: Conversation;
+  /** The request target's path and query, verbatim; on both sides. */
+  path: string;
+  /** Captured headers of the event's side, credential values redacted. */
+  headers?: HttpHeader[];
   token_usage: TokenUsage;
-  tool_calls?: ToolCall[];
-  tool_results?: ToolResult[];
   attachments?: ImageAttachment[];
 }
 
 export type EventPurpose = "session_title" | "compaction" | "prewarm";
 
-export type MessageRole =
+export type EntryRole =
   | "system"
   | "developer"
   | "user"
   | "assistant"
   | "reasoning"
-  | "tool"
+  | "tool_call"
+  | "tool_result"
   | "unknown";
 
 export type ContentCompleteness = "complete" | "partial" | "unsupported";
 
-export interface ConversationMessage {
-  id: string | null;
-  role: MessageRole;
-  /** Message text only; tool arguments and results use the event's tool fields. */
+export type ContentCategory =
+  "token_usage" | "conversation_text" | "tool_content" | "images";
+
+/** One protocol block or item, in provider order. */
+export interface ConversationEntry {
+  role: EntryRole;
+  /** Visible text; a tool call's arguments or input, a tool result's output. */
   text: string;
+  /** Pairs a tool call with its result; tool entries only. */
+  call_id?: string;
+  /** Tool name; tool calls only. */
+  name?: string;
+  /** Identity of the item the entry belongs to, as the traffic carries it. */
+  item_id?: string;
 }
 
 export interface Conversation {
-  messages: ConversationMessage[];
-  instructions_present: boolean;
+  entries: ConversationEntry[];
   completeness: ContentCompleteness;
-  policy_omitted: boolean;
 }
+
+/** One captured header; `value_base64` carries a value that is not UTF-8. */
+export type HttpHeader =
+  { name: string; value: string } | { name: string; value_base64: string };
 
 export interface DeviceContext {
   host_name: string;
@@ -83,19 +100,6 @@ export interface TokenUsage {
   total_tokens: number;
 }
 
-export interface ToolCall {
-  call_id: string;
-  name: string;
-  input: string;
-  input_sha256: string;
-}
-
-export interface ToolResult {
-  call_id: string;
-  output: string;
-  output_sha256: string;
-}
-
 export type ImageMediaType =
   "image/png" | "image/jpeg" | "image/webp" | "image/gif";
 
@@ -113,47 +117,43 @@ export function decodeAgentEvent(value: unknown): AgentEvent {
     event,
     [
       "event_id",
-      "occurred_at",
+      "observed_at",
       "device",
       "agent",
       "session_id",
-      "turn_id",
-      "naming_thread",
-      "stream_id",
       "response_id",
       "previous_response_id",
+      "subagent_id",
+      "parent_subagent_id",
+      "turn_id",
       "purpose",
-      "session_title",
       "llm",
       "side",
-      "text",
+      "omitted",
       "conversation",
+      "path",
+      "headers",
       "token_usage",
-      "tool_calls",
-      "tool_results",
       "attachments",
     ],
     "AgentEvent",
   );
   stringField(event, "event_id");
-  const occurredAt = stringField(event, "occurred_at");
-  if (Number.isNaN(Date.parse(occurredAt))) {
-    throw new TypeError("AgentEvent.occurred_at must be an RFC 3339 timestamp");
+  const observedAt = stringField(event, "observed_at");
+  if (Number.isNaN(Date.parse(observedAt))) {
+    throw new TypeError("AgentEvent.observed_at must be an RFC 3339 timestamp");
   }
   decodeDevice(event.device);
   decodeAgent(event.agent);
   stringField(event, "session_id");
   for (const field of [
-    "turn_id",
-    "stream_id",
     "response_id",
     "previous_response_id",
-    "session_title",
+    "subagent_id",
+    "parent_subagent_id",
+    "turn_id",
   ]) {
     optionalStringField(event, field);
-  }
-  if (event.naming_thread !== undefined) {
-    booleanField(event, "naming_thread");
   }
   if (event.purpose !== undefined) {
     choiceField(event, "purpose", ["session_title", "compaction", "prewarm"]);
@@ -162,51 +162,72 @@ export function decodeAgentEvent(value: unknown): AgentEvent {
   if (event.side !== "request" && event.side !== "response") {
     throw new TypeError("AgentEvent.side must be request or response");
   }
-  optionalStringField(event, "text");
+  optionalArray(event, "omitted").forEach((category, index) => {
+    if (
+      typeof category !== "string" ||
+      !["token_usage", "conversation_text", "tool_content", "images"].includes(
+        category,
+      )
+    ) {
+      throw new TypeError(`omitted[${index}] is not a content category`);
+    }
+  });
   if (event.conversation !== undefined) {
     decodeConversation(event.conversation);
   }
+  stringField(event, "path");
+  optionalArray(event, "headers").forEach(decodeHeader);
   decodeTokenUsage(event.token_usage);
-  optionalArray(event, "tool_calls").forEach(decodeToolCall);
-  optionalArray(event, "tool_results").forEach(decodeToolResult);
   optionalArray(event, "attachments").forEach(decodeAttachment);
   return event as unknown as AgentEvent;
 }
 
 function decodeConversation(value: unknown): void {
   const conversation = record(value, "AgentEvent.conversation");
-  rejectUnknown(
-    conversation,
-    ["messages", "instructions_present", "completeness", "policy_omitted"],
-    "conversation",
-  );
-  if (!Array.isArray(conversation.messages)) {
-    throw new TypeError("conversation.messages must be an array");
+  rejectUnknown(conversation, ["entries", "completeness"], "conversation");
+  if (!Array.isArray(conversation.entries)) {
+    throw new TypeError("conversation.entries must be an array");
   }
-  for (const value of conversation.messages) {
-    const message = record(value, "conversation.messages[]");
-    rejectUnknown(message, ["id", "role", "text"], "conversation message");
-    if (message.id !== null) {
-      stringField(message, "id");
-    }
-    choiceField(message, "role", [
+  for (const value of conversation.entries) {
+    const entry = record(value, "conversation.entries[]");
+    rejectUnknown(
+      entry,
+      ["role", "text", "call_id", "name", "item_id"],
+      "conversation entry",
+    );
+    choiceField(entry, "role", [
       "system",
       "developer",
       "user",
       "assistant",
       "reasoning",
-      "tool",
+      "tool_call",
+      "tool_result",
       "unknown",
     ]);
-    stringField(message, "text");
+    stringField(entry, "text");
+    for (const field of ["call_id", "name", "item_id"]) {
+      optionalStringField(entry, field);
+    }
   }
-  booleanField(conversation, "instructions_present");
   choiceField(conversation, "completeness", [
     "complete",
     "partial",
     "unsupported",
   ]);
-  booleanField(conversation, "policy_omitted");
+}
+
+function decodeHeader(value: unknown): void {
+  const header = record(value, "AgentEvent.headers[]");
+  rejectUnknown(header, ["name", "value", "value_base64"], "header");
+  stringField(header, "name");
+  optionalStringField(header, "value");
+  optionalStringField(header, "value_base64");
+  if ((header.value === undefined) === (header.value_base64 === undefined)) {
+    throw new TypeError(
+      "a header carries exactly one of value and value_base64",
+    );
+  }
 }
 
 function decodeDevice(value: unknown): void {
@@ -249,27 +270,6 @@ function decodeTokenUsage(value: unknown): void {
   for (const field of fields) {
     nonNegativeIntegerField(usage, field);
   }
-}
-
-function decodeToolCall(value: unknown): void {
-  const call = record(value, "AgentEvent.tool_calls[]");
-  rejectUnknown(
-    call,
-    ["call_id", "name", "input", "input_sha256"],
-    "tool call",
-  );
-  stringField(call, "call_id");
-  stringField(call, "name");
-  stringField(call, "input");
-  stringField(call, "input_sha256");
-}
-
-function decodeToolResult(value: unknown): void {
-  const result = record(value, "AgentEvent.tool_results[]");
-  rejectUnknown(result, ["call_id", "output", "output_sha256"], "tool result");
-  stringField(result, "call_id");
-  stringField(result, "output");
-  stringField(result, "output_sha256");
 }
 
 function decodeAttachment(value: unknown): void {
@@ -330,12 +330,6 @@ function nonNegativeIntegerField(
     throw new TypeError(`${field} must be a non-negative safe integer`);
   }
   return fieldValue;
-}
-
-function booleanField(value: Record<string, unknown>, field: string): void {
-  if (typeof value[field] !== "boolean") {
-    throw new TypeError(`${field} must be a boolean`);
-  }
 }
 
 function choiceField(

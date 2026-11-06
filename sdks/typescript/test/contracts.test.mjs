@@ -15,51 +15,50 @@ test("shared AgentEvent fixture decodes through the TypeScript SDK", async () =>
   const event = decodeAgentEvent(fixture);
 
   assert.equal(event.event_id, "evt-123");
-  assert.equal(event.turn_id, "turn-123");
   assert.equal(event.llm.provider, "openai");
-  assert.equal(event.tool_calls[0].name, "exec");
-  assert.equal(event.naming_thread, true);
-  assert.equal(event.stream_id, "thread-123");
   assert.equal(event.response_id, "resp-123");
   assert.equal(event.previous_response_id, "resp-122");
+  assert.equal(event.subagent_id, "agent-2");
+  assert.equal(event.parent_subagent_id, "agent-1");
+  assert.equal(event.turn_id, "turn-1");
   assert.equal(event.purpose, "session_title");
-  assert.equal(event.session_title, "Repository overview");
   assert.deepEqual(event.conversation, fixture.conversation);
+  assert.equal(event.path, "/v1/responses");
+  assert.deepEqual(event.headers, fixture.headers);
   assert.equal("turn_index" in event, false);
 });
 
-test("undeclared context may be omitted and message IDs may be null", async () => {
+test("undeclared context and entry identities may be omitted", async () => {
   const fixture = JSON.parse(await readFile(fixtureUrl, "utf8"));
   for (const field of [
-    "turn_id",
-    "naming_thread",
-    "stream_id",
     "response_id",
     "previous_response_id",
+    "subagent_id",
+    "parent_subagent_id",
+    "turn_id",
     "purpose",
-    "session_title",
     "conversation",
+    "headers",
   ]) {
     delete fixture[field];
   }
-  assert.equal(decodeAgentEvent(fixture).turn_id, undefined);
+  assert.equal(decodeAgentEvent(fixture).response_id, undefined);
+  assert.equal(decodeAgentEvent(fixture).subagent_id, undefined);
+  assert.equal(decodeAgentEvent(fixture).headers, undefined);
   fixture.purpose = "compaction";
+  fixture.omitted = ["conversation_text"];
   fixture.conversation = {
-    messages: [{ id: null, role: "unknown", text: "" }],
-    instructions_present: false,
+    entries: [{ role: "unknown", text: "" }],
     completeness: "partial",
-    policy_omitted: true,
   };
-  assert.deepEqual(
-    decodeAgentEvent(fixture).conversation,
-    fixture.conversation,
-  );
+  const event = decodeAgentEvent(fixture);
+  assert.deepEqual(event.conversation, fixture.conversation);
+  assert.deepEqual(event.omitted, ["conversation_text"]);
 });
 
 test("explicit prewarm retains its observed usage in v1", async () => {
   const fixture = JSON.parse(await readFile(fixtureUrl, "utf8"));
   fixture.purpose = "prewarm";
-  delete fixture.session_title;
   const event = decodeAgentEvent(fixture);
   assert.equal(event.purpose, "prewarm");
   assert.deepEqual(event.token_usage, fixture.token_usage);
@@ -72,37 +71,67 @@ test("structured events reject obsolete fields and malformed content", async () 
       e.turn_index = 1;
     },
     (e) => {
-      e.naming_thread = 1;
+      e.text = "hello";
     },
     (e) => {
-      e.stream_id = 1;
+      e.tool_calls = [];
+    },
+    (e) => {
+      e.tool_results = [];
+    },
+    (e) => {
+      e.naming_thread = true;
+    },
+    (e) => {
+      e.stream_id = "thread-1";
+    },
+    (e) => {
+      e.session_title = "title";
     },
     (e) => {
       e.purpose = "other";
     },
     (e) => {
-      e.conversation.messages[0].role = "request";
+      e.omitted = ["text"];
     },
     (e) => {
-      delete e.conversation.messages[0].id;
+      e.conversation.entries[0].role = "tool";
     },
     (e) => {
-      e.conversation.messages[0].blocks = [];
+      e.conversation.entries[0].blocks = [];
     },
     (e) => {
-      e.conversation.messages[0].text = 1;
+      e.conversation.entries[0].text = 1;
     },
     (e) => {
-      e.conversation.messages = {};
+      e.conversation.entries[0].item_id = 1;
+    },
+    (e) => {
+      e.conversation.entries = {};
     },
     (e) => {
       e.conversation.completeness = "failed";
     },
     (e) => {
-      e.conversation.instructions_present = "true";
+      e.conversation.messages = [];
     },
     (e) => {
-      delete e.conversation.policy_omitted;
+      e.conversation.instructions_present = true;
+    },
+    (e) => {
+      e.conversation.policy_omitted = false;
+    },
+    (e) => {
+      e.headers[0].value = 1;
+    },
+    (e) => {
+      e.headers[0].value_base64 = "dg==";
+    },
+    (e) => {
+      delete e.headers[0].value;
+    },
+    (e) => {
+      e.headers[0].raw = true;
     },
   ]) {
     const fixture = structuredClone(original);
@@ -114,12 +143,13 @@ test("structured events reject obsolete fields and malformed content", async () 
 test("AgentEvent decoder rejects invalid counters and unknown sides", () => {
   const base = {
     event_id: "evt-test",
-    occurred_at: "2026-08-19T10:00:00Z",
+    observed_at: "2026-08-19T10:00:00Z",
     device: { host_name: "host", platform: "linux" },
     agent: { name: "codex" },
     session_id: "session",
     llm: { provider: "openai", model: "gpt-test" },
     side: "request",
+    path: "/v1/responses",
     token_usage: {
       input_tokens: 1,
       output_tokens: 0,

@@ -3,7 +3,7 @@
 use std::path::PathBuf;
 
 use abyss_data_client::query::{
-    EventFields, EventQuery, EventSide, Filters, PageQuery, SummaryQuery,
+    EventFields, EventQuery, EventSide, Filters, PageQuery, PreviewQuery, SummaryQuery,
 };
 use chrono::{DateTime, Utc};
 use clap::{Args, Parser, Subcommand, ValueEnum};
@@ -205,14 +205,64 @@ impl PageArgs {
 #[derive(Subcommand)]
 pub enum SessionCommand {
     List(PageArgs),
-    Get { id: Uuid },
-    Outline { id: Uuid },
-    Trajectory { id: Uuid },
+    /// Session page header.
+    Header {
+        id: Uuid,
+    },
+    /// Session segments.
+    Streams {
+        id: Uuid,
+    },
+    /// Session turn tree.
+    Turns {
+        id: Uuid,
+    },
+    /// One segment's exchanges.
+    Segment {
+        id: Uuid,
+        head: String,
+        #[command(flatten)]
+        preview: PreviewArgs,
+    },
+    /// Literal search inside one session (requires backend support).
+    Search {
+        id: Uuid,
+        query: String,
+    },
 }
 #[derive(Subcommand)]
 pub enum EventCommand {
     List(EventArgs),
-    Get { id: Uuid },
+    Get {
+        id: Uuid,
+    },
+    /// Preview of an event's conversation entries.
+    Conversation {
+        id: Uuid,
+        #[command(flatten)]
+        preview: PreviewArgs,
+    },
+    /// An event's place in its session.
+    Location {
+        id: Uuid,
+    },
+}
+#[derive(Args)]
+pub struct PreviewArgs {
+    /// Comma-separated entry runs: `a-b`, `-n` (last n) or `a`; write `--entries=-n`.
+    #[arg(long)]
+    pub entries: Option<String>,
+    /// Most UTF-16 code units kept of each entry text.
+    #[arg(long)]
+    pub text_preview: Option<u32>,
+}
+impl PreviewArgs {
+    pub fn query(&self) -> PreviewQuery {
+        PreviewQuery {
+            entries: self.entries.clone(),
+            text_preview: self.text_preview,
+        }
+    }
 }
 #[derive(Clone, Copy, ValueEnum)]
 pub enum Side {
@@ -235,12 +285,13 @@ pub struct EventArgs {
     pub session_ids: Vec<String>,
     #[arg(long)]
     pub session_pk: Option<Uuid>,
-    #[arg(long)]
-    pub turn_index: Option<i32>,
     #[arg(long, value_enum)]
     pub event_type: Option<Side>,
     #[arg(long)]
     pub full: bool,
+    /// Add each event's current location.
+    #[arg(long)]
+    pub locate: bool,
     #[arg(long, default_value_t = 20, value_parser = clap::value_parser!(u32).range(1..=1000))]
     pub limit: u32,
     #[arg(long, default_value_t = 0)]
@@ -254,13 +305,13 @@ impl EventArgs {
             filters: self.filters.query(),
             session_ids: self.session_ids.clone(),
             session_pk: self.session_pk,
-            turn_index: self.turn_index,
             side: self.event_type.map(Side::query),
             fields: if self.full {
                 EventFields::Full
             } else {
                 EventFields::List
             },
+            locate: self.locate,
             limit: self.limit,
             offset: self.offset,
         }
@@ -276,6 +327,7 @@ pub struct SummaryArgs {
     pub filters: FilterArgs,
     #[arg(long, value_delimiter = ',')]
     pub group_by: Vec<String>,
+    /// Aggregate across users (`SaaS` data service, administrators only).
     #[arg(long)]
     pub global: bool,
     #[arg(long)]

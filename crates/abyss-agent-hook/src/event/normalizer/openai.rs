@@ -1,18 +1,10 @@
 //! OpenAI-family parsed exchange adaptation for the common event normalizer.
 
 use abyss_plugin_protocol::event::{EventPurpose, LlmProvider};
-use serde_json::json;
 
-use crate::{
-    config::HarnessUsageContentConfig,
-    harness::HarnessDetection,
-    protocol::{model::usage::TokenUsageSource, openai::ParsedOpenAiExchange},
-};
+use crate::{harness::HarnessDetection, protocol::openai::ParsedOpenAiExchange};
 
-use super::{
-    Continuation, HttpMetadata, NormalizableExchange, ParsedEventParts, content_segments_metadata,
-    harness_client,
-};
+use super::{Continuation, NormalizableExchange, ParsedEventParts};
 
 impl NormalizableExchange for ParsedOpenAiExchange {
     fn purpose(&self) -> Option<EventPurpose> {
@@ -32,19 +24,11 @@ impl NormalizableExchange for ParsedOpenAiExchange {
 
     fn event_parts(
         &self,
-        content: &HarnessUsageContentConfig,
         detection: &HarnessDetection,
         provider: &LlmProvider,
     ) -> ParsedEventParts<'_> {
         ParsedEventParts {
-            http: HttpMetadata {
-                transport: self.transport,
-                host: &self.host,
-                path: &self.path,
-                method: &self.method,
-            },
             harness_name: detection.harness_id.to_string(),
-            harness_client: harness_client(detection),
             harness_version: detection.version.clone(),
             llm_provider: provider.wire_name().to_owned(),
             llm_model: self.model.clone(),
@@ -55,28 +39,8 @@ impl NormalizableExchange for ParsedOpenAiExchange {
                 .unwrap_or_else(|| self.request_hash.clone()),
             request_conversation: &self.request_conversation,
             response_conversation: &self.response_conversation,
-            request_text: self.request_texts.join("\n\n"),
             request_images: self.request_images.clone(),
-            response_text: self.response_texts.join("\n\n"),
             usage: self.usage.clone(),
-            usage_source: TokenUsageSource::provider_or_absent(&self.usage),
-            metadata: json!({
-                "response_id": self.response_id,
-                "previous_response_id": self.previous_response_id,
-                "request_hash": self.request_hash,
-                "source_evidence": detection.evidence_names(),
-                "working_directory": detection.working_directory,
-                "provider_event_types": self.event_types,
-            }),
-            request_metadata: content_segments_metadata(
-                &self.request_tool_events,
-                &self.request_images,
-                content,
-            ),
-            response_metadata: content_segments_metadata(&self.response_tool_events, &[], content),
-            request_has_structured_content: !self.request_tool_events.is_empty()
-                || !self.request_images.is_empty(),
-            response_has_structured_content: !self.response_tool_events.is_empty(),
             allow_request_without_response: false,
         }
     }

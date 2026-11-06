@@ -74,9 +74,10 @@ blackbox_extract_event_pair() {
       | [$events[]
           | select(
               .event_type == "request"
-              and .agent_name == $agent_name
-              and .llm_provider == $provider
-              and (.text | type == "string" and contains($marker))
+              and .agent.name == $agent_name
+              and .llm.provider == $provider
+              and any(.conversation.entries[]?;
+                .role == "user" and (.text | contains($marker)))
             )] as $requests
       | if ($requests | length) == 0 then
           empty
@@ -87,10 +88,10 @@ blackbox_extract_event_pair() {
           | [$events[]
               | select(
                   .event_type == "response"
-                  and .agent_name == $agent_name
-                  and .llm_provider == $provider
+                  and .agent.name == $agent_name
+                  and .llm.provider == $provider
                   and .session_id == $request.session_id
-                  and .turn_index == $request.turn_index
+                  and .response_id == $request.response_id
                 )] as $responses
           | if ($responses | length) == 0 then
               empty
@@ -114,8 +115,8 @@ blackbox_assert_pair_identity() {
     and .request.event_id != .response.event_id
     and (.request.session_id | type == "string" and length > 0)
     and .request.session_id == .response.session_id
-    and (.request.turn_index | type == "number")
-    and .request.turn_index == .response.turn_index
+    and (.request.response_id | type == "string" and length > 0)
+    and .request.response_id == .response.response_id
   ' <<<"${pair_json}" >/dev/null
 }
 
@@ -196,12 +197,12 @@ blackbox_assert_summary_matches_events() {
               total_tokens: 0};
               .requests += (if $event.event_type == "request" then 1 else 0 end)
               | .responses += (if $event.event_type == "response" then 1 else 0 end)
-              | .input_tokens += $event.input_tokens
-              | .output_tokens += $event.output_tokens
-              | .cache_read_tokens += $event.cache_read_tokens
-              | .cache_write_tokens += $event.cache_write_tokens
-              | .reasoning_tokens += $event.reasoning_tokens
-              | .total_tokens += $event.total_tokens
+              | .input_tokens += $event.token_usage.input_tokens
+              | .output_tokens += $event.token_usage.output_tokens
+              | .cache_read_tokens += $event.token_usage.cache_read_tokens
+              | .cache_write_tokens += $event.token_usage.cache_write_tokens
+              | .reasoning_tokens += $event.token_usage.reasoning_tokens
+              | .total_tokens += $event.token_usage.total_tokens
             )) as $expected
           | if (
               $actual.requests == $expected.requests

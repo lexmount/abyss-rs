@@ -4,9 +4,7 @@
 use abyss_mitm::FlowContext;
 use http::HeaderMap;
 
-use crate::harness::{
-    AgentDeclaration, BuiltInHarness, DeclarationSource, HarnessDetection, HarnessEvidence,
-};
+use crate::harness::{AgentDeclaration, BuiltInHarness, DeclarationSource, HarnessDetection};
 
 use super::{HarnessDetector, header};
 
@@ -15,16 +13,14 @@ pub(super) struct OpenCodeDetector;
 impl HarnessDetector for OpenCodeDetector {
     fn detect(
         &self,
-        flow: &FlowContext,
+        _flow: &FlowContext,
         headers: &HeaderMap,
         _path: &str,
     ) -> Option<HarnessDetection> {
         let version = Self::version(header(headers, "user-agent")?)?;
         Some(HarnessDetection {
             harness_id: BuiltInHarness::OpenCode.into(),
-            evidence: vec![HarnessEvidence::Header("user-agent")],
             version: Some(version.to_owned()),
-            working_directory: flow.source_working_directory().map(str::to_owned),
         })
     }
 }

@@ -6,7 +6,6 @@ use serde_json::Value;
 use super::{
     request::ResponsesRequest,
     response::ResponsesResponse,
-    tools::extract_request_tool_events,
     websocket::{OpenAiWebSocketFrame, OpenAiWebSocketResponse, is_terminal_event},
 };
 use crate::protocol::model::usage::TokenUsage;
@@ -20,7 +19,7 @@ use crate::protocol::{
     },
     shared::{
         digest::sha256_hex,
-        http::{flow_server_name, header, opencode_session_id, request_host, transport_name},
+        http::{flow_server_name, header, opencode_session_id, request_host},
         json::{collect_string_field, event_types, string_field},
     },
 };
@@ -49,14 +48,13 @@ pub fn parse_openai_websocket_message(message: &WebSocketMessage) -> OpenAiWebSo
     let path = message.upgrade_request.uri().path();
     let is_client_message = matches!(message.direction, WebSocketDirection::ClientToServer);
     let request_payload = payload.get("response").unwrap_or(&payload);
-    let (request, request_images, request_tool_events) = if is_client_message {
+    let (request, request_images) = if is_client_message {
         (
             ResponsesRequest::parse(Some(request_payload), false),
             extract_openai_request_images(request_payload),
-            extract_request_tool_events(request_payload),
         )
     } else {
-        (ResponsesRequest::parse(None, false), Vec::new(), Vec::new())
+        (ResponsesRequest::parse(None, false), Vec::new())
     };
     let usage = if is_client_message {
         TokenUsage::default()
@@ -66,7 +64,7 @@ pub fn parse_openai_websocket_message(message: &WebSocketMessage) -> OpenAiWebSo
     // Tool calls are output items, so a frame that carries one assembles a
     // non-empty response; the turn reads them from its assembled response.
     let relevant = if is_client_message {
-        !request.is_empty() || !request_images.is_empty() || !request_tool_events.is_empty()
+        !request.is_empty() || !request_images.is_empty()
     } else {
         !ResponsesResponse::assemble(std::slice::from_ref(&payload), false).is_empty()
             || !usage.is_empty()
@@ -88,18 +86,12 @@ pub fn parse_openai_websocket_message(message: &WebSocketMessage) -> OpenAiWebSo
             string_field(&payload, "type") != Some("response.create")
                 || request_payload.get("generate").and_then(Value::as_bool) != Some(false)
         }),
-        host,
-        path: path.to_owned(),
-        method: message.upgrade_request.method().to_string(),
-        transport: transport_name(&message.flow.protocol),
         session_id: websocket_session_id(message, &payload),
         request_hash,
         request_conversation: request.conversation(),
         // The accumulator assembles the response once the turn terminates.
         response_conversation: ConversationProjection::empty(),
-        request_texts: request.texts(),
         request_images,
-        response_texts: Vec::new(),
         usage,
         response_id: if is_client_message {
             None
@@ -113,8 +105,6 @@ pub fn parse_openai_websocket_message(message: &WebSocketMessage) -> OpenAiWebSo
         } else {
             None
         },
-        request_tool_events,
-        response_tool_events: Vec::new(),
         model: first_model(std::slice::from_ref(&payload)),
         event_types: if is_client_message {
             Vec::new()

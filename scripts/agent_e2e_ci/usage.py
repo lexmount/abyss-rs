@@ -59,13 +59,20 @@ class UsageAccounting:
 
     @staticmethod
     def _is_prewarm(event: dict[str, Any]) -> bool:
-        metadata = event.get("metadata")
-        return isinstance(metadata, dict) and metadata.get("purpose") == "prewarm"
+        return event.get("purpose") == "prewarm"
 
     @classmethod
     def _backend_totals(cls, events: list[dict[str, Any]]) -> dict[str, int]:
         def total(field: str) -> int:
-            return sum(cls._counter(event, field) for event in events)
+            counts = []
+            for event in events:
+                usage = event.get("token_usage")
+                if not isinstance(usage, dict) or field not in usage:
+                    raise OrchestrationError(
+                        f"missing backend usage counter: token_usage.{field}"
+                    )
+                counts.append(cls._counter(usage, field))
+            return sum(counts)
 
         # Abyss stores disjoint input/cache counters; Codex input includes cache.
         return {

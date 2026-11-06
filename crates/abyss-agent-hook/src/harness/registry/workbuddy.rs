@@ -5,9 +5,7 @@
 use abyss_mitm::FlowContext;
 use http::HeaderMap;
 
-use crate::harness::{
-    AgentDeclaration, BuiltInHarness, DeclarationSource, HarnessDetection, HarnessEvidence,
-};
+use crate::harness::{AgentDeclaration, BuiltInHarness, DeclarationSource, HarnessDetection};
 
 use super::{HarnessDetector, header};
 
@@ -47,34 +45,30 @@ impl HarnessDetector for WorkBuddyDetector {
         _path: &str,
     ) -> Option<HarnessDetection> {
         let source = flow.source_process.as_ref()?;
-        let evidence = if let Some(application_id) = source
+        let application = source
             .application_id
             .as_deref()
-            .filter(|id| APPLICATION_IDS.contains(id))
-        {
-            HarnessEvidence::ApplicationId(application_id.to_owned())
-        } else {
-            let process = source
-                .name
-                .as_deref()
-                .into_iter()
-                .chain(source.executable_path.as_deref())
-                .find(|value| {
-                    // Platform adapters can provide either a basename or path.
-                    value.rsplit(['/', '\\']).next().is_some_and(|name| {
-                        PROCESS_NAMES.contains(&name)
-                            || WINDOWS_PROCESS_NAMES
-                                .iter()
-                                .any(|known| name.eq_ignore_ascii_case(known))
-                    })
-                })?;
-            HarnessEvidence::Process(process.to_owned())
-        };
+            .is_some_and(|id| APPLICATION_IDS.contains(&id));
+        let process = source
+            .name
+            .as_deref()
+            .into_iter()
+            .chain(source.executable_path.as_deref())
+            .any(|value| {
+                // Platform adapters can provide either a basename or path.
+                value.rsplit(['/', '\\']).next().is_some_and(|name| {
+                    PROCESS_NAMES.contains(&name)
+                        || WINDOWS_PROCESS_NAMES
+                            .iter()
+                            .any(|known| name.eq_ignore_ascii_case(known))
+                })
+            });
+        if !application && !process {
+            return None;
+        }
         Some(HarnessDetection {
             harness_id: BuiltInHarness::WorkBuddy.into(),
-            evidence: vec![evidence],
             version: None,
-            working_directory: flow.source_working_directory().map(str::to_owned),
         })
     }
 }
@@ -133,6 +127,7 @@ mod tests {
         let message = WebSocketMessage::new(
             flow,
             Request::from_parts(parts, ()),
+            Response::builder().status(101).body(()).unwrap(),
             WebSocketDirection::ClientToServer,
             1,
             Some("{}".to_owned()),
@@ -265,9 +260,8 @@ mod tests {
             &serde_json::from_value::<HarnessId>(serde_json::json!(harness)).unwrap(),
             &DeclarationSource {
                 headers: Some(&headers),
-                body: None,
+                connection_headers: None,
                 client_metadata: None,
-                response_texts: &[],
             },
         )
     }
@@ -285,8 +279,13 @@ mod tests {
                         ("X-Request-ID", message),
                     ],
                 );
-                assert_eq!(declaration.turn_id.as_deref(), Some(turn));
-                assert!(declaration.stream_id.is_none());
+                assert_eq!(
+                    declaration,
+                    AgentDeclaration {
+                        turn_id: Some(turn.to_owned()),
+                        ..AgentDeclaration::default()
+                    }
+                );
             }
         }
     }

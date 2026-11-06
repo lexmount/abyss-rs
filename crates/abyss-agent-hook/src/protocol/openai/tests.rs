@@ -6,13 +6,30 @@ use abyss_mitm::{
     CapturedBody, FlowContext, HttpExchange, OriginalDestination, TransparentProtocol,
     WebSocketDirection, WebSocketMessage,
 };
+use abyss_plugin_protocol::event::{Conversation, ConversationEntry, EntryRole};
 use http::{Request, Response};
 use serde_json::{Value, json};
 
-use crate::protocol::model::tool::ParsedToolEvent;
+use crate::protocol::model::conversation::role_texts;
 use crate::protocol::openai::{
     parse_openai_websocket_message, responses::websocket::OpenAiWebSocketFrame,
 };
+
+/// The role, text, call id, and tool name of every entry, in order.
+fn summary(conversation: &Conversation) -> Vec<(EntryRole, &str, Option<&str>, Option<&str>)> {
+    conversation
+        .entries
+        .iter()
+        .map(|entry| {
+            (
+                entry.role,
+                entry.text.as_str(),
+                entry.call_id.as_deref(),
+                entry.name.as_deref(),
+            )
+        })
+        .collect()
+}
 
 #[test]
 fn parses_responses_json_without_harness_assumptions() {
@@ -36,10 +53,15 @@ fn parses_responses_json_without_harness_assumptions() {
 
     let parsed = parse_openai_exchange(&exchange).expect("OpenAI exchange");
 
-    assert_eq!(parsed.host, "gateway.example");
     assert_eq!(parsed.session_id, "session-1");
-    assert_eq!(parsed.request_texts, vec!["hello"]);
-    assert_eq!(parsed.response_texts, vec!["hi"]);
+    assert_eq!(
+        role_texts(&parsed.request_conversation),
+        [(EntryRole::User, "hello")]
+    );
+    assert_eq!(
+        role_texts(&parsed.response_conversation),
+        [(EntryRole::Assistant, "hi")]
+    );
     assert_eq!(parsed.response_id.as_deref(), Some("resp-1"));
     assert_eq!(parsed.model.as_deref(), Some("gpt-5"));
     assert_eq!(parsed.usage.total_tokens, 7);
@@ -67,8 +89,14 @@ fn parses_chat_completions_shape() {
 
     let parsed = parse_openai_exchange(&exchange).expect("chat completions exchange");
 
-    assert_eq!(parsed.request_texts, vec!["hello gateway"]);
-    assert_eq!(parsed.response_texts, vec!["hello user"]);
+    assert_eq!(
+        role_texts(&parsed.request_conversation),
+        [(EntryRole::User, "hello gateway")]
+    );
+    assert_eq!(
+        role_texts(&parsed.response_conversation),
+        [(EntryRole::Assistant, "hello user")]
+    );
     assert_eq!(parsed.usage.input_tokens, 2);
     assert_eq!(parsed.usage.output_tokens, 3);
 }
@@ -244,29 +272,24 @@ fn chat_stream_assembles_parallel_tools_by_choice_and_tool_index() {
     let parsed = parse_openai_exchange(&exchange).unwrap();
 
     assert_eq!(parsed.response_id.as_deref(), Some("chat-1"));
-    assert_eq!(parsed.response_texts, ["Reading files."]);
     assert_eq!(parsed.usage.total_tokens, 12);
     assert_eq!(
-        parsed.response_tool_events,
-        vec![
-            ParsedToolEvent::ToolCall {
-                item_id: None,
-                call_id: Some("c1".into()),
-                name: Some("read".into()),
-                input: r#"{"path":"a"}"#.into()
-            },
-            ParsedToolEvent::ToolCall {
-                item_id: None,
-                call_id: Some("c2".into()),
-                name: Some("read".into()),
-                input: r#"{"path":"b"}"#.into()
-            },
-            ParsedToolEvent::ToolCall {
-                item_id: None,
-                call_id: Some("c3".into()),
-                name: Some("clock".into()),
-                input: "{}".into()
-            },
+        summary(&parsed.response_conversation),
+        [
+            (EntryRole::Assistant, "Reading files.", None, None),
+            (
+                EntryRole::ToolCall,
+                r#"{"path":"a"}"#,
+                Some("c1"),
+                Some("read")
+            ),
+            (
+                EntryRole::ToolCall,
+                r#"{"path":"b"}"#,
+                Some("c2"),
+                Some("read")
+            ),
+            (EntryRole::ToolCall, "{}", Some("c3"), Some("clock")),
         ]
     );
 }
@@ -283,28 +306,17 @@ fn chat_nonstream_tool_only_exchange_retains_calls_without_text_or_usage() {
             ]}}]}),
         )).expect("tool-only Chat response");
 
-    assert_eq!(parsed.response_texts, Vec::<String>::new());
     assert_eq!(
-        parsed.response_tool_events,
-        vec![
-            ParsedToolEvent::ToolCall {
-                item_id: None,
-                call_id: Some("c1".into()),
-                name: Some("clock".into()),
-                input: "{}".into()
-            },
-            ParsedToolEvent::ToolCall {
-                item_id: None,
-                call_id: Some("c2".into()),
-                name: Some("patch".into()),
-                input: "  keep whitespace\n".into()
-            },
-            ParsedToolEvent::ToolCall {
-                item_id: None,
-                call_id: Some("c3".into()),
-                name: Some("empty".into()),
-                input: String::new()
-            },
+        summary(&parsed.response_conversation),
+        [
+            (EntryRole::ToolCall, "{}", Some("c1"), Some("clock")),
+            (
+                EntryRole::ToolCall,
+                "  keep whitespace\n",
+                Some("c2"),
+                Some("patch")
+            ),
+            (EntryRole::ToolCall, "", Some("c3"), Some("empty")),
         ]
     );
 }
@@ -324,24 +336,21 @@ fn chat_request_results_preserve_history_in_every_observed_request() {
     let parsed =
         parse_openai_exchange(&json_exchange("/chat/completions", &request, &response)).unwrap();
     assert_eq!(
-        parsed.request_tool_events,
-        vec![
-            ParsedToolEvent::ToolResult {
-                call_id: Some("old".into()),
-                output: "old output".into()
-            },
-            ParsedToolEvent::ToolResult {
-                call_id: Some("new".into()),
-                output: "line 1\nline 2".into()
-            },
-            ParsedToolEvent::ToolResult {
-                call_id: Some("empty".into()),
-                output: String::new()
-            },
+        summary(&parsed.request_conversation),
+        [
+            (EntryRole::ToolCall, "{}", Some("old"), Some("read")),
+            (EntryRole::ToolResult, "old output", Some("old"), None),
+            (EntryRole::Assistant, "Previous answer", None, None),
+            (EntryRole::User, "Read again", None, None),
+            (EntryRole::ToolCall, "{}", Some("new"), Some("read")),
+            (EntryRole::ToolResult, "line 1\nline 2", Some("new"), None),
+            (EntryRole::ToolResult, "", Some("empty"), None),
         ]
     );
-    assert_eq!(parsed.request_texts, ["Read again"]);
-    assert_eq!(parsed.response_tool_events, Vec::<ParsedToolEvent>::new());
+    assert_eq!(
+        role_texts(&parsed.response_conversation),
+        [(EntryRole::Assistant, "Done")]
+    );
 
     request["messages"]
         .as_array_mut()
@@ -349,7 +358,10 @@ fn chat_request_results_preserve_history_in_every_observed_request() {
         .push(json!({"role":"user","content":"Next turn"}));
     let replay =
         parse_openai_exchange(&json_exchange("/chat/completions", &request, &response)).unwrap();
-    assert_eq!(replay.request_tool_events, parsed.request_tool_events);
+    assert_eq!(
+        replay.request_conversation.entries[..parsed.request_conversation.entries.len()],
+        parsed.request_conversation.entries[..]
+    );
 }
 
 #[test]
@@ -370,11 +382,8 @@ fn chat_request_results_survive_a_following_image_message() {
         )).unwrap();
 
     assert_eq!(
-        parsed.request_tool_events,
-        vec![ParsedToolEvent::ToolResult {
-            call_id: Some("image-call".into()),
-            output: output.into(),
-        }]
+        summary(&parsed.request_conversation)[1],
+        (EntryRole::ToolResult, output, Some("image-call"), None)
     );
     assert_eq!(parsed.request_images.len(), 1);
 }
@@ -393,15 +402,25 @@ fn chat_request_results_keep_repeated_occurrences_and_only_tool_roles() {
     ))
     .unwrap();
 
-    let result = ParsedToolEvent::ToolResult {
-        call_id: Some("same-call".into()),
-        output: "  original output\n".into(),
-    };
-    assert_eq!(parsed.request_tool_events, vec![result.clone(), result]);
+    let result = (
+        EntryRole::ToolResult,
+        "  original output\n",
+        Some("same-call"),
+        None,
+    );
+    assert_eq!(
+        summary(&parsed.request_conversation),
+        [
+            result,
+            (EntryRole::User, "user text", None, None),
+            result,
+            (EntryRole::Assistant, "Answer", None, None),
+        ]
+    );
 }
 
 #[test]
-fn chat_tool_declarations_and_nested_user_content_do_not_create_tool_events() {
+fn chat_tool_declarations_and_nested_user_content_do_not_create_tool_entries() {
     let parsed = parse_openai_exchange(&json_exchange(
             "/chat/completions",
             &json!({
@@ -410,8 +429,14 @@ fn chat_tool_declarations_and_nested_user_content_do_not_create_tool_events() {
             }),
             &json!({"choices":[{"message":{"role":"assistant","content":"Hello"}}]}),
         )).unwrap();
-    assert_eq!(parsed.request_tool_events, Vec::<ParsedToolEvent>::new());
-    assert_eq!(parsed.response_tool_events, Vec::<ParsedToolEvent>::new());
+    assert_eq!(
+        role_texts(&parsed.request_conversation),
+        [(EntryRole::User, "Hello")]
+    );
+    assert_eq!(
+        role_texts(&parsed.response_conversation),
+        [(EntryRole::Assistant, "Hello")]
+    );
 }
 
 #[test]
@@ -437,7 +462,15 @@ fn parses_responses_sse_and_tool_call() {
     let parsed = parse_openai_exchange(&exchange).expect("SSE exchange");
 
     assert_eq!(parsed.response_id.as_deref(), Some("resp-2"));
-    assert_eq!(parsed.response_tool_events.len(), 1);
+    assert_eq!(
+        summary(&parsed.response_conversation),
+        [(
+            EntryRole::ToolCall,
+            r#"{"command":"pwd"}"#,
+            Some("call-1"),
+            Some("shell")
+        )]
+    );
     assert_eq!(parsed.usage.total_tokens, 6);
     assert!(
         parsed
@@ -462,8 +495,8 @@ fn truncated_exchange_is_retained_without_parseable_content() {
 
     let parsed = parse_openai_exchange(&exchange).expect("truncated exchange");
 
-    assert_eq!(parsed.request_texts, Vec::<String>::new());
-    assert_eq!(parsed.response_texts, Vec::<String>::new());
+    assert_eq!(parsed.request_conversation.entries, []);
+    assert_eq!(parsed.response_conversation.entries, []);
 }
 
 #[test]
@@ -477,6 +510,7 @@ fn parses_responses_websocket_message() {
             .header("session-id", "session-1")
             .body(())
             .unwrap(),
+        Response::builder().status(101).body(()).unwrap(),
         WebSocketDirection::ClientToServer,
         1,
         Some(
@@ -497,7 +531,10 @@ fn parses_responses_websocket_message() {
     };
 
     assert_eq!(parsed.session_id, "session-1");
-    assert_eq!(parsed.request_texts, vec!["hello websocket"]);
+    assert_eq!(
+        role_texts(&parsed.request_conversation),
+        [(EntryRole::User, "hello websocket")]
+    );
 }
 
 #[test]
@@ -512,6 +549,7 @@ fn correlates_websocket_frames_with_underscore_session_header() {
                 .header("session_id", "shared-session")
                 .body(())
                 .unwrap(),
+            Response::builder().status(101).body(()).unwrap(),
             WebSocketDirection::ClientToServer,
             sequence,
             Some(json!({"type": "response.create", "input": text}).to_string()),
@@ -523,7 +561,10 @@ fn correlates_websocket_frames_with_underscore_session_header() {
         };
 
         assert_eq!(parsed.session_id, "shared-session");
-        assert_eq!(parsed.request_texts, vec![text]);
+        assert_eq!(
+            role_texts(&parsed.request_conversation),
+            [(EntryRole::User, text)]
+        );
     }
 }
 
@@ -543,6 +584,7 @@ fn hermes_websocket_session_header_preserves_existing_header_precedence() {
                 .header("x-hermes-session-id", hermes)
                 .body(())
                 .unwrap(),
+            Response::builder().status(101).body(()).unwrap(),
             WebSocketDirection::ClientToServer,
             1,
             Some(json!({"type": "response.create", "input": "hello"}).to_string()),
@@ -584,6 +626,7 @@ fn websocket_request_carries_the_frame_client_metadata() {
             .header("session-id", "session-1")
             .body(())
             .unwrap(),
+        Response::builder().status(101).body(()).unwrap(),
         WebSocketDirection::ClientToServer,
         1,
         Some(
@@ -616,6 +659,7 @@ fn websocket_frames_distinguish_undecodable_from_irrelevant() {
                 .header("host", "gateway.example")
                 .body(())
                 .unwrap(),
+            Response::builder().status(101).body(()).unwrap(),
             direction,
             1,
             Some(body.to_owned()),
@@ -665,7 +709,10 @@ fn streaming_response_text_is_not_repeated_by_terminal_events() {
 
     let parsed = parse_openai_exchange(&exchange).expect("streaming exchange");
 
-    assert_eq!(parsed.response_texts, vec!["Hello world"]);
+    assert_eq!(
+        role_texts(&parsed.response_conversation),
+        [(EntryRole::Assistant, "Hello world")]
+    );
     assert_eq!(parsed.usage.total_tokens, 3);
 }
 
@@ -680,7 +727,10 @@ fn streaming_response_keeps_accumulated_text_without_terminal_events() {
 
     let parsed = parse_openai_exchange(&exchange).expect("truncated streaming exchange");
 
-    assert_eq!(parsed.response_texts, vec!["partial answer"]);
+    assert_eq!(
+        role_texts(&parsed.response_conversation),
+        [(EntryRole::Assistant, "partial answer")]
+    );
 }
 
 #[test]
@@ -694,7 +744,10 @@ fn streaming_response_recovers_text_lost_from_deltas() {
 
     let parsed = parse_openai_exchange(&exchange).expect("streaming exchange");
 
-    assert_eq!(parsed.response_texts, vec!["Hello world"]);
+    assert_eq!(
+        role_texts(&parsed.response_conversation),
+        [(EntryRole::Assistant, "Hello world")]
+    );
 }
 
 #[test]
@@ -706,7 +759,10 @@ fn streaming_response_prefers_the_provider_snapshot_when_it_diverges() {
 
     let parsed = parse_openai_exchange(&exchange).expect("streaming exchange");
 
-    assert_eq!(parsed.response_texts, vec!["final"]);
+    assert_eq!(
+        role_texts(&parsed.response_conversation),
+        [(EntryRole::Assistant, "final")]
+    );
 }
 
 #[test]
@@ -719,7 +775,13 @@ fn streaming_response_keeps_reasoning_summary_and_message_order() {
 
     let parsed = parse_openai_exchange(&exchange).expect("streaming exchange");
 
-    assert_eq!(parsed.response_texts, vec!["thinking", "answer"]);
+    assert_eq!(
+        role_texts(&parsed.response_conversation),
+        [
+            (EntryRole::Reasoning, "thinking"),
+            (EntryRole::Assistant, "answer")
+        ]
+    );
 }
 
 #[test]
@@ -731,11 +793,17 @@ fn streaming_response_keeps_parallel_message_parts_separate() {
 
     let parsed = parse_openai_exchange(&exchange).expect("streaming exchange");
 
-    assert_eq!(parsed.response_texts, vec!["first", "second"]);
+    assert_eq!(
+        role_texts(&parsed.response_conversation),
+        [
+            (EntryRole::Assistant, "first"),
+            (EntryRole::Assistant, "second")
+        ]
+    );
 }
 
 #[test]
-fn streaming_response_ignores_tool_call_items() {
+fn streaming_response_keeps_tool_call_items_apart_from_text() {
     let exchange = sse_exchange(&[
         r#"{"type":"response.output_text.delta","output_index":0,"content_index":0,"delta":"answer"}"#,
         r#"{"type":"response.output_item.done","output_index":1,"item":{"id":"fc_1","type":"function_call","name":"read_file","arguments":"{}"}}"#,
@@ -743,7 +811,13 @@ fn streaming_response_ignores_tool_call_items() {
 
     let parsed = parse_openai_exchange(&exchange).expect("streaming exchange");
 
-    assert_eq!(parsed.response_texts, vec!["answer"]);
+    assert_eq!(
+        role_texts(&parsed.response_conversation),
+        [
+            (EntryRole::Assistant, "answer"),
+            (EntryRole::ToolCall, "{}")
+        ]
+    );
 }
 
 #[test]
@@ -769,21 +843,18 @@ fn a_streamed_tool_call_item_yields_one_tool_call() {
     ]))
     .expect("SSE exchange");
 
+    let call = |item_id: &str, call_id: &str, input: &str| ConversationEntry {
+        role: EntryRole::ToolCall,
+        text: input.to_owned(),
+        call_id: Some(call_id.to_owned()),
+        name: Some("exec_command".to_owned()),
+        item_id: Some(item_id.to_owned()),
+    };
     assert_eq!(
-        parsed.response_tool_events,
+        parsed.response_conversation.entries,
         [
-            ParsedToolEvent::ToolCall {
-                item_id: Some("fc_1".to_owned()),
-                call_id: Some("call_1".to_owned()),
-                name: Some("exec_command".to_owned()),
-                input: r#"{"cmd":"pwd"}"#.to_owned(),
-            },
-            ParsedToolEvent::ToolCall {
-                item_id: Some("fc_2".to_owned()),
-                call_id: Some("call_2".to_owned()),
-                name: Some("exec_command".to_owned()),
-                input: r#"{"cmd":"ls"}"#.to_owned(),
-            },
+            call("fc_1", "call_1", r#"{"cmd":"pwd"}"#),
+            call("fc_2", "call_2", r#"{"cmd":"ls"}"#),
         ]
     );
 }
@@ -894,10 +965,14 @@ fn routes_select_only_their_own_request_and_response_shapes() {
     ] {
         let parsed = parse_openai_exchange(&json_exchange(path, &request, &response))
             .expect("protocol exchange");
-        assert_eq!(parsed.request_texts, [input]);
-        assert_eq!(parsed.response_texts, [output]);
-        assert_eq!(parsed.request_conversation.messages.len(), 1);
-        assert_eq!(parsed.response_conversation.messages.len(), 1);
+        assert_eq!(
+            role_texts(&parsed.request_conversation),
+            [(EntryRole::User, input)]
+        );
+        assert_eq!(
+            role_texts(&parsed.response_conversation),
+            [(EntryRole::Assistant, output)]
+        );
     }
 }
 
@@ -916,20 +991,14 @@ fn chat_conversation_preserves_system_assistant_and_repeated_user_history() {
     ))
     .expect("chat exchange");
     assert_eq!(
-        parsed
-            .request_conversation
-            .messages
-            .iter()
-            .map(|m| m.text.as_str())
-            .collect::<Vec<_>>(),
-        ["rules", "repeat", "answer", "repeat", ""]
-    );
-    assert_eq!(
-        parsed.request_tool_events,
-        vec![ParsedToolEvent::ToolResult {
-            call_id: Some("call-1".into()),
-            output: "result".into()
-        }]
+        summary(&parsed.request_conversation),
+        [
+            (EntryRole::System, "rules", None, None),
+            (EntryRole::User, "repeat", None, None),
+            (EntryRole::Assistant, "answer", None, None),
+            (EntryRole::User, "repeat", None, None),
+            (EntryRole::ToolResult, "result", Some("call-1"), None),
+        ]
     );
 }
 
@@ -959,7 +1028,10 @@ fn conversation_header_uses_the_existing_http_session_chain() {
             exchange.request.headers_mut().remove("session-id");
             let parsed = parse_openai_exchange(&exchange).unwrap();
             assert_eq!(parsed.session_id, session);
-            assert_eq!(parsed.request_texts, vec![text]);
+            assert_eq!(
+                role_texts(&parsed.request_conversation),
+                [(EntryRole::User, text)]
+            );
             exchange
                 .request
                 .headers_mut()
@@ -1019,6 +1091,7 @@ fn conversation_header_uses_the_existing_websocket_session_chain() {
                 .header("X-Conversation-ID", " shared-conversation ")
                 .body(())
                 .unwrap(),
+            Response::builder().status(101).body(()).unwrap(),
             WebSocketDirection::ClientToServer,
             sequence,
             Some(json!({"type": "response.create", "input": text}).to_string()),
@@ -1028,6 +1101,9 @@ fn conversation_header_uses_the_existing_websocket_session_chain() {
             panic!("WebSocket request message");
         };
         assert_eq!(parsed.session_id, "shared-conversation");
-        assert_eq!(parsed.request_texts, vec![text]);
+        assert_eq!(
+            role_texts(&parsed.request_conversation),
+            [(EntryRole::User, text)]
+        );
     }
 }

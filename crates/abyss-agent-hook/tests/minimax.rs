@@ -10,7 +10,9 @@ use abyss_agent_hook::{
 use abyss_mitm::{
     CapturedBody, FlowContext, HttpExchange, MitmHook, OriginalDestination, TransparentProtocol,
 };
-use abyss_plugin_protocol::event::{AgentEvent, ContentCompleteness, MessageRole};
+use abyss_plugin_protocol::event::{
+    AgentEvent, ContentCategory, ContentCompleteness, ConversationEntry, EntryRole,
+};
 use http::{Request, Response};
 use parking_lot::Mutex;
 use serde_json::{Value, json};
@@ -29,6 +31,11 @@ const FIXTURES: [(&str, &str); 3] = [
         include_str!("fixtures/minimax/messages.sse"),
     ),
 ];
+
+/// The entries of one role, in order.
+fn entries(entries: &[ConversationEntry], role: EntryRole) -> Vec<&ConversationEntry> {
+    entries.iter().filter(|entry| entry.role == role).collect()
+}
 
 #[derive(Debug, Default)]
 struct RecordingSink {
@@ -148,28 +155,34 @@ async fn minimax_protocols_preserve_thinking_tool_roundtrip_and_disjoint_cache_u
                     );
                 }
                 assert_eq!(events[1].token_usage.reasoning_tokens, 5);
-                let thinking = &events[1].conversation.as_ref().unwrap().messages[0];
-                assert_eq!(thinking.role, MessageRole::Reasoning);
-                assert_eq!(thinking.text, "Read the file.");
-                assert_eq!(events[1].tool_calls.len(), 1);
-                let call = &events[1].tool_calls[0];
-                assert_eq!(call.call_id, "minimax-call-1");
-                assert_eq!(call.name, "read");
+                let response = &events[1].conversation.as_ref().unwrap().entries;
+                assert_eq!(response[0].role, EntryRole::Reasoning);
+                assert_eq!(response[0].text, "Read the file.");
+                let calls = entries(response, EntryRole::ToolCall);
+                assert_eq!(calls.len(), 1);
+                let call = calls[0];
+                assert_eq!(call.call_id.as_deref(), Some("minimax-call-1"));
+                assert_eq!(call.name.as_deref(), Some("read"));
                 assert_eq!(
-                    serde_json::from_str::<Value>(&call.input).unwrap(),
+                    serde_json::from_str::<Value>(&call.text).unwrap(),
                     json!({"path": "probe.txt"})
                 );
-                assert_eq!(events[2].tool_results.len(), 1);
-                assert_eq!(events[2].tool_results[0].call_id, call.call_id);
-                assert_eq!(events[2].tool_results[0].output, "MINIMAX_PROBE_OK");
-                let history = &events[2].conversation.as_ref().unwrap().messages;
-                assert!(history.iter().any(|message| {
-                    message.role == MessageRole::Reasoning && message.text == "Read the file."
-                }));
-                let reply = &events[3].conversation.as_ref().unwrap().messages;
-                assert!(reply.iter().any(|message| {
-                    message.role == MessageRole::Assistant && message.text == "MINIMAX_PROBE_OK"
-                }));
+                let history = &events[2].conversation.as_ref().unwrap().entries;
+                let results = entries(history, EntryRole::ToolResult);
+                assert_eq!(results.len(), 1);
+                assert_eq!(results[0].call_id, call.call_id);
+                assert_eq!(results[0].text, "MINIMAX_PROBE_OK");
+                assert!(
+                    entries(history, EntryRole::Reasoning)
+                        .iter()
+                        .any(|entry| entry.text == "Read the file.")
+                );
+                let reply = &events[3].conversation.as_ref().unwrap().entries;
+                assert!(
+                    entries(reply, EntryRole::Assistant)
+                        .iter()
+                        .any(|entry| entry.text == "MINIMAX_PROBE_OK")
+                );
                 assert_ne!(events[0].event_id, events[2].event_id);
             }
         }
@@ -177,7 +190,7 @@ async fn minimax_protocols_preserve_thinking_tool_roundtrip_and_disjoint_cache_u
 }
 
 #[tokio::test]
-async fn minimax_content_off_keeps_usage_without_thinking_tools_or_text() {
+async fn minimax_content_off_keeps_usage_and_roles_without_thinking_tools_or_text() {
     let policy: HooksConfig = serde_json::from_value(json!({
         "harness_usage": {"enabled": true, "config": {"content": {
             "token_usage": true, "conversation_text": false, "tool_calls": false, "images": false
@@ -206,13 +219,22 @@ async fn minimax_content_off_keeps_usage_without_thinking_tools_or_text() {
         let events = scenario.sink.events.lock();
         assert_eq!(events.len(), 4);
         for event in &*events {
-            assert!(event.text.is_none());
-            assert!(event.tool_calls.is_empty());
-            assert!(event.tool_results.is_empty());
             assert!(event.attachments.is_empty());
+            assert_eq!(
+                event.omitted,
+                [
+                    ContentCategory::ConversationText,
+                    ContentCategory::ToolContent,
+                    ContentCategory::Images,
+                ]
+            );
             let conversation = event.conversation.as_ref().unwrap();
-            assert!(conversation.policy_omitted);
-            assert!(conversation.messages.is_empty());
+            assert!(
+                conversation
+                    .entries
+                    .iter()
+                    .all(|entry| entry.text.is_empty())
+            );
         }
         assert_eq!(events[0].token_usage.input_tokens, 40);
         assert_eq!(events[0].token_usage.cache_read_tokens, 60);

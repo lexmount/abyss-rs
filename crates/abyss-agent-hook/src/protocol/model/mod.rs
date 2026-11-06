@@ -2,5 +2,4 @@
 
 pub mod conversation;
 pub mod image;
-pub mod tool;
 pub mod usage;

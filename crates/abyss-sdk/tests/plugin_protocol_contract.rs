@@ -4,7 +4,7 @@ use std::{fs, path::PathBuf};
 
 use abyss_sdk::{
     event::AgentEvent,
-    plugin::{BrokerClose, BrokerError, BrokerHello, MessageRole, PluginHello},
+    plugin::{BrokerClose, BrokerError, BrokerHello, EntryRole, PluginHello},
 };
 use serde::{Serialize, de::DeserializeOwned};
 use serde_json::Value;
@@ -23,13 +23,12 @@ fn structured_conversation_and_handshakes_round_trip() {
     contract.assert_fixture_round_trip::<PluginHello>("plugin-hello.json");
     contract.assert_fixture_round_trip::<BrokerHello>("broker-hello.json");
     let fixture = contract.json("fixtures/agent-event.json");
-    assert!(fixture["conversation"]["messages"][0]["text"].is_string());
+    assert!(fixture["conversation"]["entries"][0]["text"].is_string());
     let schema = contract.json("agent-event.schema.json");
     assert!(schema["properties"].get("conversation").is_some());
     assert!(schema["properties"].get("raw_body").is_none());
     assert!(schema["properties"].get("claude_code_billing").is_none());
     assert!(schema["properties"].get("claude_thread").is_none());
-    assert_eq!(schema["properties"]["naming_thread"]["type"], "boolean");
     assert_eq!(
         schema["properties"]["purpose"]["enum"],
         serde_json::json!(["session_title", "compaction", "prewarm"])
@@ -38,7 +37,16 @@ fn structured_conversation_and_handshakes_round_trip() {
         serde_json::to_value(abyss_sdk::event::EventPurpose::Compaction).unwrap(),
         "compaction"
     );
-    assert_eq!(fixture["naming_thread"], true);
+    // The collector infers no thread, naming thread, or session title.
+    for field in ["naming_thread", "stream_id", "session_title"] {
+        assert!(schema["properties"].get(field).is_none(), "{field}");
+        let mut inferred = fixture.clone();
+        inferred[field] = "x".into();
+        assert!(
+            serde_json::from_value::<AgentEvent>(inferred).is_err(),
+            "{field}"
+        );
+    }
     let mut prewarm = fixture.clone();
     prewarm["purpose"] = "prewarm".into();
     let decoded: AgentEvent = serde_json::from_value(prewarm.clone()).unwrap();
@@ -47,10 +55,20 @@ fn structured_conversation_and_handshakes_round_trip() {
         Some(abyss_sdk::plugin::EventPurpose::Prewarm)
     );
     assert_eq!(serde_json::to_value(decoded).unwrap(), prewarm);
-    for field in ["stream_id", "response_id", "previous_response_id"] {
+    for field in [
+        "response_id",
+        "previous_response_id",
+        "subagent_id",
+        "parent_subagent_id",
+        "turn_id",
+    ] {
         assert_eq!(schema["properties"][field]["type"], "string", "{field}");
         assert!(fixture[field].is_string(), "{field}");
     }
+    let event: AgentEvent = serde_json::from_value(fixture.clone()).unwrap();
+    assert_eq!(event.subagent_id.as_deref(), Some("agent-2"));
+    assert_eq!(event.parent_subagent_id.as_deref(), Some("agent-1"));
+    assert_eq!(event.turn_id.as_deref(), Some("turn-1"));
     let messages = contract.json("messages.schema.json");
     for name in ["pluginHello", "brokerHello"] {
         assert_eq!(
@@ -72,61 +90,60 @@ fn structured_conversation_and_handshakes_round_trip() {
 }
 
 #[test]
-fn conversation_carries_only_role_aware_messages() {
+fn conversation_carries_one_entry_per_block() {
     let contract = PublishedContract::load();
     let schema = contract.json("agent-event.schema.json");
     let conversation = &schema["$defs"]["conversation"];
-    let message = &schema["$defs"]["conversationMessage"];
+    let entry = &schema["$defs"]["conversationEntry"];
     assert_eq!(
         conversation["required"],
-        serde_json::json!([
-            "messages",
-            "instructions_present",
-            "completeness",
-            "policy_omitted"
-        ]),
+        serde_json::json!(["entries", "completeness"]),
         "conversation fields should match the public Rust contract"
     );
     assert!(
         conversation["properties"].get("payloads").is_none()
-            && message["properties"].get("blocks").is_none(),
+            && entry["properties"].get("blocks").is_none(),
         "v1 must not carry raw provider documents or original content blocks"
     );
+    assert_eq!(entry["required"], serde_json::json!(["role", "text"]));
     assert_eq!(
-        message["required"],
-        serde_json::json!(["id", "role", "text"])
-    );
-    assert_eq!(
-        message["properties"]["role"]["enum"],
+        entry["properties"]["role"]["enum"],
         serde_json::json!([
             "system",
             "developer",
             "user",
             "assistant",
             "reasoning",
-            "tool",
+            "tool_call",
+            "tool_result",
             "unknown"
         ]),
-        "message roles should be a closed published set"
+        "entry roles should be a closed published set"
     );
 
     let fixture = contract.json("fixtures/agent-event.json");
     let event: AgentEvent =
         serde_json::from_value(fixture.clone()).expect("the v1 fixture should decode");
-    let roles = event
+    let entries = event
         .conversation
         .expect("the v1 fixture should carry a conversation")
-        .messages
-        .into_iter()
-        .map(|message| message.role)
-        .collect::<Vec<_>>();
+        .entries;
     assert_eq!(
-        roles,
+        entries.iter().map(|entry| entry.role).collect::<Vec<_>>(),
         [
-            MessageRole::Reasoning,
-            MessageRole::Assistant,
-            MessageRole::Tool
+            EntryRole::Reasoning,
+            EntryRole::Assistant,
+            EntryRole::ToolCall
         ]
+    );
+    assert_eq!(entries[2].call_id.as_deref(), Some("call-123"));
+    assert_eq!(entries[2].name.as_deref(), Some("exec"));
+    assert_eq!(
+        entries
+            .iter()
+            .map(|entry| entry.item_id.as_deref())
+            .collect::<Vec<_>>(),
+        [Some("rs-123"), Some("msg-123"), Some("fc-123")]
     );
 
     let mut payloads = fixture.clone();
@@ -136,16 +153,36 @@ fn conversation_carries_only_role_aware_messages() {
         "decoded provider documents are not part of the v1 contract"
     );
     let mut blocks = fixture.clone();
-    blocks["conversation"]["messages"][0]["blocks"] = serde_json::json!([]);
+    blocks["conversation"]["entries"][0]["blocks"] = serde_json::json!([]);
     assert!(
         serde_json::from_value::<AgentEvent>(blocks).is_err(),
         "original content blocks are not part of the v1 contract"
     );
-    let mut placeholder = fixture;
-    placeholder["conversation"]["messages"][0]["role"] = "request".into();
+    let mut merged_tool = fixture.clone();
+    merged_tool["conversation"]["entries"][0]["role"] = "tool".into();
     assert!(
-        serde_json::from_value::<AgentEvent>(placeholder).is_err(),
-        "an undeclared role should use `unknown`, not a placeholder"
+        serde_json::from_value::<AgentEvent>(merged_tool).is_err(),
+        "tool entries use the `tool_call` and `tool_result` roles"
+    );
+    let mut messages = fixture.clone();
+    messages["conversation"]["messages"] = serde_json::json!([]);
+    assert!(
+        serde_json::from_value::<AgentEvent>(messages).is_err(),
+        "`messages` is replaced by `entries`"
+    );
+    let mut flagged = fixture.clone();
+    flagged["conversation"]["policy_omitted"] = false.into();
+    assert!(
+        serde_json::from_value::<AgentEvent>(flagged).is_err(),
+        "`policy_omitted` is replaced by the event-level `omitted`"
+    );
+    let mut omitted = fixture;
+    omitted["omitted"] = serde_json::json!(["conversation_text"]);
+    let decoded: AgentEvent = serde_json::from_value(omitted.clone()).unwrap();
+    assert_eq!(serde_json::to_value(decoded).unwrap(), omitted);
+    assert_eq!(
+        schema["properties"]["omitted"]["items"]["enum"],
+        serde_json::json!(["token_usage", "conversation_text", "tool_content", "images"])
     );
 }
 
@@ -240,11 +277,16 @@ fn published_agent_event_fixture_matches_the_public_sdk() {
         "the only version 1 Agent event should be flat and contain no unstructured metadata"
     );
     assert_eq!(
-        event["tool_calls"][0]["name"], "exec",
-        "tool activity should use the public structured contract"
+        event["conversation"]["entries"][2]["name"], "exec",
+        "tool activity should be carried by conversation entries"
     );
+    for field in ["text", "tool_calls", "tool_results"] {
+        assert!(
+            event.get(field).is_none(),
+            "{field} is carried only by conversation entries"
+        );
+    }
     assert!(event.get("turn_index").is_none());
-    assert_eq!(event["turn_id"], "turn-123");
     contract.assert_fixture_round_trip::<AgentEvent>("agent-event.json");
 }
 
@@ -284,13 +326,16 @@ fn published_event_schema_defines_the_flat_typed_contract() {
         event_properties.get("metadata").is_none(),
         "the public event schema should not expose an arbitrary metadata object"
     );
-    assert_eq!(
-        event_properties["tool_calls"]["items"]["$ref"], "#/$defs/toolCall",
-        "tool calls should reference their structured public schema"
-    );
-    assert_eq!(
-        event_properties["tool_results"]["items"]["$ref"], "#/$defs/toolResult",
-        "tool results should reference their structured public schema"
+    for field in ["text", "tool_calls", "tool_results"] {
+        assert!(
+            event_properties.get(field).is_none(),
+            "content is carried only by conversation entries, not {field}"
+        );
+    }
+    assert!(
+        event_schema["$defs"].get("toolCall").is_none()
+            && event_schema["$defs"].get("toolResult").is_none(),
+        "tool calls and results have no schema outside conversation entries"
     );
     assert_eq!(
         event_schema["additionalProperties"], false,

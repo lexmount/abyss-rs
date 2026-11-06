@@ -20,36 +20,41 @@ jq -n \
       {
         event_id: "request-event",
         event_type: "request",
-        agent_name: "codex",
-        llm_provider: "openai",
-        llm_model: "gpt-test",
+        agent: {name: "codex", version: "test"},
+        llm: {provider: "openai", model: "gpt-test"},
         session_id: "session-test",
-        turn_index: 3,
-        text: $marker,
-        input_tokens: 8,
-        output_tokens: 0,
-        cache_read_tokens: 2,
-        cache_write_tokens: 1,
-        reasoning_tokens: 0,
-        total_tokens: 11,
-        metadata: {provider_usage: {input_tokens: 11, output_tokens: 7, total_tokens: 21}}
+        response_id: "response-test",
+        token_usage: {
+          input_tokens: 8,
+          output_tokens: 0,
+          cache_read_tokens: 2,
+          cache_write_tokens: 1,
+          reasoning_tokens: 0,
+          total_tokens: 11
+        },
+        conversation: {entries: [{role: "user", text: $marker}], completeness: "complete"},
+        purpose: null
       },
       {
         event_id: "response-event",
         event_type: "response",
-        agent_name: "codex",
-        llm_provider: "openai",
-        llm_model: "gpt-test",
+        agent: {name: "codex", version: "test"},
+        llm: {provider: "openai", model: "gpt-test"},
         session_id: "session-test",
-        turn_index: 3,
-        text: "response",
-        input_tokens: 0,
-        output_tokens: 7,
-        cache_read_tokens: 0,
-        cache_write_tokens: 0,
-        reasoning_tokens: 3,
-        total_tokens: 7,
-        metadata: {}
+        response_id: "response-test",
+        token_usage: {
+          input_tokens: 0,
+          output_tokens: 7,
+          cache_read_tokens: 0,
+          cache_write_tokens: 0,
+          reasoning_tokens: 3,
+          total_tokens: 7
+        },
+        purpose: null,
+        conversation: {
+          entries: [{role: "assistant", text: "response"}],
+          completeness: "complete"
+        }
       }
     ]
   }' >"${EVENTS_FILE}"
@@ -113,16 +118,17 @@ blackbox_assert_summary_matches_pairs "${SUMMARY_TWO_JSON}" "${TWO_PAIRS_JSON}"
 # message. The session summary must include that request, while the native
 # turn.completed usage still matches only the marker request/response pair.
 PREWARM_EVENTS_JSON="$(jq -c '.events + [(.events[0] | .event_id = "prewarm-event"
-  | .text = "prewarm instructions" | .input_tokens = 6 | .cache_read_tokens = 0
-  | .cache_write_tokens = 0 | .total_tokens = 6
-  | .metadata.purpose = "prewarm")]' "${EVENTS_FILE}")"
+  | .conversation.entries = [{role: "system", text: "prewarm instructions"}]
+  | .token_usage.input_tokens = 6 | .token_usage.cache_read_tokens = 0
+  | .token_usage.cache_write_tokens = 0 | .token_usage.total_tokens = 6
+  | .purpose = "prewarm")]' "${EVENTS_FILE}")"
 PREWARM_SUMMARY_JSON="$(jq -c '.rows[0].requests += 1
   | .rows[0].input_tokens += 6 | .rows[0].total_tokens += 6' <<<"${SUMMARY_JSON}")"
 blackbox_assert_summary_matches_events "${PREWARM_SUMMARY_JSON}" "${PREWARM_EVENTS_JSON}"
 blackbox_assert_codex_usage_matches_pair "${USAGE_JSON}" "${PAIR_JSON}"
 COMPLETED_USAGE_JSON="$(jq -cn --argjson usage "${USAGE_JSON}" '[$usage]')"
 blackbox_assert_codex_session_usage "${COMPLETED_USAGE_JSON}" "${PREWARM_EVENTS_JSON}" >/dev/null
-UNMARKED_EVENTS_JSON="$(jq -c 'map(del(.metadata.purpose))' <<<"${PREWARM_EVENTS_JSON}")"
+UNMARKED_EVENTS_JSON="$(jq -c 'map(del(.purpose))' <<<"${PREWARM_EVENTS_JSON}")"
 if blackbox_assert_codex_session_usage "${COMPLETED_USAGE_JSON}" "${UNMARKED_EVENTS_JSON}" >/dev/null 2>&1; then
   echo "Unmarked initial requests must remain in inference usage" >&2
   exit 1

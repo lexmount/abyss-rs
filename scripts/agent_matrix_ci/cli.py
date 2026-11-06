@@ -216,7 +216,7 @@ class MatrixApplication:
         events = []
         while time.monotonic() < deadline:
             response = self.http.json(
-                f"{stack.backend_base_url}/v1/agent-usage/events?limit=1000",
+                f"{stack.backend_base_url}/v1/agent-usage/events?limit=1000&locate=true",
                 bearer=stack.native_token,
             )
             events = response.get("events")

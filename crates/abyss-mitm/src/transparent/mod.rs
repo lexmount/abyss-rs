@@ -38,7 +38,7 @@ pub use self::decrypt_policy::{
 pub use self::destination::DestinationAddress;
 pub use self::display::{
     CapturedBodyPlaintextDisplay, HttpHeadersDisplay, HttpRequestHeadDisplay,
-    HttpResponseHeadDisplay,
+    HttpResponseHeadDisplay, REDACTED_HEADER_VALUE, is_sensitive_header,
 };
 pub use self::engine::{MitmEngine, MitmTimeouts};
 pub use self::flow_id::FlowId;
@@ -838,6 +838,13 @@ mod tests {
                 .all(|observation| observation.flow_id == flow_id),
             "the ingress flow id should survive WebSocket decoding"
         );
+        assert!(
+            observations
+                .iter()
+                .all(|observation| observation.upgrade_status
+                    == http::StatusCode::SWITCHING_PROTOCOLS),
+            "every message should carry the 101 upgrade response"
+        );
     }
 
     #[tokio::test]
@@ -1446,6 +1453,7 @@ mod tests {
     struct WebSocketObservation {
         flow_id: FlowId,
         text: String,
+        upgrade_status: http::StatusCode,
     }
 
     impl MitmHook for WebSocketRecordingHook {
@@ -1454,6 +1462,7 @@ mod tests {
                 self.observations.lock().push(WebSocketObservation {
                     flow_id: message.flow.flow_id.clone(),
                     text: text.clone(),
+                    upgrade_status: message.upgrade_response.status(),
                 });
             }
             Box::pin(future::ready(Ok(())))

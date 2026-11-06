@@ -194,5 +194,5 @@ pub fn sessions(page: u32, size: u32, more: bool) -> Value {
     json!({"total_sessions":2_u32,"page":page,"page_size":size,"has_more":more,"items":[session()]})
 }
 pub fn event() -> Value {
-    json!({"id":ID,"event_id":"source-event","session_pk":ID,"text":"hello","metadata":{"partial":true}})
+    json!({"id":ID,"event_id":"source-event","session_pk":ID,"conversation":{"entries":[{"role":"user","text":"hello"}],"completeness":"partial"},"metadata":{"partial":true}})
 }

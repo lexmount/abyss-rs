@@ -78,7 +78,7 @@ where
 pub mod tests {
     use std::{convert::Infallible, future::Future, sync::Mutex};
 
-    use abyss_plugin_protocol::event::AgentEvent;
+    use abyss_plugin_protocol::event::{AgentEvent, AgentEventSide};
 
     use super::{AgentEventDeliveryError, AgentEventSink, EventDelivery};
     use crate::{
@@ -171,26 +171,26 @@ pub mod tests {
                 version: None,
             },
             session_id: "session-1".to_owned(),
-            turn_id: None,
-            naming_thread: false,
-            stream_id: None,
             response_id: None,
             previous_response_id: None,
+            subagent_id: None,
+            parent_subagent_id: None,
+            turn_id: None,
             purpose: None,
-            session_title: None,
             llm: LlmPayload {
                 provider: "openai".to_owned(),
                 model: "gpt-test".to_owned(),
             },
-            event_type: "request",
-            text: Some("hello".to_owned()),
+            side: AgentEventSide::Request,
+            omitted: Vec::new(),
             conversation: None,
+            path: "/v1/responses".to_owned(),
+            headers: Vec::new(),
             token_usage: TokenUsage {
                 input_tokens: 1_i64,
                 total_tokens: 1_i64,
                 ..TokenUsage::default()
             },
-            metadata: serde_json::json!({}),
             attachments: Vec::new(),
         }
     }
