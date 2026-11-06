@@ -36,7 +36,7 @@ state, and broker diagnostics.
 
 Usage comparisons use the shared `UsageAccounting` calculation also exercised
 by the fixed Codex black-box test. All captured events and provider counters
-remain in the evidence. Only explicit `metadata.purpose: prewarm` events
+remain in the evidence. Only explicit `purpose: prewarm` events
 (WebSocket `response.create` with `generate: false`) are reported separately
 from completed inference usage. Event position, prompt text and token gaps are
 never classification signals. The evidence includes all-observed, prewarm,

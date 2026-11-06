@@ -37,18 +37,18 @@ class MatrixVerifier:
         )
         checks["events_received"] = len(events) >= 4
         checks["harness_identity"] = bool(events) and all(
-            e.get("agent_name") == case.harness for e in events
+            (e.get("agent") or {}).get("name") == case.harness for e in events
         )
         checks["provider_identity"] = bool(events) and all(
-            e.get("llm_provider") == case.event_provider for e in events
+            (e.get("llm") or {}).get("provider") == case.event_provider for e in events
         )
         # Resolved, versioned names are allowed only when the requested alias is
         # their prefix (e.g. model -> model-YYYYMMDD); arbitrary fallback is not.
         checks["model_identity"] = bool(events) and all(
-            isinstance(e.get("llm_model"), str)
+            isinstance((e.get("llm") or {}).get("model"), str)
             and (
-                e["llm_model"] == case.model
-                or e["llm_model"].startswith(case.model + "-")
+                e["llm"]["model"] == case.model
+                or e["llm"]["model"].startswith(case.model + "-")
             )
             for e in events
         )
@@ -116,9 +116,7 @@ class MatrixVerifier:
             else bool(native.session_id)
             and all(e.get("session_id") == native.session_id for e in events)
         )
-        inference = [
-            e for e in events if e.get("metadata", {}).get("purpose") != "prewarm"
-        ]
+        inference = [e for e in events if not UsageAccounting._is_prewarm(e)]
         totals = UsageAccounting._backend_totals(inference)
         # Missing native fields are unavailable, never a fabricated zero. Input
         # and output must be present on every completed native inference.

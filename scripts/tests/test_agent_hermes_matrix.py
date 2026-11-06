@@ -214,15 +214,18 @@ class HermesVerificationTests(unittest.TestCase):
                         "event_id": f"{turn}-{side}",
                         "response_id": f"resp-{turn}",
                         "event_type": side,
-                        "agent_name": "hermes",
-                        "llm_provider": "openai",
-                        "llm_model": self.case.model,
+                        "agent": {"name": "hermes", "version": "test"},
+                        "llm": {"provider": "openai", "model": self.case.model},
                         "session_id": "native-session",
                         "location": {"turn": turn},
-                        "input_tokens": 6 if request else 0,
-                        "output_tokens": 0 if request else 2,
-                        "cache_read_tokens": 3 if request else 0,
-                        "cache_write_tokens": 1 if request else 0,
+                        "token_usage": {
+                            "input_tokens": 6 if request else 0,
+                            "output_tokens": 0 if request else 2,
+                            "cache_read_tokens": 3 if request else 0,
+                            "cache_write_tokens": 1 if request else 0,
+                            "reasoning_tokens": 0,
+                            "total_tokens": 10 if request else 2,
+                        },
                         "conversation": {
                             "completeness": "complete",
                             "entries": [
@@ -232,7 +235,7 @@ class HermesVerificationTests(unittest.TestCase):
                                 }
                             ],
                         },
-                        "metadata": {},
+                        "purpose": None,
                     }
                 )
         self.events[1]["conversation"]["entries"].append(
@@ -271,7 +274,7 @@ class HermesVerificationTests(unittest.TestCase):
             elif mutate == "wrong_session":
                 events[-1]["session_id"] = "other"
             else:
-                events[-1]["output_tokens"] += 1
+                events[-1]["token_usage"]["output_tokens"] += 1
             with self.subTest(mutate=mutate):
                 self.assertEqual(self.verify(events)["status"], "fail")
 
