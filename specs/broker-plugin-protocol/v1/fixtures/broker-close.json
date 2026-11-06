@@ -1,4 +1,5 @@
 {
+  "type": "broker_close",
   "code": 101,
   "reason": "plugin event stream is too slow"
 }

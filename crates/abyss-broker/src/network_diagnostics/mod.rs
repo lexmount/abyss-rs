@@ -296,6 +296,12 @@ impl NetworkFailureClass {
 #[derive(Debug, Clone, Copy, PartialEq, Serialize)]
 #[serde(rename_all = "snake_case")]
 pub enum NetworkErrorCode {
+    /// Network policy terminated the flow.
+    NetworkBlocked,
+    /// A plugin rejected the decoded Agent request.
+    AgentRequestBlocked,
+    /// A selected inspection session could not decide.
+    InspectionUnavailable,
     /// The configured proxy hostname could not be resolved.
     #[serde(rename = "upstream_proxy_dns_error")]
     UpstreamProxyDns,
@@ -360,6 +366,9 @@ impl NetworkErrorCode {
     #[must_use]
     pub const fn as_str(self) -> &'static str {
         match self {
+            Self::NetworkBlocked => "network_blocked",
+            Self::AgentRequestBlocked => "agent_request_blocked",
+            Self::InspectionUnavailable => "inspection_unavailable",
             Self::UpstreamProxyDns => "upstream_proxy_dns_error",
             Self::UpstreamProxyTcp => "upstream_proxy_tcp_error",
             Self::UpstreamProxyConnect => "upstream_proxy_connect_error",
@@ -385,6 +394,9 @@ impl NetworkErrorCode {
     /// Parses a stable storage and IPC label.
     pub fn parse(value: &str) -> Option<Self> {
         match value {
+            "network_blocked" => Some(Self::NetworkBlocked),
+            "agent_request_blocked" => Some(Self::AgentRequestBlocked),
+            "inspection_unavailable" => Some(Self::InspectionUnavailable),
             "upstream_proxy_dns_error" => Some(Self::UpstreamProxyDns),
             "upstream_proxy_tcp_error" => Some(Self::UpstreamProxyTcp),
             "upstream_proxy_connect_error" => Some(Self::UpstreamProxyConnect),
@@ -765,17 +777,25 @@ impl NetworkObservation {
             stage: location.stage,
             outcome,
             failure_class: Some(failure_class),
-            technical_error_code: (proxy_status == Some(407))
-                .then_some(NetworkErrorCode::UpstreamProxyAuthRequired)
-                .or_else(|| {
-                    NetworkErrorCode::from_observation(
-                        location.hop,
-                        location.stage,
-                        outcome,
-                        Some(failure_class),
-                        None,
-                    )
-                }),
+            technical_error_code: match error {
+                TransparentFlowError::Rejected(rejection) => {
+                    NetworkErrorCode::parse(rejection.code).or(Some(NetworkErrorCode::AgentRequest))
+                }
+                _ => None,
+            }
+            .or_else(|| {
+                (proxy_status == Some(407))
+                    .then_some(NetworkErrorCode::UpstreamProxyAuthRequired)
+                    .or_else(|| {
+                        NetworkErrorCode::from_observation(
+                            location.hop,
+                            location.stage,
+                            outcome,
+                            Some(failure_class),
+                            None,
+                        )
+                    })
+            }),
             timing: NetworkTiming::from_unix_ms(started_at_unix_ms, ended_at_unix_ms),
             http_status: None,
             request_method: None,

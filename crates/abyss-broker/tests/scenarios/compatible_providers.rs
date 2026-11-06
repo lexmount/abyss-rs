@@ -171,7 +171,7 @@ impl StreamScenario<'_> {
         plugin.set_read_timeout(Some(REST_TIMEOUT)).unwrap();
         write_plugin_frame(
             &mut plugin,
-            &json!({"protocol_version": 1_u16, "plugin_id": "provider-blackbox"}),
+            &json!({"type":"plugin_hello", "capabilities":["agent_events"], "protocol_version": 1_u16, "plugin_id": "provider-blackbox"}),
         );
         assert_eq!(
             read_plugin_frame(&mut plugin)["protocol_version"],
@@ -213,8 +213,8 @@ impl StreamScenario<'_> {
         );
         server.join().unwrap();
 
-        let request = read_plugin_frame(&mut plugin);
-        let response = read_plugin_frame(&mut plugin);
+        let request = super::read_plugin_event(&mut plugin);
+        let response = super::read_plugin_event(&mut plugin);
         self.verify_events(&request, &response);
         let call = response["conversation"]["entries"]
             .as_array()

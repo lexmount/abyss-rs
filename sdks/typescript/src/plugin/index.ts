@@ -21,3 +21,12 @@ export {
 } from "./errors.js";
 export { BrokerPlugin, PluginConnection } from "./plugin.js";
 export type { BrokerPluginOptions, BrokerClose } from "./plugin.js";
+
+export type {
+  AgentRequestContext,
+  AgentRequestProjection,
+  RequestSourceProcess,
+  RequestHarness,
+  RequestDecision,
+  RequestHandler,
+} from "./inspection.js";

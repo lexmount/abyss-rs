@@ -170,6 +170,21 @@ impl MitmEngine {
         &self,
         flow: AcceptedTcpFlow,
     ) -> Result<TransparentFlowOutcome, TransparentFlowError> {
+        self.handle_flow_with_control(flow, &super::UncontrolledForwarding)
+            .await
+    }
+
+    /// Handles a flow with a statically dispatched request forwarding stage.
+    ///
+    /// TLS setup remains independent of request decisions.
+    ///
+    /// # Errors
+    /// Returns transport failures or a typed local rejection.
+    pub async fn handle_flow_with_control<C: super::RequestForwardingControl>(
+        &self,
+        flow: AcceptedTcpFlow,
+        control: &C,
+    ) -> Result<TransparentFlowOutcome, TransparentFlowError> {
         let detected = DetectedProtocol::detect(flow, self.timeouts.protocol_detection).await?;
         tracing::info!(
             peer_addr = ?detected.peer_addr(),
@@ -184,8 +199,10 @@ impl MitmEngine {
         // passthrough.
         let (protocol, flow) = detected.into_parts();
         match protocol {
-            DetectedProtocol::PlainHttp => Box::pin(PlainHttpFlow::from(flow).handle(self)).await,
-            DetectedProtocol::Tls => Box::pin(TlsFlow::from(flow).handle(self)).await,
+            DetectedProtocol::PlainHttp => {
+                Box::pin(PlainHttpFlow::from(flow).handle(self, control)).await
+            }
+            DetectedProtocol::Tls => Box::pin(TlsFlow::from(flow).handle(self, control)).await,
         }
     }
 }

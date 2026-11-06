@@ -63,6 +63,17 @@ impl HarnessRegistry {
         path: &str,
         config: &HarnessUsageConfig,
     ) -> Option<HarnessDetection> {
+        Self::recognize(flow, headers, path, config, true)
+    }
+
+    /// Recognition can be reused independently of observation enablement.
+    pub(crate) fn recognize(
+        flow: &FlowContext,
+        headers: &HeaderMap,
+        path: &str,
+        config: &HarnessUsageConfig,
+        apply_audit_policy: bool,
+    ) -> Option<HarnessDetection> {
         let detectors: [&dyn HarnessDetector; 8] = [
             &codex::CodexDetector,
             &claude_desktop::ClaudeDesktopDetector,
@@ -89,10 +100,14 @@ impl HarnessRegistry {
                 !matches!(detection.harness_id.as_str(), "codex" | "claude-code")
             });
         }
-        detections.retain(|detection| config.enabled_for_harness(detection.harness_id.as_str()));
+        if apply_audit_policy {
+            detections
+                .retain(|detection| config.enabled_for_harness(detection.harness_id.as_str()));
+        }
 
         for (harness_id, harness) in &config.harnesses {
-            if harness_id.is_reserved() || !harness.enabled.unwrap_or(true) {
+            if harness_id.is_reserved() || (apply_audit_policy && !harness.enabled.unwrap_or(true))
+            {
                 continue;
             }
             if harness

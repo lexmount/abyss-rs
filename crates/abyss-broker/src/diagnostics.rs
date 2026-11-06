@@ -859,6 +859,7 @@ const fn explicit_proxy_protocol_label(protocol: ExplicitProxyProtocol) -> &'sta
 
 const fn flow_error_reason(error: &TransparentFlowError) -> &'static str {
     match error {
+        TransparentFlowError::Rejected(rejection) => rejection.code,
         TransparentFlowError::ClientClosedBeforeProtocol => "client_closed_before_protocol",
         TransparentFlowError::UnsupportedProtocol => "unsupported_protocol",
         TransparentFlowError::MissingSni => "missing_sni",

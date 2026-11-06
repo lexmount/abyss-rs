@@ -1,7 +1,7 @@
 //! Chat Completions wire protocol parsing.
 
 mod exchange;
-mod request;
+pub mod request;
 mod response;
 mod tools;
 

@@ -2,22 +2,21 @@
 
 use abyss_mitm::HttpExchange;
 
-use super::{request::ResponsesRequest, response::ResponsesResponse};
-use crate::protocol::openai::shared::{
-    exchange::ParsedOpenAiExchange, http::OpenAiHttpExchange, images::extract_openai_request_images,
-};
+use super::response::ResponsesResponse;
+use crate::protocol::openai::shared::{exchange::ParsedOpenAiExchange, http::OpenAiHttpExchange};
+use crate::protocol::{LlmProtocol, OpenAiProtocol, request::RequestContent};
 
 /// Parses a Responses exchange selected by protocol detection.
 #[must_use]
 pub fn parse_responses_exchange(exchange: &HttpExchange) -> Option<ParsedOpenAiExchange> {
     let payload = exchange.request.body().json();
-    let request = ResponsesRequest::parse(payload, exchange.request.body().truncated());
+    let request = RequestContent::parse(
+        LlmProtocol::OpenAi(OpenAiProtocol::Responses),
+        payload,
+        exchange.request.body().truncated(),
+    );
     let decoded = OpenAiHttpExchange::decode(exchange);
     let response =
         ResponsesResponse::assemble(&decoded.documents.values, decoded.documents.incomplete);
-    decoded.finish(
-        request.conversation(),
-        payload.map_or_else(Vec::new, extract_openai_request_images),
-        &response,
-    )
+    decoded.finish(request, &response)
 }

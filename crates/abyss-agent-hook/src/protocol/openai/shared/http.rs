@@ -1,7 +1,6 @@
 //! Shared HTTP capture decoding and exchange metadata; dialects supply projected content.
 
 use abyss_mitm::HttpExchange;
-use abyss_plugin_protocol::event::Conversation;
 
 use super::{
     exchange::ParsedOpenAiExchange,
@@ -10,13 +9,8 @@ use super::{
     usage::best_usage,
 };
 use crate::protocol::{
-    model::image::ParsedImageAttachment,
-    shared::{
-        digest::sha256_hex,
-        http::request_host,
-        json::{event_types, string_field},
-        sse::ResponseDocuments,
-    },
+    request::RequestContent,
+    shared::{digest::sha256_hex, http::request_host, json::event_types, sse::ResponseDocuments},
 };
 
 pub struct OpenAiHttpExchange<'a> {
@@ -32,10 +26,11 @@ impl<'a> OpenAiHttpExchange<'a> {
     }
     pub fn finish(
         self,
-        request_conversation: Conversation,
-        request_images: Vec<ParsedImageAttachment>,
+        request: RequestContent<'_>,
         response: &OpenAiResponse,
     ) -> Option<ParsedOpenAiExchange> {
+        let request_conversation = request.conversation;
+        let request_images = request.images;
         let host = request_host(self.exchange.request.headers(), self.exchange.request.uri())?;
         let path = self.exchange.request.uri().path();
         let response_conversation = response.conversation();
@@ -69,20 +64,9 @@ impl<'a> OpenAiHttpExchange<'a> {
         }
 
         let response_id = response_id(&self.documents.values);
-        let previous_response_id = self
-            .exchange
-            .request
-            .body()
-            .json()
-            .and_then(|json| string_field(json, "previous_response_id"))
-            .map(str::to_owned);
-        let model = first_model(&self.documents.values).or_else(|| {
-            self.exchange
-                .request
-                .body()
-                .json()
-                .and_then(|json| string_field(json, "model").map(str::to_owned))
-        });
+        let previous_response_id = request.metadata.previous_response_id.map(str::to_owned);
+        let model = first_model(&self.documents.values)
+            .or_else(|| request.metadata.model.map(str::to_owned));
         let headers = self.exchange.request.headers();
         let request_hash = sha256_hex(&format!(
             "{}\0{}\0{}\0{}",
@@ -103,12 +87,7 @@ impl<'a> OpenAiHttpExchange<'a> {
             usage,
             response_id,
             previous_response_id,
-            client_metadata: self
-                .exchange
-                .request
-                .body()
-                .json()
-                .and_then(|json| json.get("client_metadata").cloned()),
+            client_metadata: request.metadata.client_metadata.cloned(),
             model,
             event_types: self.documents.values.iter().flat_map(event_types).collect(),
         })
