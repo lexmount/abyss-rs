@@ -106,6 +106,8 @@ class BrokerCosTests(unittest.TestCase):
                     )
                     self.assertFalse(config.exists())
                     self.assertIn("--disable-log=true", argv)
+                    self.assertEqual(argv[argv.index("--part-size") + 1], "1")
+                    self.assertEqual(argv[argv.index("--thread-num") + 1], "5")
                 self.assertTrue(self.calls[-1][0][3].endswith("/SHA256SUMS"))
 
     def test_latest_is_one_uncached_manifest_pinning_all_platform_archives(self):

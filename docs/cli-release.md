@@ -268,7 +268,22 @@ cache rule must not override this header. Tencent's
 explains that forced caching can override `no-store`. Versioned archive paths can
 retain normal long-lived caching. The workflow does not need CDN purge credentials.
 
-For manual recovery, first verify that both origins have the complete versioned
+If a tag run's CDN upload fails, the **Recover endpoint CDN publication** workflow
+can reuse its original `broker-release` and `abyss-query-release` artifacts:
+
+```sh
+gh workflow run cdn-release-recovery.yml -f tag=v1.4.5 -f source_run=ORIGINAL_RUN_ID
+```
+
+Stop the original run first. Recovery shares its publication lock, verifies that
+the run belongs to the exact tag commit and passed assembly and GitHub staging,
+and checks both component checksum sets before uploading. It uploads all four
+component/origin combinations before promoting latest and publishing GitHub.
+It neither rebuilds binaries nor moves the tag, and refuses to replace a newer
+published version. COS uploads use 1 MiB parts with five concurrent transfers so
+slow cross-region connections can resume smaller parts instead of whole archives.
+
+For local manual recovery, first verify that both origins have the complete versioned
 release. Fetch the published tag list and run the following promotion command
 once for each origin with its bucket/region environment variables configured:
 
