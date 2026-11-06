@@ -87,11 +87,15 @@ archive. The binaries remain covered by this repository's GPL license.
 ## Build and publish
 
 `.github/workflows/cli-release.yml` builds both Unix CLI variants and the Windows
-runtime. It exercises the download installer on Unix, runs the real archived
+runtime, plus a standalone `abyss-query` archive for each of those three targets.
+It exercises the download installer on Unix, runs the real archived
 executables on their native runners, and verifies that `deploy-local` is present
-only in the default CLI. A separate assembly job requires all five archives with
-matching source revisions and versions, verifies payload and archive checksums,
-and checks that CLI variants share identical broker and delivery binaries.
+only in the default CLI. Query archives also run `--help`, `--version`, and `schema`
+on their native runners. A separate assembly job requires all five endpoint
+archives with matching source revisions and versions, verifies payload and archive checksums,
+and checks that CLI variants share identical broker and delivery binaries. Query
+assembly independently requires all three targets with matching versions and
+source revisions, and verifies payload and archive checksums.
 Pull requests and manual dispatches validate the complete release and upload
 Actions artifacts without publishing a GitHub Release. The installer smoke test
 uses local release assets as the download transport.
@@ -106,8 +110,8 @@ uses local release assets as the download transport.
    ensure its registry token and release prerequisites are ready.
 4. The publication job waits for the assembled release, verifies its checksums,
    creates a draft GitHub Release, and uploads every GitHub asset. Both CN and COM
-   broker CDN uploads must then succeed. A final job promotes both latest manifests
-   before publishing the GitHub Release as latest.
+   broker and query CDN uploads must then succeed. A final job promotes all four
+   latest manifests before publishing the GitHub Release as latest.
    Its `GITHUB_TOKEN` needs `contents: write`; the CDN credentials and repository
    variables below must also be configured. Windows executables are published without
    product signing; no signing certificate or hardware token is needed here.
@@ -117,6 +121,49 @@ run to be retried. Published releases are never overwritten by the workflow;
 source changes require a new version and tag. Tag workflows share one concurrency
 lock across build, upload, promotion, and publication. Push release tags in version
 order and wait for each release to finish before starting another version.
+
+## Query CLI CDN publication
+
+The tag workflow builds `abyss-query-cli` alongside the endpoint binaries and
+publishes standalone query archives to both the `.cn` and `.com` Tencent COS
+origins. The shared `tools/` CDN directory is reserved for CLI tools; each tool
+has its own namespace so its versioned archives and latest manifest cannot
+overwrite another tool's files.
+
+```text
+tools/abyss-query/v1.0.0/
+  abyss-query-v1.0.0-aarch64-apple-darwin.tar.gz
+  abyss-query-v1.0.0-x86_64-unknown-linux-musl.tar.gz
+  abyss-query-v1.0.0-x86_64-pc-windows-msvc.zip
+  SHA256SUMS
+tools/abyss-query/latest/
+  manifest.json
+```
+
+Each archive contains `abyss-query` (or `abyss-query.exe`), `LICENSE`, `VERSION`,
+and `query-artifact.json`. The metadata records repository, full commit revision,
+version, target, and payload SHA-256 digests. Packaging is reproducible for the
+same input binary and source revision. These standalone archives are CDN assets;
+the existing endpoint GitHub Release archive contents stay unchanged.
+
+Download `<CDN base URL>/tools/abyss-query/latest/manifest.json` from either domain.
+It uses the same schema as the broker manifest below: select `artifacts[target]`,
+download its root-relative `path` on the same CDN domain, and verify `sha256` and
+`size` before extracting. Query paths start with `/tools/abyss-query/v<version>/`.
+Both query origins and both broker origins must complete versioned uploads before
+any latest manifest is promoted. Promotion retains the existing stable-tag and
+newer-published-version checks.
+
+The shared publisher is `scripts/ci/publish_cos.py`; use `--component abyss-query`
+for query and `--component broker` for broker. For query recovery, use the original
+`abyss-query-release` Actions artifact and the same per-origin environment and
+published-tag file described below:
+
+```sh
+python3 scripts/ci/publish_cos.py --component abyss-query --source abyss-query-dist \
+  --tag v1.0.0 --coscli /path/to/coscli \
+  --latest-only --published-tags published-tags.txt
+```
 
 ## Broker CDN publication
 
@@ -213,8 +260,9 @@ the same version produces the same manifest bytes.
 
 The manifest is uploaded with `Content-Type: application/json; charset=utf-8` and
 `Cache-Control: no-cache, no-store, max-age=0, must-revalidate`. Configure **both CDN
-domains** so `/broker/latest/manifest.json` follows the origin's cache headers or
-has a highest-priority **do not cache** rule. Forced edge caching or a browser
+domains** so both `/broker/latest/manifest.json` and
+`/tools/abyss-query/latest/manifest.json` follow the origin's cache headers or
+have a highest-priority **do not cache** rule. Forced edge caching or a browser
 cache rule must not override this header. Tencent's
 [cache rule documentation](https://cloud.tencent.com/document/product/228/47672)
 explains that forced caching can override `no-store`. Versioned archive paths can
@@ -228,7 +276,7 @@ once for each origin with its bucket/region environment variables configured:
 gh api --paginate 'repos/lexmount/abyss-rs/releases?per_page=100' \
   --jq '.[] | select(.draft == false and .prerelease == false) | .tag_name' \
   > published-tags.txt
-python3 scripts/ci/publish_broker_cos.py --source broker-dist \
+python3 scripts/ci/publish_cos.py --component broker --source broker-dist \
   --tag v1.0.0 --coscli /path/to/coscli \
   --latest-only --published-tags published-tags.txt
 ```
@@ -256,15 +304,17 @@ Configure these non-secret repository **Variables** for the two CDN origins:
 | `TENCENT_COS_COM_BUCKET` | COM bucket name including its numeric APPID suffix |
 | `TENCENT_COS_COM_REGION` | COM bucket region, for example `ap-hongkong` |
 
-The credentials must permit COSCLI uploads to `broker/*` (including
-`broker/latest/manifest.json`) in both buckets,
+The credentials must permit COSCLI uploads to `broker/*` and `tools/abyss-query/*`
+(including each component's `latest/manifest.json`) in both buckets,
 including multipart uploads. Tencent's [COSCLI cp documentation](https://cloud.tencent.com/document/product/436/63669)
 lists the required bucket checks and object/multipart actions: `HeadBucket`,
 `GetBucket`, `HeadObject`, `InitiateMultipartUpload`, `UploadPart`,
 `CompleteMultipartUpload`, `ListMultipartUploads`, `ListParts`, `PutObject`, and
-`AbortMultipartUpload`. Restrict object permissions to `broker/*`; bucket-level
+`AbortMultipartUpload`. Restrict object permissions to `broker/*` and
+`tools/abyss-query/*`; bucket-level
 checks apply to the selected buckets. Credentials already scoped only to
-AbyssApp's `releases/*` or `skills/*` need the additional broker prefix.
+AbyssApp's `releases/*` or `skills/*` need the additional prefixes. Credentials
+already permitting only `broker/*` also need `tools/abyss-query/*` for this workflow.
 No CDN-management credentials or product-signing secrets are used.
 
 The workflow pins the COSCLI download SHA-256, matching AbyssApp's verified
@@ -276,11 +326,14 @@ GitHub Release in draft. Re-run failed jobs from the original tag run after fixi
 configuration or connectivity; successful matrix jobs need not be repeated.
 PR and manual workflow runs only build and validate Actions artifacts.
 
-Run `python3 scripts/tests/test_release_broker_cos.py` for offline publisher
-tests, including manifest paths and hashes, cache metadata, idempotent promotion,
-failure cleanup, and protection against promoting an older published version.
+Run `python3 scripts/tests/test_release_cos.py` for offline publisher
+tests of both components, including manifest paths and hashes, cache metadata,
+idempotent promotion, failure cleanup, and protection against promoting an older
+published version.
 `test_release_artifacts.py` also checks broker packaging, provenance,
 reproducibility, corrupted inputs, and missing platforms.
+`test_release_query.py` checks standalone query packaging and the complete
+three-platform assembly boundary.
 
 For a local packaging rehearsal after compiling the three release binaries:
 

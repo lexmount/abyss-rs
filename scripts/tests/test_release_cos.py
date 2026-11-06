@@ -18,10 +18,15 @@ sys.path.insert(0, str(ROOT / "scripts/ci"))
 
 from package_broker import broker_archive_name
 from package_cli import TARGETS
-from publish_broker_cos import check_promotion, publish
+from package_query import query_archive_name
+from publish_cos import check_promotion, publish
 
 
 class BrokerCosTests(unittest.TestCase):
+    component = "broker"
+    prefix = "broker"
+    archive_name = staticmethod(broker_archive_name)
+
     def setUp(self) -> None:
         self.temp = tempfile.TemporaryDirectory()
         self.addCleanup(self.temp.cleanup)
@@ -30,7 +35,7 @@ class BrokerCosTests(unittest.TestCase):
         self.source.mkdir()
         self.tag = "v1.2.3"
         for target in TARGETS:
-            (self.source / broker_archive_name(self.tag, target)).write_bytes(
+            (self.source / self.archive_name(self.tag, target)).write_bytes(
                 target.encode()
             )
         self.checksums = "".join(
@@ -60,6 +65,7 @@ class BrokerCosTests(unittest.TestCase):
             bucket,
             region,
             self.root / "coscli",
+            component=self.component,
             **options,
         )
 
@@ -84,16 +90,16 @@ class BrokerCosTests(unittest.TestCase):
         for region in ("ap-nanjing", "ap-hongkong"):
             with (
                 self.subTest(region=region),
-                patch(
-                    "publish_broker_cos.subprocess.run", side_effect=self.record_upload
-                ),
+                patch("publish_cos.subprocess.run", side_effect=self.record_upload),
             ):
                 self.calls.clear()
                 self.invoke(region=region)
                 self.assertEqual(len(self.calls), 4)
                 for argv, config in self.calls:
                     self.assertTrue(
-                        argv[3].startswith("cos://example-123456/broker/v1.2.3/")
+                        argv[3].startswith(
+                            f"cos://example-123456/{self.prefix}/v1.2.3/"
+                        )
                     )
                     self.assertEqual(
                         argv[argv.index("--endpoint") + 1], f"cos.{region}.myqcloud.com"
@@ -103,8 +109,8 @@ class BrokerCosTests(unittest.TestCase):
                 self.assertTrue(self.calls[-1][0][3].endswith("/SHA256SUMS"))
 
     def test_latest_is_one_uncached_manifest_pinning_all_platform_archives(self):
-        destination = "cos://example-123456/broker/latest/manifest.json"
-        with patch("publish_broker_cos.subprocess.run", side_effect=self.record_upload):
+        destination = f"cos://example-123456/{self.prefix}/latest/manifest.json"
+        with patch("publish_cos.subprocess.run", side_effect=self.record_upload):
             self.invoke(latest_only=True, published_tags=["v1.2.2"])
         self.assertEqual(len(self.calls), 1)
         argv, config = self.calls[0]
@@ -118,9 +124,9 @@ class BrokerCosTests(unittest.TestCase):
         self.assertEqual(manifest["tag"], self.tag)
         self.assertEqual(set(manifest["artifacts"]), set(TARGETS))
         for target, artifact in manifest["artifacts"].items():
-            name = broker_archive_name(self.tag, target)
+            name = self.archive_name(self.tag, target)
             archive = self.source / name
-            self.assertEqual(artifact["path"], f"/broker/{self.tag}/{name}")
+            self.assertEqual(artifact["path"], f"/{self.prefix}/{self.tag}/{name}")
             self.assertEqual(artifact["size"], archive.stat().st_size)
             self.assertEqual(
                 artifact["sha256"], hashlib.sha256(archive.read_bytes()).hexdigest()
@@ -128,8 +134,8 @@ class BrokerCosTests(unittest.TestCase):
         self.assertFalse(config.parent.exists())
 
     def test_latest_retry_is_deterministic_and_does_not_upload_versioned_files(self):
-        destination = "cos://example-123456/broker/latest/manifest.json"
-        with patch("publish_broker_cos.subprocess.run", side_effect=self.record_upload):
+        destination = f"cos://example-123456/{self.prefix}/latest/manifest.json"
+        with patch("publish_cos.subprocess.run", side_effect=self.record_upload):
             self.invoke(latest_only=True, published_tags=[])
             first = self.payloads[destination]
             self.invoke(latest_only=True, published_tags=[self.tag])
@@ -137,7 +143,7 @@ class BrokerCosTests(unittest.TestCase):
         self.assertEqual([call[0][3] for call in self.calls], [destination] * 2)
 
     def test_late_old_tag_cannot_replace_a_newer_release(self):
-        with patch("publish_broker_cos.subprocess.run") as upload:
+        with patch("publish_cos.subprocess.run") as upload:
             with self.assertRaisesRegex(ValueError, "v1.2.4 is published"):
                 self.invoke(latest_only=True, published_tags=["v1.2.4"])
             with self.assertRaisesRegex(ValueError, "requires the published"):
@@ -153,7 +159,7 @@ class BrokerCosTests(unittest.TestCase):
             self.record_upload(argv, **kwargs)
             raise subprocess.CalledProcessError(1, argv)
 
-        with patch("publish_broker_cos.subprocess.run", side_effect=fail):
+        with patch("publish_cos.subprocess.run", side_effect=fail):
             with self.assertRaises(subprocess.CalledProcessError):
                 self.invoke(latest_only=True, published_tags=[])
         self.assertEqual(len(self.calls), 1)
@@ -162,7 +168,7 @@ class BrokerCosTests(unittest.TestCase):
 
     def test_corrupt_archives_cannot_be_promoted(self):
         next(self.source.glob("*.zip")).write_bytes(b"corrupt")
-        with patch("publish_broker_cos.subprocess.run") as upload:
+        with patch("publish_cos.subprocess.run") as upload:
             with self.assertRaisesRegex(ValueError, "SHA-256"):
                 self.invoke(latest_only=True, published_tags=[])
             upload.assert_not_called()
@@ -174,7 +180,7 @@ class BrokerCosTests(unittest.TestCase):
             self.record_upload(argv, **kwargs)
             raise subprocess.CalledProcessError(1, argv)
 
-        with patch("publish_broker_cos.subprocess.run", side_effect=fail):
+        with patch("publish_cos.subprocess.run", side_effect=fail):
             with self.assertRaises(subprocess.CalledProcessError):
                 self.invoke()
         self.assertEqual(len(self.calls), 1)
@@ -182,7 +188,7 @@ class BrokerCosTests(unittest.TestCase):
         self.assertFalse(self.calls[0][0][3].endswith("/SHA256SUMS"))
 
     def test_invalid_destination_tag_and_credentials_never_upload(self):
-        with patch("publish_broker_cos.subprocess.run") as upload:
+        with patch("publish_cos.subprocess.run") as upload:
             for options in (
                 {"bucket": ""},
                 {"bucket": "example/other-123"},
@@ -202,7 +208,7 @@ class BrokerCosTests(unittest.TestCase):
     def test_missing_extra_or_corrupted_assets_never_upload(self):
         archive = next(self.source.glob("*.zip"))
         original = archive.read_bytes()
-        with patch("publish_broker_cos.subprocess.run") as upload:
+        with patch("publish_cos.subprocess.run") as upload:
             archive.unlink()
             with self.assertRaisesRegex(ValueError, "exactly three"):
                 self.invoke()
@@ -214,6 +220,12 @@ class BrokerCosTests(unittest.TestCase):
             with self.assertRaisesRegex(ValueError, "exactly three"):
                 self.invoke()
             upload.assert_not_called()
+
+
+class QueryCosTests(BrokerCosTests):
+    component = "abyss-query"
+    prefix = "tools/abyss-query"
+    archive_name = staticmethod(query_archive_name)
 
 
 if __name__ == "__main__":
