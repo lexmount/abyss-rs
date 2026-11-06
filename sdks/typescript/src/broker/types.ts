@@ -25,7 +25,7 @@ export interface ProxyStatus {
   socket_path?: string;
 }
 
-export type TlsDecryptionAction = "intercept" | "passthrough";
+export type TlsDecryptionAction = "intercept" | "passthrough" | "block";
 
 export interface TlsDecryptionRule {
   id: string;
@@ -33,6 +33,8 @@ export interface TlsDecryptionRule {
   action: TlsDecryptionAction;
   process_names?: string[];
   application_ids?: string[];
+  executable_paths?: string[];
+  process_entry_points?: string[];
   destination_hosts: string[];
 }
 
@@ -56,6 +58,8 @@ export interface HarnessUsageContentConfig {
 export interface HarnessMatcherConfig {
   process_names?: string[];
   application_ids?: string[];
+  executable_paths?: string[];
+  process_entry_points?: string[];
 }
 
 export interface HarnessConfig {

@@ -1,0 +1,6 @@
+{
+  "type": "inspect_response",
+  "request_id": "request-123",
+  "allow": false,
+  "reason": "Private key detected"
+}

@@ -62,33 +62,56 @@ where
     Ok(Some(payload))
 }
 
-/// Serializes and writes one direct protocol payload.
+/// Validated frame that can be shared across all selected inspection sessions.
+pub(super) struct EncodedFrame {
+    header: [u8; FRAME_HEADER_BYTES],
+    payload: Vec<u8>,
+}
+
+impl EncodedFrame {
+    pub(super) fn new<T: Serialize + ?Sized>(value: &T) -> Result<Self, PluginFrameError> {
+        let payload =
+            serde_json::to_vec(value).map_err(|source| PluginFrameError::Json { source })?;
+        let length =
+            u32::try_from(payload.len()).map_err(|_| PluginFrameError::PayloadTooLarge {
+                length: u32::MAX,
+                maximum: MAX_JSON_FRAME_BYTES,
+            })?;
+        validate_payload_length(length)?;
+        Ok(Self {
+            header: header_bytes(length),
+            payload,
+        })
+    }
+
+    pub(super) async fn write<W: AsyncWrite + Unpin>(
+        &self,
+        writer: &mut W,
+    ) -> Result<(), PluginFrameError> {
+        writer
+            .write_all(&self.header)
+            .await
+            .map_err(|source| PluginFrameError::Io {
+                operation: "write plugin frame header",
+                source,
+            })?;
+        writer
+            .write_all(&self.payload)
+            .await
+            .map_err(|source| PluginFrameError::Io {
+                operation: "write plugin frame payload",
+                source,
+            })
+    }
+}
+
+/// Serializes and writes one protocol payload.
 pub async fn write_json<W, T>(writer: &mut W, value: &T) -> Result<(), PluginFrameError>
 where
     W: AsyncWrite + Send + Unpin,
     T: Serialize + Sync + ?Sized,
 {
-    let payload = serde_json::to_vec(value).map_err(|source| PluginFrameError::Json { source })?;
-    let payload_length =
-        u32::try_from(payload.len()).map_err(|_error| PluginFrameError::PayloadTooLarge {
-            length: u32::MAX,
-            maximum: MAX_JSON_FRAME_BYTES,
-        })?;
-    validate_payload_length(payload_length)?;
-    writer
-        .write_all(&header_bytes(payload_length))
-        .await
-        .map_err(|source| PluginFrameError::Io {
-            operation: "write plugin frame header",
-            source,
-        })?;
-    writer
-        .write_all(&payload)
-        .await
-        .map_err(|source| PluginFrameError::Io {
-            operation: "write plugin frame payload",
-            source,
-        })
+    EncodedFrame::new(value)?.write(writer).await
 }
 
 async fn read_header<R>(

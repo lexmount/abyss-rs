@@ -4,9 +4,10 @@ use std::{sync::Arc, time::Duration};
 
 use abyss_plugin_protocol::{
     event::AgentEvent,
+    inspection::PluginCapability,
     message::{
-        BrokerClose, BrokerCloseCode, BrokerError, BrokerErrorCode, BrokerHello,
-        PluginProtocolVersion,
+        BrokerClose, BrokerCloseCode, BrokerError, BrokerErrorCode, BrokerHello, BrokerMessage,
+        PluginMessage, PluginProtocolVersion,
     },
 };
 use serde::Deserialize;
@@ -27,13 +28,25 @@ pub enum PluginSessionError {
     /// A frame could not be read or written.
     #[error("plugin frame error: {0}")]
     Frame(#[from] PluginFrameError),
+    /// Unexpected frame after the handshake.
+    #[error("invalid plugin session message")]
+    InvalidMessage,
 }
 
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
 struct RawPluginHello {
+    #[serde(rename = "type")]
+    kind: HelloKind,
+    capabilities: Vec<PluginCapability>,
     protocol_version: u16,
     plugin_id: String,
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "snake_case")]
+enum HelloKind {
+    PluginHello,
 }
 
 /// One accepted stream before and after protocol negotiation.
@@ -41,11 +54,7 @@ pub struct PluginSession<S> {
     stream: S,
     events: broadcast::Sender<Arc<AgentEvent>>,
     shutdown: watch::Receiver<bool>,
-}
-
-enum StreamAction {
-    Continue,
-    Close,
+    inspections: Arc<super::inspection::InspectionRegistry>,
 }
 
 impl<S> PluginSession<S>
@@ -53,7 +62,7 @@ where
     S: AsyncRead + AsyncWrite + Send + Unpin + 'static,
 {
     /// Creates a session around one accepted local stream.
-    pub const fn new(
+    pub fn new(
         stream: S,
         events: broadcast::Sender<Arc<AgentEvent>>,
         shutdown: watch::Receiver<bool>,
@@ -62,93 +71,101 @@ where
             stream,
             events,
             shutdown,
+            inspections: Arc::new(super::inspection::InspectionRegistry::default()),
         }
     }
 
-    /// Negotiates the event contract and writes events until this connection ends.
-    pub async fn run(mut self) -> Result<(), PluginSessionError> {
-        let Some((plugin_id, mut events)) = self.handshake().await? else {
-            return Ok(());
-        };
-        tracing::info!(%plugin_id, "broker plugin session accepted");
-
-        self.stream_events(&plugin_id, &mut events).await?;
-        tracing::info!(%plugin_id, "broker plugin session closed");
-        Ok(())
+    pub(super) fn with_inspections(
+        mut self,
+        registry: Arc<super::inspection::InspectionRegistry>,
+    ) -> Self {
+        self.inspections = registry;
+        self
     }
 
+    /// Serves independent events and correlated decisions over one connection.
     #[expect(
         clippy::integer_division_remainder_used,
-        reason = "tokio::select! expands through runtime code that uses remainder internally"
+        reason = "tokio::select! expansion uses remainder internally"
     )]
-    async fn stream_events(
-        &mut self,
-        plugin_id: &str,
-        events: &mut broadcast::Receiver<Arc<AgentEvent>>,
-    ) -> Result<(), PluginSessionError> {
-        loop {
-            tokio::select! {
-                biased;
-                changed = self.shutdown.changed() => {
-                    if changed.is_err() || *self.shutdown.borrow() {
-                        self.close(
-                            BrokerCloseCode::BrokerShutdown,
-                            "broker is shutting down",
-                        )
-                        .await?;
-                        break;
+    pub async fn run(mut self) -> Result<(), PluginSessionError> {
+        let Some(hello) = self.handshake().await? else {
+            return Ok(());
+        };
+        let mut events = self.events.subscribe();
+        let (registration, mut requests) =
+            if hello.capabilities.contains(&PluginCapability::AgentRequest) {
+                let (registration, requests) = self.inspections.register();
+                (Some(registration), requests)
+            } else {
+                (None, tokio::sync::mpsc::channel(1).1)
+            };
+        write_json(
+            &mut self.stream,
+            &BrokerMessage::BrokerHello(BrokerHello::v1()),
+        )
+        .await?;
+        tracing::info!(plugin_id = %hello.plugin_id, "broker plugin session accepted");
+        let (mut reader, mut writer) = tokio::io::split(self.stream);
+        let registration_ref = registration.as_ref();
+        let read = async {
+            while let Some(payload) = read_payload(&mut reader).await? {
+                let message: PluginMessage = serde_json::from_slice(&payload)
+                    .map_err(|source| PluginFrameError::Json { source })?;
+                match (message, registration_ref) {
+                    (PluginMessage::InspectResponse(response), Some(registration)) => {
+                        registration.session.reply(response);
+                    }
+                    _ => return Err(PluginSessionError::InvalidMessage),
+                }
+            }
+            Ok::<(), PluginSessionError>(())
+        };
+        let write = async {
+            loop {
+                tokio::select! {
+                    request = requests.recv(), if registration_ref.is_some() => {
+                        let Some(context) = request else { break; };
+                        if registration_ref.is_some_and(|registration| registration.session.is_pending(&context.request_id)) {
+                            context.frame.write(&mut writer).await?;
+                        }
+                    }
+                    event = events.recv(), if hello.capabilities.contains(&PluginCapability::AgentEvents) => {
+                        if let Ok(event) = event {
+                            write_json(&mut writer, &BrokerMessage::AgentEvent { event }).await?;
+                        } else {
+                            write_json(&mut writer, &BrokerMessage::BrokerClose(BrokerClose::new(BrokerCloseCode::EventStreamTooSlow, "plugin event stream is too slow"))).await?;
+                            break;
+                        }
                     }
                 }
-                received = events.recv() => {
-                    if matches!(
-                        self.handle_event(plugin_id, received).await?,
-                        StreamAction::Close
-                    ) {
-                        break;
-                    }
-                }
             }
+            Ok::<(), PluginSessionError>(())
+        };
+        // The frame reader remains alive while writes are pending, so a slow
+        // plugin cannot prevent replies or disconnect cleanup from progressing.
+        let result = tokio::select! {
+            result = read => result,
+            result = write => result,
+            _ = self.shutdown.changed() => Ok(()),
+        };
+        if *self.shutdown.borrow() {
+            let _close = tokio::time::timeout(
+                super::inspection::DECISION_TIMEOUT,
+                write_json(
+                    &mut writer,
+                    &BrokerMessage::BrokerClose(BrokerClose::new(
+                        BrokerCloseCode::BrokerShutdown,
+                        "broker is shutting down",
+                    )),
+                ),
+            )
+            .await;
         }
-        Ok(())
+        result
     }
 
-    async fn handle_event(
-        &mut self,
-        plugin_id: &str,
-        received: Result<Arc<AgentEvent>, broadcast::error::RecvError>,
-    ) -> Result<StreamAction, PluginSessionError> {
-        match received {
-            Ok(event) => {
-                write_json(&mut self.stream, event.as_ref()).await?;
-                Ok(StreamAction::Continue)
-            }
-            Err(broadcast::error::RecvError::Lagged(skipped)) => {
-                tracing::warn!(
-                    %plugin_id,
-                    skipped,
-                    "closing slow broker plugin session"
-                );
-                self.close(
-                    BrokerCloseCode::EventStreamTooSlow,
-                    "plugin event stream is too slow",
-                )
-                .await?;
-                Ok(StreamAction::Close)
-            }
-            Err(broadcast::error::RecvError::Closed) => {
-                self.close(
-                    BrokerCloseCode::BrokerShutdown,
-                    "broker event stream closed",
-                )
-                .await?;
-                Ok(StreamAction::Close)
-            }
-        }
-    }
-
-    async fn handshake(
-        &mut self,
-    ) -> Result<Option<(String, broadcast::Receiver<Arc<AgentEvent>>)>, PluginSessionError> {
+    async fn handshake(&mut self) -> Result<Option<RawPluginHello>, PluginSessionError> {
         let payload = match self.read_handshake_payload().await {
             Ok(Some(payload)) => payload,
             Ok(None) => return Ok(None),
@@ -170,7 +187,7 @@ where
                 return Ok(None);
             }
         };
-        let Ok(protocol_version) = PluginProtocolVersion::try_from(hello.protocol_version) else {
+        let Ok(_protocol_version) = PluginProtocolVersion::try_from(hello.protocol_version) else {
             self.reject(
                 BrokerErrorCode::UnsupportedProtocolVersion,
                 format!("unsupported protocol version {}", hello.protocol_version),
@@ -178,6 +195,14 @@ where
             .await?;
             return Ok(None);
         };
+        if hello.capabilities.is_empty() {
+            self.reject(
+                BrokerErrorCode::InvalidHandshake,
+                "at least one plugin capability is required",
+            )
+            .await?;
+            return Ok(None);
+        }
         if !Self::valid_plugin_id(&hello.plugin_id) {
             self.reject(
                 BrokerErrorCode::InvalidHandshake,
@@ -187,9 +212,8 @@ where
             return Ok(None);
         }
 
-        let events = self.events.subscribe();
-        write_json(&mut self.stream, &BrokerHello { protocol_version }).await?;
-        Ok(Some((hello.plugin_id, events)))
+        let HelloKind::PluginHello = hello.kind;
+        Ok(Some(hello))
     }
 
     #[expect(
@@ -232,19 +256,12 @@ where
     where
         T: Into<String>,
     {
-        write_json(&mut self.stream, &BrokerError::new(code, reason))
-            .await
-            .map_err(Into::into)
-    }
-
-    async fn close(
-        &mut self,
-        code: BrokerCloseCode,
-        reason: &'static str,
-    ) -> Result<(), PluginSessionError> {
-        write_json(&mut self.stream, &BrokerClose::new(code, reason))
-            .await
-            .map_err(Into::into)
+        write_json(
+            &mut self.stream,
+            &BrokerMessage::BrokerError(BrokerError::new(code, reason)),
+        )
+        .await
+        .map_err(Into::into)
     }
 
     fn valid_plugin_id(plugin_id: &str) -> bool {
@@ -261,7 +278,7 @@ mod tests {
 
     use abyss_plugin_protocol::{
         event::AgentEvent,
-        message::{BrokerClose, BrokerError, BrokerHello, PluginHello},
+        message::{BrokerClose, BrokerError, BrokerHello, PluginHello, PluginMessage},
     };
     use tokio::{io::duplex, sync::broadcast};
 
@@ -275,9 +292,12 @@ mod tests {
         let (shutdown_tx, shutdown_rx) = tokio::sync::watch::channel(false);
         let session = tokio::spawn(PluginSession::new(server, events.clone(), shutdown_rx).run());
 
-        write_json(&mut client, &PluginHello::new("test-plugin".to_owned()))
-            .await
-            .expect("PluginHello should write");
+        write_json(
+            &mut client,
+            &PluginMessage::PluginHello(PluginHello::new("test-plugin".to_owned())),
+        )
+        .await
+        .expect("PluginHello should write");
         let hello: BrokerHello = read_json(&mut client).await;
         assert_eq!(hello.protocol_version.wire_value(), 1_u16);
 
@@ -318,6 +338,8 @@ mod tests {
         write_json(
             &mut client,
             &serde_json::json!({
+                "type": "plugin_hello",
+                "capabilities": ["agent_events"],
                 "protocol_version": 2_u16,
                 "plugin_id": "future-plugin"
             }),
@@ -344,6 +366,8 @@ mod tests {
         write_json(
             &mut client,
             &serde_json::json!({
+                "type": "plugin_hello",
+                "capabilities": ["agent_events"],
                 "protocol_version": 1_u16,
                 "plugin_id": "invalid plugin id"
             }),
@@ -366,9 +390,12 @@ mod tests {
         let (_shutdown_tx, shutdown_rx) = tokio::sync::watch::channel(false);
         let session = tokio::spawn(PluginSession::new(server, events.clone(), shutdown_rx).run());
 
-        write_json(&mut client, &PluginHello::new("slow-plugin".to_owned()))
-            .await
-            .expect("PluginHello should write");
+        write_json(
+            &mut client,
+            &PluginMessage::PluginHello(PluginHello::new("slow-plugin".to_owned())),
+        )
+        .await
+        .expect("PluginHello should write");
         let _hello: BrokerHello = read_json(&mut client).await;
         for _index in 0_u8..3_u8 {
             let event: AgentEvent = serde_json::from_str(include_str!("fixtures/agent-event.json"))
@@ -384,9 +411,10 @@ mod tests {
                     .await
                     .expect("slow plugin frame should read")
                     .expect("slow plugin frame should be present");
-                let value: serde_json::Value =
+                let mut value: serde_json::Value =
                     serde_json::from_slice(&payload).expect("slow plugin frame should be JSON");
                 if value.get("code").is_some() {
+                    value.as_object_mut().unwrap().remove("type");
                     break serde_json::from_value::<BrokerClose>(value)
                         .expect("control frame should decode as BrokerClose");
                 }
@@ -443,6 +471,17 @@ mod tests {
             .await
             .expect("frame should read")
             .expect("frame should be present");
-        serde_json::from_slice(&payload).expect("frame JSON should decode")
+        decode_payload(&payload)
+    }
+    fn decode_payload<T: serde::de::DeserializeOwned>(payload: &[u8]) -> T {
+        let mut frame: serde_json::Value = serde_json::from_slice(payload).unwrap();
+        assert!(frame["type"].is_string(), "session frames are tagged");
+        let payload = if frame["type"] == "agent_event" {
+            frame["event"].take()
+        } else {
+            frame.as_object_mut().unwrap().remove("type");
+            frame
+        };
+        serde_json::from_value(payload).unwrap()
     }
 }

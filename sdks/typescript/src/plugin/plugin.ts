@@ -1,5 +1,7 @@
 /** High-level broker plugin handshake and typed event stream. */
 
+import type { AgentRequestContext, RequestHandler } from "./inspection.js";
+
 import type { Socket } from "node:net";
 
 import { decodeAgentEvent, type AgentEvent } from "../event.js";
@@ -14,6 +16,8 @@ import { connectPluginStream, resolvePluginEndpoint } from "./transport.js";
 export interface BrokerPluginOptions {
   consumerId: string;
   endpoint?: string;
+  onAgentRequest?: RequestHandler;
+  agentEvents?: boolean;
 }
 
 export interface BrokerClose {
@@ -22,18 +26,25 @@ export interface BrokerClose {
 }
 
 interface BrokerHello {
+  type: "broker_hello";
   protocol_version: number;
 }
 
 export class PluginConnection implements AsyncIterable<AgentEvent> {
   readonly #socket: Socket;
   readonly #frames: AsyncIterator<unknown>;
+  readonly #inspect: RequestHandler | undefined;
   #close: BrokerClose | undefined;
   #finished = false;
 
-  constructor(socket: Socket, frames: AsyncIterator<unknown>) {
+  constructor(
+    socket: Socket,
+    frames: AsyncIterator<unknown>,
+    inspect?: RequestHandler,
+  ) {
     this.#socket = socket;
     this.#frames = frames;
+    this.#inspect = inspect;
   }
 
   get close(): BrokerClose | undefined {
@@ -51,18 +62,37 @@ export class PluginConnection implements AsyncIterable<AgentEvent> {
     if (this.#finished) {
       return undefined;
     }
-    const next = await this.#frames.next();
-    if (next.done) {
-      this.#finished = true;
-      throw new UnexpectedBrokerEofError();
+    try {
+      while (true) {
+        const next = await this.#frames.next();
+        if (next.done) throw new UnexpectedBrokerEofError();
+        if (isBrokerClose(next.value)) {
+          this.#close = next.value;
+          this.#finished = true;
+          this.#socket.end();
+          return undefined;
+        }
+        const frame = next.value as {
+          type: string;
+          event?: unknown;
+          context: AgentRequestContext;
+        };
+        if (frame.type === "agent_event") return decodeAgentEvent(frame.event);
+        if (frame.type !== "inspect_request" || this.#inspect === undefined) {
+          throw new BrokerPluginError("unexpected broker session message");
+        }
+        const decision = await this.#inspect(frame.context);
+        await writeJsonFrame(this.#socket, {
+          type: "inspect_response",
+          request_id: frame.context.request_id,
+          allow: decision.allow,
+          reason: decision.allow ? null : decision.reason,
+        });
+      }
+    } catch (error) {
+      this.closeConnection();
+      throw error;
     }
-    if (isBrokerClose(next.value)) {
-      this.#close = next.value;
-      this.#finished = true;
-      this.#socket.end();
-      return undefined;
-    }
-    return decodeAgentEvent(next.value);
   }
 
   async *[Symbol.asyncIterator](): AsyncGenerator<AgentEvent> {
@@ -79,6 +109,8 @@ export class PluginConnection implements AsyncIterable<AgentEvent> {
 export class BrokerPlugin {
   readonly #consumerId: string;
   readonly #endpoint: string | undefined;
+  readonly #inspect: RequestHandler | undefined;
+  readonly #events: boolean;
 
   constructor(options: BrokerPluginOptions) {
     if (!/^[a-zA-Z0-9._-]{1,128}$/.test(options.consumerId)) {
@@ -88,6 +120,8 @@ export class BrokerPlugin {
     }
     this.#consumerId = options.consumerId;
     this.#endpoint = options.endpoint;
+    this.#inspect = options.onAgentRequest;
+    this.#events = options.agentEvents ?? true;
   }
 
   async connect(): Promise<PluginConnection> {
@@ -96,6 +130,11 @@ export class BrokerPlugin {
     const frames = readJsonFrames(socket)[Symbol.asyncIterator]();
     try {
       await writeJsonFrame(socket, {
+        type: "plugin_hello",
+        capabilities: [
+          ...(this.#events ? ["agent_events"] : []),
+          ...(this.#inspect === undefined ? [] : ["agent_request"]),
+        ],
         protocol_version: 1,
         plugin_id: this.#consumerId,
       });
@@ -110,12 +149,12 @@ export class BrokerPlugin {
         );
       }
       const hello = response.value as Partial<BrokerHello>;
-      if (hello.protocol_version !== 1) {
+      if (hello.type !== "broker_hello" || hello.protocol_version !== 1) {
         throw new BrokerPluginError(
           "broker returned an invalid handshake response",
         );
       }
-      return new PluginConnection(socket, frames);
+      return new PluginConnection(socket, frames, this.#inspect);
     } catch (error) {
       socket.destroy();
       throw error;
@@ -123,7 +162,7 @@ export class BrokerPlugin {
   }
 
   async run(
-    handler: (event: AgentEvent) => void | Promise<void>,
+    handler: (event: AgentEvent) => void | Promise<void> = () => {},
   ): Promise<BrokerClose> {
     const connection = await this.connect();
     try {
@@ -141,15 +180,21 @@ export class BrokerPlugin {
 }
 
 function isBrokerError(value: unknown): value is BrokerClose {
-  return isBrokerClose(value);
+  return isControl(value, "broker_error");
 }
 
 function isBrokerClose(value: unknown): value is BrokerClose {
+  return isControl(value, "broker_close");
+}
+
+function isControl(value: unknown, type: string): value is BrokerClose {
   if (typeof value !== "object" || value === null || Array.isArray(value)) {
     return false;
   }
   const candidate = value as Record<string, unknown>;
   return (
-    typeof candidate.code === "number" && typeof candidate.reason === "string"
+    candidate.type === type &&
+    typeof candidate.code === "number" &&
+    typeof candidate.reason === "string"
   );
 }

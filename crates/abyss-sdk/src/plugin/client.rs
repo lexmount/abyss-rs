@@ -10,7 +10,8 @@ use std::{
 
 use abyss_plugin_protocol::{
     event::AgentEvent,
-    message::{BrokerClose, BrokerError, BrokerHello, PluginHello},
+    inspection::{AgentRequestContext, PluginCapability, RequestDecision},
+    message::{BrokerClose, BrokerMessage, PluginHello, PluginMessage},
 };
 use futures_core::Stream;
 use futures_util::{StreamExt as _, stream};
@@ -108,20 +109,6 @@ pub struct AgentEventStream {
 }
 
 #[derive(Deserialize)]
-#[serde(untagged)]
-enum HandshakeResponse {
-    Accepted(BrokerHello),
-    Rejected(BrokerError),
-}
-
-#[derive(Deserialize)]
-#[serde(untagged)]
-enum StreamMessage {
-    Event(Box<AgentEvent>),
-    Close(BrokerClose),
-}
-
-#[derive(Deserialize)]
 struct StartupInfo {
     plugin_endpoint: String,
 }
@@ -162,12 +149,37 @@ impl BrokerPlugin {
     /// Returns an error when endpoint discovery, transport connection, or the
     /// handshake fails.
     pub async fn connect(self) -> Result<AgentEventStream, BrokerPluginError> {
+        Ok(AgentEventStream::new(
+            self.connect_transport(vec![PluginCapability::AgentEvents])
+                .await?,
+        ))
+    }
+
+    /// Registers a request decision handler; connecting this plugin enables inspection.
+    #[must_use]
+    pub const fn on_agent_request<H, F, E>(self, handler: H) -> InspectingPlugin<H>
+    where
+        H: FnMut(Arc<AgentRequestContext>) -> F,
+        F: Future<Output = Result<RequestDecision, E>>,
+        E: std::fmt::Display,
+    {
+        InspectingPlugin {
+            plugin: self,
+            handler,
+        }
+    }
+
+    async fn connect_transport(
+        &self,
+        capabilities: Vec<PluginCapability>,
+    ) -> Result<transport::ConnectedPluginStream, BrokerPluginError> {
         let endpoint = self.resolve_endpoint().await?;
         let mut stream = transport::connect(&endpoint)
             .await
             .map_err(|source| BrokerPluginError::Connect { endpoint, source })?;
-        self.handshake(stream.as_mut().get_mut()).await?;
-        Ok(AgentEventStream::new(stream))
+        self.handshake(stream.as_mut().get_mut(), capabilities)
+            .await?;
+        Ok(stream)
     }
 
     /// Connects and handles events until the broker deliberately closes the stream.
@@ -197,30 +209,43 @@ impl BrokerPlugin {
         S: AsyncRead + AsyncWrite + Send + Unpin + 'static,
     {
         let mut stream: transport::ConnectedPluginStream = Box::pin(stream);
-        self.handshake(stream.as_mut().get_mut()).await?;
+        self.handshake(
+            stream.as_mut().get_mut(),
+            vec![PluginCapability::AgentEvents],
+        )
+        .await?;
         Ok(AgentEventStream::new(stream))
     }
 
-    async fn handshake<S>(&self, stream: &mut S) -> Result<(), BrokerPluginError>
+    async fn handshake<S>(
+        &self,
+        stream: &mut S,
+        capabilities: Vec<PluginCapability>,
+    ) -> Result<(), BrokerPluginError>
     where
         S: AsyncRead + AsyncWrite + Send + Unpin + ?Sized,
     {
-        codec::write_json(stream, &PluginHello::new(self.plugin_id.clone())).await?;
+        let mut hello = PluginHello::new(self.plugin_id.clone());
+        hello.capabilities = capabilities;
+        codec::write_json(stream, &PluginMessage::PluginHello(hello)).await?;
         let payload = codec::read_payload(stream)
             .await?
             .ok_or(BrokerPluginError::UnexpectedEof)?;
-        let response = serde_json::from_slice::<HandshakeResponse>(&payload).map_err(|source| {
+        let response = serde_json::from_slice::<BrokerMessage>(&payload).map_err(|source| {
             BrokerPluginError::Decode {
                 phase: "handshake response",
                 source,
             }
         })?;
         match response {
-            HandshakeResponse::Accepted(_hello) => Ok(()),
-            HandshakeResponse::Rejected(error) => Err(BrokerPluginError::HandshakeRejected {
+            BrokerMessage::BrokerHello(_hello) => Ok(()),
+            BrokerMessage::BrokerError(error) => Err(BrokerPluginError::HandshakeRejected {
                 code: error.code,
                 reason: error.reason,
             }),
+            _ => Err(BrokerPluginError::Frame(
+                "expected broker_hello or broker_error".to_owned(),
+            )),
         }
     }
 
@@ -279,12 +304,24 @@ impl AgentEventStream {
                 return None;
             }
             match read_stream_message(state.stream.as_mut().get_mut()).await {
-                Ok(StreamMessage::Event(event)) => Some((Ok(*event), state)),
-                Ok(StreamMessage::Close(close)) => {
+                Ok(BrokerMessage::AgentEvent { event }) => Some((
+                    Ok(Arc::try_unwrap(event).expect("decoded event has one owner")),
+                    state,
+                )),
+                Ok(BrokerMessage::BrokerClose(close)) => {
                     if let Ok(mut stored) = state.close.lock() {
                         *stored = Some(close);
                     }
                     None
+                }
+                Ok(_) => {
+                    state.terminated = true;
+                    Some((
+                        Err(BrokerPluginError::Frame(
+                            "unexpected event stream message".to_owned(),
+                        )),
+                        state,
+                    ))
                 }
                 Err(error) => {
                     state.terminated = true;
@@ -313,7 +350,7 @@ impl Stream for AgentEventStream {
     }
 }
 
-async fn read_stream_message<S>(stream: &mut S) -> Result<StreamMessage, BrokerPluginError>
+async fn read_stream_message<S>(stream: &mut S) -> Result<BrokerMessage, BrokerPluginError>
 where
     S: AsyncRead + Unpin + ?Sized,
 {
@@ -326,17 +363,166 @@ where
     })
 }
 
+/// Plugin with a typed request handler, using the existing local connection.
+pub struct InspectingPlugin<H> {
+    plugin: BrokerPlugin,
+    handler: H,
+}
+
+impl<H, F, E> InspectingPlugin<H>
+where
+    H: FnMut(Arc<AgentRequestContext>) -> F,
+    F: Future<Output = Result<RequestDecision, E>>,
+    E: std::fmt::Display,
+{
+    /// Runs an inspection-only connection.
+    ///
+    /// # Errors
+    /// Returns transport, protocol, or handler errors and closes the connection.
+    pub async fn run(self) -> Result<BrokerClose, BrokerPluginError> {
+        self.run_session(
+            None::<fn(AgentEvent) -> std::future::Ready<Result<(), std::convert::Infallible>>>,
+        )
+        .await
+    }
+
+    /// Runs inspection and independent event observation on the same connection.
+    ///
+    /// # Errors
+    /// Returns transport, protocol, or handler errors and closes the connection.
+    pub async fn run_with_events<A, G, D>(
+        self,
+        handler: A,
+    ) -> Result<BrokerClose, BrokerPluginError>
+    where
+        A: FnMut(AgentEvent) -> G,
+        G: Future<Output = Result<(), D>>,
+        D: std::fmt::Display,
+    {
+        self.run_session(Some(handler)).await
+    }
+
+    async fn run_session<A, G, D>(
+        mut self,
+        mut events: Option<A>,
+    ) -> Result<BrokerClose, BrokerPluginError>
+    where
+        A: FnMut(AgentEvent) -> G,
+        G: Future<Output = Result<(), D>>,
+        D: std::fmt::Display,
+    {
+        let mut capabilities = vec![PluginCapability::AgentRequest];
+        if events.is_some() {
+            capabilities.push(PluginCapability::AgentEvents);
+        }
+        let mut stream = self.plugin.connect_transport(capabilities).await?;
+        loop {
+            match read_stream_message(stream.as_mut().get_mut()).await? {
+                BrokerMessage::InspectRequest { context } => {
+                    let request_id = context.request_id.clone();
+                    let decision = (self.handler)(context)
+                        .await
+                        .map_err(|error| BrokerPluginError::Handler(error.to_string()))?;
+                    codec::write_json(
+                        stream.as_mut().get_mut(),
+                        &PluginMessage::InspectResponse(decision.into_response(request_id)),
+                    )
+                    .await?;
+                }
+                BrokerMessage::AgentEvent { event } => {
+                    if let Some(handler) = events.as_mut() {
+                        handler(Arc::try_unwrap(event).expect("decoded event has one owner"))
+                            .await
+                            .map_err(|error| BrokerPluginError::Handler(error.to_string()))?;
+                    }
+                }
+                BrokerMessage::BrokerClose(close) => return Ok(close),
+                _ => {
+                    return Err(BrokerPluginError::Frame(
+                        "unexpected session message".to_owned(),
+                    ));
+                }
+            }
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use abyss_plugin_protocol::{
         event::AgentEvent,
-        message::{BrokerClose, BrokerCloseCode, BrokerHello, PluginHello},
+        message::{BrokerClose, BrokerCloseCode, BrokerHello, BrokerMessage, PluginHello},
     };
     use futures_util::StreamExt as _;
     use tokio::io::duplex;
 
     use super::BrokerPlugin;
     use crate::plugin::codec::{read_payload, write_json};
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn request_handler_uses_the_same_session_and_returns_a_correlated_decision() {
+        let endpoint =
+            std::env::temp_dir().join(format!("abyss-sdk-inspection-{}.sock", std::process::id()));
+        let listener = tokio::net::UnixListener::bind(&endpoint).unwrap();
+        let server = tokio::spawn(async move {
+            let (mut stream, _) = listener.accept().await.unwrap();
+            let payload = read_payload(&mut stream).await.unwrap().unwrap();
+            let message: abyss_plugin_protocol::message::PluginMessage =
+                serde_json::from_slice(&payload).unwrap();
+            let abyss_plugin_protocol::message::PluginMessage::PluginHello(hello) = message else {
+                panic!("expected hello");
+            };
+            assert_eq!(
+                hello.capabilities,
+                vec![abyss_plugin_protocol::inspection::PluginCapability::AgentRequest]
+            );
+            write_json(&mut stream, &BrokerMessage::BrokerHello(BrokerHello::v1()))
+                .await
+                .unwrap();
+            let request: BrokerMessage = serde_json::from_str(include_str!(
+                "../../tests/fixtures/broker-plugin-protocol/v1/fixtures/inspect-request.json"
+            ))
+            .unwrap();
+            write_json(&mut stream, &request).await.unwrap();
+            let payload = read_payload(&mut stream).await.unwrap().unwrap();
+            let reply: abyss_plugin_protocol::message::PluginMessage =
+                serde_json::from_slice(&payload).unwrap();
+            let abyss_plugin_protocol::message::PluginMessage::InspectResponse(reply) = reply
+            else {
+                panic!("expected decision");
+            };
+            assert_eq!(reply.request_id, "request-123");
+            assert!(!reply.allow, "handler block must reach the broker");
+            assert_eq!(reply.reason.as_deref(), Some("test policy"));
+            write_json(
+                &mut stream,
+                &BrokerMessage::BrokerClose(BrokerClose::new(
+                    BrokerCloseCode::BrokerShutdown,
+                    "test complete",
+                )),
+            )
+            .await
+            .unwrap();
+        });
+        let close = BrokerPlugin::new("sdk-inspector")
+            .with_endpoint(endpoint.to_string_lossy())
+            .on_agent_request(|context| async move {
+                assert_eq!(
+                    context.agent.as_ref().unwrap().model.as_deref(),
+                    Some("gpt-test")
+                );
+                Ok::<_, std::convert::Infallible>(crate::plugin::RequestDecision::Block(
+                    "test policy".to_owned(),
+                ))
+            })
+            .run()
+            .await
+            .unwrap();
+        assert_eq!(close.code, 100);
+        server.await.unwrap();
+        tokio::fs::remove_file(endpoint).await.unwrap();
+    }
 
     #[tokio::test]
     async fn performs_handshake_and_exposes_agent_events_as_a_stream() {
@@ -345,19 +531,27 @@ mod tests {
             let hello: PluginHello = read_json(&mut server).await;
             assert_eq!(hello.plugin_id, "sdk-test-plugin");
             assert_eq!(hello.protocol_version.wire_value(), 1_u16);
-            write_json(&mut server, &BrokerHello::v1())
+            write_json(&mut server, &BrokerMessage::BrokerHello(BrokerHello::v1()))
                 .await
                 .expect("BrokerHello should write");
             let event: AgentEvent = serde_json::from_str(include_str!(
                 "../../tests/fixtures/broker-plugin-protocol/v1/fixtures/agent-event.json"
             ))
             .expect("published AgentEvent fixture should decode");
-            write_json(&mut server, &event)
-                .await
-                .expect("AgentEvent should write");
             write_json(
                 &mut server,
-                &BrokerClose::new(BrokerCloseCode::BrokerShutdown, "test complete"),
+                &BrokerMessage::AgentEvent {
+                    event: std::sync::Arc::new(event),
+                },
+            )
+            .await
+            .expect("AgentEvent should write");
+            write_json(
+                &mut server,
+                &BrokerMessage::BrokerClose(BrokerClose::new(
+                    BrokerCloseCode::BrokerShutdown,
+                    "test complete",
+                )),
             )
             .await
             .expect("BrokerClose should write");
@@ -391,6 +585,13 @@ mod tests {
             .await
             .expect("plugin frame should read")
             .expect("plugin frame should be present");
-        serde_json::from_slice(&payload).expect("plugin frame JSON should decode")
+        {
+            let message: abyss_plugin_protocol::message::PluginMessage =
+                serde_json::from_slice(&payload).unwrap();
+            let abyss_plugin_protocol::message::PluginMessage::PluginHello(hello) = message else {
+                panic!("expected plugin hello");
+            };
+            serde_json::from_value(serde_json::to_value(hello).unwrap()).unwrap()
+        }
     }
 }

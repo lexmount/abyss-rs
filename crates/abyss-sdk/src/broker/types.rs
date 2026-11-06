@@ -103,6 +103,8 @@ pub struct TlsDecryptionPolicy {
 #[non_exhaustive]
 #[serde(rename_all = "snake_case")]
 pub enum TlsDecryptionAction {
+    /// Reject matching network traffic.
+    Block,
     /// Decrypt and inspect matching TLS traffic.
     Intercept,
     /// Relay matching TLS traffic without decryption.
@@ -125,6 +127,12 @@ pub struct TlsDecryptionRule {
     /// Exact application-identity selectors.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub application_ids: Vec<String>,
+    /// Exact absolute executable paths.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub executable_paths: Vec<String>,
+    /// Exact absolute process entry points.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub process_entry_points: Vec<String>,
     /// Exact hosts and leading-wildcard suffixes.
     pub destination_hosts: Vec<String>,
 }

@@ -62,23 +62,54 @@ pub struct PluginHello {
     pub protocol_version: PluginProtocolVersion,
     /// Stable identity used to describe this plugin connection.
     pub plugin_id: String,
+    /// Capabilities enabled for this connection.
+    pub capabilities: Vec<crate::inspection::PluginCapability>,
 }
 
 impl PluginHello {
     /// Creates a version 1 plugin handshake.
     #[must_use]
-    // Valid plugin identifiers are non-empty runtime strings, so exposing this
-    // as const would suggest a construction mode that the wire contract rejects.
-    #[expect(
-        clippy::missing_const_for_fn,
-        reason = "valid plugin identifiers are non-empty runtime strings"
-    )]
     pub fn new(plugin_id: String) -> Self {
         Self {
             protocol_version: PluginProtocolVersion::V1,
             plugin_id,
+            capabilities: vec![crate::inspection::PluginCapability::AgentEvents],
         }
     }
+}
+
+/// Current plugin-to-broker messages on the shared connection.
+#[derive(Debug, Deserialize, Serialize)]
+#[serde(tag = "type", rename_all = "snake_case")]
+#[non_exhaustive]
+pub enum PluginMessage {
+    /// Initial session handshake.
+    PluginHello(PluginHello),
+    /// Correlated request decision.
+    InspectResponse(crate::inspection::InspectResponse),
+}
+
+/// Current broker-to-plugin messages on the shared connection.
+#[derive(Debug, Deserialize, Serialize)]
+#[serde(tag = "type", rename_all = "snake_case")]
+#[non_exhaustive]
+pub enum BrokerMessage {
+    /// Accepted session handshake.
+    BrokerHello(BrokerHello),
+    /// Rejected session handshake.
+    BrokerError(BrokerError),
+    /// Final session frame.
+    BrokerClose(BrokerClose),
+    /// Independent observation event.
+    AgentEvent {
+        /// Normalized event.
+        event: std::sync::Arc<crate::event::AgentEvent>,
+    },
+    /// Full request awaiting a decision before forwarding.
+    InspectRequest {
+        /// Parsed and raw request context.
+        context: std::sync::Arc<crate::inspection::AgentRequestContext>,
+    },
 }
 
 /// Handshake response sent from `abyss-broker` to one plugin process.
@@ -196,7 +227,10 @@ impl BrokerClose {
 mod tests {
     use serde_json::json;
 
-    use super::{BrokerClose, BrokerError, BrokerHello, PluginHello, PluginProtocolVersion};
+    use super::{
+        BrokerClose, BrokerError, BrokerHello, BrokerMessage, PluginHello, PluginMessage,
+        PluginProtocolVersion,
+    };
 
     #[test]
     fn unsupported_protocol_version_is_rejected() {
@@ -212,19 +246,19 @@ mod tests {
     }
 
     #[test]
-    fn constructors_emit_direct_v1_handshake_payloads() {
-        let plugin_hello = serde_json::to_value(PluginHello::new("sample-plugin".to_owned()))
-            .expect("plugin hello should serialize");
-        let broker_hello =
-            serde_json::to_value(BrokerHello::v1()).expect("broker hello should serialize");
+    fn handshake_frames_have_explicit_tags() {
+        let plugin_hello = serde_json::to_value(PluginMessage::PluginHello(PluginHello::new(
+            "sample-plugin".to_owned(),
+        )))
+        .expect("plugin hello should serialize");
+        let broker_hello = serde_json::to_value(BrokerMessage::BrokerHello(BrokerHello::v1()))
+            .expect("broker hello should serialize");
 
-        assert!(
-            plugin_hello.get("type").is_none(),
-            "session phase should identify PluginHello without a type discriminator"
-        );
-        assert!(
-            broker_hello.get("type").is_none(),
-            "session phase should identify BrokerHello without a type discriminator"
+        assert_eq!(plugin_hello["type"], "plugin_hello");
+        assert_eq!(broker_hello["type"], "broker_hello");
+        assert_eq!(
+            plugin_hello["capabilities"],
+            serde_json::json!(["agent_events"])
         );
         assert_eq!(
             plugin_hello["protocol_version"], 1_u16,
@@ -241,22 +275,22 @@ mod tests {
     }
 
     #[test]
-    fn broker_control_payloads_serialize_without_wrapper_enums() {
-        let broker_error = serde_json::to_value(BrokerError {
+    fn broker_control_frames_have_explicit_tags() {
+        let broker_error = serde_json::to_value(BrokerMessage::BrokerError(BrokerError {
             code: 1,
             reason: "unsupported protocol version".to_owned(),
-        })
+        }))
         .expect("broker error should serialize");
-        let broker_close = serde_json::to_value(BrokerClose {
+        let broker_close = serde_json::to_value(BrokerMessage::BrokerClose(BrokerClose {
             code: 101,
             reason: "plugin event stream is too slow".to_owned(),
-        })
+        }))
         .expect("broker close should serialize");
 
-        assert!(broker_error.get("type").is_none());
+        assert_eq!(broker_error["type"], "broker_error");
         assert_eq!(broker_error["code"], 1_u32);
         assert_eq!(broker_error["reason"], "unsupported protocol version");
-        assert!(broker_close.get("type").is_none());
+        assert_eq!(broker_close["type"], "broker_close");
         assert_eq!(broker_close["code"], 101_u32);
         assert_eq!(broker_close["reason"], "plugin event stream is too slow");
     }

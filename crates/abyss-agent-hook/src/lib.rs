@@ -16,6 +16,7 @@ pub(crate) mod harness;
 mod hook;
 pub(crate) mod protocol;
 pub(crate) mod provider;
+mod request;
 
 pub use config::{
     DeviceIdentity, HarnessConfig, HarnessMatcherConfig, HarnessUsageConfig,
@@ -25,3 +26,4 @@ pub use config::{
 pub use delivery::AgentEventSink;
 pub use harness::{BuiltInHarness, HarnessId};
 pub use hook::HarnessUsageHook;
+pub use request::AgentRequestParser;

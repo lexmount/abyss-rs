@@ -37,3 +37,18 @@ println!("broker close code: {}", close.code);
 # Ok(())
 # }
 ```
+
+## Request inspection
+
+A connected request handler enables `agent_request` inspection on the existing
+plugin connection. See the [request inspection example](examples/request_inspection.rs). No broker
+inspector configuration is needed. Event observation is an independent capability.
+Use the complete decoded body/JSON and parsing status as well as the normalized
+Agent projection when implementing a policy; unknown protocols still reach the
+handler. Credential headers are omitted and explicit proxy process fields are absent.
+Return a safe block reason that does not contain the rejected content.
+
+All selected plugins must allow before the broker forwards the request. A selected
+plugin that fails or does not respond within five seconds fails that request.
+Disconnecting the last inspection plugin restores normal streaming for future
+requests. Network policy Block and opaque TLS Passthrough never invoke this callback.

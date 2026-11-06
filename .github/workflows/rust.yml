@@ -159,6 +159,10 @@ jobs:
         if: runner.os != 'Windows'
         run: make test-blackbox-broker-upstream
 
+      - name: Request blocking black-box
+        if: runner.os != 'Windows'
+        run: make test-blackbox-request-blocking
+
       - name: Run macOS transparent upstream black-box
         if: runner.os == 'macOS'
         run: make test-blackbox-broker-transparent-upstream

@@ -12,6 +12,7 @@ pub mod anthropic;
 pub mod detection;
 pub mod model;
 pub mod openai;
+pub mod request;
 pub mod shared;
 
 pub use detection::{

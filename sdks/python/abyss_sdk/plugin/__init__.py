@@ -15,12 +15,22 @@ from ..event import (
     TokenUsage,
 )
 from .errors import BrokerPluginError, HandshakeRejectedError, UnexpectedBrokerEofError
+from .inspection import (
+    AgentRequestContext,
+    AgentRequestProjection,
+    DecodedContent,
+    RequestDecision,
+    RequestHarness,
+    RequestSourceProcess,
+)
 from .plugin import AgentEventStream, BrokerClose, BrokerPlugin
 
 __all__ = [
     "AgentContext",
     "AgentEvent",
     "AgentEventStream",
+    "AgentRequestContext",
+    "AgentRequestProjection",
     "BrokerClose",
     "BrokerPlugin",
     "BrokerPluginError",
@@ -28,12 +38,16 @@ __all__ = [
     "ContentCompleteness",
     "Conversation",
     "ConversationEntry",
+    "DecodedContent",
     "DeviceContext",
     "EntryRole",
     "EventPurpose",
     "HandshakeRejectedError",
     "ImageAttachment",
     "LlmContext",
+    "RequestDecision",
+    "RequestHarness",
+    "RequestSourceProcess",
     "TokenUsage",
     "UnexpectedBrokerEofError",
 ]

@@ -4,7 +4,6 @@ use abyss_mitm::{WebSocketDirection, WebSocketMessage};
 use serde_json::Value;
 
 use super::{
-    request::ResponsesRequest,
     response::ResponsesResponse,
     websocket::{OpenAiWebSocketFrame, OpenAiWebSocketResponse, is_terminal_event},
 };
@@ -13,7 +12,6 @@ use crate::protocol::{
     model::conversation::ConversationProjection,
     openai::shared::{
         exchange::ParsedOpenAiExchange,
-        images::extract_openai_request_images,
         metadata::{first_model, response_id},
         usage::best_usage,
     },
@@ -48,14 +46,11 @@ pub fn parse_openai_websocket_message(message: &WebSocketMessage) -> OpenAiWebSo
     let path = message.upgrade_request.uri().path();
     let is_client_message = matches!(message.direction, WebSocketDirection::ClientToServer);
     let request_payload = payload.get("response").unwrap_or(&payload);
-    let (request, request_images) = if is_client_message {
-        (
-            ResponsesRequest::parse(Some(request_payload), false),
-            extract_openai_request_images(request_payload),
-        )
-    } else {
-        (ResponsesRequest::parse(None, false), Vec::new())
-    };
+    let request = crate::protocol::request::RequestContent::parse(
+        crate::protocol::LlmProtocol::OpenAi(crate::protocol::OpenAiProtocol::Responses),
+        is_client_message.then_some(request_payload),
+        false,
+    );
     let usage = if is_client_message {
         TokenUsage::default()
     } else {
@@ -64,7 +59,7 @@ pub fn parse_openai_websocket_message(message: &WebSocketMessage) -> OpenAiWebSo
     // Tool calls are output items, so a frame that carries one assembles a
     // non-empty response; the turn reads them from its assembled response.
     let relevant = if is_client_message {
-        !request.is_empty() || !request_images.is_empty()
+        !request.is_empty() || !request.images.is_empty()
     } else {
         !ResponsesResponse::assemble(std::slice::from_ref(&payload), false).is_empty()
             || !usage.is_empty()
@@ -88,24 +83,23 @@ pub fn parse_openai_websocket_message(message: &WebSocketMessage) -> OpenAiWebSo
         }),
         session_id: websocket_session_id(message, &payload),
         request_hash,
-        request_conversation: request.conversation(),
+        request_conversation: request.conversation,
         // The accumulator assembles the response once the turn terminates.
         response_conversation: ConversationProjection::empty(),
-        request_images,
+        request_images: request.images,
         usage,
         response_id: if is_client_message {
             None
         } else {
             response_id(std::slice::from_ref(&payload))
         },
-        previous_response_id: string_field(request_payload, "previous_response_id")
-            .map(str::to_owned),
-        client_metadata: if is_client_message {
-            request_payload.get("client_metadata").cloned()
+        previous_response_id: request.metadata.previous_response_id.map(str::to_owned),
+        client_metadata: request.metadata.client_metadata.cloned(),
+        model: if is_client_message {
+            request.metadata.model.map(str::to_owned)
         } else {
-            None
+            first_model(std::slice::from_ref(&payload))
         },
-        model: first_model(std::slice::from_ref(&payload)),
         event_types: if is_client_message {
             Vec::new()
         } else {

@@ -34,7 +34,13 @@ pub struct ProtocolDetector;
 
 impl ProtocolDetector {
     pub fn detect_http(exchange: &HttpExchange) -> Option<LlmProtocol> {
-        let path = exchange.request.uri().path();
+        Self::detect_request(
+            exchange.request.uri().path(),
+            exchange.request.body().json(),
+        )
+    }
+
+    pub fn detect_request(path: &str, payload: Option<&serde_json::Value>) -> Option<LlmProtocol> {
         if path.contains("/organizations/") && path.ends_with("/completion") {
             return Some(LlmProtocol::Anthropic(AnthropicProtocol::ClaudeWeb(
                 ClaudeWebProtocol::ConversationCompletion,
@@ -53,7 +59,7 @@ impl ProtocolDetector {
             return Some(LlmProtocol::Anthropic(AnthropicProtocol::Messages));
         }
 
-        let request = exchange.request.body().json()?;
+        let request = payload?;
         if request.get("input").is_some() {
             return Some(LlmProtocol::OpenAi(OpenAiProtocol::Responses));
         }

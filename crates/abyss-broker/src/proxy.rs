@@ -151,6 +151,7 @@ pub struct ProxyService {
 struct ProxyWorkerServices {
     network: crate::network_config::NetworkRuntime,
     mitm: Arc<abyss_mitm::MitmEngine>,
+    inspector: crate::plugin::inspection::AgentRequestInspector,
     diagnostics: FlowDiagnostics,
     traffic: TrafficMonitor,
 }
@@ -189,11 +190,20 @@ impl ProxyService {
             state: Arc::new(Mutex::new(ProxyRuntimeState::stopped())),
             worker_services: ProxyWorkerServices {
                 network,
+                inspector: crate::plugin::inspection::AgentRequestInspector::default(),
                 mitm,
                 diagnostics,
                 traffic,
             },
         }
+    }
+
+    pub(crate) fn with_inspector(
+        mut self,
+        inspector: crate::plugin::inspection::AgentRequestInspector,
+    ) -> Self {
+        self.worker_services.inspector = inspector;
+        self
     }
 
     /// Starts the requested proxy ingress plan when it is not already running.
@@ -334,6 +344,7 @@ impl StoppedProxyRuntime {
                 services.diagnostics,
                 services.traffic,
             )
+            .with_inspector(services.inspector)
             .run(shutdown_rx),
         );
         IngressTask {
@@ -390,6 +401,7 @@ impl IngressTask {
 struct ProxyWorker<I> {
     ingress: I,
     mitm: Arc<abyss_mitm::MitmEngine>,
+    inspector: crate::plugin::inspection::AgentRequestInspector,
     diagnostics: FlowDiagnostics,
     traffic: TrafficMonitor,
     connections: JoinSet<()>,
@@ -409,11 +421,20 @@ where
         Self {
             ingress,
             mitm,
+            inspector: crate::plugin::inspection::AgentRequestInspector::default(),
             diagnostics,
             traffic,
             connections: JoinSet::new(),
             shutdown_drain_timeout: PROXY_SHUTDOWN_DRAIN_TIMEOUT,
         }
+    }
+
+    fn with_inspector(
+        mut self,
+        inspector: crate::plugin::inspection::AgentRequestInspector,
+    ) -> Self {
+        self.inspector = inspector;
+        self
     }
 
     #[cfg(all(test, unix))]
@@ -459,6 +480,7 @@ where
                 self.mitm.clone(),
                 self.diagnostics.clone(),
                 self.traffic.clone(),
+                self.inspector.clone(),
             )
             .run(),
         );
@@ -521,6 +543,7 @@ where
 struct ProxyConnection<C> {
     connection: C,
     mitm: Arc<abyss_mitm::MitmEngine>,
+    inspector: crate::plugin::inspection::AgentRequestInspector,
     diagnostics: FlowDiagnostics,
     traffic: TrafficMonitor,
 }
@@ -534,10 +557,12 @@ where
         mitm: Arc<abyss_mitm::MitmEngine>,
         diagnostics: FlowDiagnostics,
         traffic: TrafficMonitor,
+        inspector: crate::plugin::inspection::AgentRequestInspector,
     ) -> Self {
         Self {
             connection,
             mitm,
+            inspector,
             diagnostics,
             traffic,
         }
@@ -548,6 +573,7 @@ where
         let Self {
             connection,
             mitm,
+            inspector,
             diagnostics,
             traffic,
         } = self;
@@ -561,12 +587,13 @@ where
             }
         };
         diagnostics.record_accepted();
-        Self::run_flow(flow, mitm, diagnostics, traffic).await;
+        Self::run_flow(flow, mitm, inspector, diagnostics, traffic).await;
     }
 
     async fn run_flow(
         flow: PlatformFlow,
         mitm: Arc<abyss_mitm::MitmEngine>,
+        inspector: crate::plugin::inspection::AgentRequestInspector,
         diagnostics: FlowDiagnostics,
         traffic: TrafficMonitor,
     ) {
@@ -594,7 +621,7 @@ where
         let mitm_flow = flow
             .into_mitm_flow()
             .with_traffic_observer(traffic_flow.observer());
-        let result = mitm.handle_flow(mitm_flow).await;
+        let result = mitm.handle_flow_with_control(mitm_flow, &inspector).await;
         traffic_flow.finish();
         drop(traffic_finish_guard);
         let _recorded_result = result.record(&diagnostics, diagnostic_context);
