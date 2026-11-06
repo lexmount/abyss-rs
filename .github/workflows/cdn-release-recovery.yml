@@ -1,0 +1,143 @@
+name: Recover endpoint CDN publication
+
+on:
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: Existing stable release tag (vX.Y.Z)
+        required: true
+        type: string
+      source_run:
+        description: Original Release endpoint binaries tag run ID
+        required: true
+        type: string
+
+permissions:
+  actions: read
+  contents: write
+
+concurrency:
+  group: cli-release-publication
+  cancel-in-progress: false
+
+jobs:
+  recover:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    env:
+      GH_TOKEN: ${{ github.token }}
+      GH_REPO: ${{ github.repository }}
+      RELEASE_TAG: ${{ inputs.tag }}
+      SOURCE_RUN: ${{ inputs.source_run }}
+      TENCENT_COSCLI_URL: https://cosbrowser.cloud.tencent.com/software/coscli/coscli-linux-amd64
+      TENCENT_COSCLI_SHA256: a07de5ba2800147a700ed29036b0c76a4229088cee68e1682d0eae19b638a915
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Verify original tag run and staged release
+        run: |
+          python - <<'PY'
+          import json
+          import os
+          import re
+          import subprocess
+          import sys
+
+          sys.path.insert(0, "scripts/ci")
+          from publish_cos import check_promotion, stable_version
+
+          tag, run_id, repo = (os.environ[name] for name in ("RELEASE_TAG", "SOURCE_RUN", "GH_REPO"))
+          stable_version(tag)
+          if not re.fullmatch(r"[1-9][0-9]*", run_id):
+              raise ValueError("source_run must be a numeric Actions run ID")
+
+          def gh(*args):
+              return json.loads(subprocess.check_output(["gh", *args], text=True))
+
+          run = gh("api", f"repos/{repo}/actions/runs/{run_id}")
+          ref = gh("api", f"repos/{repo}/git/ref/tags/{tag}")["object"]
+          while ref["type"] == "tag":
+              ref = gh("api", f"repos/{repo}/git/tags/{ref['sha']}")["object"]
+          if not (
+              run["event"] == "push"
+              and run["path"] == ".github/workflows/cli-release.yml"
+              and run["head_branch"] == tag
+              and run["head_sha"] == ref["sha"]
+              and ref["type"] == "commit"
+              and run["head_repository"]["full_name"] == repo
+              and run["status"] == "completed"
+          ):
+              raise ValueError("source must be a completed endpoint release run for this exact tag")
+          jobs = gh("run", "view", run_id, "--json", "jobs")["jobs"]
+          successful = {job["name"] for job in jobs if job["conclusion"] == "success"}
+          if not {"Validate complete endpoint release", "Stage complete endpoint release"} <= successful:
+              raise ValueError("original release must have passed assembly and staging")
+          release = gh("release", "view", tag, "--json", "tagName")
+          if release["tagName"] != tag:
+              raise ValueError("staged GitHub release does not match tag")
+          pages = gh("api", "--paginate", "--slurp", f"repos/{repo}/releases?per_page=100")
+          tags = [item["tag_name"] for page in pages for item in page if not item["draft"] and not item["prerelease"]]
+          check_promotion(tag, tags)
+          with open("published-tags.txt", "w") as stream:
+              stream.write("\n".join(tags) + "\n")
+          print(f"Verified {tag} at {ref['sha']} from run {run_id}")
+          PY
+      - uses: actions/download-artifact@v4
+        with:
+          name: broker-release
+          path: broker-dist
+          run-id: ${{ inputs.source_run }}
+          github-token: ${{ github.token }}
+      - uses: actions/download-artifact@v4
+        with:
+          name: abyss-query-release
+          path: abyss-query-dist
+          run-id: ${{ inputs.source_run }}
+          github-token: ${{ github.token }}
+      - name: Verify all component checksums before cloud writes
+        run: |
+          python - <<'PY'
+          import os
+          import sys
+          from pathlib import Path
+          sys.path.insert(0, "scripts/ci")
+          from publish_cos import release_files
+          for component in ("broker", "abyss-query"):
+              release_files(Path(f"{component}-dist"), os.environ["RELEASE_TAG"], component)
+          PY
+      - name: Install verified Tencent COSCLI
+        run: |
+          coscli="$RUNNER_TEMP/coscli"
+          curl --fail --location --proto '=https' --proto-redir '=https' \
+            --retry 3 --output "$coscli" "$TENCENT_COSCLI_URL"
+          echo "$TENCENT_COSCLI_SHA256  $coscli" | sha256sum --check --strict -
+          chmod 700 "$coscli"
+          echo "TENCENT_COSCLI_BIN=$coscli" >> "$GITHUB_ENV"
+      - name: Upload original archives, then promote both components on both origins
+        env:
+          TENCENTCLOUD_SECRET_ID: ${{ secrets.TENCENTCLOUD_SECRET_ID }}
+          TENCENTCLOUD_SECRET_KEY: ${{ secrets.TENCENTCLOUD_SECRET_KEY }}
+          TENCENT_COS_CN_BUCKET: ${{ vars.TENCENT_COS_CN_BUCKET }}
+          TENCENT_COS_CN_REGION: ${{ vars.TENCENT_COS_CN_REGION }}
+          TENCENT_COS_COM_BUCKET: ${{ vars.TENCENT_COS_COM_BUCKET }}
+          TENCENT_COS_COM_REGION: ${{ vars.TENCENT_COS_COM_REGION }}
+        run: |
+          for phase in upload promote; do
+            args=()
+            if [[ "$phase" == promote ]]; then
+              args+=(--latest-only --published-tags published-tags.txt)
+            fi
+            for site in CN COM; do
+              bucket_var="TENCENT_COS_${site}_BUCKET"
+              region_var="TENCENT_COS_${site}_REGION"
+              for component in broker abyss-query; do
+                TENCENT_COS_BUCKET="${!bucket_var}" TENCENT_COS_REGION="${!region_var}" \
+                  python scripts/ci/publish_cos.py --component "$component" --source "$component-dist" \
+                    --tag "$RELEASE_TAG" --coscli "$TENCENT_COSCLI_BIN" "${args[@]}"
+              done
+            done
+          done
+      - name: Publish GitHub latest after all manifests are ready
+        run: gh release edit "$RELEASE_TAG" --draft=false --latest

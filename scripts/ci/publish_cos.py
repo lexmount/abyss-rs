@@ -173,6 +173,12 @@ def publish(
                     f"cos.{region}.myqcloud.com",
                     "--bucket-type",
                     "COS",
+                    # Small resumable parts avoid restarting whole archives on
+                    # slow cross-region connections from hosted CI runners.
+                    "--part-size",
+                    "1",
+                    "--thread-num",
+                    "5",
                     "--disable-log=true",
                     "--process-log=false",
                     "--fail-output=false",
