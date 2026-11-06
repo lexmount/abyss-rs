@@ -12,7 +12,10 @@ use std::{
     time::{Duration, Instant},
 };
 
-use abyss_sdk::plugin::{AgentEvent, BrokerClose, BrokerCloseCode, BrokerHello, PluginHello};
+use abyss_sdk::plugin::{
+    AgentEvent, BrokerClose, BrokerCloseCode, BrokerHello,
+    protocol::{BrokerMessage, PluginMessage},
+};
 use serde::{Serialize, de::DeserializeOwned};
 use serde_json::Value;
 use tempfile::tempdir;
@@ -58,18 +61,20 @@ fn real_plugin_process_delivers_a_broker_event_to_the_configured_destination() {
         .spawn()
         .expect("delivery plugin should start");
     let (mut stream, _) = broker.accept().expect("plugin should connect");
-    let hello: PluginHello = read_frame(&mut stream);
+    let PluginMessage::PluginHello(hello) = read_frame(&mut stream) else {
+        panic!("expected plugin hello");
+    };
     assert_eq!(hello.plugin_id, "official-delivery-blackbox");
     assert_eq!(hello.protocol_version.wire_value(), 1);
     assert!(
         !startup_info_path.exists(),
         "a spawned worker must not publish readiness before BrokerHello"
     );
-    write_frame(&mut stream, &BrokerHello::v1());
+    write_frame(&mut stream, &BrokerMessage::BrokerHello(BrokerHello::v1()));
     let startup_info = wait_for_startup_info(&startup_info_path);
     assert_eq!(startup_info["worker_pid"], child.id());
     assert_eq!(startup_info["broker_pid"], 4_242_u32);
-    write_frame(&mut stream, &fixture_agent_event());
+    send_fixture_event(&mut stream);
 
     let request = received
         .recv_timeout(Duration::from_secs(5))
@@ -97,10 +102,7 @@ fn real_plugin_process_delivers_a_broker_event_to_the_configured_destination() {
     );
     assert_eq!(payload["diagnostic_captures"], serde_json::json!([]));
 
-    write_frame(
-        &mut stream,
-        &BrokerClose::new(BrokerCloseCode::BrokerShutdown, "test complete"),
-    );
+    close_plugin(&mut stream);
     let status = child.wait().expect("plugin process should exit");
     assert!(
         status.success(),
@@ -150,8 +152,12 @@ fn managed_bearer_hot_update_replays_spool_without_restarting_worker() {
         .expect("delivery plugin should start");
     let original_pid = child.id();
     let (mut stream, _) = broker.accept().expect("plugin should connect");
-    let _: PluginHello = read_frame(&mut stream);
-    write_frame(&mut stream, &BrokerHello::v1());
+    let hello: PluginMessage = read_frame(&mut stream);
+    assert!(
+        matches!(hello, PluginMessage::PluginHello(_)),
+        "expected plugin hello"
+    );
+    write_frame(&mut stream, &BrokerMessage::BrokerHello(BrokerHello::v1()));
     let startup_info = wait_for_startup_info(&startup_info_path);
     assert_eq!(startup_info["worker_pid"], original_pid);
     assert_eq!(
@@ -159,7 +165,7 @@ fn managed_bearer_hot_update_replays_spool_without_restarting_worker() {
         control_token_path.to_string_lossy().as_ref()
     );
 
-    write_frame(&mut stream, &fixture_agent_event());
+    send_fixture_event(&mut stream);
     wait_for_non_empty_file(&spool_path);
     assert!(
         received.recv_timeout(Duration::from_millis(250)).is_err(),
@@ -204,10 +210,7 @@ fn managed_bearer_hot_update_replays_spool_without_restarting_worker() {
         "successful replay should drain the spool"
     );
 
-    write_frame(
-        &mut stream,
-        &BrokerClose::new(BrokerCloseCode::BrokerShutdown, "test complete"),
-    );
+    close_plugin(&mut stream);
     let status = child.wait().expect("plugin process should exit");
     assert!(status.success());
     assert!(!control_token_path.exists());
@@ -251,8 +254,12 @@ fn destination_unauthorized_invalidates_token_and_refresh_replays_without_restar
         .expect("delivery plugin should start");
     let original_pid = child.id();
     let (mut stream, _) = broker.accept().expect("plugin should connect");
-    let _: PluginHello = read_frame(&mut stream);
-    write_frame(&mut stream, &BrokerHello::v1());
+    let hello: PluginMessage = read_frame(&mut stream);
+    assert!(
+        matches!(hello, PluginMessage::PluginHello(_)),
+        "expected plugin hello"
+    );
+    write_frame(&mut stream, &BrokerMessage::BrokerHello(BrokerHello::v1()));
     let startup_info = wait_for_startup_info(&startup_info_path);
     let control_endpoint = startup_info["control_endpoint"]
         .as_str()
@@ -272,7 +279,7 @@ fn destination_unauthorized_invalidates_token_and_refresh_replays_without_restar
         .expect("initial credential update should complete");
     assert_eq!(response.status(), reqwest::StatusCode::OK);
 
-    write_frame(&mut stream, &fixture_agent_event());
+    send_fixture_event(&mut stream);
     let first = received
         .recv_timeout(Duration::from_secs(5))
         .expect("destination should receive expired credential");
@@ -313,10 +320,7 @@ fn destination_unauthorized_invalidates_token_and_refresh_replays_without_restar
     assert_eq!(child.id(), original_pid, "credential refresh must be hot");
     assert!(!spool_path.exists());
 
-    write_frame(
-        &mut stream,
-        &BrokerClose::new(BrokerCloseCode::BrokerShutdown, "test complete"),
-    );
+    close_plugin(&mut stream);
     let status = child.wait().expect("plugin process should exit");
     assert!(status.success());
 }
@@ -520,4 +524,23 @@ where
     stream
         .write_all(&payload)
         .expect("frame payload should write");
+}
+
+fn send_fixture_event(stream: &mut UnixStream) {
+    write_frame(
+        stream,
+        &BrokerMessage::AgentEvent {
+            event: std::sync::Arc::new(fixture_agent_event()),
+        },
+    );
+}
+
+fn close_plugin(stream: &mut UnixStream) {
+    write_frame(
+        stream,
+        &BrokerMessage::BrokerClose(BrokerClose::new(
+            BrokerCloseCode::BrokerShutdown,
+            "test complete",
+        )),
+    );
 }

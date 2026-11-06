@@ -1,182 +1,126 @@
-# Abyss Broker Plugin Protocol Version 1
+# Abyss Broker Plugin Protocol
 
-## Scope
+The broker uses one local Unix socket or Windows Named Pipe for observation and
+request inspection. Delivery, remote destinations and authentication remain plugin
+responsibilities. The current wire revision is `protocol_version = 1`; mismatched
+builds are rejected. There is no legacy decoder or negotiation fallback.
 
-This directory is the language-neutral contract for consuming normalized Agent
-events from `abyss-broker`.
+## Transport and framing
 
-Protocol version 1 defines:
+Each frame is a four-byte unsigned big-endian length followed by UTF-8 JSON.
+The maximum JSON length is 64 MiB. Every frame has a `type` discriminator.
+`messages.schema.json` defines frames; `agent-event.schema.json` defines the
+observation payload, and `inspection.schema.json` defines request context.
 
-- local stream framing;
-- plugin-to-broker and broker-to-plugin frame payloads;
-- a long-lived live event stream;
-- the `AgentEvent` contract carried by protocol version 1.
+The endpoint is advertised in broker startup information as `plugin_endpoint`.
+SDKs accept an explicit endpoint or discover it using
+`ABYSS_BROKER_PLUGIN_ENDPOINT`, `ABYSS_BROKER_STARTUP_INFO`, or
+`ABYSS_HOME/runtime/startup-info.json`. Local endpoint permissions determine who
+can connect. A plugin ID is a diagnostic label, not an authorization token.
 
-It does not define plugin process discovery, process startup, remote upload, or
-authentication. Those concerns belong to the product or third-party process
-that owns the plugin.
+## Connection lifecycle
 
-## Transport and Framing
-
-The transport is a reliable local byte stream:
-
-| Platform | Transport |
-| --- | --- |
-| macOS | Unix domain socket |
-| Linux | Unix domain socket |
-| Windows | Named Pipe |
-
-The broker listens and the plugin process connects. Every message is encoded as
-one frame:
-
-```text
-+--------------------------+------------------------+
-| payload_length: uint32be | UTF-8 JSON payload     |
-+--------------------------+------------------------+
-             4 bytes              payload_length
-```
-
-`payload_length` counts only the JSON payload bytes. One frame contains exactly
-one JSON payload. Protocol version negotiation occurs in the first frame rather
-than in the binary frame header.
-
-The version 1 maximum JSON payload is 64 MiB. A future transport implementation
-must reject a larger frame before allocating its declared payload.
-
-## Session Sequence
-
-The plugin initiates one long-lived session:
-
-```text
-plugin                                           broker
-  |                                                |
-  | PluginHello                                    |
-  |----------------------------------------------->|
-  |                                                |
-  |                       BrokerHello | BrokerError |
-  |<-----------------------------------------------|
-  |                                                |
-  |                                     AgentEvent |
-  |<-----------------------------------------------|
-  |                                                |
-  |                                     AgentEvent |
-  |<-----------------------------------------------|
-  |                                                |
-  |                            BrokerClose | ...    |
-  |<-----------------------------------------------|
-```
-
-The plugin must send `PluginHello` before another payload. The broker's first
-response is either `BrokerHello`, which accepts the session and confirms the
-requested plugin protocol version, or `BrokerError`, which rejects the
-handshake and is followed by connection close. Every subsequent `AgentEvent`
-uses the event contract defined by the accepted protocol version.
-
-After the handshake, the broker pushes one `AgentEvent` message for every new
-normalized event while the plugin remains connected. The stream is idle when
-there are no events. Frames sent on one connection preserve event order.
-
-Version 1 is a live, best-effort stream. The broker does not retain events for
-an offline plugin, wait for plugin processing, accept acknowledgements, or
-replay events after reconnection. A plugin that needs reliable remote delivery
-must persist an event after receiving it and own its later retry behavior.
-
-Each plugin connection is independent. A slow or disconnected plugin must not
-block Agent event production or delivery to other plugins. Before deliberately
-closing an accepted session, the broker sends `BrokerClose` as its final frame.
-An uncontrolled transport failure may still end with EOF and no close frame;
-the plugin owns reconnection.
-
-The initial broker keeps a 64-event broadcast ring shared by all accepted
-connections. Each connection reads independently from that ring. Falling more
-than 64 events behind closes only that connection with close code `101`.
-Plugins subscribe after `PluginHello` validation and immediately before the
-broker writes `BrokerHello`. Events produced before validation or while
-disconnected are not replayed.
-
-Version 1 allows simultaneous connections with the same `plugin_id`. The value
-is used for diagnostics only and does not select, replace, or authenticate a
-connection.
-
-## Endpoint Discovery
-
-The default Unix endpoint is
-`$ABYSS_HOME/runtime/broker-plugin-v1.sock`. Linux falls back to
-`$HOME/.abyss`; the installed macOS Host uses `/Library/Application
-Support/Abyss` as its default root. Windows uses
-`\\.\pipe\abyss.broker-plugin-v1-<product-root-hash>` so product-scoped
-runtime roots do not collide. A Unix broker whose product-root path would
-exceed the operating-system socket limit uses a stable hashed socket path under
-`/tmp` with owner-only permissions.
-
-When a product starts a dynamically addressed broker, the broker writes the
-concrete plugin endpoint into its startup-info file. SDK implementations should
-prefer that product-owned handoff over reconstructing platform paths.
-
-## Frame Payloads
-
-The connection phase and direction determine how to decode each frame:
-
-- the plugin's first frame is a `PluginHello`;
-- the broker's first frame is a `BrokerHello` or `BrokerError`;
-- after `BrokerHello`, broker frames are `AgentEvent` values; and
-- `BrokerClose`, when present, is the final frame of an accepted session.
-
-The JSON payloads do not carry a separate message `type` discriminator. Session
-phase determines whether the shared `{ "code", "reason" }` control shape is a
-handshake `BrokerError` or a final `BrokerClose`. An `AgentEvent` is serialized
-directly and is not nested under an `event` field. For example, the complete
-successful handshake payloads are:
+The plugin first sends:
 
 ```json
-{
-  "protocol_version": 1,
-  "plugin_id": "company-a-security-exporter"
-}
+{"type":"plugin_hello","protocol_version":1,"plugin_id":"example.dlp","capabilities":["agent_request","agent_events"]}
 ```
+
+Capabilities are independent. `agent_events` subscribes to the bounded observation
+stream. `agent_request` makes this connection eligible for pre-forwarding request
+decisions. An event-only connection does not enable inspection. No separate broker
+configuration, endpoint, inspector list, or persistent registration is needed.
+The broker replies with `broker_hello`, or `broker_error` and closes the connection.
+A deliberate shutdown sends `broker_close` when the transport remains writable.
+
+```mermaid
+sequenceDiagram
+    participant Relay
+    participant Broker
+    participant Plugin
+    Plugin->>Broker: plugin_hello (capabilities)
+    Broker-->>Plugin: broker_hello
+    Relay->>Broker: complete decoded request + flow metadata
+    Broker->>Plugin: inspect_request (context.request_id)
+    Plugin-->>Broker: inspect_response (request_id, allow, reason)
+    Broker-->>Relay: forward or reject
+    opt independent observation subscription
+        Broker-->>Plugin: agent_event (event)
+    end
+```
+
+## Request decisions
 
 ```json
-{
-  "protocol_version": 1
-}
+{"type":"inspect_response","request_id":"request-123","allow":false,"reason":"Private key detected"}
 ```
 
-The plugin identifier must contain 1 to 128 ASCII letters, digits, `.`, `_`, or
-`-`. It describes the plugin connection and is not a remote authentication
-credential.
+`inspect_request.context` carries lossless decoded content (`utf8` text or base64
+binary), complete JSON when available, request-side Agent projection, Harness
+identity/declarations, and available process and destination metadata. Explicit
+proxy flows have `source_process: null`. Authorization, Proxy-Authorization, Cookie,
+Set-Cookie, provider API-key headers, ChatGPT-Account-Id and headers whose names
+contain `token` are omitted using the shared MITM credential-header predicate.
+`sequence` is 1 for HTTP and counts client data messages on a WebSocket flow;
+`message_type` preserves text/binary framing and is null for HTTP.
+Plugins must not echo sensitive content in
+reasons: a block reason is returned to the client. Unknown protocols and malformed
+model payloads still reach the plugin with complete content and a parsing status.
+Attachment/history references are not fetched. The projection contains no invented
+response or usage facts.
 
-Handshake rejection and deliberate close payloads use the same direct control
-shape:
+The projection uses the same `conversation.entries` contract as observation:
+one entry per protocol block, with tool arguments and results kept in their
+original positions. There are no separate text or tool projections. Audit content
+omission does not apply to inspection. Harness declarations contain only the
+client-declared `turn_id`, `subagent_id`, `parent_subagent_id` and purpose;
+WebSocket declarations combine connection headers with the current message's
+`client_metadata`, without inheriting an upgrade request's turn.
+
+The broker snapshots connected inspection sessions in registration order per HTTP
+request or complete client WebSocket data message. All selected plugins must allow;
+the first rejection stops evaluation. Replies are correlated on the same session.
+Late replies are ignored. A selected session's disconnect, handler failure, queue
+exhaustion or five-second decision deadline rejects the current request with
+`inspection_unavailable`. Waiters are removed on cancellation and disconnect.
+There are no retries or replay. Later requests select the currently connected
+sessions; with none connected, the normal streaming relay remains active.
+
+HTTP inspection retains the complete original wire body within the existing 16 MiB
+default HTTP body limit and applies existing content-decoding limits. A client
+must finish its inspected HTTP body within 30 seconds, or receives 408
+`inspection_body_timeout`. Rejected or
+uninspectable requests send no HTTP request head/body bytes to the provider.
+Provider TCP/TLS setup retains its existing order. Allowed bodies use their original
+wire framing and content encoding. Oversized bodies receive 413, unsupported encoding
+415, invalid encoding/body 400, plugin rejection 403 `agent_request_blocked`, and
+inspection failure 503 `inspection_unavailable`. Local errors identify `abyss-broker`.
+The HTTP upgrade is inspected before its head is forwarded. After upgrade,
+WebSocket inspection runs on complete client data messages; reverse
+traffic can continue while a decision is pending. Rejection closes with 1008 and
+inspection failure with 1011. Control frames are not inspected. Reassembly keeps
+the relay's existing 64 MiB message and 16 MiB frame limits; exceeding them with
+an inspector connected closes with 1009. These transport limits also apply when
+no inspector is connected. A context exceeding the 64 MiB JSON frame limit is
+rejected locally before any inspection RPC, without disconnecting the plugin.
+
+Network `Block` is separate: `mitm.tls_decryption` chooses Intercept, Passthrough or
+Block using OS/network selectors. Block terminates the flow before any inspection;
+Passthrough stays opaque. Plugins never override either outcome. Where no HTTP error
+can be delivered (such as transparent TLS), network Block closes the connection and
+records its local reason without decrypting it just to return an error.
+
+## Observation frames
 
 ```json
-{
-  "code": 1,
-  "reason": "unsupported protocol version"
-}
+{"type":"agent_event","event":{"event_id":"example"}}
 ```
 
-Version 1 defines these handshake error codes:
-
-| Code | Meaning |
-| --- | --- |
-| `1` | Unsupported protocol version |
-| `2` | Invalid plugin handshake |
-| `3` | Broker resource limit |
-
-Version 1 defines these close codes after an accepted handshake:
-
-| Code | Meaning |
-| --- | --- |
-| `100` | Broker shutdown |
-| `101` | Plugin event stream is too slow |
-
-After `BrokerHello`, version 1 is broker-to-plugin only. A plugin does not send
-event acknowledgements, keepalives, or other application frames. Stream liveness
-comes from the local transport; reconnect policy belongs to the plugin.
-
-The complete frame payload schema is in
-[`messages.schema.json`](messages.schema.json). Standard examples are in
-[`fixtures/`](fixtures/).
+The abbreviated event above illustrates the envelope; `fixtures/agent-event-frame.json`
+contains a complete frame. `fixtures/agent-event.json` remains the reusable event
+payload fixture. Slow observation consumers are disconnected with code 101;
+normal broker shutdown uses code 100. A rejected prompt is not published through
+normal observation or parser-diagnostic delivery.
 
 ## Agent Event Contract
 
@@ -496,13 +440,3 @@ structured event unchanged.
 
 The complete event schema is in
 [`agent-event.schema.json`](agent-event.schema.json).
-
-## Versioning
-
-`protocol_version` covers framing, handshake semantics, and the `AgentEvent`
-contract. An event does not carry or negotiate a separate schema version.
-
-During the current pre-release development phase, this single v1 contract is
-updated in place. Earlier development shapes are not supported; the broker and
-SDKs must be updated together. Once the protocol is published as stable,
-incompatible changes require a new version and explicit negotiation support.

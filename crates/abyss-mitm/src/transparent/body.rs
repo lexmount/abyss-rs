@@ -37,6 +37,8 @@ pub struct CapturedBody {
     raw_truncated: bool,
     pub(super) decode_limit: usize,
     status: BodyDecodingStatus,
+    /// Whether content coding has already been applied to this immutable capture.
+    content_decoded: bool,
     /// Decoded HTTP body bytes retained for hooks.
     bytes: Bytes,
     /// Whether the observation is incomplete because of capture limits or decoding state.
@@ -58,6 +60,7 @@ impl CapturedBody {
             raw_truncated: false,
             decode_limit: super::engine::DEFAULT_MAX_HTTP1_BODY_BYTES,
             status: BodyDecodingStatus::Complete,
+            content_decoded: false,
             json: parse_json_body(&bytes),
             bytes,
             truncated: false,
@@ -73,6 +76,7 @@ impl CapturedBody {
             raw_truncated: true,
             decode_limit: super::engine::DEFAULT_MAX_HTTP1_BODY_BYTES,
             status: BodyDecodingStatus::Truncated,
+            content_decoded: false,
             json: parse_json_body(&bytes),
             bytes,
             truncated: true,
@@ -133,7 +137,12 @@ impl CapturedBody {
         self.raw_bytes.clone()
     }
 
+    pub(super) const fn content_decoded(&self) -> bool {
+        self.content_decoded
+    }
+
     pub(super) fn set_decoded(&mut self, bytes: Bytes, status: BodyDecodingStatus) {
+        self.content_decoded = status != BodyDecodingStatus::Pending;
         self.json = if matches!(
             status,
             BodyDecodingStatus::Complete | BodyDecodingStatus::Truncated

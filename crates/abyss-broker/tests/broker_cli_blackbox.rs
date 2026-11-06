@@ -455,7 +455,7 @@ fn custom_harness_emits_events_through_real_broker_flow_and_plugin_boundaries() 
         .expect("plugin should configure a read timeout");
     write_plugin_frame(
         &mut plugin,
-        &json!({"protocol_version": 1_u16, "plugin_id": "custom-harness-blackbox"}),
+        &json!({"type":"plugin_hello", "capabilities":["agent_events"], "protocol_version": 1_u16, "plugin_id": "custom-harness-blackbox"}),
     );
     assert_eq!(read_plugin_frame(&mut plugin)["protocol_version"], 1_u16);
 
@@ -508,8 +508,12 @@ fn custom_harness_emits_events_through_real_broker_flow_and_plugin_boundaries() 
     send_custom_harness_flow(&socket_path, upstream_addr, &broker.log_file);
     upstream_task.join().expect("upstream task should complete");
 
-    let request_event = read_plugin_frame(&mut plugin);
-    let response_event = read_plugin_frame(&mut plugin);
+    let request_frame = read_plugin_frame(&mut plugin);
+    assert_eq!(request_frame["type"], "agent_event");
+    let request_event = &request_frame["event"];
+    let response_frame = read_plugin_frame(&mut plugin);
+    assert_eq!(response_frame["type"], "agent_event");
+    let response_event = &response_frame["event"];
     for event in [&request_event, &response_event] {
         assert_eq!(event["agent"]["name"], "acme-agent");
         assert_eq!(event["llm"]["provider"], "gateway.example");
@@ -714,7 +718,7 @@ fn broker_plugin_endpoint_accepts_a_v1_session_and_closes_it_on_shutdown() {
         .expect("plugin should configure a read timeout");
     write_plugin_frame(
         &mut plugin,
-        &json!({"protocol_version": 1_u16, "plugin_id": "blackbox-plugin"}),
+        &json!({"type":"plugin_hello", "capabilities":["agent_events"], "protocol_version": 1_u16, "plugin_id": "blackbox-plugin"}),
     );
     let hello = read_plugin_frame(&mut plugin);
     assert_eq!(hello["protocol_version"], 1_u16);
@@ -760,7 +764,7 @@ fn broker_plugin_named_pipe_accepts_a_v1_session_and_closes_it_on_shutdown() {
             .expect("plugin should connect to the broker Named Pipe");
         write_windows_plugin_frame(
             &mut plugin,
-            &json!({"protocol_version": 1_u16, "plugin_id": "blackbox-plugin"}),
+            &json!({"type":"plugin_hello", "capabilities":["agent_events"], "protocol_version": 1_u16, "plugin_id": "blackbox-plugin"}),
         )
         .await;
         let hello = read_windows_plugin_frame(&mut plugin).await;
@@ -774,6 +778,16 @@ fn broker_plugin_named_pipe_accepts_a_v1_session_and_closes_it_on_shutdown() {
     assert_eq!(close["code"], 100_u32);
     broker.wait_for_exit();
     drop(fs::remove_file(startup_info_file));
+}
+
+#[cfg(unix)]
+fn read_plugin_event(stream: &mut std::os::unix::net::UnixStream) -> Value {
+    let mut frame = read_plugin_frame(stream);
+    assert_eq!(
+        frame["type"], "agent_event",
+        "expected observation envelope"
+    );
+    frame["event"].take()
 }
 
 #[cfg(unix)]

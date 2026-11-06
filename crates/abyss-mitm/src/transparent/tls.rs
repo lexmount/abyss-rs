@@ -27,22 +27,25 @@ impl From<AcceptedTcpFlow> for TlsFlow {
 
 impl TlsFlow {
     #[tracing::instrument(level = "trace", skip_all)]
-    pub(super) async fn handle(
+    pub(super) async fn handle<C: super::RequestForwardingControl>(
         self,
         engine: &MitmEngine,
+        control: &C,
     ) -> Result<TransparentFlowOutcome, TransparentFlowError> {
         let policy = engine.tls_decryption_policy();
         if !policy.requires_sni_peek() && !self.flow.ingress.requires_tls_server_name_validation() {
-            return TlsHttpFlow::from(self.flow).handle(engine).await;
+            return TlsHttpFlow::from(self.flow).handle(engine, control).await;
         }
 
-        self.handle_with_decryption_policy(engine, policy).await
+        self.handle_with_decryption_policy(engine, control, policy)
+            .await
     }
 
     #[tracing::instrument(level = "trace", skip_all)]
-    async fn handle_with_decryption_policy(
+    async fn handle_with_decryption_policy<C: super::RequestForwardingControl>(
         self,
         engine: &MitmEngine,
+        control: &C,
         policy: Arc<TlsDecryptionPolicy>,
     ) -> Result<TransparentFlowOutcome, TransparentFlowError> {
         let AcceptedTcpFlow {
@@ -84,6 +87,16 @@ impl TlsFlow {
         );
 
         match decision.action() {
+            TlsDecryptionAction::Block => {
+                let mut rejection = super::LocalRejection::new(
+                    http::StatusCode::FORBIDDEN,
+                    "network_blocked",
+                    "Network request blocked by abyss-broker",
+                    flow_id.to_string(),
+                );
+                rejection.rule_id = decision.matched_rule_id().map(str::to_owned);
+                Err(rejection.into())
+            }
             TlsDecryptionAction::Intercept => {
                 TlsHttpFlow::from_inspected(
                     inspected,
@@ -99,7 +112,7 @@ impl TlsFlow {
                         traffic_observer,
                     },
                 )
-                .handle(engine)
+                .handle(engine, control)
                 .await
             }
             TlsDecryptionAction::Passthrough => {

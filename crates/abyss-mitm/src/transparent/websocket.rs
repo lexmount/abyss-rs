@@ -2,8 +2,8 @@
 //!
 //! Once a request receives `101 Switching Protocols`, HTTP body framing no
 //! longer applies. This module switches the two plaintext streams into
-//! WebSocket message streams, forwards each message, and submits observe-only
-//! hook events without blocking network forwarding.
+//! WebSocket message streams, applies optional request decisions, and submits
+//! observation events only for messages allowed to proceed.
 
 use std::io::ErrorKind;
 
@@ -136,6 +136,32 @@ where
             .map_err(|source| TransparentFlowError::websocket(operation, source))?;
         Ok(())
     }
+
+    async fn reject(
+        &mut self,
+        rejection: &super::LocalRejection,
+    ) -> Result<(), TransparentFlowError> {
+        use tokio_tungstenite::tungstenite::protocol::{CloseFrame, frame::coding::CloseCode};
+
+        let code = match rejection.code {
+            "agent_request_blocked" => CloseCode::Policy,
+            "inspection_body_too_large" => CloseCode::Size,
+            _ => CloseCode::Error,
+        };
+        let reason = format!(
+            "abyss-broker: {} {}: {}",
+            rejection.code, rejection.request_id, rejection.reason
+        );
+        let end = reason.floor_char_boundary(123);
+        self.send(
+            Message::Close(Some(CloseFrame {
+                code,
+                reason: reason[..end].to_owned().into(),
+            })),
+            FlowOperation::WriteAgentWebSocket,
+        )
+        .await
+    }
 }
 
 /// Returns whether an Agent-side transport error only means the local Agent
@@ -166,14 +192,13 @@ fn is_agent_stream_end(direction: WebSocketDirection, error: &WebSocketError) ->
 /// into `from_partially_read` preserves frames that arrive in the same read as
 /// the upgrade head.
 #[tracing::instrument(level = "trace", skip_all)]
-pub(super) async fn relay_websocket_messages<C, U>(
-    client: C,
-    client_prefetch: Vec<u8>,
-    upstream: U,
-    upstream_prefetch: Vec<u8>,
+pub(super) async fn relay_websocket_messages<C, U, F: super::RequestForwardingControl>(
+    (client, client_prefetch): (C, Vec<u8>),
+    (upstream, upstream_prefetch): (U, Vec<u8>),
     flow: FlowContext,
     upgrade: WebSocketUpgrade,
     hooks: &HookDispatcher,
+    control: &F,
 ) -> Result<WebSocketRelayOutcome, TransparentFlowError>
 where
     C: AsyncRead + AsyncWrite + Unpin,
@@ -193,8 +218,15 @@ where
         WebSocketDirection::ServerToClient,
     )
     .await;
-    let outcome =
-        run_websocket_select_loop(&mut client_ws, &mut upstream_ws, &flow, &upgrade, hooks).await?;
+    let outcome = run_websocket_select_loop(
+        &mut client_ws,
+        &mut upstream_ws,
+        &flow,
+        &upgrade,
+        hooks,
+        control,
+    )
+    .await?;
     tracing::info!(
         original_destination = %flow.original_destination,
         method = %upgrade.request.method(),
@@ -211,26 +243,64 @@ where
     reason = "tokio::select! macro expansion uses remainder internally; relay code does not."
 )]
 #[tracing::instrument(level = "trace", skip_all)]
-async fn run_websocket_select_loop<C, U>(
+async fn run_websocket_select_loop<C, U, F: super::RequestForwardingControl>(
     client_ws: &mut DecodedWebSocketStream<C>,
     upstream_ws: &mut DecodedWebSocketStream<U>,
     flow: &FlowContext,
     upgrade: &WebSocketUpgrade,
     hooks: &HookDispatcher,
+    control: &F,
 ) -> Result<WebSocketRelayOutcome, TransparentFlowError>
 where
     C: AsyncRead + AsyncWrite + Unpin,
     U: AsyncRead + AsyncWrite + Unpin,
 {
     let mut sequence = 0_u64;
+    let mut client_sequence = 0_u64;
     let mut outcome = WebSocketRelayOutcome::default();
 
     loop {
         tokio::select! {
             client_message = client_ws.next_forwarded_message(FlowOperation::ReadAgentWebSocket) => {
+                // Reassembly already uses tungstenite's bounded message/frame limits
+                // for both modes. Inspection never sends an oversized prefix to a plugin.
+                if matches!(&client_message, Err(TransparentFlowError::WebSocket { source: WebSocketError::Capacity(_), .. }))
+                    && control.plan().is_some()
+                {
+                    let rejection = super::LocalRejection::new(http::StatusCode::PAYLOAD_TOO_LARGE,
+                        "inspection_body_too_large", "WebSocket message exceeds the relay limit", flow.flow_id.to_string());
+                    client_ws.reject(&rejection).await?;
+                    return Err(rejection.into());
+                }
                 let Some(forwarded) = client_message? else {
                     break;
                 };
+                let transport = match &forwarded.message {
+                    Message::Text(_) => Some(super::RequestTransport::WebSocketText { sequence: next_sequence(&mut client_sequence)? }),
+                    Message::Binary(_) => Some(super::RequestTransport::WebSocketBinary { sequence: next_sequence(&mut client_sequence)? }),
+                    _ => None,
+                };
+                if let Some(transport) = transport && let Some(plan) = control.plan() {
+                    let body = super::CapturedBody::from_bytes(forwarded.message.clone().into_data());
+                    let decision = control.before_forward(plan, super::RequestView { flow, head: &upgrade.request, body: &body, transport });
+                    tokio::pin!(decision);
+                    loop {
+                        tokio::select! {
+                            result = &mut decision => {
+                                if let Err(rejection) = result {
+                                    client_ws.reject(&rejection).await?;
+                                    return Err(rejection.into());
+                                }
+                                break;
+                            }
+                            message = upstream_ws.next_forwarded_message(FlowOperation::ReadProviderWebSocket) => {
+                                if !forward_provider_message(message?, client_ws, flow, upgrade, &mut sequence, hooks, &mut outcome).await? {
+                                    return Ok(outcome);
+                                }
+                            }
+                        }
+                    }
+                }
                 forwarded.submit_hook_message(flow, upgrade, &mut sequence, hooks)?;
                 upstream_ws
                     .send(forwarded.message, FlowOperation::WriteProviderWebSocket)
@@ -244,18 +314,7 @@ where
                 }
             }
             upstream_message = upstream_ws.next_forwarded_message(FlowOperation::ReadProviderWebSocket) => {
-                let Some(forwarded) = upstream_message? else {
-                    break;
-                };
-                forwarded.submit_hook_message(flow, upgrade, &mut sequence, hooks)?;
-                client_ws
-                    .send(forwarded.message, FlowOperation::WriteAgentWebSocket)
-                    .await?;
-                outcome.upstream_to_client_bytes = add_bytes(
-                    outcome.upstream_to_client_bytes,
-                    forwarded.payload_bytes,
-                )?;
-                if forwarded.is_close {
+                if !forward_provider_message(upstream_message?, client_ws, flow, upgrade, &mut sequence, hooks, &mut outcome).await? {
                     break;
                 }
             }
@@ -263,6 +322,27 @@ where
     }
 
     Ok(outcome)
+}
+
+async fn forward_provider_message<C: AsyncRead + AsyncWrite + Unpin>(
+    message: Option<ForwardedWebSocketMessage>,
+    client: &mut DecodedWebSocketStream<C>,
+    flow: &FlowContext,
+    upgrade: &WebSocketUpgrade,
+    sequence: &mut u64,
+    hooks: &HookDispatcher,
+    outcome: &mut WebSocketRelayOutcome,
+) -> Result<bool, TransparentFlowError> {
+    let Some(forwarded) = message else {
+        return Ok(false);
+    };
+    forwarded.submit_hook_message(flow, upgrade, sequence, hooks)?;
+    client
+        .send(forwarded.message, FlowOperation::WriteAgentWebSocket)
+        .await?;
+    outcome.upstream_to_client_bytes =
+        add_bytes(outcome.upstream_to_client_bytes, forwarded.payload_bytes)?;
+    Ok(!forwarded.is_close)
 }
 
 fn hook_message_from_websocket(

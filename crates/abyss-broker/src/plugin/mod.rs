@@ -4,6 +4,7 @@
 //! module depends only on the shared wire contract and Agent Hook sink boundary.
 
 mod codec;
+pub mod inspection;
 mod session;
 mod transport;
 
@@ -65,6 +66,7 @@ impl AgentEventSink for PluginEventBroadcaster {
 pub struct PluginServer {
     listener: PlatformPluginTransport,
     broadcaster: Arc<PluginEventBroadcaster>,
+    inspections: Arc<inspection::InspectionRegistry>,
 }
 
 impl PluginServer {
@@ -79,6 +81,7 @@ impl PluginServer {
         );
         Ok(Self {
             listener,
+            inspections: Arc::new(inspection::InspectionRegistry::default()),
             broadcaster: Arc::new(PluginEventBroadcaster { sender }),
         })
     }
@@ -93,6 +96,13 @@ impl PluginServer {
     #[must_use]
     pub(super) fn event_sink(&self) -> Arc<PluginEventBroadcaster> {
         self.broadcaster.clone()
+    }
+
+    pub(crate) fn inspector(
+        &self,
+        hooks: abyss_agent_hook::HooksRuntimeConfig,
+    ) -> inspection::AgentRequestInspector {
+        inspection::AgentRequestInspector::new(self.inspections.clone(), hooks)
     }
 
     /// Accepts plugin connections until broker shutdown is requested.
@@ -121,6 +131,7 @@ impl PluginServer {
                             self.broadcaster.sender.clone(),
                             shutdown.clone(),
                         )
+                        .with_inspections(self.inspections.clone())
                         .run(),
                     );
                 }
@@ -159,7 +170,7 @@ mod tests {
     use abyss_agent_hook::AgentEventSink as _;
     use abyss_plugin_protocol::{
         event::AgentEvent,
-        message::{BrokerClose, BrokerHello, PluginHello},
+        message::{BrokerClose, BrokerHello, PluginHello, PluginMessage},
     };
     use tokio::net::UnixStream;
 
@@ -222,9 +233,12 @@ mod tests {
         let mut stream = UnixStream::connect(endpoint)
             .await
             .expect("plugin should connect to the Unix socket");
-        write_json(&mut stream, &PluginHello::new(plugin_id.to_owned()))
-            .await
-            .expect("PluginHello should write");
+        write_json(
+            &mut stream,
+            &PluginMessage::PluginHello(PluginHello::new(plugin_id.to_owned())),
+        )
+        .await
+        .expect("PluginHello should write");
         let hello: BrokerHello = read_json(&mut stream).await;
         assert_eq!(
             hello.protocol_version.wire_value(),
@@ -242,7 +256,7 @@ mod tests {
             .await
             .expect("plugin frame should read")
             .expect("plugin frame should be present");
-        serde_json::from_slice(&payload).expect("plugin frame JSON should decode")
+        decode_payload(&payload)
     }
 
     fn test_root() -> PathBuf {
@@ -251,5 +265,16 @@ mod tests {
             std::process::id(),
             rand::random::<u64>()
         ))
+    }
+    fn decode_payload<T: serde::de::DeserializeOwned>(payload: &[u8]) -> T {
+        let mut frame: serde_json::Value = serde_json::from_slice(payload).unwrap();
+        assert!(frame["type"].is_string(), "session frames are tagged");
+        let payload = if frame["type"] == "agent_event" {
+            frame["event"].take()
+        } else {
+            frame.as_object_mut().unwrap().remove("type");
+            frame
+        };
+        serde_json::from_value(payload).unwrap()
     }
 }

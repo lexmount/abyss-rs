@@ -1,8 +1,13 @@
 # Broker network blocking and Agent request inspection
 
-Status: proposed. This document describes a design; the configuration, APIs,
-and protocol additions below are not implemented. The source review is based on
-commit `57c29ef`.
+Status: implemented. This document records the architecture and design rationale;
+the original source review below is based on commit `57c29ef`. For the concrete
+wire schema, limits and callback examples, see the
+[plugin contract](../specs/broker-plugin-protocol/v1/README.md) and
+[broker usage guide](../crates/abyss-broker/README.md).
+The implementation follows the structured-session model introduced in `4e24dcf`:
+request content uses `Conversation.entries`, and Harness declarations retain only
+the identities actually declared by the client.
 
 Backward compatibility with earlier configuration and plugin protocols is not a
 requirement at this rollout stage. Update the broker, delivery plugin, Rust /
@@ -388,9 +393,10 @@ provider TLS setup behind the plugin decision or add deferred connection
 machinery for Agent inspection. This keeps connection setup out of the work
 that must run after the hook allows the request.
 
-Network blocks whose final decision is already established at CONNECT time run
-before `prepare_upstream()`, subject to the rule-order constraint above. This is
-a network-policy optimization, independent of the Agent gate.
+An early CONNECT block before `prepare_upstream()` is an optional network-policy
+optimization, subject to the rule-order constraint above. The implementation
+keeps existing CONNECT setup and enforces TLS blocks at the ClientHello policy
+boundary, independently of the Agent gate.
 
 The current `CapturedBody` may hold only an observation prefix. That is not an
 acceptable inspection result. A request exceeding the inspection limit, an
@@ -475,7 +481,8 @@ produce a model response. A Responses prewarm message can still carry sensitive
 input. Do not reinterpret TLS rules for each message.
 
 Use the WebSocket implementation's message reassembly for fragmented frames and
-apply the inspection limit during assembly. Inspect the resulting payload once;
+retain its existing bounded assembly (64 MiB per message, 16 MiB per frame).
+Inspect the resulting payload once;
 do not forward fragments while accumulating it. Ping, Pong, and Close remain
 transport control messages rather than model-input checks.
 
@@ -587,8 +594,10 @@ stage. For WebSocket, both inspection and the observer's accumulator consume the
 same client-message projection; only response accumulation waits for a completed
 turn. Keep server-message parsing in its existing response stage.
 
-Reuse the event model's request-side primitives, such as `Conversation`, tool
-calls/results, and attachment representations, wherever their semantics match.
+Reuse the event model's request-side primitives: `Conversation.entries` carries
+text, instructions and tool calls/results in protocol order, and attachment
+representations carry embedded images. Do not restore separate text or tool
+projections removed by the structured-session model.
 The completed audit `AgentEvent` is not the inspection input: normalization can
 depend on response-derived identity, usage, and audit retention settings. The
 request projection contains only facts known before forwarding; it does not
@@ -629,7 +638,7 @@ The proposed inspection context contains:
 | Request | Method, URI/path, business headers, transport, WebSocket message type and sequence, and upgrade metadata when applicable. |
 | Content | Complete content-decoded bytes, an optional complete JSON value, and explicit decoding/parsing status. Binary bytes have a defined wire encoding. Original encoding metadata describes the retained encoded representation, not the decoded view. |
 | Model input | Detected protocol, provider, requested model, ordered conversation/instructions, tool definitions, tool calls/results, and attachment references or inline content present in this request. |
-| Agent declarations | Optional Harness identity/evidence/version and declared session, turn, stream, or previous-response IDs available before a response. |
+| Agent declarations | Optional Harness identity/version, client-declared root `turn_id`, `subagent_id`, `parent_subagent_id`, and purpose. Provider continuation IDs remain in the request projection. No inferred thread/title fields. |
 
 Provide the decoded body together with the structured model projection. The
 projection is convenience data, not a complete substitute for the provider

@@ -38,7 +38,7 @@ fn hermes_sdk_requests_are_identified_from_native_source_metadata() {
     plugin.set_read_timeout(Some(REST_TIMEOUT)).unwrap();
     write_plugin_frame(
         &mut plugin,
-        &json!({"protocol_version": 1_u16, "plugin_id": "hermes-blackbox"}),
+        &json!({"type":"plugin_hello", "capabilities":["agent_events"], "protocol_version": 1_u16, "plugin_id": "hermes-blackbox"}),
     );
     assert_eq!(read_plugin_frame(&mut plugin)["protocol_version"], 1_u16);
 
@@ -69,7 +69,7 @@ fn hermes_sdk_requests_are_identified_from_native_source_metadata() {
         });
         if expected.is_some() {
             for side in ["request", "response"] {
-                let event = read_plugin_frame(&mut plugin);
+                let event = super::read_plugin_event(&mut plugin);
                 assert_eq!(event["side"], side);
                 assert_eq!(event["agent"]["name"], "hermes");
             }

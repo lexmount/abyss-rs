@@ -1,4 +1,5 @@
 {
+  "type": "broker_error",
   "code": 1,
   "reason": "unsupported protocol version"
 }

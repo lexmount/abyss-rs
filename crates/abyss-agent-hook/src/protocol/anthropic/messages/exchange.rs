@@ -6,15 +6,11 @@ use http::Method;
 use super::{model::ParsedAnthropicMessagesExchange, session::anthropic_session_id};
 use crate::protocol::{
     anthropic::shared::{
-        conversation::{AnthropicRequest, AnthropicResponse},
-        images::extract_anthropic_request_images,
-        metadata::first_model,
-        usage::best_usage,
+        conversation::AnthropicResponse, metadata::first_model, usage::best_usage,
     },
     shared::{
         digest::sha256_hex,
         http::{flow_server_name, request_host},
-        json::string_field,
         sse::ResponseDocuments,
     },
 };
@@ -38,9 +34,13 @@ pub fn parse_anthropic_messages_exchange(
     };
     let headers = exchange.request.headers();
 
-    let request_conversation =
-        AnthropicRequest::parse(request_json, exchange.request.body().truncated()).conversation();
-    let request_images = extract_anthropic_request_images(request_json);
+    let request = crate::protocol::request::RequestContent::parse(
+        crate::protocol::LlmProtocol::Anthropic(crate::protocol::AnthropicProtocol::Messages),
+        Some(request_json),
+        exchange.request.body().truncated(),
+    );
+    let request_conversation = request.conversation;
+    let request_images = request.images;
     // Bootstrap, registry, and telemetry calls are useful transport evidence but
     // not dialogue turns. Upload only exchanges whose request carries content:
     // a conversation entry or an image.
@@ -56,8 +56,7 @@ pub fn parse_anthropic_messages_exchange(
         .or_else(|| best_usage(std::slice::from_ref(request_json)))
         .unwrap_or_default();
     let message_id = response.id().map(str::to_owned);
-    let model = first_model(&response_values)
-        .or_else(|| string_field(request_json, "model").map(str::to_owned));
+    let model = first_model(&response_values).or_else(|| request.metadata.model.map(str::to_owned));
     let request_hash = sha256_hex(&format!(
         "{}\0{}\0{}\0{}",
         exchange.request.method(),
@@ -65,11 +64,7 @@ pub fn parse_anthropic_messages_exchange(
         path,
         String::from_utf8_lossy(exchange.request.body().bytes())
     ));
-    let previous_response_id = request_json
-        .get("thread")
-        .filter(|thread| string_field(thread, "type") == Some("continue"))
-        .and_then(|thread| string_field(thread, "previous_message_id"))
-        .map(str::to_owned);
+    let previous_response_id = request.metadata.previous_response_id.map(str::to_owned);
 
     Some(ParsedAnthropicMessagesExchange {
         session_id: anthropic_session_id(headers, request_json, &host),

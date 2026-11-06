@@ -396,6 +396,9 @@ pub enum TransparentFlowOutcome {
 #[derive(Debug, Error)]
 #[non_exhaustive]
 pub enum TransparentFlowError {
+    /// Local network policy or request inspection rejected forwarding.
+    #[error(transparent)]
+    Rejected(#[from] super::LocalRejection),
     /// Configured next-hop establishment failed; direct fallback is prohibited.
     #[error("upstream proxy {endpoint} could not connect to {target}: {source}")]
     UpstreamProxy {

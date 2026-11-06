@@ -1,4 +1,8 @@
 {
+  "type": "plugin_hello",
   "protocol_version": 1,
-  "plugin_id": "company-a-security-exporter"
+  "plugin_id": "company-a-security-exporter",
+  "capabilities": [
+    "agent_events"
+  ]
 }

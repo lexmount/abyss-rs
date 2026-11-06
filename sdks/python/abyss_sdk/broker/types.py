@@ -32,18 +32,20 @@ class ProxyStatus(_ProxyStatusRequired, total=False):
 class _TlsDecryptionRuleRequired(TypedDict):
     id: str
     enabled: bool
-    action: Literal["intercept", "passthrough"]
+    action: Literal["intercept", "passthrough", "block"]
     destination_hosts: list[str]
 
 
 class TlsDecryptionRule(_TlsDecryptionRuleRequired, total=False):
     process_names: list[str]
     application_ids: list[str]
+    executable_paths: list[str]
+    process_entry_points: list[str]
 
 
 class TlsDecryptionPolicy(TypedDict):
-    default_action: Literal["intercept", "passthrough"]
-    missing_sni_action: Optional[Literal["intercept", "passthrough"]]
+    default_action: Literal["intercept", "passthrough", "block"]
+    missing_sni_action: Optional[Literal["intercept", "passthrough", "block"]]
     rules: list[TlsDecryptionRule]
 
 
@@ -61,6 +63,8 @@ class HarnessUsageContentConfig(TypedDict):
 class HarnessMatcherConfig(TypedDict, total=False):
     process_names: list[str]
     application_ids: list[str]
+    executable_paths: list[str]
+    process_entry_points: list[str]
 
 
 class HarnessConfig(TypedDict, total=False):

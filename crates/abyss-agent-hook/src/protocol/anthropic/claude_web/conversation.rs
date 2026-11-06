@@ -9,8 +9,7 @@ use http::Method;
 use super::metadata::{assistant_message_uuid, claude_web_file_uuids};
 use crate::protocol::{
     anthropic::shared::{
-        conversation::{AnthropicRequest, AnthropicResponse},
-        images::extract_anthropic_request_images,
+        conversation::AnthropicResponse,
         metadata::first_model,
         usage::{best_usage, estimated_visible_usage},
     },
@@ -18,7 +17,6 @@ use crate::protocol::{
     shared::{
         digest::sha256_hex,
         http::{flow_server_name, request_host},
-        json::string_field,
         sse::ResponseDocuments,
         text::non_empty_trimmed,
     },
@@ -62,9 +60,15 @@ pub fn parse_claude_web_exchange(exchange: &HttpExchange) -> Option<ParsedClaude
     let path = exchange.request.uri().path();
     let conversation_id = completion_conversation_id(path)?;
     let request_json = exchange.request.body().json()?;
-    let request_conversation =
-        AnthropicRequest::parse(request_json, exchange.request.body().truncated()).conversation();
-    let request_images = extract_anthropic_request_images(request_json);
+    let request = crate::protocol::request::RequestContent::parse(
+        crate::protocol::LlmProtocol::Anthropic(crate::protocol::AnthropicProtocol::ClaudeWeb(
+            crate::protocol::ClaudeWebProtocol::ConversationCompletion,
+        )),
+        Some(request_json),
+        exchange.request.body().truncated(),
+    );
+    let request_conversation = request.conversation;
+    let request_images = request.images;
     let request_file_uuids = claude_web_file_uuids(request_json);
     if request_conversation.entries.is_empty()
         && request_images.is_empty()
@@ -101,8 +105,7 @@ pub fn parse_claude_web_exchange(exchange: &HttpExchange) -> Option<ParsedClaude
             .id()
             .map(str::to_owned)
             .or_else(|| assistant_message_uuid.clone()),
-        model: first_model(&response_values)
-            .or_else(|| string_field(request_json, "model").map(str::to_owned)),
+        model: first_model(&response_values).or_else(|| request.metadata.model.map(str::to_owned)),
         assistant_message_uuid,
     })
 }
