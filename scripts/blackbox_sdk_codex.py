@@ -12,6 +12,7 @@ import http.client
 import http.server
 import json
 import os
+import signal
 import subprocess
 import tempfile
 import threading
@@ -290,15 +291,28 @@ def run_codex(broker, directory, marker, model, api_key):
         "--",
         "-",
     ]
-    result = subprocess.run(
+    with subprocess.Popen(
         command,
         env=environment,
         cwd=directory,
-        input=f"Do not use any tools. Reply with exactly this text: {marker}\n",
         text=True,
-        capture_output=True,
-        timeout=180,
-    )
+        stdin=subprocess.PIPE,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        start_new_session=True,
+    ) as process:
+        try:
+            stdout, stderr = process.communicate(
+                input=f"Do not use any tools. Reply with exactly this text: {marker}\n",
+                timeout=180,
+            )
+        finally:
+            # Codex may exit while a background plugin clone still writes to CODEX_HOME.
+            # Stop its isolated process group before the temporary directory is removed.
+            with contextlib.suppress(ProcessLookupError):
+                os.killpg(process.pid, signal.SIGKILL)
+            process.wait()
+        result = subprocess.CompletedProcess(command, process.returncode, stdout, stderr)
     events = [json.loads(line) for line in result.stdout.splitlines() if line.strip()]
     return result, events
 
