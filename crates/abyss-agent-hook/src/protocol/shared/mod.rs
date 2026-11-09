@@ -4,6 +4,5 @@ pub mod digest;
 pub mod http;
 pub mod image;
 pub mod json;
-mod request;
 pub mod sse;
 pub mod text;

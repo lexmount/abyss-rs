@@ -7,7 +7,7 @@ use abyss_plugin_protocol::event::Conversation;
 use serde_json::Value;
 
 use super::{image::ParsedImageAttachment, usage::TokenUsage};
-use crate::protocol::LlmProtocol;
+use crate::protocol::{LlmProtocol, shared::json::string_field};
 
 /// An optional protocol projection prepared before forwarding.
 #[derive(Clone)]
@@ -33,6 +33,23 @@ pub struct RequestMetadata {
     pub tool_definitions: Option<Value>,
     pub previous_response_id: Option<String>,
     pub client_metadata: Option<Value>,
+}
+
+impl RequestMetadata {
+    pub fn parse(payload: Option<&Value>) -> Self {
+        Self {
+            model: payload
+                .and_then(|value| string_field(value, "model"))
+                .map(str::to_owned),
+            tool_definitions: payload.and_then(|value| value.get("tools")).cloned(),
+            previous_response_id: payload
+                .and_then(|value| string_field(value, "previous_response_id"))
+                .map(str::to_owned),
+            client_metadata: payload
+                .and_then(|value| value.get("client_metadata"))
+                .cloned(),
+        }
+    }
 }
 
 impl RequestContent {
