@@ -208,7 +208,7 @@ where
         U: AsyncWrite + Unpin + Send,
     {
         // This method exists so the high-level flow does not need to know the
-        // exact HTTP body framing rules. `forward_request` owns the byte-level
+        // exact HTTP body framing rules. `forward_controlled_request` owns the byte-level
         // preservation and capture logic.
         forward_controlled_request(
             &mut self.stream,
@@ -677,7 +677,7 @@ where
         match prepared {
             Ok(retained) => Some(retained),
             Err(rejection) => {
-                rejection.write_http(client).await?;
+                rejection.response_error(client).await?;
                 return Err(rejection.into());
             }
         }
@@ -850,27 +850,6 @@ impl RequestInspection<'_> {
     ) -> super::LocalRejection {
         super::LocalRejection::new(status, code, reason, self.flow.flow_id.to_string())
     }
-}
-
-#[cfg(test)]
-async fn forward_request<R: AsyncRead + AsyncWrite + Unpin, W: AsyncWrite + Unpin>(
-    client: &mut R,
-    upstream: &mut W,
-    request: &Request<()>,
-    head_buffer: &Http1HeadBuffer,
-    flow: &FlowContext,
-    max_body_bytes: usize,
-) -> Result<MessageCapture, TransparentFlowError> {
-    forward_controlled_request(
-        client,
-        upstream,
-        request,
-        head_buffer,
-        flow,
-        max_body_bytes,
-        &super::UncontrolledForwarding,
-    )
-    .await
 }
 
 fn request_head_for_relay<'a>(
@@ -1696,12 +1675,13 @@ mod tests {
         time::Duration,
     };
 
-    use tokio::io::{AsyncReadExt as _, AsyncWrite, AsyncWriteExt as _};
+    use http::Request;
+    use tokio::io::{AsyncRead, AsyncReadExt as _, AsyncWrite, AsyncWriteExt as _};
 
     use super::{
         BodyDirection, ChunkedBodyCapture, HTTP1_100_CONTINUE, MAX_INITIAL_BODY_CAPTURE_CAPACITY,
-        forward_chunked_body, forward_request, initial_body_capture_capacity,
-        shutdown_completed_agent_stream,
+        MessageCapture, forward_chunked_body, forward_controlled_request,
+        initial_body_capture_capacity, shutdown_completed_agent_stream,
     };
 
     #[test]
@@ -1714,12 +1694,32 @@ mod tests {
         assert_eq!(initial_body_capture_capacity(128, 32), 32);
     }
     use crate::{
-        http1::{Http1ClientStream, Http1Error, MAX_HTTP1_HEADER_BYTES},
+        http1::{Http1ClientStream, Http1Error, Http1HeadBuffer, MAX_HTTP1_HEADER_BYTES},
         transparent::{
             FlowContext, FlowOperation, OriginalDestination, TransparentFlowError,
-            TransparentProtocol,
+            TransparentProtocol, UncontrolledForwarding,
         },
     };
+
+    async fn forward_request<R: AsyncRead + AsyncWrite + Unpin, W: AsyncWrite + Unpin>(
+        client: &mut R,
+        upstream: &mut W,
+        request: &Request<()>,
+        head_buffer: &Http1HeadBuffer,
+        flow: &FlowContext,
+        max_body_bytes: usize,
+    ) -> Result<MessageCapture, TransparentFlowError> {
+        forward_controlled_request(
+            client,
+            upstream,
+            request,
+            head_buffer,
+            flow,
+            max_body_bytes,
+            &UncontrolledForwarding,
+        )
+        .await
+    }
 
     #[tokio::test(start_paused = true)]
     async fn inspected_partial_body_has_a_finite_retention_deadline() {

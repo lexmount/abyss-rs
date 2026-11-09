@@ -109,7 +109,7 @@ impl LocalRejection {
     ///
     /// # Errors
     /// Returns the client write or shutdown error.
-    pub async fn write_http<W: AsyncWrite + Unpin>(
+    pub async fn response_error<W: AsyncWrite + Unpin>(
         &self,
         writer: &mut W,
     ) -> Result<(), TransparentFlowError> {

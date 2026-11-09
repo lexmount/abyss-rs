@@ -91,7 +91,7 @@ impl PlainHttpFlow {
                 decoded.context.flow_id.to_string(),
             );
             rejection.rule_id = decision.matched_rule_id().map(str::to_owned);
-            rejection.write_http(&mut decoded.stream).await?;
+            rejection.response_error(&mut decoded.stream).await?;
             return Err(rejection.into());
         }
 
