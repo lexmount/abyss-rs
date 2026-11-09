@@ -1,0 +1,134 @@
+name: Build macOS preview endpoint
+
+on:
+  workflow_call:
+    inputs:
+      source_revision:
+        description: Full 40-character commit SHA from lexmount/abyss-rs.
+        required: true
+        type: string
+    outputs:
+      source_revision:
+        description: Verified public endpoint source commit.
+        value: ${{ jobs.build.outputs.source_revision }}
+      artifact_id:
+        description: Preview artifact ID in the caller workflow run.
+        value: ${{ jobs.build.outputs.artifact_id }}
+      artifact_digest:
+        description: SHA-256 digest reported by upload-artifact.
+        value: ${{ jobs.build.outputs.artifact_digest }}
+
+permissions:
+  contents: read
+
+defaults:
+  run:
+    shell: bash
+
+jobs:
+  build:
+    name: Build and test macOS endpoint preview
+    runs-on: macos-15
+    timeout-minutes: 45
+    env:
+      RUSTUP_TOOLCHAIN: '1.98.0'
+      ENDPOINT_TARGET: aarch64-apple-darwin
+      CARGO_TERM_COLOR: always
+    outputs:
+      source_revision: ${{ steps.revision.outputs.source_revision }}
+      artifact_id: ${{ steps.upload.outputs.artifact-id }}
+      artifact_digest: ${{ steps.upload.outputs.artifact-digest }}
+    steps:
+      - name: Validate source revision
+        id: source
+        env:
+          SOURCE_REVISION: ${{ inputs.source_revision }}
+        run: |
+          if [[ ! "$SOURCE_REVISION" =~ ^[0-9a-fA-F]{40}$ ]]; then
+            echo 'source_revision must be a full 40-character commit SHA' >&2
+            exit 1
+          fi
+          revision="$(printf '%s' "$SOURCE_REVISION" | tr '[:upper:]' '[:lower:]')"
+          printf 'source_revision=%s\n' "$revision" >> "$GITHUB_OUTPUT"
+
+      - name: Checkout public endpoint source
+        uses: actions/checkout@v4
+        with:
+          repository: lexmount/abyss-rs
+          ref: ${{ steps.source.outputs.source_revision }}
+          persist-credentials: false
+
+      - name: Verify checked out revision
+        id: revision
+        env:
+          SOURCE_REVISION: ${{ steps.source.outputs.source_revision }}
+        run: |
+          actual_revision="$(git rev-parse HEAD)"
+          if [[ "$actual_revision" != "$SOURCE_REVISION" ]]; then
+            echo 'Checked out source does not match the requested commit' >&2
+            exit 1
+          fi
+          printf 'source_revision=%s\n' "$actual_revision" >> "$GITHUB_OUTPUT"
+
+      - name: Configure macOS build tools
+        run: |
+          clang_bin="$(xcrun --find clang)"
+          libclang_dir="$(cd "$(dirname "$clang_bin")/../lib" && pwd)"
+          echo "LIBCLANG_PATH=$libclang_dir" >> "$GITHUB_ENV"
+          echo 'MACOSX_DEPLOYMENT_TARGET=11.0' >> "$GITHUB_ENV"
+
+      - name: Install Rust
+        run: rustup toolchain install "$RUSTUP_TOOLCHAIN" --profile minimal --target "$ENDPOINT_TARGET"
+
+      - name: Test macOS framed ingress
+        run: |
+          cargo test --release --locked --target "$ENDPOINT_TARGET" \
+            --package abyss-broker --bin abyss-broker ingress::macos::
+
+      - name: Build endpoint binaries
+        run: |
+          cargo build --release --locked --target "$ENDPOINT_TARGET" \
+            --package abyss-broker --package abyss-delivery-plugin
+
+      - name: Assemble preview artifact
+        env:
+          SOURCE_REVISION: ${{ steps.revision.outputs.source_revision }}
+        run: |
+          python3 - <<'PY'
+          import hashlib
+          import json
+          import os
+          from pathlib import Path
+          import shutil
+
+          target = os.environ['ENDPOINT_TARGET']
+          revision = os.environ['SOURCE_REVISION']
+          output = Path('preview-endpoint')
+          output.mkdir()
+          binaries = {}
+          checksums = []
+          for name in ('abyss-broker', 'abyss-delivery-plugin'):
+              binary = output / name
+              shutil.copy2(Path('target') / target / 'release' / name, binary)
+              digest = hashlib.sha256(binary.read_bytes()).hexdigest()
+              binaries[name] = {'sha256': digest}
+              checksums.append(f'{digest}  {name}\n')
+          manifest = {
+              'schema_version': 1,
+              'repository': 'https://github.com/lexmount/abyss-rs',
+              'revision': revision,
+              'target': target,
+              'binaries': binaries,
+          }
+          (output / 'endpoint-preview.json').write_text(json.dumps(manifest, indent=2) + '\n')
+          (output / 'SHA256SUMS').write_text(''.join(checksums))
+          PY
+
+      - name: Upload endpoint preview
+        id: upload
+        uses: actions/upload-artifact@v4
+        with:
+          name: macos-preview-endpoint-${{ github.run_attempt }}
+          path: preview-endpoint/*
+          if-no-files-found: error
+          retention-days: 14
