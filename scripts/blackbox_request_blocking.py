@@ -414,6 +414,32 @@ def checks(broker, origin, endpoint):
         finally:
             silent.close()
 
+        # Pending decisions must not serialize unrelated requests or stop the
+        # PluginServer from accepting another connection. Replies may arrive
+        # out of order, and a new session cannot join an existing request plan.
+        concurrent_plugin = Plugin(endpoint)
+        later = None
+        try:
+            count = len(origin.requests)
+            first = pool.submit(request, broker, harmless)
+            first_context = read_frame(concurrent_plugin.stream)["context"]
+            second = pool.submit(request, broker, private)
+            second_context = read_frame(concurrent_plugin.stream)["context"]
+            assert first_context["request_id"] != second_context["request_id"]
+            assert len(origin.requests) == count and not first.done()
+            later = Plugin(endpoint)
+            concurrent_plugin.reply(second_context, False)
+            assert second.result(timeout=3).startswith(b"HTTP/1.1 403")
+            assert not first.done() and len(origin.requests) == count
+            concurrent_plugin.reply(first_context, True)
+            assert first.result(timeout=3).startswith(b"HTTP/1.1 200")
+            assert origin.bodies[-1] == harmless
+            assert len(origin.requests) == count + 1
+        finally:
+            concurrent_plugin.close()
+            if later:
+                later.close()
+
     inspected, release = threading.Event(), threading.Event()
 
     def hold(context):
@@ -498,7 +524,7 @@ def main():
                 print((directory / "broker.log").read_text()[-12000:])
                 raise
         print(
-            "PASS: network policy, full-body decisions, raw-byte allow, compressed/chunked bodies, unknown requests, multiple plugins, disconnect, timeout, fragmented WebSocket and Python SDK"
+            "PASS: network policy, full-body decisions, raw-byte allow, compressed/chunked bodies, unknown requests, concurrent plugin decisions, connection snapshots, disconnect, timeout, fragmented WebSocket and Python SDK"
         )
     finally:
         if broker and not broker.log.closed:

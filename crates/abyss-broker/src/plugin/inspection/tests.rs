@@ -20,7 +20,11 @@ async fn timeout_and_cancellation_remove_waiters_and_late_replies_are_ignored() 
     let registry = Arc::new(InspectionRegistry::default());
     let (registration, mut requests) = registry.register();
     let session = registration.session.clone();
-    let pending = tokio::spawn(async move { session.inspect(context()).await });
+    let pending = tokio::spawn(async move {
+        session
+            .inspect(context(), Instant::now() + DECISION_TIMEOUT)
+            .await
+    });
     let request = requests.recv().await.unwrap();
     tokio::time::advance(DECISION_TIMEOUT).await;
     assert!(
@@ -37,7 +41,11 @@ async fn timeout_and_cancellation_remove_waiters_and_late_replies_are_ignored() 
         reason: None,
     });
     let session = registration.session.clone();
-    let pending = tokio::spawn(async move { session.inspect(context()).await });
+    let pending = tokio::spawn(async move {
+        session
+            .inspect(context(), Instant::now() + DECISION_TIMEOUT)
+            .await
+    });
     let _request = requests.recv().await.unwrap();
     pending.abort();
     assert!(
@@ -53,15 +61,17 @@ async fn timeout_and_cancellation_remove_waiters_and_late_replies_are_ignored() 
 #[tokio::test]
 async fn selected_disconnect_fails_current_request_and_future_requests_use_current_membership() {
     let registry = Arc::new(InspectionRegistry::default());
-    let inspector =
-        AgentRequestInspector::new(registry.clone(), HooksRuntimeConfig::default_enabled());
+    let participants = registry.subscribe();
     assert!(
-        inspector.plan().is_none(),
+        participants.borrow().is_empty(),
         "no plugins means ordinary streaming"
     );
     let (first, mut requests) = registry.register();
     let (second, _requests) = registry.register();
-    let snapshot = inspector.plan().unwrap();
+    let plan = InspectionPlan {
+        sessions: participants.borrow().clone(),
+    };
+    let snapshot = registry.select(&plan).unwrap();
     assert!(
         Arc::ptr_eq(&snapshot[0], &first.session),
         "registration order must be stable"
@@ -71,21 +81,65 @@ async fn selected_disconnect_fails_current_request_and_future_requests_use_curre
         "all selected connections must participate"
     );
     let session = snapshot[0].clone();
-    let pending = tokio::spawn(async move { session.inspect(context()).await });
+    let pending = tokio::spawn(async move {
+        session
+            .inspect(context(), Instant::now() + DECISION_TIMEOUT)
+            .await
+    });
     let _request = requests.recv().await.unwrap();
     drop(first);
     assert!(
         pending.await.unwrap().is_err(),
         "selected disconnect must fail its waiter"
     );
-    assert_eq!(inspector.plan().unwrap().len(), 1);
+    assert_eq!(participants.borrow().len(), 1);
     assert!(
-        snapshot[0].inspect(context()).await.is_err(),
+        registry.select(&plan).is_err(),
+        "a disconnected identity cannot be replaced"
+    );
+    assert!(
+        snapshot[0]
+            .inspect(context(), Instant::now() + DECISION_TIMEOUT)
+            .await
+            .is_err(),
         "old snapshots must retain closed session identity"
     );
     drop(second);
     assert!(
-        inspector.plan().is_none(),
+        participants.borrow().is_empty(),
         "future requests must return to streaming after last disconnect"
     );
+}
+
+#[tokio::test]
+async fn caller_cancellation_cancels_server_task_and_session_waiter() {
+    let registry = Arc::new(InspectionRegistry::default());
+    let (registration, mut requests) = registry.register();
+    let plan = InspectionPlan {
+        sessions: registry.subscribe().borrow().clone(),
+    };
+    let message: BrokerMessage = serde_json::from_str(include_str!(concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/../../specs/broker-plugin-protocol/v1/fixtures/inspect-request.json"
+    )))
+    .unwrap();
+    let BrokerMessage::InspectRequest { context } = message else {
+        panic!("fixture");
+    };
+    let (reply, response) = oneshot::channel();
+    let task = tokio::spawn(
+        InspectionTask::new(
+            &registry,
+            &plan,
+            context,
+            Instant::now() + DECISION_TIMEOUT,
+            reply,
+        )
+        .run(),
+    );
+    let _request = requests.recv().await.unwrap();
+    assert_eq!(registration.session.pending.lock().len(), 1);
+    drop(response);
+    task.await.unwrap();
+    assert!(registration.session.pending.lock().is_empty());
 }

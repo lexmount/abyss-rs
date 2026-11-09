@@ -4,6 +4,10 @@
 //! retains only one task control handle and its common status snapshot, keeping
 //! dynamic dispatch out of the connection path.
 
+mod request_control;
+
+use request_control::RequestControl;
+
 use std::{net::SocketAddr, path::Path, sync::Arc};
 
 use serde::Serialize;
@@ -151,7 +155,7 @@ pub struct ProxyService {
 struct ProxyWorkerServices {
     network: crate::network_config::NetworkRuntime,
     mitm: Arc<abyss_mitm::MitmEngine>,
-    inspector: crate::plugin::inspection::AgentRequestInspector,
+    request_control: Option<RequestControl>,
     diagnostics: FlowDiagnostics,
     traffic: TrafficMonitor,
 }
@@ -190,7 +194,7 @@ impl ProxyService {
             state: Arc::new(Mutex::new(ProxyRuntimeState::stopped())),
             worker_services: ProxyWorkerServices {
                 network,
-                inspector: crate::plugin::inspection::AgentRequestInspector::default(),
+                request_control: None,
                 mitm,
                 diagnostics,
                 traffic,
@@ -198,11 +202,12 @@ impl ProxyService {
         }
     }
 
-    pub(crate) fn with_inspector(
+    pub(crate) fn with_plugins(
         mut self,
-        inspector: crate::plugin::inspection::AgentRequestInspector,
+        plugins: crate::plugin::PluginClient,
+        hooks: abyss_agent_hook::HooksRuntimeConfig,
     ) -> Self {
-        self.worker_services.inspector = inspector;
+        self.worker_services.request_control = Some(RequestControl::new(plugins, hooks));
         self
     }
 
@@ -344,7 +349,7 @@ impl StoppedProxyRuntime {
                 services.diagnostics,
                 services.traffic,
             )
-            .with_inspector(services.inspector)
+            .with_request_control(services.request_control)
             .run(shutdown_rx),
         );
         IngressTask {
@@ -401,7 +406,7 @@ impl IngressTask {
 struct ProxyWorker<I> {
     ingress: I,
     mitm: Arc<abyss_mitm::MitmEngine>,
-    inspector: crate::plugin::inspection::AgentRequestInspector,
+    request_control: Option<RequestControl>,
     diagnostics: FlowDiagnostics,
     traffic: TrafficMonitor,
     connections: JoinSet<()>,
@@ -421,7 +426,7 @@ where
         Self {
             ingress,
             mitm,
-            inspector: crate::plugin::inspection::AgentRequestInspector::default(),
+            request_control: None,
             diagnostics,
             traffic,
             connections: JoinSet::new(),
@@ -429,11 +434,8 @@ where
         }
     }
 
-    fn with_inspector(
-        mut self,
-        inspector: crate::plugin::inspection::AgentRequestInspector,
-    ) -> Self {
-        self.inspector = inspector;
+    fn with_request_control(mut self, request_control: Option<RequestControl>) -> Self {
+        self.request_control = request_control;
         self
     }
 
@@ -480,7 +482,7 @@ where
                 self.mitm.clone(),
                 self.diagnostics.clone(),
                 self.traffic.clone(),
-                self.inspector.clone(),
+                self.request_control.clone(),
             )
             .run(),
         );
@@ -543,7 +545,7 @@ where
 struct ProxyConnection<C> {
     connection: C,
     mitm: Arc<abyss_mitm::MitmEngine>,
-    inspector: crate::plugin::inspection::AgentRequestInspector,
+    request_control: Option<RequestControl>,
     diagnostics: FlowDiagnostics,
     traffic: TrafficMonitor,
 }
@@ -557,12 +559,12 @@ where
         mitm: Arc<abyss_mitm::MitmEngine>,
         diagnostics: FlowDiagnostics,
         traffic: TrafficMonitor,
-        inspector: crate::plugin::inspection::AgentRequestInspector,
+        request_control: Option<RequestControl>,
     ) -> Self {
         Self {
             connection,
             mitm,
-            inspector,
+            request_control,
             diagnostics,
             traffic,
         }
@@ -573,7 +575,7 @@ where
         let Self {
             connection,
             mitm,
-            inspector,
+            request_control,
             diagnostics,
             traffic,
         } = self;
@@ -587,13 +589,13 @@ where
             }
         };
         diagnostics.record_accepted();
-        Self::run_flow(flow, mitm, inspector, diagnostics, traffic).await;
+        Self::run_flow(flow, mitm, request_control, diagnostics, traffic).await;
     }
 
     async fn run_flow(
         flow: PlatformFlow,
         mitm: Arc<abyss_mitm::MitmEngine>,
-        inspector: crate::plugin::inspection::AgentRequestInspector,
+        request_control: Option<RequestControl>,
         diagnostics: FlowDiagnostics,
         traffic: TrafficMonitor,
     ) {
@@ -621,7 +623,11 @@ where
         let mitm_flow = flow
             .into_mitm_flow()
             .with_traffic_observer(traffic_flow.observer());
-        let result = mitm.handle_flow_with_control(mitm_flow, &inspector).await;
+        let result = if let Some(control) = request_control {
+            mitm.handle_flow_with_control(mitm_flow, &control).await
+        } else {
+            mitm.handle_flow(mitm_flow).await
+        };
         traffic_flow.finish();
         drop(traffic_finish_guard);
         let _recorded_result = result.record(&diagnostics, diagnostic_context);

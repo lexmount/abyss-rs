@@ -119,7 +119,7 @@ pub async fn serve(
         traffic.clone(),
         network.clone(),
     )
-    .with_inspector(plugin_server.inspector(hooks.clone()));
+    .with_plugins(plugin_server.client(), hooks.clone());
     let diagnostics =
         BrokerDiagnosticsService::new(actual_addr, proxy_endpoint_label, flow_diagnostics).await;
     let _proxy_status = proxy.start(proxy_plan).await?;

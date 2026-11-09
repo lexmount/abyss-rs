@@ -718,6 +718,23 @@ it through the plugin protocol. It is not a Rust `MitmHook` implementation loade
 into the transport engine. Connection membership, dispatch, pending replies,
 and decision aggregation belong to the broker plugin service.
 
+Broker callers use one `PluginServer::client()` channel handle for both kinds of
+work. `PluginClient` publishes events with a best-effort `try_send`; inspection
+submits an already parsed context and awaits a oneshot result. The server receives
+both commands, broadcasts observations through existing sessions, and spawns a
+server-owned task for each inspection. It continues accepting connections and
+dispatching other commands while plugins decide. The command queue and active
+inspection tasks are each bounded at 64; excess active inspections fail as
+`inspection_unavailable`.
+
+Before request retention, the client reads a `watch` snapshot of immutable
+connection identities. An empty snapshot preserves streaming with no inspection
+context construction or RPC. A nonempty snapshot becomes an opaque
+`InspectionPlan`: no registry, session object, or session sender escapes the
+plugin service. The server resolves those identities and performs ordered
+inspection internally. Connections added after selection do not join that request;
+a selected connection that disappears fails it even if the same plugin reconnects.
+
 Keep the existing Unix socket/Named Pipe endpoint and length-prefixed JSON
 framing. Update the protocol on that same connection with capability declaration.
 A plugin declares `agent_request` when it supplies an
@@ -761,7 +778,10 @@ through a bounded session channel instead of the best-effort event broadcast.
 Associate each pending request with a oneshot reply and its session. This permits
 concurrent request IDs without holding a mutex across I/O or a decision await.
 
-The internal default deadline covers queueing, transmission, and the reply. A
+The internal five-second deadline per selected session covers queueing,
+transmission, and the reply. Server command queueing consumes the first session's
+budget. Dropping the caller's reply receiver cancels the server inspection task;
+server shutdown drops queued replies and stops active tasks before closing sessions. A
 selected session's full queue, disconnect, timeout, malformed reply, or handler
 error rejects its pending request as `inspection_unavailable`. Remove pending
 entries on completion or cancellation; late replies are ignored. Disconnecting
@@ -795,9 +815,11 @@ inspection messages in `abyss-plugin-protocol`:
 | `abyss-mitm` | Existing TLS/network decisions, HTTP/WS framing, request retention, and the mechanical wait/forward/reject boundary. |
 
 MITM must not import broker, Agent parsing, or plugin protocol types. It does not
-know which model or plugin is being inspected. The broker's concrete
-`AgentRequestInspector` connects transport input to `abyss-agent-hook` and the
-plugin service, then maps the plugin decision into a transport result.
+know which model or plugin is being inspected. The broker's private
+`proxy::request_control::RequestControl` connects transport input to
+`abyss-agent-hook`, submits the prepared context through `PluginClient`, and maps
+the returned decision into a transport result. `plugin::inspection` remains
+private and owns session selection, encoding, pending replies, and aggregation.
 
 The relay still needs a point at which its caller can await a result before
 writing upstream. Keep that a narrow transport integration interface, separate
@@ -832,7 +854,7 @@ trait RequestForwardingControl: Send + Sync {
 ```
 
 `RequestView` borrows flow metadata and complete decoded content. The associated
-plan carries the snapshot of selected connected plugin handles
+plan carries an opaque snapshot of selected connection identities
 without exposing those types to MITM. The WebSocket entry uses the same decision types
 with a message view and upgrade metadata. `LocalRejection` contains only the
 transport response/close information needed by the relay; the broker owns the
@@ -845,12 +867,18 @@ with a live or retained body source, then call the same response/completion
 stages. The plan's only inspection-specific work is retaining full content and
 awaiting the broker's before-forward result.
 
-`AgentRequestInspector::before_forward` calls the shared Agent request parser,
-builds plugin context, awaits the selected plugin sessions, and maps their
+`RequestControl::before_forward` calls the shared Agent request parser,
+builds plugin context, awaits the plugin server through its channel client, and maps its
 `Allow`/`Block` result to `Forward`/`Reject`. It does not call the observer's
 `on_http_exchange` with a fabricated response. An Agent `Allow` authorizes this
 request within an already intercepted/decoded flow and never overrides a network
 decision.
+
+After Allow, the prepared request remains attached to the captured body for the
+existing observation worker to reuse. With no inspector, Agent request/response
+parsing and exchange assembly remain in that background worker. This refactor
+keeps the current eager JSON initialization in `CapturedBody`; moving that step
+off the forwarding path is outside its scope.
 
 Pass `G: RequestForwardingControl` through the relevant engine/relay methods so
 Rust monomorphizes the calls and futures. Keep the engine and unrelated control API
@@ -989,8 +1017,9 @@ required parts of the final feature.
 3. **Broker plugin inspection.** Update the current protocol on the existing
    endpoint with capability declaration, connection membership, tagged messages,
    and SDK handlers. Update all SDKs, the delivery plugin, specs, and fixtures
-   together; implement no legacy protocol path. Implement `AgentRequestInspector` using the
-   shared parser and selected connected sessions. Add no plugin configuration
+   together; implement no legacy protocol path. Use a private request control
+   adapter for the shared parser and a channel-only `PluginClient` for decisions.
+   Keep connected-session dispatch inside `PluginServer`. Add no plugin configuration
    section or management API.
    Add a minimal DLP plugin example; private-key detection belongs in that custom
    plugin rather than a broker or MITM security-rule catalog.

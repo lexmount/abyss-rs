@@ -3,27 +3,34 @@
 //! The broker owns this server. Public plugin clients use `abyss-sdk`; this
 //! module depends only on the shared wire contract and Agent Hook sink boundary.
 
+mod client;
 mod codec;
-pub mod inspection;
+mod inspection;
+mod message;
 mod session;
 mod transport;
 
-use std::{convert::Infallible, future::Future, path::Path, sync::Arc};
+use std::{path::Path, sync::Arc};
 
-use abyss_agent_hook::AgentEventSink;
 use abyss_plugin_protocol::event::AgentEvent;
 use thiserror::Error;
 use tokio::{
-    sync::{broadcast, watch},
+    sync::{broadcast, mpsc, watch},
     task::JoinSet,
 };
 
+pub use client::PluginClient;
+pub use message::{InspectionDecision, InspectionError, InspectionPlan};
+
 use self::{
+    inspection::InspectionTask,
+    message::PluginCommand,
     session::PluginSession,
     transport::{PluginTransport as _, platform::PlatformPluginTransport},
 };
 
 const EVENT_BROADCAST_CAPACITY: usize = 64;
+const COMMAND_CAPACITY: usize = 64;
 
 /// Failure that prevents the broker plugin service from continuing.
 #[derive(Debug, Error)]
@@ -46,26 +53,12 @@ impl PluginServerError {
     }
 }
 
-/// Non-blocking Agent Hook sink backed by the shared broadcast ring.
-#[derive(Debug, Clone)]
-pub struct PluginEventBroadcaster {
-    sender: broadcast::Sender<Arc<AgentEvent>>,
-}
-
-impl AgentEventSink for PluginEventBroadcaster {
-    type Error = Infallible;
-
-    fn publish(&self, event: AgentEvent) -> impl Future<Output = Result<(), Self::Error>> + Send {
-        // A live stream intentionally drops events when there are no receivers.
-        drop(self.sender.send(Arc::new(event)));
-        std::future::ready(Ok(()))
-    }
-}
-
 /// Bound local plugin listener and its shared live event source.
 pub struct PluginServer {
     listener: PlatformPluginTransport,
-    broadcaster: Arc<PluginEventBroadcaster>,
+    events: broadcast::Sender<Arc<AgentEvent>>,
+    client: PluginClient,
+    commands: mpsc::Receiver<PluginCommand>,
     inspections: Arc<inspection::InspectionRegistry>,
 }
 
@@ -73,7 +66,10 @@ impl PluginServer {
     /// Binds the platform-default endpoint beneath the broker product root.
     pub async fn bind(abyss_home: &Path) -> Result<Self, PluginServerError> {
         let listener = PlatformPluginTransport::bind(abyss_home).await?;
-        let (sender, _receiver) = broadcast::channel(EVENT_BROADCAST_CAPACITY);
+        let (events, _receiver) = broadcast::channel(EVENT_BROADCAST_CAPACITY);
+        let (commands, receiver) = mpsc::channel(COMMAND_CAPACITY);
+        let inspections = Arc::new(inspection::InspectionRegistry::default());
+        let client = PluginClient::new(commands, inspections.subscribe());
         tracing::info!(
             endpoint = %listener.endpoint_label(),
             event_capacity = EVENT_BROADCAST_CAPACITY,
@@ -81,8 +77,10 @@ impl PluginServer {
         );
         Ok(Self {
             listener,
-            inspections: Arc::new(inspection::InspectionRegistry::default()),
-            broadcaster: Arc::new(PluginEventBroadcaster { sender }),
+            inspections,
+            events,
+            client,
+            commands: receiver,
         })
     }
 
@@ -92,17 +90,9 @@ impl PluginServer {
         self.listener.endpoint_label()
     }
 
-    /// Returns the non-blocking Agent Hook publication boundary.
-    #[must_use]
-    pub(super) fn event_sink(&self) -> Arc<PluginEventBroadcaster> {
-        self.broadcaster.clone()
-    }
-
-    pub(crate) fn inspector(
-        &self,
-        hooks: abyss_agent_hook::HooksRuntimeConfig,
-    ) -> inspection::AgentRequestInspector {
-        inspection::AgentRequestInspector::new(self.inspections.clone(), hooks)
+    /// Returns a channel-only handle for event publication and request decisions.
+    pub fn client(&self) -> PluginClient {
+        self.client.clone()
     }
 
     /// Accepts plugin connections until broker shutdown is requested.
@@ -115,9 +105,9 @@ impl PluginServer {
         mut shutdown: watch::Receiver<bool>,
     ) -> Result<(), PluginServerError> {
         let mut sessions = JoinSet::new();
+        let mut inspections = JoinSet::new();
         loop {
             tokio::select! {
-                biased;
                 changed = shutdown.changed() => {
                     if changed.is_err() || *shutdown.borrow() {
                         break;
@@ -128,7 +118,7 @@ impl PluginServer {
                     sessions.spawn(
                         PluginSession::new(
                             stream,
-                            self.broadcaster.sender.clone(),
+                            self.events.clone(),
                             shutdown.clone(),
                         )
                         .with_inspections(self.inspections.clone())
@@ -138,14 +128,53 @@ impl PluginServer {
                 completed = sessions.join_next(), if !sessions.is_empty() => {
                     Self::log_completed_session(completed);
                 }
+                command = self.commands.recv() => {
+                    match command {
+                        Some(PluginCommand::PublishEvent(event)) => {
+                            // A live event has no receipt or replay if nobody subscribes.
+                            drop(self.events.send(event));
+                        }
+                        Some(PluginCommand::InspectRequest { plan, context, first_deadline, reply }) => {
+                            // Completed tasks must not consume active request capacity.
+                            while let Some(completed) = inspections.try_join_next() {
+                                Self::log_completed_inspection(completed);
+                            }
+                            if inspections.len() >= COMMAND_CAPACITY {
+                                let _sent = reply.send(Err(InspectionError::Unavailable));
+                            } else {
+                                inspections.spawn(InspectionTask::new(
+                                    &self.inspections, &plan, context, first_deadline, reply,
+                                ).run());
+                            }
+                        }
+                        None => break,
+                    }
+                }
+                completed = inspections.join_next(), if !inspections.is_empty() => {
+                    if let Some(completed) = completed {
+                        Self::log_completed_inspection(completed);
+                    }
+                }
             }
         }
 
+        self.commands.close();
+        // Dropping queued reply senders wakes callers before waiting for sockets.
+        while let Ok(command) = self.commands.try_recv() {
+            drop(command);
+        }
+        inspections.shutdown().await;
         self.listener.shutdown().await;
         while let Some(completed) = sessions.join_next().await {
             Self::log_completed_session(Some(completed));
         }
         Ok(())
+    }
+
+    fn log_completed_inspection(completed: Result<(), tokio::task::JoinError>) {
+        if let Err(error) = completed {
+            tracing::error!(%error, "broker plugin inspection task failed");
+        }
     }
 
     fn log_completed_session(
@@ -164,117 +193,4 @@ impl PluginServer {
 }
 
 #[cfg(all(test, unix))]
-mod tests {
-    use std::path::PathBuf;
-
-    use abyss_agent_hook::AgentEventSink as _;
-    use abyss_plugin_protocol::{
-        event::AgentEvent,
-        message::{BrokerClose, BrokerHello, PluginHello, PluginMessage},
-    };
-    use tokio::net::UnixStream;
-
-    use super::{
-        PluginServer,
-        codec::{read_payload, write_json},
-    };
-
-    #[tokio::test]
-    async fn one_real_listener_broadcasts_the_same_event_to_two_plugins() {
-        let root = test_root();
-        let server = PluginServer::bind(&root)
-            .await
-            .expect("plugin server should bind");
-        let endpoint = PathBuf::from(server.endpoint_label());
-        let sink = server.broadcaster.clone();
-        let (shutdown_tx, shutdown_rx) = tokio::sync::watch::channel(false);
-        let server_task = tokio::spawn(server.run(shutdown_rx));
-
-        let mut first = connect_plugin(&endpoint, "first-plugin").await;
-        let mut second = connect_plugin(&endpoint, "second-plugin").await;
-        let event: AgentEvent = serde_json::from_str(include_str!("fixtures/agent-event.json"))
-            .expect("published AgentEvent fixture should decode");
-        sink.publish(event)
-            .await
-            .expect("broker event sink should accept the event");
-
-        // Both plugins negotiate v1, whose frames are not `AgentEvent`s.
-        let first_event: serde_json::Value = read_json(&mut first).await;
-        let second_event: serde_json::Value = read_json(&mut second).await;
-        assert_eq!(first_event["event_id"], "evt-123");
-        assert_eq!(second_event, first_event);
-
-        shutdown_tx
-            .send(true)
-            .expect("server should retain shutdown receiver");
-        let first_close: BrokerClose = read_json(&mut first).await;
-        let second_close: BrokerClose = read_json(&mut second).await;
-        assert_eq!(first_close.code, 100_u32);
-        assert_eq!(second_close.code, 100_u32);
-        server_task
-            .await
-            .expect("plugin server task should finish")
-            .expect("plugin server should stop cleanly");
-        assert!(
-            !endpoint.exists(),
-            "orderly shutdown should remove the Unix socket"
-        );
-        if tokio::fs::try_exists(&root)
-            .await
-            .expect("plugin server test root should be queryable")
-        {
-            tokio::fs::remove_dir_all(root)
-                .await
-                .expect("plugin server test root should remove");
-        }
-    }
-
-    async fn connect_plugin(endpoint: &std::path::Path, plugin_id: &str) -> UnixStream {
-        let mut stream = UnixStream::connect(endpoint)
-            .await
-            .expect("plugin should connect to the Unix socket");
-        write_json(
-            &mut stream,
-            &PluginMessage::PluginHello(PluginHello::new(plugin_id.to_owned())),
-        )
-        .await
-        .expect("PluginHello should write");
-        let hello: BrokerHello = read_json(&mut stream).await;
-        assert_eq!(
-            hello.protocol_version.wire_value(),
-            1_u16,
-            "broker should negotiate plugin protocol version 1"
-        );
-        stream
-    }
-
-    async fn read_json<T>(stream: &mut UnixStream) -> T
-    where
-        T: serde::de::DeserializeOwned,
-    {
-        let payload = read_payload(stream)
-            .await
-            .expect("plugin frame should read")
-            .expect("plugin frame should be present");
-        decode_payload(&payload)
-    }
-
-    fn test_root() -> PathBuf {
-        std::env::temp_dir().join(format!(
-            "abyss-plugin-server-test-{}-{}",
-            std::process::id(),
-            rand::random::<u64>()
-        ))
-    }
-    fn decode_payload<T: serde::de::DeserializeOwned>(payload: &[u8]) -> T {
-        let mut frame: serde_json::Value = serde_json::from_slice(payload).unwrap();
-        assert!(frame["type"].is_string(), "session frames are tagged");
-        let payload = if frame["type"] == "agent_event" {
-            frame["event"].take()
-        } else {
-            frame.as_object_mut().unwrap().remove("type");
-            frame
-        };
-        serde_json::from_value(payload).unwrap()
-    }
-}
+mod tests;

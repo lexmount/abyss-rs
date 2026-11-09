@@ -1,4 +1,5 @@
-//! Connected-session request decisions; membership never persists beyond a connection.
+//! Server-owned inspection tasks and connected-session decisions.
+//! Callers submit context through the plugin command channel; sessions never escape it.
 
 #[cfg(test)]
 mod tests;
@@ -12,13 +13,16 @@ use std::{
     time::Duration,
 };
 
-use abyss_agent_hook::{AgentRequestParser, HooksRuntimeConfig};
-use abyss_mitm::{LocalRejection, RequestForwardingControl, RequestView};
 use abyss_plugin_protocol::inspection::{AgentRequestContext, InspectResponse};
 use abyss_plugin_protocol::message::BrokerMessage;
-use axum::http::{Extensions, StatusCode};
 use parking_lot::Mutex;
-use tokio::sync::{mpsc, oneshot};
+use tokio::{
+    sync::{mpsc, oneshot, watch},
+    time::Instant,
+};
+use uuid::Uuid;
+
+use super::message::{InspectionDecision, InspectionError, InspectionPlan};
 
 /// A decision includes queueing and reply time. There are no retries.
 pub(super) const DECISION_TIMEOUT: Duration = Duration::from_secs(5);
@@ -39,12 +43,22 @@ impl InspectionRequest {
     }
 }
 
-#[derive(Default)]
-pub struct InspectionRegistry {
+pub(super) struct InspectionRegistry {
     sessions: Mutex<Vec<Arc<InspectionSession>>>,
+    participants: watch::Sender<Arc<[Uuid]>>,
 }
 
-pub struct InspectionSession {
+impl Default for InspectionRegistry {
+    fn default() -> Self {
+        Self {
+            sessions: Mutex::new(Vec::new()),
+            participants: watch::channel(Arc::from([])).0,
+        }
+    }
+}
+
+pub(super) struct InspectionSession {
+    id: Uuid,
     sender: mpsc::Sender<Arc<InspectionRequest>>,
     pending: Mutex<HashMap<String, oneshot::Sender<InspectResponse>>>,
     closed: AtomicBool,
@@ -56,16 +70,48 @@ pub(super) struct SessionRegistration {
 }
 
 impl InspectionRegistry {
+    pub(super) fn subscribe(&self) -> watch::Receiver<Arc<[Uuid]>> {
+        self.participants.subscribe()
+    }
+
+    fn publish_participants(&self, sessions: &[Arc<InspectionSession>]) {
+        self.participants
+            .send_replace(sessions.iter().map(|session| session.id).collect());
+    }
+
+    fn select(
+        &self,
+        plan: &InspectionPlan,
+    ) -> Result<Vec<Arc<InspectionSession>>, InspectionError> {
+        let sessions = self.sessions.lock();
+        plan.sessions
+            .iter()
+            .map(|id| {
+                sessions
+                    .iter()
+                    .find(|session| session.id == *id)
+                    .cloned()
+                    .ok_or(InspectionError::Unavailable)
+            })
+            .collect()
+    }
+
     pub(super) fn register(
         self: &Arc<Self>,
     ) -> (SessionRegistration, mpsc::Receiver<Arc<InspectionRequest>>) {
         let (sender, receiver) = mpsc::channel(SESSION_CAPACITY);
         let session = Arc::new(InspectionSession {
+            id: Uuid::new_v4(),
             sender,
             pending: Mutex::new(HashMap::new()),
             closed: AtomicBool::new(false),
         });
-        self.sessions.lock().push(session.clone());
+        {
+            let mut sessions = self.sessions.lock();
+            sessions.push(session.clone());
+            self.publish_participants(&sessions);
+            drop(sessions);
+        }
         (
             SessionRegistration {
                 registry: self.clone(),
@@ -79,10 +125,12 @@ impl InspectionRegistry {
 impl Drop for SessionRegistration {
     fn drop(&mut self) {
         self.session.closed.store(true, Ordering::Release);
-        self.registry
-            .sessions
-            .lock()
-            .retain(|session| !Arc::ptr_eq(session, &self.session));
+        {
+            let mut sessions = self.registry.sessions.lock();
+            sessions.retain(|session| session.id != self.session.id);
+            self.registry.publish_participants(&sessions);
+            drop(sessions);
+        }
         self.session.pending.lock().clear();
     }
 }
@@ -110,7 +158,11 @@ impl InspectionSession {
         }
     }
 
-    async fn inspect(&self, context: Arc<InspectionRequest>) -> Result<InspectResponse, ()> {
+    async fn inspect(
+        &self,
+        context: Arc<InspectionRequest>,
+        deadline: Instant,
+    ) -> Result<InspectResponse, ()> {
         let (sender, receiver) = oneshot::channel();
         {
             let mut pending = self.pending.lock();
@@ -124,7 +176,7 @@ impl InspectionSession {
             session: self,
             request_id: context.request_id.clone(),
         };
-        tokio::time::timeout(DECISION_TIMEOUT, async {
+        tokio::time::timeout_at(deadline, async {
             self.sender.send(context).await.map_err(|_| ())?;
             receiver.await.map_err(|_| ())
         })
@@ -133,90 +185,82 @@ impl InspectionSession {
     }
 }
 
-/// Broker-owned Agent parsing and plugin decision stage.
-#[derive(Clone)]
-pub struct AgentRequestInspector {
-    registry: Arc<InspectionRegistry>,
-    hooks: HooksRuntimeConfig,
+/// One server-dispatched command; the server owns its task and cancellation.
+pub(super) struct InspectionTask {
+    sessions: Result<Vec<Arc<InspectionSession>>, InspectionError>,
+    context: Arc<AgentRequestContext>,
+    first_deadline: Instant,
+    reply: oneshot::Sender<Result<InspectionDecision, InspectionError>>,
 }
 
-impl Default for AgentRequestInspector {
-    fn default() -> Self {
-        Self::new(
-            Arc::new(InspectionRegistry::default()),
-            HooksRuntimeConfig::default_enabled(),
-        )
-    }
-}
-
-impl AgentRequestInspector {
-    pub(crate) const fn new(registry: Arc<InspectionRegistry>, hooks: HooksRuntimeConfig) -> Self {
-        Self { registry, hooks }
-    }
-}
-
-impl RequestForwardingControl for AgentRequestInspector {
-    type Plan = Vec<Arc<InspectionSession>>;
-
-    fn plan(&self) -> Option<Self::Plan> {
-        let sessions = self.registry.sessions.lock();
-        (!sessions.is_empty()).then(|| sessions.clone())
-    }
-
-    async fn before_forward(
-        &self,
-        sessions: Self::Plan,
-        request: RequestView<'_>,
-    ) -> Result<Extensions, LocalRejection> {
-        let request_id = uuid::Uuid::new_v4().to_string();
-        let parsed = AgentRequestParser::prepare(&request);
-        let context = Arc::new(AgentRequestParser::parse_prepared(
-            &parsed,
-            &request,
-            &self.hooks.snapshot().harness_usage.config,
-            request_id.clone(),
-        ));
-        let request = Arc::new(InspectionRequest::new(context).map_err(|error| {
-            let (status, code, reason) = if matches!(
-                error,
-                super::codec::PluginFrameError::PayloadTooLarge { .. }
-            ) {
-                (
-                    StatusCode::PAYLOAD_TOO_LARGE,
-                    "inspection_body_too_large",
-                    "Request context exceeds the plugin frame limit",
-                )
-            } else {
-                (
-                    StatusCode::SERVICE_UNAVAILABLE,
-                    "inspection_unavailable",
-                    "Request context could not be encoded",
-                )
-            };
-            LocalRejection::new(status, code, reason, request_id.clone())
-        })?);
-        for session in sessions {
-            let response = session.inspect(request.clone()).await.map_err(|()| {
-                LocalRejection::new(
-                    StatusCode::SERVICE_UNAVAILABLE,
-                    "inspection_unavailable",
-                    "Request inspection unavailable",
-                    request_id.clone(),
-                )
-            })?;
-            if !response.allow {
-                return Err(LocalRejection::new(
-                    StatusCode::FORBIDDEN,
-                    "agent_request_blocked",
-                    response
-                        .reason
-                        .unwrap_or_else(|| "Request blocked by abyss-broker".to_owned()),
-                    request_id,
-                ));
-            }
+impl InspectionTask {
+    pub(super) fn new(
+        registry: &InspectionRegistry,
+        plan: &InspectionPlan,
+        context: Arc<AgentRequestContext>,
+        first_deadline: Instant,
+        reply: oneshot::Sender<Result<InspectionDecision, InspectionError>>,
+    ) -> Self {
+        Self {
+            sessions: registry.select(plan),
+            context,
+            first_deadline,
+            reply,
         }
-        let mut annotations = Extensions::new();
-        annotations.insert(parsed);
-        Ok(annotations)
+    }
+
+    #[expect(
+        clippy::integer_division_remainder_used,
+        reason = "tokio::select! expansion uses remainder internally"
+    )]
+    pub(super) async fn run(self) {
+        let Self {
+            sessions,
+            context,
+            first_deadline,
+            mut reply,
+        } = self;
+        let result = tokio::select! {
+            biased;
+            () = reply.closed() => return,
+            result = Self::decide(sessions, context, first_deadline) => result,
+        };
+        let _sent = reply.send(result);
+    }
+
+    #[expect(
+        clippy::arithmetic_side_effects,
+        reason = "the fixed five-second deadline fits Instant's range"
+    )]
+    async fn decide(
+        sessions: Result<Vec<Arc<InspectionSession>>, InspectionError>,
+        context: Arc<AgentRequestContext>,
+        mut deadline: Instant,
+    ) -> Result<InspectionDecision, InspectionError> {
+        let sessions = sessions?;
+        let request = Arc::new(
+            InspectionRequest::new(context).map_err(|error| match error {
+                super::codec::PluginFrameError::PayloadTooLarge { .. } => {
+                    InspectionError::PayloadTooLarge
+                }
+                _ => InspectionError::Encoding,
+            })?,
+        );
+        for session in sessions {
+            if Instant::now() >= deadline {
+                return Err(InspectionError::Unavailable);
+            }
+            let response = session
+                .inspect(request.clone(), deadline)
+                .await
+                .map_err(|()| InspectionError::Unavailable)?;
+            if !response.allow {
+                return Ok(InspectionDecision::Block {
+                    reason: response.reason,
+                });
+            }
+            deadline = Instant::now() + DECISION_TIMEOUT;
+        }
+        Ok(InspectionDecision::Allow)
     }
 }
