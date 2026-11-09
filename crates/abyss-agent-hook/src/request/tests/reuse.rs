@@ -10,6 +10,7 @@ use abyss_mitm::{
     RequestView, TransparentProtocol, WebSocketDirection, WebSocketMessage,
 };
 use abyss_plugin_protocol::event::AgentEvent;
+use base64::{Engine as _, engine::general_purpose::STANDARD};
 use http::{Request, Response};
 use serde_json::{Value, json};
 
@@ -91,6 +92,73 @@ fn hook(sink: Arc<Events>) -> HarnessUsageHook<Arc<Events>> {
         HooksRuntimeConfig::default_enabled(),
         sink,
     )
+}
+
+#[tokio::test]
+async fn responses_tool_output_image_reaches_inspection_and_both_observation_modes() {
+    let image = b"\x89PNG\r\n\x1a\nread-image-result";
+    let encoded = STANDARD.encode(image);
+    let request = json!({"model":"requested","input":[{
+        "type":"function_call_output","call_id":"read-image","output":[
+            {"type":"input_text","text":"read_image result"},
+            {"type":"input_image","image_url":format!("data:image/png;base64,{encoded}")}
+        ]
+    }]});
+    let response = json!({"id":"response-1","model":"actual","output":[{
+        "type":"message","role":"assistant","content":[{"type":"output_text","text":"image received"}]
+    }]});
+    let flow = flow();
+    let head = head("/v1/responses");
+    let plain = HttpExchange::new(
+        flow.clone(),
+        head.clone().map(|()| body(&request)),
+        Response::new(body(&response)),
+    );
+    let mut captured = body(&request);
+    let view = RequestView {
+        flow: &flow,
+        head: &head,
+        body: &captured,
+        transport: RequestTransport::Http,
+    };
+    let prepared = AgentRequestParser::prepare(&view);
+    let context = AgentRequestParser::parse_prepared(
+        &prepared,
+        &view,
+        &HarnessUsageConfig::default(),
+        "checked-image".to_owned(),
+    );
+    let attachments = context.agent.unwrap().attachments;
+    assert_eq!(attachments.len(), 1);
+    assert_eq!(
+        attachments[0].content_base64.as_deref(),
+        Some(encoded.as_str())
+    );
+    captured.extensions_mut().insert(prepared);
+    let inspected = HttpExchange::new(
+        flow,
+        head.map(|()| captured),
+        Response::new(body(&response)),
+    );
+    let plain_events = Arc::new(Events::default());
+    let inspected_events = Arc::new(Events::default());
+    hook(plain_events.clone())
+        .on_http_exchange(&plain)
+        .await
+        .unwrap();
+    hook(inspected_events.clone())
+        .on_http_exchange(&inspected)
+        .await
+        .unwrap();
+
+    let events = plain_events.normalized();
+    assert_eq!(events.len(), 2);
+    assert_eq!(events, inspected_events.normalized());
+    assert_eq!(
+        events[0]["attachments"],
+        serde_json::to_value(attachments).unwrap()
+    );
+    assert!(events[1].get("attachments").is_none());
 }
 
 #[tokio::test]

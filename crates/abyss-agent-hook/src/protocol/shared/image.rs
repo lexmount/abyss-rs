@@ -244,7 +244,7 @@ mod tests {
     }
 
     #[test]
-    fn ignores_images_outside_user_message_content() {
+    fn ignores_images_in_tool_definitions_and_developer_content() {
         let data_url = format!("data:image/png;base64,{}", STANDARD.encode(PNG_BYTES));
         let payload = json!({
             "tools": [{"example": {"type": "input_image", "image_url": data_url}}],
