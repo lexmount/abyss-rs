@@ -22,6 +22,13 @@ test-sdks-unit:
 test-blackbox-sdks:
 	bash scripts/blackbox_sdk_real_broker.sh
 
+.PHONY: test-blackbox-sdks-codex
+test-blackbox-sdks-codex:
+	cargo build --locked --package abyss-broker
+	cargo test --locked --package abyss-sdk --test codex_inspection --no-run
+	npm --prefix sdks/typescript run build
+	python3 scripts/blackbox_sdk_codex.py $(SDK_CODEX_ARGS)
+
 .PHONY: test-blackbox-codex-upload test-blackbox-usage-helpers
 test-blackbox-codex-upload:
 	bash scripts/blackbox_codex_usage_upload.sh

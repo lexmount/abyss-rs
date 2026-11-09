@@ -17,6 +17,65 @@ permissions:
   contents: read
 
 jobs:
+  sdk-inspection:
+    name: Real Codex SDK inspection (Rust, TypeScript, Python)
+    if: github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    concurrency:
+      group: abyss-e2e-provider-openai
+      queue: max
+      cancel-in-progress: false
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Rust
+        uses: ./.github/actions/setup-rust
+        with:
+          cache-shared-key: sdk-codex-blackbox
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: npm
+          cache-dependency-path: sdks/typescript/package-lock.json
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Install Codex and SDK toolchains
+        shell: bash
+        run: |
+          tools_dir="$RUNNER_TEMP/abyss-sdk-codex-tools"
+          npm install --prefix "$tools_dir" --no-audit --no-fund @openai/codex@0.163.0
+          echo "$tools_dir/node_modules/.bin" >> "$GITHUB_PATH"
+          npm --prefix sdks/typescript ci
+          python -m pip install --disable-pip-version-check './sdks/python[dev]'
+
+      - name: Set up Codex Linux sandbox
+        uses: ./.github/actions/setup-codex-sandbox
+
+      - name: Test SDK black-box assertions
+        run: python3 -m unittest discover -s scripts/tests -p 'test_sdk_codex_blackbox.py'
+
+      - name: Run real Codex through each SDK inspection plugin
+        env:
+          CODEX_API_KEY: ${{ secrets.CODEX_API_KEY }}
+        run: make test-blackbox-sdks-codex SDK_CODEX_ARGS="--report $RUNNER_TEMP/sdk-codex-results.json"
+
+      - name: Upload sanitized SDK results
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: sdk-codex-inspection-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/sdk-codex-results.json
+          if-no-files-found: warn
+          retention-days: 14
+
   codex-upload:
     name: Real Codex context upload
     if: github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository

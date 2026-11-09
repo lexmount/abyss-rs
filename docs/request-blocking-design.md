@@ -1109,3 +1109,39 @@ network decisions must not allocate inspection buffers, serialize
 model requests, or start decision workers. Report active inspection
 latency separately from relay overhead. These measurements validate the intended
 abstraction cost without expanding this change into a new performance framework.
+
+## Real Codex SDK inspection regression
+
+`make test-blackbox-sdks-codex` runs the actual Codex CLI against OpenAI through
+an isolated explicit-proxy broker and each language's public SDK. It requires
+`CODEX_API_KEY`, the pinned Codex CLI used by CI, and installed TypeScript build
+dependencies. No backend, system trust-store change, or private-key detection is
+involved. The temporary CA is supplied only to the Codex child process.
+
+The Rust, TypeScript, and Python participants all declare both `agent_request`
+and `agent_events` on one connection. For each SDK the runner checks:
+
+- A real Codex request reaches the callback with the decoded JSON, normalized
+  request entries, Codex identity, model, TLS target, absent explicit-proxy process
+  attribution, and credential headers omitted.
+- A marker in the parsed request selects Block. Codex exits with a failed turn,
+  HTTP 403, and the plugin's exact reason. Codex displays `error.message`, so its
+  console output is not expected to reproduce the complete broker JSON envelope.
+- A different marker selects Allow on the same plugin connection. Codex completes
+  against the real provider and returns that marker. The SDK receives correlated
+  request/response events with a response ID and nonzero output usage.
+- The blocked prompt produces no observed request/response exchange, and broker
+  shutdown cleanly closes the SDK session.
+
+The `Codex Black-box` workflow runs this target on same-repository pull requests,
+main pushes, and manual dispatch. It uses the repository's `CODEX_API_KEY` secret;
+fork pull requests cannot run this credentialed job. Provider concurrency follows
+the existing OpenAI CI queue. Artifacts contain sanitized results and, on failure,
+metadata-only SDK evidence. Raw prompts, credential values, and temporary CA keys
+are not uploaded.
+
+To select one SDK, set `SDK_CODEX_ARGS="--sdk rust"` (or `typescript` / `python`).
+`--block-only` is a separate local rejection smoke test; its results explicitly
+report that live provider completion was not verified. CI does not use that mode.
+The regular `make test-sdks` remains credential-free, and existing deterministic
+HTTP / gzip / WebSocket broker tests continue to cover transport-level behavior.
