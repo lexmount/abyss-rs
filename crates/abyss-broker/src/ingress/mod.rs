@@ -302,6 +302,7 @@ impl<I> StartedIngress<I> {
 }
 
 /// Metadata recovered by a platform ingress before MITM handling.
+#[derive(Debug)]
 pub struct PlatformFlowMetadata {
     flow_id: abyss_mitm::FlowId,
     peer_addr: Option<SocketAddr>,
@@ -542,6 +543,15 @@ pub enum IngressError {
     /// Explicit HTTP proxy connection preparation failed.
     #[error("explicit HTTP proxy ingress error: {0}")]
     Explicit(#[from] explicit::ExplicitIngressError),
+    /// Establishing a requested direct macOS flow failed before local flow open.
+    #[cfg(target_os = "macos")]
+    #[error("connect framed platform flow {flow_id}: {source}")]
+    FramedConnect {
+        flow_id: uuid::Uuid,
+        metadata: Box<PlatformFlowMetadata>,
+        #[source]
+        source: abyss_mitm::TransparentFlowError,
+    },
     /// Binding the platform listener failed.
     #[cfg(target_os = "windows")]
     #[error("bind platform ingress listener at {listen_addr}: {source}")]

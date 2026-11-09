@@ -3,6 +3,7 @@
 //! The macOS Network Extension sends one Unix socket connection per intercepted
 //! flow. Each connection carries `ABY1` frames: one `FlowOpen`, zero or more
 //! bidirectional `FlowData` frames, and directional `FlowClose` bookkeeping.
+//! Opt-in connections receive one `FlowOpenResult` before application data.
 //! A close frame must name the byte direction that ended; the opposite
 //! direction remains writable until it receives its own close.
 
@@ -10,9 +11,7 @@ use std::{io, net::IpAddr};
 
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
-use tokio::io::{AsyncRead, AsyncReadExt as _};
-#[cfg(test)]
-use tokio::io::{AsyncWrite, AsyncWriteExt as _};
+use tokio::io::{AsyncRead, AsyncReadExt as _, AsyncWrite, AsyncWriteExt as _};
 use uuid::Uuid;
 
 const MAGIC: [u8; 4] = [0x41, 0x42, 0x59, 0x31];
@@ -86,6 +85,8 @@ pub enum FlowFrameType {
     Data,
     /// End-of-flow bookkeeping.
     Close,
+    /// Optional response to a connect-before-open request.
+    OpenResult,
 }
 
 impl FlowFrameType {
@@ -94,6 +95,7 @@ impl FlowFrameType {
             Self::Open => 1,
             Self::Data => 2,
             Self::Close => 3,
+            Self::OpenResult => 4,
         }
     }
 
@@ -102,6 +104,7 @@ impl FlowFrameType {
             1 => Ok(Self::Open),
             2 => Ok(Self::Data),
             3 => Ok(Self::Close),
+            4 => Ok(Self::OpenResult),
             value => Err(FlowProtocolError::InvalidFrameType(value)),
         }
     }
@@ -177,6 +180,23 @@ impl FlowFrame {
     /// Creates an EOF frame for the broker-to-client byte direction.
     pub fn broker_to_client_eof(flow_id: Uuid, reason: &str) -> Result<Self, FlowProtocolError> {
         Self::close(flow_id, FlowFrameDirection::BrokerToClient, reason)
+    }
+
+    /// Creates a control result without adding bytes to the proxied TCP stream.
+    pub(super) fn open_result(
+        flow_id: Uuid,
+        result: FlowOpenResult,
+    ) -> Result<Self, FlowProtocolError> {
+        let payload = serde_json::to_vec(&result).map_err(|source| FlowProtocolError::Json {
+            operation: "encode FlowOpenResult payload",
+            source,
+        })?;
+        Ok(Self::new(
+            FlowFrameType::OpenResult,
+            FlowFrameDirection::BrokerToClient,
+            flow_id,
+            payload,
+        ))
     }
 
     fn close(
@@ -355,7 +375,6 @@ impl FlowFrameCodec {
     }
 
     /// Writes one complete frame.
-    #[cfg(test)]
     pub async fn write_frame<W>(writer: &mut W, frame: &FlowFrame) -> Result<(), FlowProtocolError>
     where
         W: AsyncWrite + Unpin,
@@ -422,6 +441,9 @@ pub struct FlowOpenPayload {
     /// Transport protocol.
     #[serde(rename = "protocol")]
     pub protocol_name: FlowTransportProtocol,
+    /// Request a connection result before the adapter opens its local TCP flow.
+    #[serde(default)]
+    pub connect_before_open: bool,
     /// Source process identifier.
     #[serde(rename = "source_pid")]
     pub source_pid: Option<u32>,
@@ -446,6 +468,18 @@ pub struct FlowOpenPayload {
     /// Original TLS SNI when the wrapper already knows it.
     #[serde(rename = "original_tls_sni")]
     pub original_tls_sni: Option<String>,
+}
+
+/// Outcome of preparing a requested flow before any application bytes arrive.
+#[derive(Clone, Copy, Serialize)]
+#[serde(tag = "status", rename_all = "snake_case")]
+pub(super) enum FlowOpenResult {
+    /// The captured direct target TCP endpoint is connected.
+    Connected,
+    /// Configured proxy negotiation still requires application hostname bytes.
+    Deferred,
+    /// The direct target could not be connected.
+    Failed { reason: &'static str },
 }
 
 impl FlowOpenPayload {
@@ -480,7 +514,48 @@ impl FlowClosePayload {
 
 #[cfg(test)]
 mod tests {
-    use super::{FlowFrame, FlowFrameDirection, FlowFrameType, FlowOpenPayload, FlowProtocolError};
+    use super::{
+        FlowFrame, FlowFrameDirection, FlowFrameType, FlowOpenPayload, FlowOpenResult,
+        FlowProtocolError,
+    };
+
+    #[test]
+    fn open_result_encodes_the_shared_status_and_frame_contract() {
+        let flow_id = uuid::Uuid::new_v4();
+        for (result, expected) in [
+            (
+                FlowOpenResult::Connected,
+                serde_json::json!({"status": "connected"}),
+            ),
+            (
+                FlowOpenResult::Deferred,
+                serde_json::json!({"status": "deferred"}),
+            ),
+            (
+                FlowOpenResult::Failed {
+                    reason: "connection_refused",
+                },
+                serde_json::json!({"status": "failed", "reason": "connection_refused"}),
+            ),
+        ] {
+            let frame = FlowFrame::open_result(flow_id, result).expect("result encodes");
+            let encoded = frame.encode().expect("frame encodes");
+            assert_eq!(encoded[4], 4);
+            assert_eq!(encoded[5], 2);
+            let header = encoded[..super::FRAME_HEADER_LEN]
+                .try_into()
+                .expect("fixed header");
+            let decoded = FlowFrame::decode(&header, encoded[super::FRAME_HEADER_LEN..].to_vec())
+                .expect("result frame decodes");
+            assert_eq!(decoded.frame_type(), FlowFrameType::OpenResult);
+            assert_eq!(decoded.direction(), FlowFrameDirection::BrokerToClient);
+            assert_eq!(decoded.flow_id(), flow_id);
+            assert_eq!(
+                serde_json::from_slice::<serde_json::Value>(decoded.payload()).unwrap(),
+                expected
+            );
+        }
+    }
 
     #[test]
     fn frame_round_trip_preserves_header_and_payload() {
@@ -558,6 +633,11 @@ mod tests {
             Some("com.apple.curl")
         );
         assert_eq!(decoded.destination_port, Some(443));
+        assert!(!decoded.connect_before_open);
+        let mut requested: serde_json::Value = serde_json::from_slice(frame.payload()).unwrap();
+        requested["connect_before_open"] = serde_json::json!(true);
+        let requested: FlowOpenPayload = serde_json::from_value(requested).unwrap();
+        assert!(requested.connect_before_open);
     }
 
     #[test]

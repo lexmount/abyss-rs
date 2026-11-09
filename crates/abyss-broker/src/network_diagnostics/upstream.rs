@@ -19,6 +19,30 @@ impl NetworkObservation {
         started_at: u64,
         ended_at: u64,
     ) -> Option<Self> {
+        #[cfg(target_os = "macos")]
+        if let IngressError::FramedConnect {
+            flow_id,
+            metadata,
+            source,
+        } = error
+        {
+            let mut observation = Self::from_error(
+                Some(*flow_id),
+                &abyss_mitm::FlowIngress::transparent(
+                    abyss_mitm::TransparentFlowSource::MacosNetworkExtension,
+                ),
+                metadata.destination_host(),
+                metadata.source_process(),
+                started_at,
+                ended_at,
+                source,
+            );
+            observation.destination_addr = metadata
+                .original_destination()
+                .socket_addr()
+                .map(|address| address.to_string());
+            return Some(observation);
+        }
         let IngressError::Explicit(ExplicitIngressError::UpstreamProxy {
             target,
             endpoint,
