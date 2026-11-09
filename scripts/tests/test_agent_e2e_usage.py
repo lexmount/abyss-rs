@@ -13,16 +13,40 @@ class UsageAccountingTests(unittest.TestCase):
         self.events = [
             {
                 "event_id": "warm",
-                "input_tokens": 10790,
-                "metadata": {"purpose": "prewarm"},
+                "purpose": "prewarm",
+                "token_usage": {
+                    "input_tokens": 10790,
+                    "output_tokens": 0,
+                    "cache_read_tokens": 0,
+                    "cache_write_tokens": 0,
+                    "reasoning_tokens": 0,
+                    "total_tokens": 10790,
+                },
             },
             {
                 "event_id": "request",
-                "input_tokens": 8,
-                "cache_read_tokens": 2,
-                "cache_write_tokens": 1,
+                "purpose": None,
+                "token_usage": {
+                    "input_tokens": 8,
+                    "output_tokens": 0,
+                    "cache_read_tokens": 2,
+                    "cache_write_tokens": 1,
+                    "reasoning_tokens": 0,
+                    "total_tokens": 11,
+                },
             },
-            {"event_id": "response", "output_tokens": 7, "reasoning_tokens": 3},
+            {
+                "event_id": "response",
+                "purpose": None,
+                "token_usage": {
+                    "input_tokens": 0,
+                    "output_tokens": 7,
+                    "cache_read_tokens": 0,
+                    "cache_write_tokens": 0,
+                    "reasoning_tokens": 3,
+                    "total_tokens": 7,
+                },
+            },
         ]
         self.native = (
             {
@@ -45,22 +69,22 @@ class UsageAccountingTests(unittest.TestCase):
         self.assertEqual(result["backend_inference"]["reasoning_output_tokens"], 3)
 
     def test_unmarked_initial_and_compaction_calls_are_not_excluded(self) -> None:
-        for metadata in ({}, {"purpose": "compaction"}, {"purpose": "session_title"}):
-            with self.subTest(metadata=metadata):
-                self.events[0]["metadata"] = metadata
+        for purpose in (None, "compaction", "session_title"):
+            with self.subTest(purpose=purpose):
+                self.events[0]["purpose"] = purpose
                 result = UsageAccounting.compare(self.events, self.native)
                 self.assertFalse(result["matches"])
                 self.assertEqual(result["difference"]["input_tokens"], 10790)
                 self.assertEqual(result["prewarm_event_ids"], [])
 
     def test_prewarm_is_independent_of_event_order_and_token_amount(self) -> None:
-        self.events[0]["input_tokens"] = 19
+        self.events[0]["token_usage"]["input_tokens"] = 19
         result = UsageAccounting.compare(list(reversed(self.events)), self.native)
         self.assertTrue(result["matches"])
         self.assertEqual(result["backend_prewarm"]["input_tokens"], 19)
 
     def test_one_token_mismatch_remains_a_failure(self) -> None:
-        self.events[1]["input_tokens"] = 9
+        self.events[1]["token_usage"]["input_tokens"] = 9
         result = UsageAccounting.compare(self.events, self.native)
         self.assertFalse(result["matches"])
         self.assertEqual(result["difference"]["input_tokens"], 1)
@@ -78,7 +102,7 @@ class UsageAccountingTests(unittest.TestCase):
         self.assertNotIn("cache_write_input_tokens", result["difference"])
         self.assertNotIn("cache_write_input_tokens", result["codex_completed_inference"])
         self.assertEqual(result["backend_inference"]["cache_write_input_tokens"], 1)
-        self.events[1]["cache_write_tokens"] = 2
+        self.events[1]["token_usage"]["cache_write_tokens"] = 2
         result = UsageAccounting.compare(self.events, self.native)
         self.assertFalse(result["matches"])
         self.assertEqual(result["difference"]["input_tokens"], 1)
@@ -110,9 +134,16 @@ class UsageAccountingTests(unittest.TestCase):
     def test_invalid_counters_fail_instead_of_becoming_zero(self) -> None:
         for count in (True, None, -1, 2.5, "2"):
             with self.subTest(count=count):
-                self.events[1]["input_tokens"] = count
+                self.events[1]["token_usage"]["input_tokens"] = count
                 with self.assertRaises(OrchestrationError):
                     UsageAccounting.compare(self.events, self.native)
+
+    def test_missing_backend_usage_cannot_become_zero(self) -> None:
+        for usage in (None, {}, {"input_tokens": 0}, "invalid"):
+            with self.subTest(usage=usage), self.assertRaises(OrchestrationError):
+                UsageAccounting.compare([{"token_usage": usage}], ({},))
+        with self.assertRaises(OrchestrationError):
+            UsageAccounting.compare([{"input_tokens": 0}], ({},))
 
 
 if __name__ == "__main__":

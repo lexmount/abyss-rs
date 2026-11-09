@@ -19,7 +19,7 @@ sys.path.insert(0, str(ROOT / "scripts/ci"))
 from assemble_release import assemble
 from package_broker import package_brokers
 from package_cli import package
-from publish_broker_cos import release_files
+from publish_cos import release_files
 from verify_release import read_artifact
 
 MACOS = "aarch64-apple-darwin"

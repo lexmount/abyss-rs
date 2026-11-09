@@ -9,7 +9,8 @@ on:
       - 'scripts/ci/verify_release.py'
       - 'scripts/ci/assemble_release.py'
       - 'scripts/ci/package_broker.py'
-      - 'scripts/ci/publish_broker_cos.py'
+      - 'scripts/ci/package_query.py'
+      - 'scripts/ci/publish_cos.py'
       - 'scripts/tests/*release*'
       - 'crates/**'
       - 'Cargo.toml'
@@ -26,12 +27,15 @@ permissions:
   contents: read
 
 concurrency:
-  group: cli-release-${{ github.ref }}
+  # Hold one lock across version uploads, latest promotion, and GitHub publish.
+  group: cli-release-${{ github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v') && 'publication' || github.ref }}
   cancel-in-progress: false
 
 env:
   RUSTUP_TOOLCHAIN: '1.98.0'
   CARGO_TERM_COLOR: always
+  TENCENT_COSCLI_URL: https://cosbrowser.cloud.tencent.com/software/coscli/coscli-linux-amd64
+  TENCENT_COSCLI_SHA256: a07de5ba2800147a700ed29036b0c76a4229088cee68e1682d0eae19b638a915
 
 defaults:
   run:
@@ -48,7 +52,7 @@ jobs:
         include:
           - os: ubuntu-22.04
             target: x86_64-unknown-linux-musl
-          - os: macos-14
+          - os: macos-15
             target: aarch64-apple-darwin
           - os: windows-2022
             target: x86_64-pc-windows-msvc
@@ -94,7 +98,8 @@ jobs:
       - name: Test release packaging and assembly
         run: |
           python scripts/tests/test_release_artifacts.py
-          python scripts/tests/test_release_broker_cos.py
+          python scripts/tests/test_release_query.py
+          python scripts/tests/test_release_cos.py
       - name: Test piped download installer
         if: runner.os != 'Windows'
         run: |
@@ -107,7 +112,7 @@ jobs:
         env:
           CLI_TARGET: ${{ matrix.target }}
         run: |
-          packages=(-p abyss-broker -p abyss-delivery-plugin)
+          packages=(-p abyss-broker -p abyss-delivery-plugin -p abyss-query-cli)
           if [[ "$RUNNER_OS" != Windows ]]; then
             packages+=(-p abyss-cli)
           fi
@@ -128,6 +133,25 @@ jobs:
           python scripts/ci/package_cli.py --target "$CLI_TARGET" \
             --binaries "target/$CLI_TARGET/release" --output dist "${args[@]}"
           cat dist/SHA256SUMS.* > dist/SHA256SUMS
+      - name: Package and smoke-test standalone query CLI
+        env:
+          CLI_TARGET: ${{ matrix.target }}
+          RELEASE_REF_TYPE: ${{ github.ref_type }}
+          RELEASE_REF_NAME: ${{ github.ref_name }}
+        run: |
+          args=()
+          if [[ "$RELEASE_REF_TYPE" == tag ]]; then
+            args+=(--tag "$RELEASE_REF_NAME")
+          fi
+          python scripts/ci/package_query.py package --target "$CLI_TARGET" \
+            --binaries "target/$CLI_TARGET/release" --output query-dist "${args[@]}"
+          shopt -s nullglob
+          python scripts/ci/package_query.py verify --smoke query-dist/*.tar.gz query-dist/*.zip
+      - uses: actions/upload-artifact@v4
+        with:
+          name: query-build-${{ matrix.target }}
+          path: query-dist/*
+          if-no-files-found: error
       - name: Verify installed release binaries
         if: runner.os != 'Windows'
         run: sh scripts/tests/smoke_release_install.sh dist
@@ -176,6 +200,10 @@ jobs:
         with:
           pattern: endpoint-build-*
           path: artifacts
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: query-build-*
+          path: query-artifacts
       - name: Assemble complete release
         env:
           RELEASE_REVISION: ${{ github.sha }}
@@ -184,6 +212,8 @@ jobs:
             --output dist --revision "$RELEASE_REVISION"
           python scripts/ci/package_broker.py --release dist \
             --output broker-dist --revision "$RELEASE_REVISION"
+          python scripts/ci/package_query.py assemble --artifacts query-artifacts \
+            --output abyss-query-dist --revision "$RELEASE_REVISION"
           cd dist
           sha256sum --check SHA256SUMS
       - uses: actions/upload-artifact@v4
@@ -196,9 +226,14 @@ jobs:
           name: broker-release
           path: broker-dist/*
           if-no-files-found: error
+      - uses: actions/upload-artifact@v4
+        with:
+          name: abyss-query-release
+          path: abyss-query-dist/*
+          if-no-files-found: error
 
-  publish-broker-cdn:
-    name: Publish broker to ${{ matrix.site }} CDN origin
+  publish-cdn:
+    name: Publish ${{ matrix.component }} to ${{ matrix.site }} CDN origin
     if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')
     needs: [assemble, stage-release]
     runs-on: ubuntu-latest
@@ -207,11 +242,10 @@ jobs:
       fail-fast: false
       matrix:
         site: [CN, COM]
+        component: [broker, abyss-query]
     env:
       TENCENT_COS_BUCKET: ${{ vars[format('TENCENT_COS_{0}_BUCKET', matrix.site)] }}
       TENCENT_COS_REGION: ${{ vars[format('TENCENT_COS_{0}_REGION', matrix.site)] }}
-      TENCENT_COSCLI_URL: https://cosbrowser.cloud.tencent.com/software/coscli/coscli-linux-amd64
-      TENCENT_COSCLI_SHA256: a07de5ba2800147a700ed29036b0c76a4229088cee68e1682d0eae19b638a915
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
@@ -219,8 +253,8 @@ jobs:
           python-version: '3.12'
       - uses: actions/download-artifact@v4
         with:
-          name: broker-release
-          path: broker-dist
+          name: ${{ matrix.component }}-release
+          path: cdn-dist
       - name: Install verified Tencent COSCLI
         run: |
           coscli="$RUNNER_TEMP/coscli"
@@ -229,13 +263,14 @@ jobs:
           echo "$TENCENT_COSCLI_SHA256  $coscli" | sha256sum --check --strict -
           chmod 700 "$coscli"
           echo "TENCENT_COSCLI_BIN=$coscli" >> "$GITHUB_ENV"
-      - name: Upload broker archives and checksums
+      - name: Upload component archives and checksums
         env:
           TENCENTCLOUD_SECRET_ID: ${{ secrets.TENCENTCLOUD_SECRET_ID }}
           TENCENTCLOUD_SECRET_KEY: ${{ secrets.TENCENTCLOUD_SECRET_KEY }}
           RELEASE_TAG: ${{ github.ref_name }}
+          RELEASE_COMPONENT: ${{ matrix.component }}
         run: |
-          python scripts/ci/publish_broker_cos.py --source broker-dist \
+          python scripts/ci/publish_cos.py --component "$RELEASE_COMPONENT" --source cdn-dist \
             --tag "$RELEASE_TAG" --coscli "$TENCENT_COSCLI_BIN"
 
   stage-release:
@@ -245,9 +280,6 @@ jobs:
     runs-on: ubuntu-latest
     permissions:
       contents: write
-    concurrency:
-      group: cli-release-publish
-      cancel-in-progress: false
     steps:
       - uses: actions/download-artifact@v4
         with:
@@ -272,17 +304,63 @@ jobs:
           gh release upload "$RELEASE_TAG" dist/install.sh dist/SHA256SUMS dist/*.tar.gz dist/*.zip --clobber
 
   publish:
-    name: Publish complete endpoint release
+    name: Promote CDN latest manifests and publish endpoint release
     if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')
-    needs: [stage-release, publish-broker-cdn]
+    needs: [stage-release, publish-cdn]
     runs-on: ubuntu-latest
+    timeout-minutes: 10
     permissions:
       contents: write
-    concurrency:
-      group: cli-release-publish
-      cancel-in-progress: false
     steps:
-      - name: Publish latest after both CDN origins are ready
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - uses: actions/download-artifact@v4
+        with:
+          name: broker-release
+          path: broker-dist
+      - uses: actions/download-artifact@v4
+        with:
+          name: abyss-query-release
+          path: abyss-query-dist
+      - name: Install verified Tencent COSCLI
+        run: |
+          coscli="$RUNNER_TEMP/coscli"
+          curl --fail --location --proto '=https' --proto-redir '=https' \
+            --retry 3 --output "$coscli" "$TENCENT_COSCLI_URL"
+          echo "$TENCENT_COSCLI_SHA256  $coscli" | sha256sum --check --strict -
+          chmod 700 "$coscli"
+          echo "TENCENT_COSCLI_BIN=$coscli" >> "$GITHUB_ENV"
+      - name: Read published versions before promoting latest
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+        run: |
+          gh api --paginate "repos/$GH_REPO/releases?per_page=100" \
+            --jq '.[] | select(.draft == false and .prerelease == false) | .tag_name' \
+            > published-tags.txt
+      - name: Promote latest manifests after every component is ready on both origins
+        env:
+          TENCENTCLOUD_SECRET_ID: ${{ secrets.TENCENTCLOUD_SECRET_ID }}
+          TENCENTCLOUD_SECRET_KEY: ${{ secrets.TENCENTCLOUD_SECRET_KEY }}
+          TENCENT_COS_CN_BUCKET: ${{ vars.TENCENT_COS_CN_BUCKET }}
+          TENCENT_COS_CN_REGION: ${{ vars.TENCENT_COS_CN_REGION }}
+          TENCENT_COS_COM_BUCKET: ${{ vars.TENCENT_COS_COM_BUCKET }}
+          TENCENT_COS_COM_REGION: ${{ vars.TENCENT_COS_COM_REGION }}
+          RELEASE_TAG: ${{ github.ref_name }}
+        run: |
+          for site in CN COM; do
+            bucket_var="TENCENT_COS_${site}_BUCKET"
+            region_var="TENCENT_COS_${site}_REGION"
+            for component in broker abyss-query; do
+              TENCENT_COS_BUCKET="${!bucket_var}" TENCENT_COS_REGION="${!region_var}" \
+                python scripts/ci/publish_cos.py --component "$component" --source "$component-dist" \
+                  --tag "$RELEASE_TAG" --coscli "$TENCENT_COSCLI_BIN" \
+                  --latest-only --published-tags published-tags.txt
+            done
+          done
+      - name: Publish GitHub latest after all manifests are ready
         env:
           GH_TOKEN: ${{ github.token }}
           GH_REPO: ${{ github.repository }}

@@ -488,15 +488,19 @@ class VerificationTests(unittest.TestCase):
                     "event_id": str(i),
                     "event_type": "response" if i % 2 else "request",
                     "response_id": f"response-{i // 2}",
-                    "agent_name": "codex",
-                    "llm_provider": "openai",
-                    "llm_model": "gpt-5",
+                    "agent": {"name": "codex", "version": "test"},
+                    "llm": {"provider": "openai", "model": "gpt-5"},
                     "session_id": "session",
-                    "input_tokens": 3 if i % 2 == 0 else 0,
-                    "cache_read_tokens": 2 if i % 2 == 0 else 0,
-                    "output_tokens": 3 if i % 2 else 0,
+                    "token_usage": {
+                        "input_tokens": 3 if i % 2 == 0 else 0,
+                        "cache_read_tokens": 2 if i % 2 == 0 else 0,
+                        "output_tokens": 3 if i % 2 else 0,
+                        "cache_write_tokens": 0,
+                        "reasoning_tokens": 0,
+                        "total_tokens": 3 if i % 2 else 5,
+                    },
                     "conversation": {"completeness": "complete", "entries": []},
-                    "metadata": {},
+                    "purpose": None,
                 }
             )
         self.events[1]["conversation"]["entries"] = [
@@ -539,26 +543,52 @@ class VerificationTests(unittest.TestCase):
             model="gpt-5",
         )[0]
         for event in self.events:
-            event["agent_name"] = "deepseek-harness"
+            event["agent"]["name"] = "deepseek-harness"
         self.native.call_ids = {"call|fc-item"}
         self.assertEqual(self.verify()["status"], "pass")
         self.native.call_ids = {"wrong-call|fc-item"}
         self.assertIn("native_tool_ids", self.verify()["failed_checks"])
 
     def test_observation_mutations_cannot_pass(self):
-        for key, value in (
-            ("input_tokens", 100),
-            ("agent_name", "other"),
-            ("llm_model", "wrong"),
-            ("session_id", "wrong"),
-            ("llm_provider", "wrong"),
+        for path, value in (
+            (("token_usage", "input_tokens"), 100),
+            (("agent", "name"), "other"),
+            (("llm", "model"), "wrong"),
+            (("session_id",), "wrong"),
+            (("llm", "provider"), "wrong"),
         ):
             events = copy.deepcopy(self.events)
-            events[0][key] = value
-            with self.subTest(key=key):
+            target = events[0]
+            for key in path[:-1]:
+                target = target[key]
+            target[path[-1]] = value
+            with self.subTest(path=path):
                 self.assertEqual(self.verify(events)["status"], "fail")
         self.assertEqual(self.verify([])["status"], "fail")
         self.assertEqual(self.verify(self.events + [self.events[0]])["status"], "fail")
+
+    def test_missing_grouped_identity_cannot_pass(self):
+        for group, checks in (
+            ("agent", {"harness_identity"}),
+            ("llm", {"provider_identity", "model_identity"}),
+        ):
+            events = copy.deepcopy(self.events)
+            del events[0][group]
+            with self.subTest(group=group):
+                self.assertTrue(checks <= set(self.verify(events)["failed_checks"]))
+
+    def test_only_declared_prewarm_is_excluded_from_usage(self):
+        warmup = copy.deepcopy(self.events[:2])
+        for event in warmup:
+            event["event_id"] += "-warmup"
+            event["response_id"] = "warmup-response"
+            event["purpose"] = "prewarm"
+            event["conversation"]["entries"] = []
+        events = self.events + warmup
+        self.assertEqual(self.verify(events)["status"], "pass")
+        for event in warmup:
+            event["purpose"] = "compaction"
+        self.assertIn("exact_usage", self.verify(events)["failed_checks"])
 
     def test_broken_tool_roundtrip_and_partial_capture_fail(self):
         events = copy.deepcopy(self.events)

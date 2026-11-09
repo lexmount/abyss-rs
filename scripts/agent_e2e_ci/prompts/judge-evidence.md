@@ -32,7 +32,7 @@ Judging rules:
    protocol did not expose.
 7. Compare completed inference usage using each execution's `usage_accounting`.
    It computes exact totals from the raw events and B's `turn.completed.usage`.
-   Only events explicitly marked `metadata.purpose == "prewarm"` are excluded
+   Only events explicitly marked `purpose == "prewarm"` are excluded
    from the inference comparison: these are WebSocket `response.create` calls
    with `generate: false`, which Codex completes before inference and omits from
    `turn.completed.usage`. Their content and original counters remain in

@@ -74,8 +74,8 @@ blackbox_extract_event_pair() {
       | [$events[]
           | select(
               .event_type == "request"
-              and .agent_name == $agent_name
-              and .llm_provider == $provider
+              and .agent.name == $agent_name
+              and .llm.provider == $provider
               and any(.conversation.entries[]?;
                 .role == "user" and (.text | contains($marker)))
             )] as $requests
@@ -88,8 +88,8 @@ blackbox_extract_event_pair() {
           | [$events[]
               | select(
                   .event_type == "response"
-                  and .agent_name == $agent_name
-                  and .llm_provider == $provider
+                  and .agent.name == $agent_name
+                  and .llm.provider == $provider
                   and .session_id == $request.session_id
                   and .response_id == $request.response_id
                 )] as $responses
@@ -197,12 +197,12 @@ blackbox_assert_summary_matches_events() {
               total_tokens: 0};
               .requests += (if $event.event_type == "request" then 1 else 0 end)
               | .responses += (if $event.event_type == "response" then 1 else 0 end)
-              | .input_tokens += $event.input_tokens
-              | .output_tokens += $event.output_tokens
-              | .cache_read_tokens += $event.cache_read_tokens
-              | .cache_write_tokens += $event.cache_write_tokens
-              | .reasoning_tokens += $event.reasoning_tokens
-              | .total_tokens += $event.total_tokens
+              | .input_tokens += $event.token_usage.input_tokens
+              | .output_tokens += $event.token_usage.output_tokens
+              | .cache_read_tokens += $event.token_usage.cache_read_tokens
+              | .cache_write_tokens += $event.token_usage.cache_write_tokens
+              | .reasoning_tokens += $event.token_usage.reasoning_tokens
+              | .total_tokens += $event.token_usage.total_tokens
             )) as $expected
           | if (
               $actual.requests == $expected.requests
