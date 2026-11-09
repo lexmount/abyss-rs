@@ -1,10 +1,88 @@
 //! Conversation projection regression cases.
 
 use abyss_plugin_protocol::event::{ContentCompleteness, Conversation, EntryRole};
+use base64::{Engine as _, engine::general_purpose::STANDARD};
 use serde_json::{Value, json};
 
-use super::{request::ResponsesRequest, response::ResponsesResponse};
-use crate::protocol::model::conversation::role_texts;
+use super::{ResponsesParser, request::ResponsesRequest, response::ResponsesResponse};
+use crate::protocol::{
+    model::{
+        conversation::role_texts,
+        image::{ImageMediaType, MAX_IMAGE_ATTACHMENTS_PER_EVENT},
+    },
+    parser::ProtocolParser,
+};
+
+#[test]
+fn request_parser_retains_user_and_tool_output_images_in_input_order() {
+    let png = b"\x89PNG\r\n\x1a\nuser-image";
+    let jpeg = b"\xff\xd8\xfffunction-image";
+    let gif = b"GIF89acustom-image";
+    let payload = json!({"input":[
+        {"role":"user","content":[{"type":"input_image","image_url":format!("data:image/png;base64,{}", STANDARD.encode(png))}]},
+        {"type":"function_call_output","call_id":"read-image","output":[
+            {"type":"input_text","text":"read_image result"},
+            {"type":"input_image","image_url":format!("data:image/jpeg;base64,{}", STANDARD.encode(jpeg)),"detail":"auto"}
+        ]},
+        {"type":"custom_tool_call_output","call_id":"custom-image","output":[
+            {"type":"input_text","text":"custom tool result"},
+            {"type":"input_image","image_url":format!("data:image/gif;base64,{}", STANDARD.encode(gif))}
+        ]}
+    ]});
+
+    let parsed = ResponsesParser::parse_request(Some(&payload), false);
+
+    assert_eq!(parsed.images.len(), 3);
+    for (image, (media_type, bytes)) in parsed.images.iter().zip([
+        (ImageMediaType::Png, png.as_slice()),
+        (ImageMediaType::Jpeg, jpeg.as_slice()),
+        (ImageMediaType::Gif, gif.as_slice()),
+    ]) {
+        assert_eq!(image.media_type, media_type);
+        assert_eq!(image.bytes, bytes);
+    }
+    assert_eq!(
+        role_texts(&parsed.conversation),
+        [
+            (EntryRole::ToolResult, "read_image result"),
+            (EntryRole::ToolResult, "custom tool result"),
+        ]
+    );
+}
+
+#[test]
+fn request_parser_ignores_images_in_tool_definitions_and_unrelated_fields() {
+    let image = json!({"type":"input_image","image_url":format!("data:image/png;base64,{}", STANDARD.encode(b"\x89PNG\r\n\x1a\nimage"))});
+    let payload = json!({
+        "tools":[{"example":image}],
+        "input":[
+            {"role":"developer","content":[image]},
+            {"type":"function_call","arguments":image},
+            {"type":"unknown_output","output":[image]},
+            {"type":"function_call_output","call_id":"string","output":image.to_string()},
+            {"type":"custom_tool_call_output","call_id":"text","output":[{"type":"input_text","text":"text only","example":image}]}
+        ]
+    });
+
+    assert!(
+        ResponsesParser::parse_request(Some(&payload), false)
+            .images
+            .is_empty()
+    );
+}
+
+#[test]
+fn request_parser_tool_output_images_share_the_image_limit() {
+    let image = json!({"type":"input_image","image_url":format!("data:image/png;base64,{}", STANDARD.encode(b"\x89PNG\r\n\x1a\nimage"))});
+    let payload = json!({"input":[
+        {"role":"user","content":[image]},
+        {"type":"function_call_output","call_id":"images","output":vec![image; MAX_IMAGE_ATTACHMENTS_PER_EVENT]}
+    ]});
+
+    let parsed = ResponsesParser::parse_request(Some(&payload), false);
+
+    assert_eq!(parsed.images.len(), MAX_IMAGE_ATTACHMENTS_PER_EVENT);
+}
 
 fn assemble(values: &[Value], incomplete: bool) -> Conversation {
     ResponsesResponse::assemble(values, incomplete).conversation()

@@ -4,7 +4,7 @@ use serde_json::Value;
 
 use crate::protocol::{model::image::ParsedImageAttachment, shared::image::ImageCollector};
 
-/// Extracts images from OpenAI Responses and Chat Completions user content.
+/// Extracts images from user content and Responses function/custom tool outputs.
 pub fn extract_openai_request_images(payload: &Value) -> Vec<ParsedImageAttachment> {
     let mut collector = RequestImages::default();
     if let Some(input) = payload.get("input") {
@@ -54,8 +54,14 @@ impl RequestImages {
             return;
         }
 
-        let is_user_message = object.get("role").and_then(Value::as_str) == Some("user");
-        if is_user_message && let Some(content) = object.get("content") {
+        let content = match item_type {
+            Some("function_call_output" | "custom_tool_call_output") => object.get("output"),
+            _ if object.get("role").and_then(Value::as_str) == Some("user") => {
+                object.get("content")
+            }
+            _ => None,
+        };
+        if let Some(content) = content {
             self.collect_openai_content(content);
         }
     }
