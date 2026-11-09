@@ -37,7 +37,7 @@ impl OpenCodeScenario {
         plugin.set_read_timeout(Some(REST_TIMEOUT)).unwrap();
         write_plugin_frame(
             &mut plugin,
-            &json!({"protocol_version": 1_u16, "plugin_id": "opencode-blackbox"}),
+            &json!({"type":"plugin_hello", "capabilities":["agent_events"], "protocol_version": 1_u16, "plugin_id": "opencode-blackbox"}),
         );
         assert_eq!(
             read_plugin_frame(&mut plugin)["protocol_version"],
@@ -91,8 +91,8 @@ impl OpenCodeScenario {
         );
         server.join().unwrap();
         let events = [
-            read_plugin_frame(&mut self.plugin),
-            read_plugin_frame(&mut self.plugin),
+            super::read_plugin_event(&mut self.plugin),
+            super::read_plugin_event(&mut self.plugin),
         ];
         for (event, side) in events.iter().zip(["request", "response"]) {
             assert_eq!(

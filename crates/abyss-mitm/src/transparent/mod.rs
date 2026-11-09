@@ -15,6 +15,7 @@ mod destination;
 mod display;
 mod engine;
 mod flow_id;
+mod forwarding;
 mod hook;
 mod io;
 mod passthrough;
@@ -42,6 +43,9 @@ pub use self::display::{
 };
 pub use self::engine::{MitmEngine, MitmTimeouts};
 pub use self::flow_id::FlowId;
+pub use self::forwarding::{
+    LocalRejection, RequestForwardingControl, RequestTransport, RequestView, UncontrolledForwarding,
+};
 pub use self::hook::{
     CapturedBody, FlowContext, HookError, HookFuture, HookResult, HttpExchange, MitmHook,
     SourceProcess, WebSocketDirection, WebSocketMessage,
@@ -56,6 +60,7 @@ pub use self::types::{
 
 #[cfg(test)]
 mod tests {
+    mod blocking;
     mod proxy_chain;
     use std::{
         future,
@@ -160,6 +165,7 @@ mod tests {
                     action: TlsDecryptionAction::Passthrough,
                     process_names: Vec::new(),
                     application_ids: Vec::new(),
+                    executable_paths: Vec::new(),
                     process_entry_points: Vec::new(),
                     destination_hosts: vec!["passthrough.example.test".to_owned()],
                 }],
@@ -1238,6 +1244,7 @@ mod tests {
                     action: TlsDecryptionAction::Passthrough,
                     process_names: vec!["codex".to_owned()],
                     application_ids: vec!["com.openai.codex".to_owned()],
+                    executable_paths: Vec::new(),
                     process_entry_points: Vec::new(),
                     destination_hosts: vec!["platform-fallback.example".to_owned()],
                 },
@@ -1247,6 +1254,7 @@ mod tests {
                     action: TlsDecryptionAction::Intercept,
                     process_names: vec!["codex".to_owned()],
                     application_ids: vec!["com.openai.codex".to_owned()],
+                    executable_paths: Vec::new(),
                     process_entry_points: Vec::new(),
                     destination_hosts: vec!["*.openai.com".to_owned()],
                 },

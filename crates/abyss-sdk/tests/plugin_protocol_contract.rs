@@ -4,7 +4,10 @@ use std::{fs, path::PathBuf};
 
 use abyss_sdk::{
     event::AgentEvent,
-    plugin::{BrokerClose, BrokerError, BrokerHello, EntryRole, PluginHello},
+    plugin::{
+        EntryRole,
+        protocol::{BrokerMessage, PluginMessage},
+    },
 };
 use serde::{Serialize, de::DeserializeOwned};
 use serde_json::Value;
@@ -20,8 +23,8 @@ struct PublishedContract {
 fn structured_conversation_and_handshakes_round_trip() {
     let contract = PublishedContract::load();
     contract.assert_fixture_round_trip::<AgentEvent>("agent-event.json");
-    contract.assert_fixture_round_trip::<PluginHello>("plugin-hello.json");
-    contract.assert_fixture_round_trip::<BrokerHello>("broker-hello.json");
+    contract.assert_fixture_round_trip::<PluginMessage>("plugin-hello.json");
+    contract.assert_fixture_round_trip::<BrokerMessage>("broker-hello.json");
     let fixture = contract.json("fixtures/agent-event.json");
     assert!(fixture["conversation"]["entries"][0]["text"].is_string());
     let schema = contract.json("agent-event.schema.json");
@@ -199,6 +202,10 @@ fn packaged_contract_matches_the_public_specification() {
         "README.md",
         "agent-event.schema.json",
         "messages.schema.json",
+        "inspection.schema.json",
+        "fixtures/inspect-request.json",
+        "fixtures/inspect-response.json",
+        "fixtures/agent-event-frame.json",
         "fixtures/agent-event.json",
         "fixtures/broker-close.json",
         "fixtures/broker-error.json",
@@ -268,7 +275,7 @@ fn published_agent_event_fixture_matches_the_public_sdk() {
     );
     assert!(
         event.get("type").is_none() && event.get("event").is_none(),
-        "an Agent event frame should contain the event directly without a message wrapper"
+        "the event payload stays independent of its tagged transport envelope"
     );
     assert!(
         event.get("event_type").is_none()
@@ -294,10 +301,10 @@ fn published_agent_event_fixture_matches_the_public_sdk() {
 fn published_handshake_fixtures_match_the_public_sdk() {
     let contract = PublishedContract::load();
 
-    contract.assert_fixture_round_trip::<PluginHello>("plugin-hello.json");
-    contract.assert_fixture_round_trip::<BrokerHello>("broker-hello.json");
-    contract.assert_fixture_round_trip::<BrokerError>("broker-error.json");
-    contract.assert_fixture_round_trip::<BrokerClose>("broker-close.json");
+    contract.assert_fixture_round_trip::<PluginMessage>("plugin-hello.json");
+    contract.assert_fixture_round_trip::<BrokerMessage>("broker-hello.json");
+    contract.assert_fixture_round_trip::<BrokerMessage>("broker-error.json");
+    contract.assert_fixture_round_trip::<BrokerMessage>("broker-close.json");
 }
 
 #[test]
@@ -358,27 +365,28 @@ fn published_message_schema_defines_handshake_and_control_contracts() {
         "message schema id should remain versioned"
     );
     assert_eq!(
-        message_schema["oneOf"][3]["$ref"], "agent-event.schema.json",
-        "the live frame should directly reference the version 1 Agent event schema"
+        message_schema["$defs"]["agentEvent"]["properties"]["event"]["$ref"],
+        "agent-event.schema.json",
+        "the event envelope should reference the shared Agent event schema"
     );
     assert_eq!(
         message_schema["oneOf"][2]["$ref"], "#/$defs/brokerError",
         "the first-response error should be a published frame payload"
     );
     assert_eq!(
-        message_schema["oneOf"][4]["$ref"], "#/$defs/brokerClose",
+        message_schema["oneOf"][3]["$ref"], "#/$defs/brokerClose",
         "the deliberate close should be a published final frame payload"
     );
     assert_eq!(
         message_schema["oneOf"].as_array().map(Vec::len),
-        Some(5),
-        "version 1 should publish handshakes, broker control, and direct Agent events"
+        Some(7),
+        "current frames include independent inspection requests and replies"
     );
     assert!(
         message_schema["$defs"]
             .as_object()
             .map(serde_json::Map::len)
-            == Some(4)
+            == Some(7)
             && message_schema["$defs"].get("pluginHello").is_some()
             && message_schema["$defs"].get("brokerHello").is_some()
             && message_schema["$defs"].get("brokerError").is_some()
@@ -386,7 +394,7 @@ fn published_message_schema_defines_handshake_and_control_contracts() {
             && message_schema["$defs"].get("pullEvents").is_none()
             && message_schema["$defs"].get("eventBatch").is_none()
             && message_schema["$defs"].get("ackEvents").is_none(),
-        "version 1 should not publish event wrappers, pull, batch, or acknowledgement messages"
+        "current protocol should not publish pull, batch, or acknowledgement messages"
     );
     assert_eq!(
         message_schema["$defs"]["brokerError"]["properties"]["code"]["enum"],
@@ -411,23 +419,30 @@ fn published_message_schema_defines_handshake_and_control_contracts() {
         "^[a-zA-Z0-9._-]+$",
         "plugin id should use the documented portable character set"
     );
-    assert!(
-        message_schema["$defs"]["pluginHello"]["properties"]
-            .get("type")
-            .is_none()
-            && message_schema["$defs"]["brokerHello"]["properties"]
-                .get("type")
-                .is_none()
-            && message_schema["$defs"]["brokerError"]["properties"]
-                .get("type")
-                .is_none()
-            && message_schema["$defs"]["brokerClose"]["properties"]
-                .get("type")
-                .is_none(),
-        "session phase should identify handshake and control payloads without a discriminator"
-    );
+    for name in [
+        "pluginHello",
+        "brokerHello",
+        "brokerError",
+        "brokerClose",
+        "agentEvent",
+        "inspectRequest",
+        "inspectResponse",
+    ] {
+        assert!(
+            message_schema["$defs"][name]["properties"]["type"]["const"].is_string(),
+            "every frame needs an explicit tag"
+        );
+    }
     assert!(
         contract.root.join("agent-event.schema.json").is_file(),
         "the direct Agent event schema reference should resolve on disk"
     );
+}
+
+#[test]
+fn inspection_frames_round_trip_the_current_contract() {
+    let contract = PublishedContract::load();
+    contract.assert_fixture_round_trip::<BrokerMessage>("inspect-request.json");
+    contract.assert_fixture_round_trip::<PluginMessage>("inspect-response.json");
+    contract.assert_fixture_round_trip::<BrokerMessage>("agent-event-frame.json");
 }

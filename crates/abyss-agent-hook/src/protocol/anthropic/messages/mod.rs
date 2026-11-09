@@ -9,3 +9,6 @@ pub use model::ParsedAnthropicMessagesExchange;
 
 #[cfg(test)]
 mod tests;
+
+mod parser;
+pub use parser::MessagesParser;

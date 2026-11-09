@@ -44,9 +44,10 @@ impl From<AcceptedTcpFlow> for PlainHttpFlow {
 
 impl PlainHttpFlow {
     #[tracing::instrument(level = "trace", skip_all)]
-    pub(super) async fn handle(
+    pub(super) async fn handle<C: super::RequestForwardingControl>(
         self,
         engine: &MitmEngine,
+        control: &C,
     ) -> Result<TransparentFlowOutcome, TransparentFlowError> {
         let context = FlowContext::from_destination_parts(
             self.peer_addr,
@@ -60,7 +61,7 @@ impl PlainHttpFlow {
         .with_ingress(self.ingress);
         // Plain HTTP needs no TLS state. The request decoder can immediately
         // read HTTP/1 bytes from the accepted TCP stream.
-        let decoded =
+        let mut decoded =
             DecodedClientFlow::from_http1(self.stream, context, engine.timeouts.clone()).await?;
         tracing::info!(
             peer_addr = ?self.peer_addr,
@@ -70,6 +71,29 @@ impl PlainHttpFlow {
             host = ?request_host(&decoded.first_request),
             "MITM decoded plain HTTP/1 request head"
         );
+
+        let authority = request_host(&decoded.first_request)
+            .and_then(|host| host.parse::<http::uri::Authority>().ok());
+        let decision = engine
+            .tls_decryption_policy()
+            .decide(super::TlsDecryptionContext::new(
+                authority
+                    .as_ref()
+                    .map(http::uri::Authority::host)
+                    .or(decoded.context.destination_host.as_deref()),
+                decoded.context.source_process.as_ref(),
+            ));
+        if decision.action() == super::TlsDecryptionAction::Block {
+            let mut rejection = super::LocalRejection::new(
+                http::StatusCode::FORBIDDEN,
+                "network_blocked",
+                "Network request blocked by abyss-broker",
+                decoded.context.flow_id.to_string(),
+            );
+            rejection.rule_id = decision.matched_rule_id().map(str::to_owned);
+            rejection.response_error(&mut decoded.stream).await?;
+            return Err(rejection.into());
+        }
 
         // Plain HTTP connects directly to the original destination and then
         // enters the shared relay path. That relay path is responsible for
@@ -89,6 +113,7 @@ impl PlainHttpFlow {
             &engine.hooks,
             engine.timeouts.clone(),
             engine.max_http1_body_bytes,
+            control,
         ))
         .await?;
 

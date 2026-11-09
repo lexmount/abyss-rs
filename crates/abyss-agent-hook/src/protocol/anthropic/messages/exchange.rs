@@ -3,19 +3,15 @@
 use abyss_mitm::HttpExchange;
 use http::Method;
 
-use super::{model::ParsedAnthropicMessagesExchange, session::anthropic_session_id};
+use super::{
+    model::ParsedAnthropicMessagesExchange, parser::MessagesParser, session::anthropic_session_id,
+};
 use crate::protocol::{
-    anthropic::shared::{
-        conversation::{AnthropicRequest, AnthropicResponse},
-        images::extract_anthropic_request_images,
-        metadata::first_model,
-        usage::best_usage,
-    },
+    model::{request::RequestContent, response::ResponseContent},
+    parser::parse_http_exchange,
     shared::{
         digest::sha256_hex,
         http::{flow_server_name, request_host},
-        json::string_field,
-        sse::ResponseDocuments,
     },
 };
 
@@ -23,6 +19,14 @@ use crate::protocol::{
 #[must_use]
 pub fn parse_anthropic_messages_exchange(
     exchange: &HttpExchange,
+) -> Option<ParsedAnthropicMessagesExchange> {
+    parse_http_exchange::<MessagesParser, _, _>(exchange, assemble_exchange)
+}
+
+fn assemble_exchange(
+    exchange: &HttpExchange,
+    request: RequestContent,
+    response: ResponseContent,
 ) -> Option<ParsedAnthropicMessagesExchange> {
     let Some(host) = request_host(exchange.request.headers(), exchange.request.uri())
         .or_else(|| flow_server_name(&exchange.flow))
@@ -38,9 +42,8 @@ pub fn parse_anthropic_messages_exchange(
     };
     let headers = exchange.request.headers();
 
-    let request_conversation =
-        AnthropicRequest::parse(request_json, exchange.request.body().truncated()).conversation();
-    let request_images = extract_anthropic_request_images(request_json);
+    let request_conversation = request.conversation;
+    let request_images = request.images;
     // Bootstrap, registry, and telemetry calls are useful transport evidence but
     // not dialogue turns. Upload only exchanges whose request carries content:
     // a conversation entry or an image.
@@ -49,15 +52,9 @@ pub fn parse_anthropic_messages_exchange(
         return None;
     }
 
-    let response_documents = ResponseDocuments::decode(exchange.response.body());
-    let response_values = response_documents.values;
-    let response = AnthropicResponse::assemble(&response_values, response_documents.incomplete);
-    let usage = best_usage(&response_values)
-        .or_else(|| best_usage(std::slice::from_ref(request_json)))
-        .unwrap_or_default();
-    let message_id = response.id().map(str::to_owned);
-    let model = first_model(&response_values)
-        .or_else(|| string_field(request_json, "model").map(str::to_owned));
+    let usage = response.usage.or(request.usage).unwrap_or_default();
+    let message_id = response.response_id;
+    let model = response.model.or(request.metadata.model);
     let request_hash = sha256_hex(&format!(
         "{}\0{}\0{}\0{}",
         exchange.request.method(),
@@ -65,17 +62,13 @@ pub fn parse_anthropic_messages_exchange(
         path,
         String::from_utf8_lossy(exchange.request.body().bytes())
     ));
-    let previous_response_id = request_json
-        .get("thread")
-        .filter(|thread| string_field(thread, "type") == Some("continue"))
-        .and_then(|thread| string_field(thread, "previous_message_id"))
-        .map(str::to_owned);
+    let previous_response_id = request.metadata.previous_response_id;
 
     Some(ParsedAnthropicMessagesExchange {
         session_id: anthropic_session_id(headers, request_json, &host),
         request_hash,
         request_conversation,
-        response_conversation: response.conversation(),
+        response_conversation: response.conversation,
         request_images,
         previous_response_id,
         usage,

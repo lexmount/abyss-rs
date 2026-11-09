@@ -6,20 +6,17 @@
 use abyss_mitm::HttpExchange;
 use http::Method;
 
-use super::metadata::{assistant_message_uuid, claude_web_file_uuids};
+use super::parser::ClaudeWebParser;
 use crate::protocol::{
-    anthropic::shared::{
-        conversation::{AnthropicRequest, AnthropicResponse},
-        images::extract_anthropic_request_images,
-        metadata::first_model,
-        usage::{best_usage, estimated_visible_usage},
+    anthropic::shared::usage::estimated_visible_usage,
+    model::{
+        image::ParsedImageAttachment, request::RequestContent, response::ResponseContent,
+        usage::TokenUsage,
     },
-    model::{image::ParsedImageAttachment, usage::TokenUsage},
+    parser::parse_http_exchange,
     shared::{
         digest::sha256_hex,
         http::{flow_server_name, request_host},
-        json::string_field,
-        sse::ResponseDocuments,
         text::non_empty_trimmed,
     },
 };
@@ -53,6 +50,14 @@ pub struct ParsedClaudeWebExchange {
 /// Parses one Claude Web private conversation-completion exchange.
 #[must_use]
 pub fn parse_claude_web_exchange(exchange: &HttpExchange) -> Option<ParsedClaudeWebExchange> {
+    parse_http_exchange::<ClaudeWebParser, _, _>(exchange, assemble_exchange)
+}
+
+fn assemble_exchange(
+    exchange: &HttpExchange,
+    request: RequestContent,
+    response: ResponseContent,
+) -> Option<ParsedClaudeWebExchange> {
     if exchange.request.method() != Method::POST {
         return None;
     }
@@ -61,11 +66,10 @@ pub fn parse_claude_web_exchange(exchange: &HttpExchange) -> Option<ParsedClaude
         .or_else(|| flow_server_name(&exchange.flow))?;
     let path = exchange.request.uri().path();
     let conversation_id = completion_conversation_id(path)?;
-    let request_json = exchange.request.body().json()?;
-    let request_conversation =
-        AnthropicRequest::parse(request_json, exchange.request.body().truncated()).conversation();
-    let request_images = extract_anthropic_request_images(request_json);
-    let request_file_uuids = claude_web_file_uuids(request_json);
+    exchange.request.body().json()?;
+    let request_conversation = request.conversation;
+    let request_images = request.images;
+    let request_file_uuids = request.file_uuids;
     if request_conversation.entries.is_empty()
         && request_images.is_empty()
         && request_file_uuids.is_empty()
@@ -73,14 +77,12 @@ pub fn parse_claude_web_exchange(exchange: &HttpExchange) -> Option<ParsedClaude
         return None;
     }
 
-    let response_documents = ResponseDocuments::decode(exchange.response.body());
-    let response_values = response_documents.values;
-    let response = AnthropicResponse::assemble(&response_values, response_documents.incomplete);
-    let response_conversation = response.conversation();
-    let usage = best_usage(&response_values)
-        .or_else(|| best_usage(std::slice::from_ref(request_json)))
+    let response_conversation = response.conversation;
+    let usage = response
+        .usage
+        .or(request.usage)
         .unwrap_or_else(|| estimated_visible_usage(&request_conversation, &response_conversation));
-    let assistant_message_uuid = assistant_message_uuid(request_json);
+    let assistant_message_uuid = request.assistant_message_uuid;
     let request_hash = sha256_hex(&format!(
         "{}\0{}\0{}\0{}",
         exchange.request.method(),
@@ -98,11 +100,9 @@ pub fn parse_claude_web_exchange(exchange: &HttpExchange) -> Option<ParsedClaude
         request_file_uuids,
         usage,
         message_id: response
-            .id()
-            .map(str::to_owned)
+            .response_id
             .or_else(|| assistant_message_uuid.clone()),
-        model: first_model(&response_values)
-            .or_else(|| string_field(request_json, "model").map(str::to_owned)),
+        model: response.model.or(request.metadata.model),
         assistant_message_uuid,
     })
 }

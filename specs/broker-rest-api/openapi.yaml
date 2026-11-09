@@ -331,7 +331,7 @@ components:
           items:
             $ref: "#/components/schemas/TlsDecryptionRule"
     TlsDecryptionAction:
-      enum: [intercept, passthrough]
+      enum: [intercept, passthrough, block]
     TlsDecryptionRule:
       type: object
       additionalProperties: false
@@ -350,6 +350,12 @@ components:
             type: string
             minLength: 1
         application_ids:
+          type: array
+          items:
+            type: string
+            minLength: 1
+        executable_paths:
+          description: Exact absolute executable paths; absent process metadata does not match.
           type: array
           items:
             type: string

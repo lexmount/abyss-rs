@@ -175,7 +175,15 @@ async fn relay_case(buffered: bool, complete: bool, error_kind: io::ErrorKind) {
     let flow = DecodedClientFlow::from_http1(client, test_flow(), timeouts.clone())
         .await
         .unwrap();
-    let result = flow.relay_to(upstream, &hooks, timeouts, 1024).await;
+    let result = flow
+        .relay_to(
+            upstream,
+            &hooks,
+            timeouts,
+            1024,
+            &crate::UncontrolledForwarding,
+        )
+        .await;
     let error = result.err().expect("client write must fail");
     assert!(
         matches!(
@@ -239,7 +247,16 @@ async fn start_relay(
     let flow = DecodedClientFlow::from_http1(client, test_flow(), timeouts.clone())
         .await
         .unwrap();
-    let relay = tokio::spawn(async move { flow.relay_to(upstream, &hooks, timeouts, limit).await });
+    let relay = tokio::spawn(async move {
+        flow.relay_to(
+            upstream,
+            &hooks,
+            timeouts,
+            limit,
+            &crate::UncontrolledForwarding,
+        )
+        .await
+    });
     (relay, events)
 }
 

@@ -1,6 +1,8 @@
 //! Chat Completions wire protocol parsing.
 
 mod exchange;
+mod parser;
+pub use parser::ChatCompletionsParser;
 mod request;
 mod response;
 mod tools;

@@ -589,7 +589,7 @@ fn event_content_hash(
     sha256_hex(&identity)
 }
 
-fn normalized_image_attachments(
+pub fn normalized_image_attachments(
     images: &[ParsedImageAttachment],
     content: &HarnessUsageContentConfig,
 ) -> Vec<NormalizedImageAttachment> {

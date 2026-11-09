@@ -16,6 +16,8 @@ use super::hook::SourceProcess;
 #[non_exhaustive]
 #[serde(rename_all = "snake_case")]
 pub enum TlsDecryptionAction {
+    /// Reject the network flow without decrypting or forwarding its payload.
+    Block,
     /// Terminate client TLS and expose HTTP/WebSocket plaintext to hooks.
     Intercept,
     /// Keep the TLS session opaque and relay raw bytes to the original server.
@@ -81,6 +83,9 @@ pub struct TlsDecryptionRule {
     /// Application installation paths are retained. Missing metadata never matches.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub process_entry_points: Vec<String>,
+    /// Exact absolute executable paths. Missing process attribution never matches.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub executable_paths: Vec<String>,
     /// Exact hosts or leading-wildcard suffixes such as `*.openai.com`.
     #[serde(default)]
     pub destination_hosts: Vec<String>,
@@ -96,6 +101,11 @@ pub struct TlsDecryptionContext<'a> {
 #[derive(Debug, Clone, PartialEq)]
 #[non_exhaustive]
 pub enum TlsDecryptionDecision {
+    /// Reject the network flow before forwarding application bytes.
+    Block {
+        /// Identifier of the matched rule, when a rule selected the action.
+        matched_rule_id: Option<String>,
+    },
     /// Decrypt the TLS flow.
     Intercept {
         /// Identifier of the matched rule, when a rule selected the action.
@@ -117,7 +127,7 @@ pub enum TlsDecryptionPolicyError {
     EmptyRuleId,
     /// A rule did not constrain any source or destination dimension.
     #[error(
-        "TLS decryption rule `{rule_id}` requires destination_hosts, process_names, application_ids, or process_entry_points"
+        "TLS decryption rule `{rule_id}` requires destination_hosts, process_names, application_ids, process_entry_points, or executable_paths"
     )]
     EmptySelectors {
         /// Rule id that failed validation.
@@ -142,6 +152,14 @@ pub enum TlsDecryptionPolicyError {
         rule_id: String,
         /// Entry point that failed validation.
         entry_point: String,
+    },
+    /// An executable selector was not an absolute path on this platform.
+    #[error("TLS decryption rule `{rule_id}` contains invalid executable path `{path}`")]
+    InvalidExecutablePath {
+        /// Rule containing the invalid selector.
+        rule_id: String,
+        /// Executable path that failed validation.
+        path: String,
     },
     /// A host pattern was malformed.
     #[error("TLS decryption rule `{rule_id}` contains invalid host pattern `{pattern}`: {reason}")]
@@ -193,7 +211,7 @@ impl TlsDecryptionPolicy {
     pub fn requires_sni_peek(&self) -> bool {
         self.missing_sni_action.is_some()
             || !self.rules.is_empty()
-            || self.default_action == TlsDecryptionAction::Passthrough
+            || self.default_action != TlsDecryptionAction::Intercept
     }
 
     /// Validates rule identifiers and selector values.
@@ -211,6 +229,7 @@ impl TlsDecryptionPolicy {
             if rule.process_names.is_empty()
                 && rule.application_ids.is_empty()
                 && rule.process_entry_points.is_empty()
+                && rule.executable_paths.is_empty()
                 && rule.destination_hosts.is_empty()
             {
                 return Err(TlsDecryptionPolicyError::EmptySelectors {
@@ -236,6 +255,14 @@ impl TlsDecryptionPolicy {
                     return Err(TlsDecryptionPolicyError::InvalidProcessEntryPoint {
                         rule_id: rule.id.clone(),
                         entry_point: entry_point.clone(),
+                    });
+                }
+            }
+            for path in &rule.executable_paths {
+                if !Path::new(path).is_absolute() {
+                    return Err(TlsDecryptionPolicyError::InvalidExecutablePath {
+                        rule_id: rule.id.clone(),
+                        path: path.clone(),
                     });
                 }
             }
@@ -309,6 +336,9 @@ impl TlsDecryptionRule {
             &self.application_ids,
             source_process.and_then(|source| source.application_id.as_deref()),
         ) && entry_point_selector_matches(
+            &self.executable_paths,
+            source_process.and_then(|source| source.executable_path.as_deref()),
+        ) && entry_point_selector_matches(
             &self.process_entry_points,
             source_process.and_then(|source| source.entry_point.as_deref()),
         ) && destination_selector_matches(&self.destination_hosts, destination_domain)
@@ -320,6 +350,7 @@ impl TlsDecryptionDecision {
     #[must_use]
     pub const fn action(&self) -> TlsDecryptionAction {
         match self {
+            Self::Block { .. } => TlsDecryptionAction::Block,
             Self::Intercept { .. } => TlsDecryptionAction::Intercept,
             Self::Passthrough { .. } => TlsDecryptionAction::Passthrough,
         }
@@ -329,9 +360,9 @@ impl TlsDecryptionDecision {
     #[must_use]
     pub fn matched_rule_id(&self) -> Option<&str> {
         match self {
-            Self::Intercept { matched_rule_id } | Self::Passthrough { matched_rule_id } => {
-                matched_rule_id.as_deref()
-            }
+            Self::Block { matched_rule_id }
+            | Self::Intercept { matched_rule_id }
+            | Self::Passthrough { matched_rule_id } => matched_rule_id.as_deref(),
         }
     }
 }
@@ -345,6 +376,7 @@ fn decision_for_action(
     matched_rule_id: Option<String>,
 ) -> TlsDecryptionDecision {
     match action {
+        TlsDecryptionAction::Block => TlsDecryptionDecision::Block { matched_rule_id },
         TlsDecryptionAction::Intercept => TlsDecryptionDecision::Intercept { matched_rule_id },
         TlsDecryptionAction::Passthrough => TlsDecryptionDecision::Passthrough { matched_rule_id },
     }
@@ -476,6 +508,7 @@ mod tests {
                     action: TlsDecryptionAction::Intercept,
                     process_names: Vec::new(),
                     application_ids: Vec::new(),
+                    executable_paths: Vec::new(),
                     process_entry_points: Vec::new(),
                     destination_hosts: vec!["openai.com".to_owned(), "*.openai.com".to_owned()],
                 },
@@ -485,6 +518,7 @@ mod tests {
                     action: TlsDecryptionAction::Passthrough,
                     process_names: Vec::new(),
                     application_ids: Vec::new(),
+                    executable_paths: Vec::new(),
                     process_entry_points: Vec::new(),
                     destination_hosts: vec!["api.openai.com".to_owned()],
                 },
@@ -510,6 +544,7 @@ mod tests {
                 action: TlsDecryptionAction::Intercept,
                 process_names: Vec::new(),
                 application_ids: Vec::new(),
+                executable_paths: Vec::new(),
                 process_entry_points: Vec::new(),
                 destination_hosts: vec!["*.example.test".to_owned()],
             }],
@@ -557,6 +592,7 @@ mod tests {
                     "com.example.other".to_owned(),
                     "com.openai.codex".to_owned(),
                 ],
+                executable_paths: Vec::new(),
                 process_entry_points: Vec::new(),
                 destination_hosts: vec!["openai.com".to_owned(), "*.openai.com".to_owned()],
             }],
@@ -596,6 +632,7 @@ mod tests {
                 action: TlsDecryptionAction::Intercept,
                 process_names: vec!["codex".to_owned()],
                 application_ids: vec!["com.openai.codex".to_owned()],
+                executable_paths: Vec::new(),
                 process_entry_points: Vec::new(),
                 destination_hosts: Vec::new(),
             }],
@@ -631,6 +668,7 @@ mod tests {
                 action: TlsDecryptionAction::Intercept,
                 process_names: vec!["codex.exe".to_owned()],
                 application_ids: vec![r"c:\program files\openai\codex.exe".to_owned()],
+                executable_paths: Vec::new(),
                 process_entry_points: Vec::new(),
                 destination_hosts: Vec::new(),
             }],
@@ -659,6 +697,7 @@ mod tests {
                 action: TlsDecryptionAction::Intercept,
                 process_names: vec!["codex".to_owned()],
                 application_ids: Vec::new(),
+                executable_paths: Vec::new(),
                 process_entry_points: Vec::new(),
                 destination_hosts: Vec::new(),
             }],
@@ -684,6 +723,7 @@ mod tests {
                 action: TlsDecryptionAction::Intercept,
                 process_names: Vec::new(),
                 application_ids: Vec::new(),
+                executable_paths: Vec::new(),
                 process_entry_points: Vec::new(),
                 destination_hosts: Vec::new(),
             }],
@@ -750,6 +790,7 @@ mod tests {
             action: TlsDecryptionAction::Intercept,
             process_names: vec![process_name.to_owned()],
             application_ids: Vec::new(),
+            executable_paths: Vec::new(),
             process_entry_points: Vec::new(),
             destination_hosts: Vec::new(),
         }

@@ -4,6 +4,7 @@
 //! runtime behavior and SDK client behavior remain in their owning crates.
 
 pub mod event;
+pub mod inspection;
 pub mod message;
 
 /// Maximum UTF-8 JSON payload accepted in one version 1 frame.

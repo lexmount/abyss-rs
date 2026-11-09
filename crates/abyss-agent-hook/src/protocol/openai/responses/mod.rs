@@ -1,6 +1,8 @@
 //! Responses wire protocol parsing.
 
 mod exchange;
+mod parser;
+pub use parser::ResponsesParser;
 mod request;
 mod response;
 mod tools;

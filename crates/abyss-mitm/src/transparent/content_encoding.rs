@@ -61,9 +61,9 @@ pub(super) struct ContentDecoder {
 }
 
 impl ContentDecoder {
-    /// Keeps already parsed identity captures ready for direct hook delivery.
+    /// Keeps identity captures and inspected decoded captures ready for observation.
     pub(super) fn prepare_body(headers: &HeaderMap, body: &mut CapturedBody) {
-        if !Self::identity_only(headers) {
+        if !body.content_decoded() && !Self::identity_only(headers) {
             body.set_decoded(Bytes::new(), BodyDecodingStatus::Pending);
         }
     }
@@ -101,12 +101,13 @@ impl ContentDecoder {
             return body.decoding_status() == BodyDecodingStatus::Complete
                 && body.bytes().is_empty();
         }
-        Self::identity_only(headers)
+        (body.content_decoded() || Self::identity_only(headers))
             && matches!(
                 body.decoding_status(),
                 BodyDecodingStatus::Complete | BodyDecodingStatus::Truncated
             )
             && body.raw_bytes().len() <= body.decode_limit.min(DEFAULT_MAX_HTTP1_BODY_BYTES)
+            && body.bytes().len() <= body.decode_limit.min(DEFAULT_MAX_HTTP1_BODY_BYTES)
     }
 
     pub(super) fn decode_exchange(mut exchange: HttpExchange) -> HttpExchange {
@@ -120,7 +121,7 @@ impl ContentDecoder {
         exchange
     }
 
-    fn decode_body(headers: &HeaderMap, body: &mut CapturedBody, no_body: bool) {
+    pub(super) fn decode_body(headers: &HeaderMap, body: &mut CapturedBody, no_body: bool) {
         if Self::body_ready(headers, body, no_body) {
             Self::log_decoded(headers, body);
             return;

@@ -28,6 +28,59 @@ to trust the broker's CA. Explicit proxy connections do not require authenticati
 so use network access controls to restrict who can reach an exposed listener.
 The REST control API retains its separate loopback-only listener and bearer token.
 
+## Block network flows
+
+Add ordered rules to the existing MITM policy in `runtime-policy.toml`, or update
+the running policy with `PUT /v1/mitm/config`:
+
+```toml
+[mitm.tls_decryption]
+default_action = "passthrough"
+
+[[mitm.tls_decryption.rules]]
+id = "deny-destination"
+action = "block"
+destination_hosts = ["blocked.example", "*.blocked.example"]
+
+[[mitm.tls_decryption.rules]]
+id = "deny-executable"
+action = "block"
+executable_paths = ["/opt/example/bin/client"]
+```
+
+The first enabled matching rule wins across `block`, `intercept` and `passthrough`.
+Different selector dimensions are ANDed; values in one dimension are ORed.
+`process_names`, `application_ids` and `process_entry_points` remain available.
+Executable paths and entry points use exact native absolute-path matching.
+Explicit proxy ingress has no process identity, so process-based selectors do not
+match it. Destination rules and default actions still apply.
+
+Plain HTTP receives a local `403 network_blocked`. TLS blocks close before
+decryption, with `network_blocked` recorded in broker diagnostics. Existing CONNECT
+setup remains unchanged: a TLS block decided from ClientHello occurs after CONNECT
+acknowledgement and is visible to the client as a TLS/socket failure.
+
+## Inspect Agent requests through plugins
+
+A plugin connects to the existing local endpoint and declares `agent_request`.
+The broker sends complete decoded content, a shared Agent request projection and
+available flow metadata; the plugin replies with `allow` and a safe reason.
+No inspector list or additional broker configuration is needed. Event-only plugins
+continue observing without enabling request inspection.
+
+The HTTP request, WebSocket upgrade, and each reassembled client WebSocket data
+message are checked before forwarding. Provider TCP/TLS setup retains its existing
+order. All selected plugins must allow; a block returns `403 agent_request_blocked`,
+and a selected plugin's failure or five-second timeout returns `503 inspection_unavailable`.
+WebSocket decisions close with 1008 or 1011 respectively. Without connected inspectors,
+the existing streaming path is used. Network passthrough remains opaque and never
+enters Agent inspection.
+
+See the [plugin contract](../../specs/broker-plugin-protocol/v1/README.md) and
+[Rust](../abyss-sdk/examples/request_inspection.rs),
+[TypeScript](../../sdks/typescript/examples/request-inspection.ts), and
+[Python](../../sdks/python/examples/request_inspection.py) callback examples.
+
 ## Forward through another explicit proxy
 
 Add an upstream table to `broker-config.toml` when the broker should use a

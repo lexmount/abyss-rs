@@ -13,10 +13,16 @@
       "$ref": "#/$defs/brokerError"
     },
     {
-      "$ref": "agent-event.schema.json"
+      "$ref": "#/$defs/brokerClose"
     },
     {
-      "$ref": "#/$defs/brokerClose"
+      "$ref": "#/$defs/agentEvent"
+    },
+    {
+      "$ref": "#/$defs/inspectRequest"
+    },
+    {
+      "$ref": "#/$defs/inspectResponse"
     }
   ],
   "$defs": {
@@ -24,8 +30,10 @@
       "type": "object",
       "additionalProperties": false,
       "required": [
+        "type",
         "protocol_version",
-        "plugin_id"
+        "plugin_id",
+        "capabilities"
       ],
       "properties": {
         "protocol_version": {
@@ -36,6 +44,19 @@
           "minLength": 1,
           "maxLength": 128,
           "pattern": "^[a-zA-Z0-9._-]+$"
+        },
+        "type": {
+          "const": "plugin_hello"
+        },
+        "capabilities": {
+          "type": "array",
+          "items": {
+            "enum": [
+              "agent_events",
+              "agent_request"
+            ]
+          },
+          "minItems": 1
         }
       }
     },
@@ -43,11 +64,15 @@
       "type": "object",
       "additionalProperties": false,
       "required": [
+        "type",
         "protocol_version"
       ],
       "properties": {
         "protocol_version": {
           "const": 1
+        },
+        "type": {
+          "const": "broker_hello"
         }
       }
     },
@@ -55,6 +80,7 @@
       "type": "object",
       "additionalProperties": false,
       "required": [
+        "type",
         "code",
         "reason"
       ],
@@ -68,6 +94,9 @@
         },
         "reason": {
           "type": "string"
+        },
+        "type": {
+          "const": "broker_error"
         }
       }
     },
@@ -75,6 +104,7 @@
       "type": "object",
       "additionalProperties": false,
       "required": [
+        "type",
         "code",
         "reason"
       ],
@@ -87,6 +117,68 @@
         },
         "reason": {
           "type": "string"
+        },
+        "type": {
+          "const": "broker_close"
+        }
+      }
+    },
+    "agentEvent": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "type",
+        "event"
+      ],
+      "properties": {
+        "type": {
+          "const": "agent_event"
+        },
+        "event": {
+          "$ref": "agent-event.schema.json"
+        }
+      }
+    },
+    "inspectRequest": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "type",
+        "context"
+      ],
+      "properties": {
+        "type": {
+          "const": "inspect_request"
+        },
+        "context": {
+          "$ref": "inspection.schema.json"
+        }
+      }
+    },
+    "inspectResponse": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "type",
+        "request_id",
+        "allow",
+        "reason"
+      ],
+      "properties": {
+        "type": {
+          "const": "inspect_response"
+        },
+        "request_id": {
+          "type": "string"
+        },
+        "allow": {
+          "type": "boolean"
+        },
+        "reason": {
+          "type": [
+            "string",
+            "null"
+          ]
         }
       }
     }

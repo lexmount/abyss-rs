@@ -69,9 +69,10 @@ impl TlsHttpFlow {
     }
 
     #[tracing::instrument(level = "trace", skip_all)]
-    pub(super) async fn handle(
+    pub(super) async fn handle<C: super::RequestForwardingControl>(
         self,
         engine: &MitmEngine,
+        control: &C,
     ) -> Result<TransparentFlowOutcome, TransparentFlowError> {
         let Self { client, metadata } = self;
         let TlsHttpMetadata {
@@ -164,6 +165,7 @@ impl TlsHttpFlow {
             &engine.hooks,
             engine.timeouts.clone(),
             engine.max_http1_body_bytes,
+            control,
         ))
         .await?;
 

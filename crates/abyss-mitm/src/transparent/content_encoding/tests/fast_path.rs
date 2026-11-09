@@ -1,6 +1,6 @@
 //! Ready captures bypass decoding without losing validation or capture limits.
 
-use std::net::SocketAddr;
+use std::{net::SocketAddr, sync::Arc};
 
 use super::super::*;
 use super::PAYLOAD;
@@ -29,6 +29,36 @@ fn identity_captures_reuse_the_existing_json_view() {
             "identity captures must not allocate and parse their JSON again"
         );
     }
+}
+
+#[test]
+fn inspected_compressed_capture_reuses_decoded_bytes_and_json_for_observation() {
+    let mut headers = HeaderMap::new();
+    headers.insert(CONTENT_ENCODING, "gzip".parse().unwrap());
+    let mut body = super::decode("gzip", super::encode("gzip", PAYLOAD), false, 4096);
+    let prepared = Arc::new("parsed request".to_owned());
+    body.extensions_mut().insert(prepared.clone());
+    let decoded_allocation = body.bytes().as_ptr();
+    let model_allocation = body.json().unwrap()["model"].as_str().unwrap().as_ptr();
+    ContentDecoder::prepare_body(&headers, &mut body);
+    assert!(ContentDecoder::body_ready(&headers, &body, false));
+    ContentDecoder::decode_body(&headers, &mut body, false);
+    assert_eq!(body.bytes().as_ptr(), decoded_allocation);
+    assert_eq!(
+        body.json().unwrap()["model"].as_str().unwrap().as_ptr(),
+        model_allocation
+    );
+    assert_eq!(body.bytes(), PAYLOAD);
+    assert!(Arc::ptr_eq(
+        body.extensions().get::<Arc<String>>().unwrap(),
+        &prepared
+    ));
+    // A smaller observation budget must still be respected on an already decoded capture.
+    body = body.with_decode_limit(8);
+    ContentDecoder::decode_body(&headers, &mut body, false);
+    assert!(body.truncated());
+    assert!(body.bytes().len() <= 8);
+    assert!(body.extensions().get::<Arc<String>>().is_none());
 }
 
 #[test]

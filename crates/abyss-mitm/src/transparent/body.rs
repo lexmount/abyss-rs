@@ -33,10 +33,14 @@ pub enum BodyDecodingStatus {
 /// independent from this representation and still forwards the full body.
 #[derive(Debug, Clone)]
 pub struct CapturedBody {
+    /// Consumer-owned results carried with this capture, never serialized onto the wire.
+    extensions: http::Extensions,
     raw_bytes: Bytes,
     raw_truncated: bool,
     pub(super) decode_limit: usize,
     status: BodyDecodingStatus,
+    /// Whether content coding has already been applied to this immutable capture.
+    content_decoded: bool,
     /// Decoded HTTP body bytes retained for hooks.
     bytes: Bytes,
     /// Whether the observation is incomplete because of capture limits or decoding state.
@@ -54,10 +58,12 @@ impl CapturedBody {
     #[must_use]
     pub fn from_bytes(bytes: Bytes) -> Self {
         Self {
+            extensions: http::Extensions::new(),
             raw_bytes: bytes.clone(),
             raw_truncated: false,
             decode_limit: super::engine::DEFAULT_MAX_HTTP1_BODY_BYTES,
             status: BodyDecodingStatus::Complete,
+            content_decoded: false,
             json: parse_json_body(&bytes),
             bytes,
             truncated: false,
@@ -69,10 +75,12 @@ impl CapturedBody {
     #[must_use]
     pub fn from_truncated_bytes(bytes: Bytes) -> Self {
         Self {
+            extensions: http::Extensions::new(),
             raw_bytes: bytes.clone(),
             raw_truncated: true,
             decode_limit: super::engine::DEFAULT_MAX_HTTP1_BODY_BYTES,
             status: BodyDecodingStatus::Truncated,
+            content_decoded: false,
             json: parse_json_body(&bytes),
             bytes,
             truncated: true,
@@ -98,6 +106,17 @@ impl CapturedBody {
     #[must_use]
     pub const fn json(&self) -> Option<&Value> {
         self.json.as_ref()
+    }
+
+    /// Consumer annotations retained with this decoded body for later observation.
+    #[must_use]
+    pub const fn extensions(&self) -> &http::Extensions {
+        &self.extensions
+    }
+
+    /// Attaches consumer annotations without adding a protocol dependency to MITM.
+    pub const fn extensions_mut(&mut self) -> &mut http::Extensions {
+        &mut self.extensions
     }
 
     /// Whether the observation view is incomplete, including decoding failures.
@@ -133,7 +152,13 @@ impl CapturedBody {
         self.raw_bytes.clone()
     }
 
+    pub(super) const fn content_decoded(&self) -> bool {
+        self.content_decoded
+    }
+
     pub(super) fn set_decoded(&mut self, bytes: Bytes, status: BodyDecodingStatus) {
+        self.extensions.clear();
+        self.content_decoded = status != BodyDecodingStatus::Pending;
         self.json = if matches!(
             status,
             BodyDecodingStatus::Complete | BodyDecodingStatus::Truncated
