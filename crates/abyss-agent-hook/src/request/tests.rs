@@ -1,5 +1,8 @@
 //! Inspection projections preserve request content independently of audit settings.
 
+mod metadata;
+mod reuse;
+
 use abyss_mitm::{
     CapturedBody, FlowContext, OriginalDestination, RequestView, TransparentProtocol,
 };

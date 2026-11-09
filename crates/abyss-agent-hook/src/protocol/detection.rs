@@ -3,28 +3,28 @@
 use abyss_mitm::{HttpExchange, WebSocketMessage};
 
 /// Supported wire protocols, grouped independently from Harness identity.
-#[derive(Clone, Copy, Debug)]
+#[derive(Clone, Copy, Debug, PartialEq)]
 pub enum LlmProtocol {
     OpenAi(OpenAiProtocol),
     Anthropic(AnthropicProtocol),
 }
 
 /// OpenAI-compatible wire dialects.
-#[derive(Clone, Copy, Debug)]
+#[derive(Clone, Copy, Debug, PartialEq)]
 pub enum OpenAiProtocol {
     Responses,
     ChatCompletions,
 }
 
 /// Anthropic-compatible public and private wire dialects.
-#[derive(Clone, Copy, Debug)]
+#[derive(Clone, Copy, Debug, PartialEq)]
 pub enum AnthropicProtocol {
     Messages,
     ClaudeWeb(ClaudeWebProtocol),
 }
 
 /// Claude Web private protocol operations that carry model interactions.
-#[derive(Clone, Copy, Debug)]
+#[derive(Clone, Copy, Debug, PartialEq)]
 pub enum ClaudeWebProtocol {
     ConversationCompletion,
 }

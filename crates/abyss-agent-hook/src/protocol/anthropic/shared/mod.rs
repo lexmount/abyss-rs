@@ -5,3 +5,5 @@ pub mod images;
 pub mod metadata;
 pub mod tools;
 pub mod usage;
+
+pub(super) mod parser;

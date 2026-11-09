@@ -12,7 +12,8 @@ use serde_json::Value;
 
 use crate::protocol::{
     model::conversation::ConversationProjection,
-    openai::{ParsedOpenAiExchange, responses::response::ResponsesResponse},
+    openai::{ParsedOpenAiExchange, responses::ResponsesParser},
+    parser::ProtocolParser,
 };
 
 const PENDING_TURN_TTL: Duration = Duration::from_mins(1);
@@ -91,7 +92,7 @@ impl OpenAiWebSocketAccumulator {
             .unwrap_or_else(|| PendingTurn::new(now));
         turn.record(frame);
         if turn.exchange.as_ref().is_some_and(is_terminal_response) {
-            return turn.complete();
+            return turn.assemble_exchange();
         }
         turn.updated_at = now;
         if pending.len() >= MAX_PENDING_TURNS
@@ -240,13 +241,13 @@ impl PendingTurn {
     }
 
     /// Assembles the turn's conversations from the merged and buffered frames.
-    fn complete(self) -> Option<ParsedOpenAiExchange> {
+    fn assemble_exchange(self) -> Option<ParsedOpenAiExchange> {
         let mut exchange = self.exchange?;
-        let response = ResponsesResponse::assemble(
+        let response = ResponsesParser::parse_response(
             &self.response_documents,
             self.response_overflowed || self.response_decode_failed,
         );
-        exchange.response_conversation = response.conversation();
+        exchange.response_conversation = response.conversation;
         exchange.request_conversation = self.request_conversation.unwrap_or_else(|| {
             let mut unobserved = ConversationProjection::empty();
             unobserved.completeness = ContentCompleteness::Unsupported;

@@ -7,3 +7,6 @@ pub use context::ClaudeWebContext;
 pub use conversation::{ParsedClaudeWebExchange, parse_claude_web_exchange};
 
 mod metadata;
+
+mod parser;
+pub use parser::ClaudeWebParser;

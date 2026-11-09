@@ -607,13 +607,36 @@ inspection protocol. Response-derived model identity, correlation, and usage are
 added by the later response/exchange stages using the existing precedence rules;
 they do not change what was known in the request projection.
 
+The concrete protocol parsers implement `ProtocolParser::parse_request` and
+`parse_response`. `ProtocolDetector` returns a protocol enum; dispatch selects a
+concrete parser without allocating a `Box<dyn ProtocolParser>`. Request and
+response results live in `protocol/model`. Dialect exchange adapters call the
+shared `parse_http_exchange` composition and supply their `assemble_exchange`
+function. They do not call back into the request-only protocol dispatcher.
+
+Both inspected and uninspected requests follow one logical sequence:
+`parse_request -> parse_response -> assemble_exchange`. Inspection moves the
+request stage before forwarding, without introducing another response parser or
+exchange assembler. Without an inspector, the request stage runs at observation
+time; the same response and assembly stages follow it.
+
 Reuse decoded bytes and JSON values already available to the request stage.
-All selected inspection plugins consume the same parsed result. If the result
-is already retained in request-local state for later observation, pass it onward
-rather than parse it again. Without such a result, observation invokes the same
-shared stages on its captured request, preserving incomplete/truncated input
-status. No global parse cache or new cross-task ownership framework is needed
-solely to force result reuse.
+All selected inspection plugins consume the same parsed result. The broker
+retains `ParsedAgentRequest` after allowance using the captured body's ordinary
+`http::Extensions`. Its owned `RequestContent` is shared by `Arc`; MITM only
+carries opaque consumer annotations and does not import Agent types. Observation
+borrows this exact request result instead of parsing it again. Without a prepared
+result, it creates the request projection locally, preserving incomplete/truncated
+input status and avoiding an inspection-only shared allocation. No global cache
+or request-ID lookup is involved. Replacing decoded body bytes invalidates its
+annotations.
+
+For WebSocket, each inspected client data message carries its own prepared
+`CapturedBody` into observation, including decoded JSON and request projection.
+The upgrade request cannot supply another message's projection. Client-message
+parsing reuses the prepared result, while the existing response accumulator calls
+the protocol response parser and the same terminal `assemble_exchange` for both
+paths. Multiple messages and turns on one connection retain their own identities.
 
 Harness detection enriches the context but does not gate inspection. An unknown,
 disabled-for-audit, or ambiguously identified Harness must still reach the

@@ -27,3 +27,5 @@ pub use delivery::AgentEventSink;
 pub use harness::{BuiltInHarness, HarnessId};
 pub use hook::HarnessUsageHook;
 pub use request::AgentRequestParser;
+
+pub use protocol::model::request::ParsedAgentRequest;

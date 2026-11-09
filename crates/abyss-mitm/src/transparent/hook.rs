@@ -343,6 +343,9 @@ pub enum WebSocketDirection {
 #[derive(Debug, Clone)]
 #[non_exhaustive]
 pub struct WebSocketMessage {
+    /// Complete message body already prepared by forwarding control, when present.
+    /// Includes consumer annotations; independent of the HTTP upgrade capture.
+    pub captured_body: Option<CapturedBody>,
     /// Network-level flow metadata.
     pub flow: FlowContext,
     /// HTTP request that upgraded this flow to WebSocket.
@@ -375,6 +378,7 @@ impl WebSocketMessage {
         binary: Option<Bytes>,
     ) -> Self {
         Self {
+            captured_body: None,
             flow,
             upgrade_request,
             upgrade_response,
@@ -1262,6 +1266,7 @@ mod tests {
 
     fn test_websocket_message(text: &'static str) -> WebSocketMessage {
         WebSocketMessage {
+            captured_body: None,
             flow: FlowContext::new(
                 SocketAddr::from(([127, 0, 0, 1], 50000)),
                 SocketAddr::from(([127, 0, 0, 1], 18090)),

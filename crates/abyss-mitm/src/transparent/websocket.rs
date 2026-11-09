@@ -50,17 +50,18 @@ struct ForwardedWebSocketMessage {
     message: Message,
     payload_bytes: u64,
     is_close: bool,
+    captured_body: Option<super::CapturedBody>,
 }
 
 impl ForwardedWebSocketMessage {
     fn submit_hook_message(
-        &self,
+        &mut self,
         flow: &FlowContext,
         upgrade: &WebSocketUpgrade,
         sequence: &mut u64,
         hooks: &HookDispatcher,
     ) -> Result<(), TransparentFlowError> {
-        let Some(hook_message) = hook_message_from_websocket(
+        let Some(mut hook_message) = hook_message_from_websocket(
             flow,
             upgrade,
             self.direction,
@@ -69,6 +70,7 @@ impl ForwardedWebSocketMessage {
         ) else {
             return Ok(());
         };
+        hook_message.captured_body = self.captured_body.take();
         hooks.submit_websocket_message(hook_message);
         Ok(())
     }
@@ -118,6 +120,7 @@ where
         let payload_bytes = payload_len(&message)?;
         let is_close = message.is_close();
         Ok(Some(ForwardedWebSocketMessage {
+            captured_body: None,
             direction: self.direction,
             message,
             payload_bytes,
@@ -272,7 +275,7 @@ where
                     client_ws.reject(&rejection).await?;
                     return Err(rejection.into());
                 }
-                let Some(forwarded) = client_message? else {
+                let Some(mut forwarded) = client_message? else {
                     break;
                 };
                 let transport = match &forwarded.message {
@@ -281,17 +284,20 @@ where
                     _ => None,
                 };
                 if let Some(transport) = transport && let Some(plan) = control.plan() {
-                    let body = super::CapturedBody::from_bytes(forwarded.message.clone().into_data());
+                    let mut body = super::CapturedBody::from_bytes(forwarded.message.clone().into_data());
+                    let annotations = {
                     let decision = control.before_forward(plan, super::RequestView { flow, head: &upgrade.request, body: &body, transport });
                     tokio::pin!(decision);
                     loop {
                         tokio::select! {
                             result = &mut decision => {
-                                if let Err(rejection) = result {
-                                    client_ws.reject(&rejection).await?;
-                                    return Err(rejection.into());
+                                match result {
+                                    Ok(annotations) => break annotations,
+                                    Err(rejection) => {
+                                        client_ws.reject(&rejection).await?;
+                                        return Err(rejection.into());
+                                    }
                                 }
-                                break;
                             }
                             message = upstream_ws.next_forwarded_message(FlowOperation::ReadProviderWebSocket) => {
                                 if !forward_provider_message(message?, client_ws, flow, upgrade, &mut sequence, hooks, &mut outcome).await? {
@@ -300,6 +306,9 @@ where
                             }
                         }
                     }
+                    };
+                    body.extensions_mut().extend(annotations);
+                    forwarded.captured_body = Some(body);
                 }
                 forwarded.submit_hook_message(flow, upgrade, &mut sequence, hooks)?;
                 upstream_ws
@@ -333,7 +342,7 @@ async fn forward_provider_message<C: AsyncRead + AsyncWrite + Unpin>(
     hooks: &HookDispatcher,
     outcome: &mut WebSocketRelayOutcome,
 ) -> Result<bool, TransparentFlowError> {
-    let Some(forwarded) = message else {
+    let Some(mut forwarded) = message else {
         return Ok(false);
     };
     forwarded.submit_hook_message(flow, upgrade, sequence, hooks)?;
@@ -354,6 +363,7 @@ fn hook_message_from_websocket(
 ) -> Option<WebSocketMessage> {
     match message {
         Message::Text(text) => Some(WebSocketMessage {
+            captured_body: None,
             flow: flow.clone(),
             upgrade_request: upgrade.request.clone(),
             upgrade_response: upgrade.response.clone(),
@@ -363,6 +373,7 @@ fn hook_message_from_websocket(
             binary: None,
         }),
         Message::Binary(bytes) => Some(WebSocketMessage {
+            captured_body: None,
             flow: flow.clone(),
             upgrade_request: upgrade.request.clone(),
             upgrade_response: upgrade.response.clone(),

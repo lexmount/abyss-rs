@@ -32,7 +32,7 @@ impl RequestForwardingControl for DecisionControl {
         &self,
         (): (),
         request: RequestView<'_>,
-    ) -> impl std::future::Future<Output = Result<(), LocalRejection>> + Send {
+    ) -> impl std::future::Future<Output = Result<http::Extensions, LocalRejection>> + Send {
         self.calls.fetch_add(1, Ordering::Relaxed);
         assert_eq!(
             request.body.json().unwrap()["input"],
@@ -47,7 +47,9 @@ impl RequestForwardingControl for DecisionControl {
                 request.flow.flow_id.to_string(),
             ))
         } else {
-            Ok(())
+            let mut annotations = http::Extensions::new();
+            annotations.insert(Arc::new("prepared request".to_owned()));
+            Ok(annotations)
         })
     }
 }
@@ -147,7 +149,18 @@ async fn complete_body_is_checked_before_any_provider_header_or_body_byte() {
 async fn allow_reuses_original_chunk_framing() {
     let wire = b"POST /v1/responses HTTP/1.1\r\nHost: example.test\r\nTransfer-Encoding: chunked\r\n\r\n12\r\n{\"input\":\"secret\"}\r\n0\r\n\r\n".to_vec();
     let (response, provider, calls, result) = exchange(wire.clone(), false, 1024).await;
-    assert!(result.is_ok(), "allowed request must complete");
+    let crate::TransparentFlowOutcome::Intercepted(outcome) = result.unwrap() else {
+        panic!("allowed request must produce an intercepted exchange");
+    };
+    assert_eq!(
+        outcome
+            .first_request
+            .body()
+            .extensions()
+            .get::<Arc<String>>()
+            .map(|value| value.as_str()),
+        Some("prepared request")
+    );
     assert!(
         response.starts_with(b"HTTP/1.1 200"),
         "provider response must be relayed"

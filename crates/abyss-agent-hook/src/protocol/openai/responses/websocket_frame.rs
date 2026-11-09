@@ -1,24 +1,22 @@
 //! Responses WebSocket frame decoding; accumulation is handled by websocket.
 
+use std::borrow::Cow;
+
 use abyss_mitm::{WebSocketDirection, WebSocketMessage};
 use serde_json::Value;
 
 use super::{
-    response::ResponsesResponse,
+    parser::ResponsesParser,
     websocket::{OpenAiWebSocketFrame, OpenAiWebSocketResponse, is_terminal_event},
 };
-use crate::protocol::model::usage::TokenUsage;
 use crate::protocol::{
     model::conversation::ConversationProjection,
-    openai::shared::{
-        exchange::ParsedOpenAiExchange,
-        metadata::{first_model, response_id},
-        usage::best_usage,
-    },
+    openai::shared::{exchange::ParsedOpenAiExchange, metadata::response_id},
+    parser::{ProtocolParser, prepared_request},
     shared::{
         digest::sha256_hex,
         http::{flow_server_name, header, opencode_session_id, request_host},
-        json::{collect_string_field, event_types, string_field},
+        json::{collect_string_field, string_field},
     },
 };
 
@@ -46,25 +44,27 @@ pub fn parse_openai_websocket_message(message: &WebSocketMessage) -> OpenAiWebSo
     let path = message.upgrade_request.uri().path();
     let is_client_message = matches!(message.direction, WebSocketDirection::ClientToServer);
     let request_payload = payload.get("response").unwrap_or(&payload);
-    let request = crate::protocol::request::RequestContent::parse(
-        crate::protocol::LlmProtocol::OpenAi(crate::protocol::OpenAiProtocol::Responses),
-        is_client_message.then_some(request_payload),
-        false,
-    );
-    let usage = if is_client_message {
-        TokenUsage::default()
-    } else {
-        best_usage(std::slice::from_ref(&payload)).unwrap_or_default()
-    };
-    // Tool calls are output items, so a frame that carries one assembles a
-    // non-empty response; the turn reads them from its assembled response.
-    let relevant = if is_client_message {
-        !request.is_empty() || !request.images.is_empty()
-    } else {
-        !ResponsesResponse::assemble(std::slice::from_ref(&payload), false).is_empty()
-            || !usage.is_empty()
-            || string_field(&payload, "type").is_some_and(is_terminal_event)
-    };
+    let request = is_client_message.then(|| {
+        message
+            .captured_body
+            .as_ref()
+            .and_then(prepared_request::<ResponsesParser>)
+            .map_or_else(
+                || Cow::Owned(ResponsesParser::parse_request(Some(request_payload), false)),
+                Cow::Borrowed,
+            )
+    });
+    let response = (!is_client_message)
+        .then(|| ResponsesParser::parse_response(std::slice::from_ref(payload.as_ref()), false));
+    let relevant = request.as_ref().is_some_and(|request| !request.is_empty())
+        || response.as_ref().is_some_and(|response| {
+            response.has_content
+                || response
+                    .usage
+                    .as_ref()
+                    .is_some_and(|usage| !usage.is_empty())
+                || string_field(&payload, "type").is_some_and(is_terminal_event)
+        });
     if !relevant {
         return OpenAiWebSocketFrame::Irrelevant;
     }
@@ -83,28 +83,38 @@ pub fn parse_openai_websocket_message(message: &WebSocketMessage) -> OpenAiWebSo
         }),
         session_id: websocket_session_id(message, &payload),
         request_hash,
-        request_conversation: request.conversation,
+        request_conversation: request
+            .as_ref()
+            .map_or_else(ConversationProjection::empty, |request| {
+                request.conversation.clone()
+            }),
         // The accumulator assembles the response once the turn terminates.
         response_conversation: ConversationProjection::empty(),
-        request_images: request.images,
-        usage,
-        response_id: if is_client_message {
-            None
-        } else {
-            response_id(std::slice::from_ref(&payload))
-        },
-        previous_response_id: request.metadata.previous_response_id.map(str::to_owned),
-        client_metadata: request.metadata.client_metadata.cloned(),
-        model: if is_client_message {
-            request.metadata.model.map(str::to_owned)
-        } else {
-            first_model(std::slice::from_ref(&payload))
-        },
-        event_types: if is_client_message {
-            Vec::new()
-        } else {
-            event_types(&payload)
-        },
+        request_images: request
+            .as_ref()
+            .map_or_else(Vec::new, |request| request.images.clone()),
+        usage: response
+            .as_ref()
+            .and_then(|response| response.usage.clone())
+            .unwrap_or_default(),
+        response_id: response
+            .as_ref()
+            .and_then(|response| response.response_id.clone()),
+        previous_response_id: request
+            .as_ref()
+            .and_then(|request| request.metadata.previous_response_id.clone()),
+        client_metadata: request
+            .as_ref()
+            .and_then(|request| request.metadata.client_metadata.clone()),
+        model: request
+            .as_ref()
+            .and_then(|request| request.metadata.model.clone())
+            .or_else(|| {
+                response
+                    .as_ref()
+                    .and_then(|response| response.model.clone())
+            }),
+        event_types: response.map_or_else(Vec::new, |response| response.event_types),
     };
     if is_client_message {
         return OpenAiWebSocketFrame::Request(Box::new(exchange));
@@ -115,15 +125,18 @@ pub fn parse_openai_websocket_message(message: &WebSocketMessage) -> OpenAiWebSo
     );
     OpenAiWebSocketFrame::Response(Box::new(OpenAiWebSocketResponse {
         exchange,
-        document: payload,
+        document: payload.into_owned(),
         byte_len,
     }))
 }
 
-fn websocket_json_payload(message: &WebSocketMessage) -> Option<Value> {
+fn websocket_json_payload(message: &WebSocketMessage) -> Option<Cow<'_, Value>> {
+    if let Some(body) = &message.captured_body {
+        return body.json().map(Cow::Borrowed);
+    }
     match (&message.text, &message.binary) {
-        (Some(text), _) => serde_json::from_str(text).ok(),
-        (None, Some(bytes)) => serde_json::from_slice(bytes).ok(),
+        (Some(text), _) => serde_json::from_str(text).ok().map(Cow::Owned),
+        (None, Some(bytes)) => serde_json::from_slice(bytes).ok().map(Cow::Owned),
         (None, None) => None,
     }
 }

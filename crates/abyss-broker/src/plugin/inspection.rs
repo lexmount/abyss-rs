@@ -16,7 +16,7 @@ use abyss_agent_hook::{AgentRequestParser, HooksRuntimeConfig};
 use abyss_mitm::{LocalRejection, RequestForwardingControl, RequestView};
 use abyss_plugin_protocol::inspection::{AgentRequestContext, InspectResponse};
 use abyss_plugin_protocol::message::BrokerMessage;
-use axum::http::StatusCode;
+use axum::http::{Extensions, StatusCode};
 use parking_lot::Mutex;
 use tokio::sync::{mpsc, oneshot};
 
@@ -167,9 +167,11 @@ impl RequestForwardingControl for AgentRequestInspector {
         &self,
         sessions: Self::Plan,
         request: RequestView<'_>,
-    ) -> Result<(), LocalRejection> {
+    ) -> Result<Extensions, LocalRejection> {
         let request_id = uuid::Uuid::new_v4().to_string();
-        let context = Arc::new(AgentRequestParser::parse(
+        let parsed = AgentRequestParser::prepare(&request);
+        let context = Arc::new(AgentRequestParser::parse_prepared(
+            &parsed,
             &request,
             &self.hooks.snapshot().harness_usage.config,
             request_id.clone(),
@@ -213,6 +215,8 @@ impl RequestForwardingControl for AgentRequestInspector {
                 ));
             }
         }
-        Ok(())
+        let mut annotations = Extensions::new();
+        annotations.insert(parsed);
+        Ok(annotations)
     }
 }

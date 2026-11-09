@@ -304,7 +304,6 @@ where
         let request_capture = self
             .forward_http_request_to(&mut upstream, max_body_bytes, control)
             .await?;
-        let request_head_bytes = request_capture.forwarded_bytes;
         let response = decode_response_from_upstream(upstream, timeouts).await?;
 
         if response.head.status() != StatusCode::SWITCHING_PROTOCOLS {
@@ -323,7 +322,7 @@ where
         }
 
         let upgrade = self
-            .forward_websocket_success(response, request_head_bytes, hooks)
+            .forward_websocket_success(response, request_capture, hooks)
             .await?;
         let ForwardedWebSocketUpgrade {
             client_stream,
@@ -357,7 +356,7 @@ where
     async fn forward_websocket_success<U>(
         mut self,
         response: DecodedUpstreamResponse<U>,
-        request_head_bytes: u64,
+        request_capture: MessageCapture,
         hooks: &HookDispatcher,
     ) -> Result<ForwardedWebSocketUpgrade<S, U>, TransparentFlowError>
     where
@@ -388,7 +387,7 @@ where
             self.context.clone(),
             self.first_request,
             response_head,
-            empty_message_capture(request_head_bytes),
+            request_capture,
             empty_message_capture(response_head_bytes),
             hooks,
             CapturedExchangeLog::WebSocketUpgrade,
@@ -787,7 +786,7 @@ impl RequestInspection<'_> {
                 ));
             }
         }
-        control
+        let annotations = control
             .before_forward(
                 plan,
                 super::RequestView {
@@ -798,6 +797,7 @@ impl RequestInspection<'_> {
                 },
             )
             .await?;
+        capture.body.extensions_mut().extend(annotations);
         Ok((wire, capture))
     }
 

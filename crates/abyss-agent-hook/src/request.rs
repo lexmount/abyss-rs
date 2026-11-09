@@ -3,6 +3,8 @@
 #[cfg(test)]
 mod tests;
 
+use std::sync::Arc;
+
 use abyss_mitm::{RequestTransport, RequestView, TransparentProtocol};
 use abyss_plugin_protocol::{
     event::ImageAttachment,
@@ -19,7 +21,8 @@ use crate::{
     harness::{DeclarationSource, HarnessRegistry},
     protocol::{
         AnthropicProtocol, LlmProtocol, OpenAiProtocol, ProtocolDetector,
-        request::RequestContent,
+        model::request::{ParsedAgentRequest, RequestContent},
+        request::RequestParser,
         shared::http::{flow_server_name, request_host},
     },
     provider::ProviderResolver,
@@ -29,9 +32,44 @@ use crate::{
 pub struct AgentRequestParser;
 
 impl AgentRequestParser {
+    /// Parses request content once so inspection and observation can share it.
+    #[must_use]
+    pub fn prepare(request: &RequestView<'_>) -> ParsedAgentRequest {
+        let json = request.body.json();
+        let payload = match request.transport {
+            RequestTransport::Http => json,
+            _ => json.map(|value| value.get("response").unwrap_or(value)),
+        };
+        let protocol = ProtocolDetector::detect_request(request.head.uri().path(), payload);
+        ParsedAgentRequest {
+            projection: protocol.map(|protocol| {
+                (
+                    protocol,
+                    Arc::new(RequestParser::parse(
+                        protocol,
+                        payload,
+                        request.body.truncated(),
+                    )),
+                )
+            }),
+        }
+    }
+
     /// Builds a complete inspection context independently of audit content policy.
     #[must_use]
     pub fn parse(
+        request: &RequestView<'_>,
+        config: &HarnessUsageConfig,
+        request_id: String,
+    ) -> AgentRequestContext {
+        let parsed = Self::prepare(request);
+        Self::parse_prepared(&parsed, request, config, request_id)
+    }
+
+    /// Projects an already parsed request without repeating protocol extraction.
+    #[must_use]
+    pub fn parse_prepared(
+        parsed: &ParsedAgentRequest,
         request: &RequestView<'_>,
         config: &HarnessUsageConfig,
         request_id: String,
@@ -52,18 +90,19 @@ impl AgentRequestParser {
         } else {
             json
         };
-        let protocol = ProtocolDetector::detect_request(request.head.uri().path(), payload);
         let authority = request_host(request.head.headers(), request.head.uri())
             .or_else(|| flow_server_name(request.flow));
-        let (agent, parsing_status) = match (protocol, payload) {
+        let (agent, parsing_status) = match (parsed.projection.as_ref(), payload) {
             (None, _) => (None, RequestParsingStatus::UnknownProtocol),
             (Some(_), None) => (None, RequestParsingStatus::InvalidPayload),
-            (Some(protocol), Some(payload)) => {
-                Self::project(protocol, payload, authority.as_deref().unwrap_or("unknown"))
-                    .map_or((None, RequestParsingStatus::InvalidPayload), |agent| {
-                        (Some(agent), RequestParsingStatus::Parsed)
-                    })
-            }
+            (Some((protocol, content)), Some(_)) => Self::project(
+                *protocol,
+                content,
+                authority.as_deref().unwrap_or("unknown"),
+            )
+            .map_or((None, RequestParsingStatus::InvalidPayload), |agent| {
+                (Some(agent), RequestParsingStatus::Parsed)
+            }),
         };
         let harness = Self::harness(request, config, payload);
         AgentRequestContext {
@@ -161,10 +200,9 @@ impl AgentRequestParser {
 
     fn project(
         protocol: LlmProtocol,
-        payload: &serde_json::Value,
+        request: &RequestContent,
         host: &str,
     ) -> Result<AgentRequestProjection, AgentEventConversionError> {
-        let request = RequestContent::parse(protocol, Some(payload), false);
         let attachments = normalized_image_attachments(
             &request.images,
             &HarnessUsageContentConfig {
@@ -184,11 +222,11 @@ impl AgentRequestParser {
             }
             .to_owned(),
             provider: ProviderResolver::resolve(host, protocol),
-            model: request.metadata.model.map(str::to_owned),
-            conversation: request.conversation,
+            model: request.metadata.model.clone(),
+            conversation: request.conversation.clone(),
             attachments,
-            tools: request.metadata.tool_definitions.cloned(),
-            previous_response_id: request.metadata.previous_response_id.map(str::to_owned),
+            tools: request.metadata.tool_definitions.clone(),
+            previous_response_id: request.metadata.previous_response_id.clone(),
         })
     }
 }

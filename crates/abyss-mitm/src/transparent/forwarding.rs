@@ -43,12 +43,13 @@ pub trait RequestForwardingControl: Send + Sync {
     /// Returns a snapshot when inspection is active. `None` keeps streaming.
     fn plan(&self) -> Option<Self::Plan>;
 
-    /// Decides before any request bytes reach the provider.
+    /// Decides before any request bytes reach the provider and returns annotations
+    /// to retain on the captured body for later observation.
     fn before_forward(
         &self,
         plan: Self::Plan,
         request: RequestView<'_>,
-    ) -> impl Future<Output = Result<(), LocalRejection>> + Send;
+    ) -> impl Future<Output = Result<http::Extensions, LocalRejection>> + Send;
 }
 
 /// Default transport behavior with no inspection stage or body retention.
@@ -65,8 +66,8 @@ impl RequestForwardingControl for UncontrolledForwarding {
         &self,
         (): (),
         _request: RequestView<'_>,
-    ) -> impl Future<Output = Result<(), LocalRejection>> + Send {
-        std::future::ready(Ok(()))
+    ) -> impl Future<Output = Result<http::Extensions, LocalRejection>> + Send {
+        std::future::ready(Ok(http::Extensions::new()))
     }
 }
 

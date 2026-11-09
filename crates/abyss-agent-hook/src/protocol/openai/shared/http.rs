@@ -2,38 +2,24 @@
 
 use abyss_mitm::HttpExchange;
 
-use super::{
-    exchange::ParsedOpenAiExchange,
-    metadata::{first_model, response_id, session_id},
-    response::OpenAiResponse,
-    usage::best_usage,
-};
+use super::{exchange::ParsedOpenAiExchange, metadata::session_id};
 use crate::protocol::{
-    request::RequestContent,
-    shared::{digest::sha256_hex, http::request_host, json::event_types, sse::ResponseDocuments},
+    model::{request::RequestContent, response::ResponseContent},
+    shared::{digest::sha256_hex, http::request_host},
 };
 
-pub struct OpenAiHttpExchange<'a> {
-    exchange: &'a HttpExchange,
-    pub documents: ResponseDocuments,
-}
-impl<'a> OpenAiHttpExchange<'a> {
-    pub fn decode(exchange: &'a HttpExchange) -> Self {
-        Self {
-            exchange,
-            documents: ResponseDocuments::decode(exchange.response.body()),
-        }
-    }
-    pub fn finish(
-        self,
-        request: RequestContent<'_>,
-        response: &OpenAiResponse,
+pub struct OpenAiHttpExchange;
+impl OpenAiHttpExchange {
+    pub fn assemble_exchange(
+        exchange: &HttpExchange,
+        request: RequestContent,
+        response: ResponseContent,
     ) -> Option<ParsedOpenAiExchange> {
         let request_conversation = request.conversation;
         let request_images = request.images;
-        let host = request_host(self.exchange.request.headers(), self.exchange.request.uri())?;
-        let path = self.exchange.request.uri().path();
-        let response_conversation = response.conversation();
+        let host = request_host(exchange.request.headers(), exchange.request.uri())?;
+        let path = exchange.request.uri().path();
+        let response_conversation = response.conversation;
         // Providers usually report token usage on the final response event. Some
         // request styles may include useful usage-like fields on the request, so use
         // those as a fallback only when response usage is absent.
@@ -44,16 +30,9 @@ impl<'a> OpenAiHttpExchange<'a> {
         // Treat truncation itself as evidence that an audit-relevant exchange
         // occurred, even when the retained prefixes do not parse into entries or
         // usage.
-        let usage = best_usage(&self.documents.values).unwrap_or_else(|| {
-            self.exchange
-                .request
-                .body()
-                .json()
-                .and_then(|json| best_usage(std::slice::from_ref(json)))
-                .unwrap_or_default()
-        });
+        let usage = response.usage.or(request.usage).unwrap_or_default();
         let body_was_truncated =
-            self.exchange.request.body().truncated() || self.exchange.response.body().truncated();
+            exchange.request.body().truncated() || exchange.response.body().truncated();
         if request_conversation.entries.is_empty()
             && request_images.is_empty()
             && response_conversation.entries.is_empty()
@@ -63,17 +42,16 @@ impl<'a> OpenAiHttpExchange<'a> {
             return None;
         }
 
-        let response_id = response_id(&self.documents.values);
-        let previous_response_id = request.metadata.previous_response_id.map(str::to_owned);
-        let model = first_model(&self.documents.values)
-            .or_else(|| request.metadata.model.map(str::to_owned));
-        let headers = self.exchange.request.headers();
+        let response_id = response.response_id;
+        let previous_response_id = request.metadata.previous_response_id;
+        let model = response.model.or(request.metadata.model);
+        let headers = exchange.request.headers();
         let request_hash = sha256_hex(&format!(
             "{}\0{}\0{}\0{}",
-            self.exchange.request.method(),
+            exchange.request.method(),
             host,
             path,
-            String::from_utf8_lossy(self.exchange.request.body().bytes())
+            String::from_utf8_lossy(exchange.request.body().bytes())
         ));
 
         Some(ParsedOpenAiExchange {
@@ -87,9 +65,9 @@ impl<'a> OpenAiHttpExchange<'a> {
             usage,
             response_id,
             previous_response_id,
-            client_metadata: request.metadata.client_metadata.cloned(),
+            client_metadata: request.metadata.client_metadata,
             model,
-            event_types: self.documents.values.iter().flat_map(event_types).collect(),
+            event_types: response.event_types,
         })
     }
 }
