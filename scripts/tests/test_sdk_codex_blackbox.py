@@ -1,10 +1,15 @@
 """Ensure live SDK tests cannot pass on provider errors or unrelated audit events."""
 
+import contextlib
 import copy
 import os
+import signal
+import sys
 import tempfile
+import time
 import unittest
 from pathlib import Path
+from types import SimpleNamespace
 from unittest.mock import patch
 
 from scripts.blackbox_sdk_codex import (
@@ -12,12 +17,44 @@ from scripts.blackbox_sdk_codex import (
     allowed_exchange,
     child_environment,
     records,
+    run_codex,
     validate_blocked_codex,
     validate_context,
 )
 
 
 class CodexSdkEvidenceTests(unittest.TestCase):
+    @unittest.skipUnless(os.name == "posix", "live Codex SDK runner uses POSIX process groups")
+    def test_codex_exit_stops_background_directory_writes(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            executable = root / "codex"
+            executable.write_text(
+                f"#!{sys.executable}\n"
+                "import pathlib, subprocess, sys, time\n"
+                "child = subprocess.Popen([sys.executable, '-c', "
+                "\"import os, pathlib, time; pathlib.Path('child.pid').write_text(str(os.getpid())); "
+                "time.sleep(0.3); pathlib.Path('late-write').touch()\"], "
+                "stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)\n"
+                "while not pathlib.Path('child.pid').exists(): time.sleep(0.01)\n"
+                "print('{\"type\":\"turn.completed\"}')\n"
+            )
+            executable.chmod(0o755)
+            directory = root / "request"
+            broker = SimpleNamespace(proxy_url="http://127.0.0.1:1", ca_file=root / "ca")
+            try:
+                with patch.dict(os.environ, {"PATH": f"{root}{os.pathsep}{os.environ['PATH']}"}):
+                    result, events = run_codex(broker, directory, "marker", "model", "test-key")
+                self.assertEqual(result.returncode, 0)
+                self.assertEqual(events, [{"type": "turn.completed"}])
+                time.sleep(0.5)
+                self.assertFalse((directory / "late-write").exists())
+            finally:
+                pid_file = directory / "child.pid"
+                if pid_file.exists():
+                    with contextlib.suppress(ProcessLookupError):
+                        os.kill(int(pid_file.read_text()), signal.SIGKILL)
+
     def test_provider_forbidden_is_not_plugin_rejection(self):
         with self.assertRaises(AssertionError):
             validate_blocked_codex(
