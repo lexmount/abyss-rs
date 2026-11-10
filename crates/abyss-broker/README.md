@@ -143,9 +143,8 @@ from the target's trust and the Agent-facing MITM CA. There is no verification
 bypass. SOCKS5, client-certificate authentication, Digest/NTLM and HTTP/2 CONNECT
 are not supported.
 
-Both file paths must be absolute and local to the broker. The CA bundle is limited
-to 1 MiB and the JSON credentials file to 16 KiB. Files are loaded into each route
-snapshot at startup or `PUT /v1/network/config`; editing them alone does not update
+Both file paths must be absolute and local to the broker. Files are loaded into
+each route snapshot at startup or `PUT /v1/network/config`; editing them alone does not update
 a running route. Reapply the network configuration to rotate credentials or CAs.
 Invalid material rejects the update and retains the active route. The
 `handshake_timeout_ms` budget covers proxy TLS and CONNECT together.

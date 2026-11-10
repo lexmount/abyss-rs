@@ -5,7 +5,6 @@ import base64
 import copy
 import http.client
 import json
-import os
 import ssl
 import sys
 import tempfile
@@ -173,12 +172,6 @@ def run_checks(broker, proxy):
     missing = copy.deepcopy(configured)
     missing["upstream"]["credentials_file"] = str(broker.directory / "missing.json")
     rejected_update(broker, missing)
-    if os.name == "posix":
-        fifo = broker.directory / "credentials.fifo"
-        os.mkfifo(fifo, 0o600)
-        special = copy.deepcopy(configured)
-        special["upstream"]["credentials_file"] = str(fifo)
-        rejected_update(broker, special)
     invalid_ca = broker.directory / "invalid-ca.pem"
     invalid_ca.write_text("password-sentinel malformed certificate")
     invalid = copy.deepcopy(configured)

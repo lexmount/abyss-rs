@@ -217,8 +217,6 @@ fn configuration_material_is_validated_without_exposing_secrets() {
         let error = HttpConnectProxy::new(&config).err().unwrap();
         assert!(!error.to_string().contains("secret"));
     }
-    std::fs::write(&path, vec![b'x'; 16 * 1024 + 1]).unwrap();
-    assert!(HttpConnectProxy::new(&config).is_err());
     std::fs::write(&path, br#"{"username":"","password":""}"#).unwrap();
     assert!(HttpConnectProxy::new(&config).is_ok());
     assert!(!serde_json::to_string(&config).unwrap().contains("password"));

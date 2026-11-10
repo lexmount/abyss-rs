@@ -8,16 +8,10 @@ use tokio::{
 };
 use tokio_rustls::{
     TlsConnector,
-    rustls::{
-        ClientConfig, RootCertStore,
-        pki_types::{CertificateDer, ServerName, pem::PemObject as _},
-    },
+    rustls::{ClientConfig, RootCertStore, pki_types::ServerName},
 };
 
-use super::{
-    ProxyConnectStage, UpstreamProxyConfig, UpstreamProxyConfigError, UpstreamProxyError,
-    config::read_material,
-};
+use super::{ProxyConnectStage, UpstreamProxyConfig, UpstreamProxyConfigError, UpstreamProxyError};
 use crate::{BoxedDuplexStream, TargetAuthority};
 
 #[derive(Clone)]
@@ -40,21 +34,10 @@ impl ProxyTransport {
         crate::tls::install_default_crypto_provider();
         let mut roots = RootCertStore::empty();
         roots.extend(webpki_roots::TLS_SERVER_ROOTS.iter().cloned());
-        if let Some(path) = &config.ca_file {
-            let pem = read_material(path, 1024 * 1024)?;
-            let certificates = CertificateDer::pem_slice_iter(&pem)
-                .collect::<Result<Vec<_>, _>>()
-                .map_err(|_| UpstreamProxyConfigError("invalid proxy CA PEM bundle"))?;
-            if certificates.is_empty() {
-                return Err(UpstreamProxyConfigError(
-                    "proxy CA PEM bundle contains no certificates",
-                ));
-            }
-            for certificate in certificates {
-                roots
-                    .add(certificate)
-                    .map_err(|_| UpstreamProxyConfigError("invalid proxy CA certificate"))?;
-            }
+        for certificate in config.load_ca_certificates()? {
+            roots
+                .add(certificate)
+                .map_err(|_| UpstreamProxyConfigError("invalid proxy CA certificate"))?;
         }
         let server_name = match endpoint.host().as_ip_addr() {
             Some(address) => ServerName::IpAddress(address.into()),

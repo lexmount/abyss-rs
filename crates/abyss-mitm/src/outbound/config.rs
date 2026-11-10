@@ -1,9 +1,10 @@
 //! Shared startup configuration for protocol-based next-hop connections.
 
-use std::{io::Read as _, path::PathBuf, time::Duration};
+use std::{path::PathBuf, time::Duration};
 
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
+use tokio_rustls::rustls::pki_types::{CertificateDer, pem::PemObject as _};
 
 use crate::TargetAuthority;
 
@@ -107,7 +108,8 @@ impl UpstreamProxyConfig {
         self.credentials_file
             .as_deref()
             .map(|path| {
-                let bytes = read_material(path, 16 * 1024)?;
+                let bytes = std::fs::read(path)
+                    .map_err(|_| UpstreamProxyConfigError("cannot read proxy credentials file"))?;
                 let credentials: ProxyCredentials =
                     serde_json::from_slice(&bytes).map_err(|_| {
                         UpstreamProxyConfigError(
@@ -118,6 +120,26 @@ impl UpstreamProxyConfig {
                 Ok(credentials)
             })
             .transpose()
+    }
+
+    /// Reads the configured PEM bundle when preparing a route snapshot.
+    pub(super) fn load_ca_certificates(
+        &self,
+    ) -> Result<Vec<CertificateDer<'static>>, UpstreamProxyConfigError> {
+        let Some(path) = &self.ca_file else {
+            return Ok(Vec::new());
+        };
+        let pem = std::fs::read(path)
+            .map_err(|_| UpstreamProxyConfigError("cannot read proxy CA file"))?;
+        let certificates = CertificateDer::pem_slice_iter(&pem)
+            .collect::<Result<Vec<_>, _>>()
+            .map_err(|_| UpstreamProxyConfigError("invalid proxy CA PEM bundle"))?;
+        if certificates.is_empty() {
+            return Err(UpstreamProxyConfigError(
+                "proxy CA PEM bundle contains no certificates",
+            ));
+        }
+        Ok(certificates)
     }
 
     pub(super) fn target(&self) -> Result<TargetAuthority, UpstreamProxyConfigError> {
@@ -146,41 +168,6 @@ impl UpstreamProxyConfig {
     pub(super) const fn handshake_timeout(&self) -> Duration {
         Duration::from_millis(self.handshake_timeout_ms)
     }
-}
-
-/// Reads bounded local configuration material without including its contents in errors.
-pub(super) fn read_material(
-    path: &std::path::Path,
-    limit: u64,
-) -> Result<Vec<u8>, UpstreamProxyConfigError> {
-    // Reject special files before opening: opening a FIFO can itself block.
-    let metadata = std::fs::metadata(path)
-        .map_err(|_| UpstreamProxyConfigError("cannot inspect proxy configuration material"))?;
-    if !metadata.is_file() || metadata.len() > limit {
-        return Err(UpstreamProxyConfigError(
-            "proxy configuration material must be a bounded regular file",
-        ));
-    }
-    let file = std::fs::File::open(path)
-        .map_err(|_| UpstreamProxyConfigError("cannot open proxy configuration material"))?;
-    let metadata = file
-        .metadata()
-        .map_err(|_| UpstreamProxyConfigError("cannot inspect proxy configuration material"))?;
-    if !metadata.is_file() || metadata.len() > limit {
-        return Err(UpstreamProxyConfigError(
-            "proxy configuration material must be a bounded regular file",
-        ));
-    }
-    let mut bytes = Vec::new();
-    file.take(limit.saturating_add(1))
-        .read_to_end(&mut bytes)
-        .map_err(|_| UpstreamProxyConfigError("cannot read proxy configuration material"))?;
-    if u64::try_from(bytes.len()).unwrap_or(u64::MAX) > limit {
-        return Err(UpstreamProxyConfigError(
-            "proxy configuration material exceeds its size limit",
-        ));
-    }
-    Ok(bytes)
 }
 
 const fn default_timeout_ms() -> u64 {
