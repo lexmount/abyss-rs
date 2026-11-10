@@ -1,117 +1,215 @@
-# Broker plugin request mutation
+# Agent request editing through broker plugins
 
-Status: proposed, not implemented. The source review is based on commit `2e1824a`.
+Status: proposed, not implemented. Source analysis is based on commit `2e1824a`.
 
-Extend the existing before-forward request inspection boundary with mutation.
-A plugin returns Allow, Modify, or Block. The broker applies each modification
-to the current request, gives that updated request to the next plugin, and
-forwards only after the entire selected chain succeeds. Automatic API key
-allocation is one application implemented by a plugin; the broker supplies
-general request mutation primitives.
+Extend `agent_request` so a plugin reads a semantic Agent request context and
+returns Allow, Block, or Modify with an explicit list of semantic actions. The SDK
+serializes that result. Abyss validates and applies the actions to the retained
+original request, updates context for subsequent plugins, and forwards only when
+the selected chain succeeds. Neither the SDK nor the broker computes a context diff.
 
-This proposal builds on the connection lifecycle, deadlines, and network-policy
-boundaries in the [request inspection design](request-blocking-design.md).
-The [v1 plugin contract](../specs/broker-plugin-protocol/v1/README.md) continues
-to describe the implemented behavior until this proposal is adopted.
+The public API describes Agent requests. HTTP headers, JSON locations, WebSocket
+messages, and framing are internal implementation details. API key allocation is
+one application; allocation policy and credential storage belong to the plugin.
+
+This proposal builds on the [request inspection design](request-blocking-design.md).
+The [v1 plugin contract](../specs/broker-plugin-protocol/v1/README.md) describes the
+implemented behavior until this proposal is adopted.
 
 ## Scope and required behavior
 
-The first release covers requests at these existing transport boundaries:
+The first release provides actions for two semantic values. Both are read from
+context; edits are expressed only through returned actions.
 
-| Boundary | Mutable content | Processing unit |
+| Read-only value | Allowed actions | Write-back behavior |
 | --- | --- | --- |
-| Ordinary HTTP, including intercepted HTTPS | Set/remove request headers; replace the entire body | One complete request |
-| WebSocket upgrade | Ordinary request headers, including Authorization | One HTTP handshake |
-| Client WebSocket data messages | Replace the entire payload, retaining text/binary type | One reassembled message |
+| `context.auth_token` | `SetAuthToken`, `RemoveAuthToken` | Update or remove the credential selected by the target's authentication adapter; the token excludes header names and scheme prefixes |
+| `context.agent.model`, when an Agent projection exists | `SetModel`, `RemoveModel` | Update or remove the model field selected by the recognized request protocol |
 
-These operations support credential injection, model parameter changes, prompt
-processing, and tool-definition filtering. Plugins own those decisions. The
-broker does not acquire API key pools, provider allocation rules, or APIs for
-editing particular model fields.
+Plugins also receive already parsed conversation, tools, attachments, protocol,
+provider, and Harness information. These views remain read-only in this release.
+Adding conversation or tool editing requires an explicit mapping back to the
+original protocol structure; it is not enabled by making an observation object
+mutable. Raw headers, JSON, and decoded bytes, if exposed for inspection, remain
+read-only diagnostic views.
 
-The following properties define the implementation:
+The implementation must preserve these properties:
 
-1. No HTTP request head/body or client WebSocket data message is sent upstream
-   until the selected plugin chain has completed successfully.
-2. Each plugin sees the modifications accepted from earlier plugins, subject to
-   the existing credential-header filtering. Modifications are applied in order.
-3. Forwarding, request projections, and observation use the same final request.
-   A modified capture must never accompany an unmodified upstream request.
-4. Network Block/Passthrough/Intercept decisions retain their existing meaning.
-   Connecting a plugin does not enable TLS decryption or reclassify opaque flows.
-5. With no request-processing plugins connected, retain the ordinary streaming
-   path without additional buffering or plugin RPC.
-6. Reuse the existing plugin connection, shared request parser, and relay stages.
-   Mutation must not create a separate HTTP or WebSocket relay implementation.
+1. Selected plugins finish successfully before any pending application request
+   head/body or client data-message payload is sent upstream.
+2. Plugins run sequentially. Each sees the accepted edits from earlier plugins,
+   including the current authentication token.
+3. The final semantic context, forwarded request, and observed request describe
+   the same content. Credential values remain excluded from observation output.
+4. Source identity, request/flow IDs, destination, method, path/query, Host, SNI,
+   and outbound route remain read-only. Editing a model does not reroute a request.
+5. No selected request plugins means the existing streaming path, without extra
+   mutation buffering or RPC. Network Block/Passthrough/Intercept behavior stays
+   unchanged; connecting a plugin does not enable TLS decryption.
+6. Reuse the existing inspection boundary, parsers, plugin connection, and relay.
+   Plugins do not parse provider JSON or construct transport-level mutations.
 
-Keep the method, path/query, destination, Host, SNI, and outbound route unchanged
-in this release. Upstream connections may already exist at this boundary;
-destination rewriting would require separate connection and policy evaluation
-semantics. Response bodies, incremental SSE rewriting, and raw TCP/TLS mutation
-are outside this proposal.
-
-There is no JSON Patch language, script engine, plugin dependency graph, generic
-middleware framework, or new plugin endpoint. A plugin editing JSON produces
-the complete replacement body itself. Define a response-side contract at the
-response forwarding boundary when a concrete response mutation need arises.
+There is no public header-operation list, whole-body replacement, or
+`RequestMutation::Http / WebSocket` enum. Response editing, arbitrary traffic
+rewriting, JSON Patch, and a universal protocol conversion framework are outside
+this proposal. Internal transport code still handles HTTP and WebSocket correctly.
 
 ## Current implementation and change points
 
-The existing synchronous inspection path provides most of the required mechanism:
+Abyss already pauses before forwarding to ask plugins whether to allow or block
+a request. Modify adds an explicit list of actions such as setting a token or a
+model. Plugins continue to read context without modifying it. The processing path
+has four steps:
 
-| Existing component | Current behavior | Required change |
-| --- | --- | --- |
-| [Forwarding control:39](../crates/abyss-mitm/src/transparent/forwarding.rs#L39) | `RequestForwardingControl` waits before forwarding and returns annotations. | Return the final forwardable request with its annotations. |
-| [HTTP forwarding:636](../crates/abyss-mitm/src/transparent/relay.rs#L636) | Retains original wire bytes and decodes complete content when plugins are selected. | Select original or replacement body bytes and encode the final request head. |
-| [Broker request control:31](../crates/abyss-broker/src/proxy/request_control.rs#L31) | Builds a projection and submits the request to the plugin service. | Own the current request, call plugins sequentially, apply changes, and refresh projections. |
-| [Plugin inspection:235](../crates/abyss-broker/src/plugin/inspection.rs#L235) | Every selected plugin inspects the same immutable context. | Accept current context for each invocation and return that plugin's decision. |
-| [Request parser:37](../crates/abyss-agent-hook/src/request.rs#L37) | Shares parsed request results between inspection and observation. | Refresh derived data after mutation and retain the final parsed result for observation. |
-| [WebSocket forwarding:286](../crates/abyss-mitm/src/transparent/websocket.rs#L286) | Awaits a decision before sending a complete client message. | Send and observe the replacement message when one is supplied. |
+1. **Receive and hold the request.** The relay already collects complete content
+   when request plugins participate. Keep that boundary and the original bytes;
+   extend the result so it can carry the final request as well as parsed facts.
+2. **Prepare context and run plugins.** The broker currently sends the same
+   immutable context to every participant. It will instead own the current request,
+   apply each accepted edit, and prepare the next participant's updated context.
+3. **Write changes back and refresh parsing.** The parser already extracts model,
+   conversation, and tools. Add narrowly scoped write-back functions beside the
+   relevant protocol parsers. A change from `model-a` to `model-b` must update the
+   original request and the parsed model seen by the next plugin.
+4. **Forward and observe the final content.** Existing HTTP and WebSocket writers
+   send the resulting request. Captured content and parsing caches must follow
+   the same version, so observation cannot report a change that was never sent.
 
-Asynchronous `MitmHook` callbacks remain observers. The relay does not wait for
-their results, and their queue may drop work under pressure, so they cannot
-implement request mutation.
+The plugin chooses semantic actions. The broker owns execution order and current
+state. Agent protocol code maps those actions to their original request locations. MITM owns
+transport validation, encoding, framing, and actual writes. The plugin service
+continues to own sessions, IPC, reply correlation, and deadlines.
 
-`abyss-mitm` owns a protocol-independent mutable request value and the operations
-that validate and apply transport changes. The broker owns that value while
-processing plugins and converts wire mutations into transport operations.
-MITM must not depend on `abyss-plugin-protocol` or `abyss-agent-hook`.
+| Work | Existing entry point |
+| --- | --- |
+| Waiting before forwarding and returning processing results | [forwarding.rs:39](../crates/abyss-mitm/src/transparent/forwarding.rs#L39) |
+| Holding and sending HTTP request bytes | [relay.rs:636](../crates/abyss-mitm/src/transparent/relay.rs#L636) |
+| Preparing request context and coordinating plugin processing | [request_control.rs:31](../crates/abyss-broker/src/proxy/request_control.rs#L31) |
+| Calling selected plugins and waiting for replies | [inspection.rs:235](../crates/abyss-broker/src/plugin/inspection.rs#L235) |
+| Shared semantic request parsing | [request.rs:37](../crates/abyss-agent-hook/src/request.rs#L37) |
+| Existing inspection context and Agent projection | [inspection.rs:87](../crates/abyss-plugin-protocol/src/inspection.rs#L87) |
+| Waiting for and forwarding complete client messages | [websocket.rs:286](../crates/abyss-mitm/src/transparent/websocket.rs#L286) |
 
-## Plugin protocol and SDK contract
+Asynchronous `MitmHook` callbacks remain observers: forwarding does not wait for
+them and their queue can drop notifications. Editing belongs in the synchronous
+inspection path. `abyss-mitm` must not depend on plugin protocol or Agent parsing
+crates; the broker connects those layers using transport-neutral request values.
 
-Retain the `agent_request` capability, `inspect_request` / `inspect_response`
-messages, and existing SDK request callback. Add Modify to `RequestDecision`.
-The existing capability name is retained; a recognized Agent or model protocol
-is not required for invocation. Unknown protocols remain eligible for mutation.
+## Semantic context and plugin API
 
-The following types illustrate the proposed API, not an implemented interface:
+Keep the `agent_request` capability and the read-only callback context. Retain the
+existing request metadata and Agent projection, adding the current token and two
+facts describing which action targets are writable. This is an API sketch;
+existing context fields and asynchronous callback details are abbreviated:
 
 ```rust
+struct AgentRequestContext {
+    pub auth_token: Option<String>,
+    pub auth_token_writable: bool,
+    pub model_writable: bool,
+    pub agent: Option<AgentRequestProjection>,
+    // Existing request metadata and diagnostic views are omitted.
+}
+
 enum RequestDecision {
     Allow,
-    Modify(RequestMutation),
-    Block { reason: String },
+    Block(String),
+    Modify(Box<[ModifyAction]>),
 }
 
-enum RequestMutation {
-    Http {
-        headers: Vec<HeaderMutation>,
-        body: Option<DecodedContent>,
-    },
-    WebSocket {
-        body: DecodedContent,
-    },
+enum ModifyAction {
+    SetAuthToken(String),
+    RemoveAuthToken,
+    SetModel(String),
+    RemoveModel,
 }
 
-enum HeaderMutation {
-    Set { name: String, values: Vec<String> },
-    Remove { name: String },
+fn agent_request(context: &AgentRequestContext) -> RequestDecision {
+    if !context.auth_token_writable {
+        return RequestDecision::Allow;
+    }
+
+    RequestDecision::Modify(
+        vec![ModifyAction::SetAuthToken("allocated-token".into())]
+            .into_boxed_slice(),
+    )
 }
 ```
 
-Modify permits the resulting request to continue through the remaining plugins;
-it does not authorize immediate forwarding. Use a tagged decision object on the
-wire so a reply cannot simultaneously block a request and request modifications:
+The entire context is an input view: identities, target information, parsing
+status, token, model, conversation, tools, attachments, and diagnostic content.
+`context.agent` remains optional for unknown content or connection setup without
+a model body. There is no mutable request object and no second editable model
+value. Broker updates become visible in the next plugin's context.
+
+`auth_token_writable` and `model_writable` indicate whether the corresponding
+Set/Remove actions are supported for this invocation. They describe write-back
+availability, not plugin permissions. On an established authenticated connection,
+the token is readable but auth actions are unavailable. If no authentication
+binding is recognized, a null token does not prove the request has no credentials.
+
+`ModifyAction` defines the complete public editing surface. Plugins cannot select
+arbitrary headers, JSON paths, or context members. A new editing capability needs
+an explicit enum variant, wire contract, and write-back rule. Keep the action list
+as `Box<[ModifyAction]>`: its length is fixed after the handler returns. A plugin
+can build a `Vec` and finish with `into_boxed_slice()`.
+
+The processing result has these semantics:
+
+| Result | SDK reply | Broker behavior |
+| --- | --- | --- |
+| Allow | Result only | Preserve the current request and continue to the next plugin |
+| Modify(actions) | Result and the ordered action list | Validate and apply the list, then continue to the next plugin |
+| Block(reason) | Result and safe reason | Stop without forwarding the pending request |
+
+The actions themselves specify the requested changes:
+
+- Set writes the supplied string to the selected semantic field. It does not ask
+  the broker to infer whether a context member was edited.
+- Remove deletes the field, including an explicitly null model member. Removing
+  an absent field has no effect when that action target is supported.
+- A field with no action retains its original representation, including missing
+  versus null JSON members. Not listing an action never means deletion.
+- Apply actions in array order. Later actions on the same field determine its
+  final value; for example, SetModel followed by RemoveModel removes the model.
+- Validate the whole list and commit its result atomically. Any invalid action
+  rejects the pending request, even if another action later overwrites that field.
+  No plugin or upstream sees a partially applied list.
+- An action targeting a field whose writable flag is false is rejected, even if
+  its supplied value happens to match the current value.
+- An empty action list is valid and behaves like Allow. Repeating a Set with the
+  current value is also valid; explicit body actions do not promise byte-for-byte
+  preservation of the original JSON formatting.
+
+Modify permits continued processing, not immediate forwarding or bypassing later
+plugins. Only actions in the returned result are authoritative. The SDK does not
+inspect local copies of context or infer actions from changes to them.
+
+Unknown protocols still receive the inspection callback and can be allowed or
+blocked. Model actions require a supported parser and writer. Authentication
+actions can be available independently when the target's binding is known,
+including setup without a model body. Unsupported targets remain read-only.
+
+## SDK and wire contract
+
+The SDK receives a read-only context, invokes the handler, and serializes its
+`RequestDecision`. The existing Rust `Arc<AgentRequestContext>` callback can remain;
+the borrowed reference above illustrates the same read-only contract. TypeScript
+and Python expose the equivalent read-only context and typed action variants.
+There is no mutable-context round trip, old-context copy, dirty tracking, or diff
+calculation in the SDK. The reply is constructed only from the returned result.
+
+Use a tagged result in the proposed v2 `inspect_response`:
+
+```json
+{
+  "type": "inspect_response",
+  "request_id": "request-123",
+  "decision": {
+    "action": "allow"
+  }
+}
+```
 
 ```json
 {
@@ -119,446 +217,443 @@ wire so a reply cannot simultaneously block a request and request modifications:
   "request_id": "request-123",
   "decision": {
     "action": "modify",
-    "mutation": {
-      "kind": "http",
-      "headers": [
-        {
-          "op": "set",
-          "name": "authorization",
-          "values": ["Bearer <allocated-token>"]
-        }
-      ]
-    }
+    "actions": [
+      {"op": "set_auth_token", "value": "allocated-token"},
+      {"op": "set_model", "value": "model-b"}
+    ]
   }
 }
 ```
 
-The mutation operations have these semantics:
+```json
+{
+  "type": "inspect_response",
+  "request_id": "request-123",
+  "decision": {
+    "action": "block",
+    "reason": "Request blocked by plugin policy"
+  }
+}
+```
 
-- Header names are case-insensitive. Apply operations in array order.
-- Set removes all existing values for that name and installs the supplied
-  values in order. The values array must be nonempty; `[""]` sets an empty
-  value. Remove deletes all matching values and has no effect if none exist.
-- An absent or null HTTP `body` keeps the body unchanged.
-  `{"encoding":"utf8","content":""}` replaces it with an empty body.
-  Binary content uses the existing base64 representation.
-- There is no replacement of the entire header collection. Plugin context has
-  credential headers removed; rebuilding all headers from that view would
-  unintentionally delete credentials retained inside the broker.
-- HTTP mutations do not apply to WebSocket data messages, or vice versa. An
-  upgrade accepts header changes only, without adding a body or changing the
-  handshake type.
-- `json`, `agent`, and `harness` are read-only derived views. Plugins modify the
-  actual headers/body, and the broker rebuilds those views.
+Each `ModifyAction` has one wire form:
 
-The reply shape changes a strictly decoded contract. Advance the plugin wire
-version to `protocol_version = 2` and update the broker, official delivery plugin,
-and Rust, TypeScript, and Python SDKs together. Keep one current runtime protocol
-and explicitly reject older versions; do not add dual-version negotiation.
-Publish v2 schemas and fixtures while retaining the v1 documentation as a
-historical contract. `AgentEvent` needs no application-specific fields.
+| Rust variant | Action object |
+| --- | --- |
+| `SetAuthToken(token)` | `{"op":"set_auth_token","value":"allocated-token"}` |
+| `RemoveAuthToken` | `{"op":"remove_auth_token"}` |
+| `SetModel(model)` | `{"op":"set_model","value":"model-b"}` |
+| `RemoveModel` | `{"op":"remove_model"}` |
 
-## Sequential plugin execution and ownership
+Set requires a string value; Remove has no value. There is no null sentinel,
+complete request snapshot, or raw JSON patch. A token-only modification sends
+only a token action, without echoing the model or any other context value.
+`Box<[ModifyAction]>` serializes as an array, preserving order. The SDK must not
+sort, merge, or drop actions.
 
-Snapshot the participating sessions in registration order for each HTTP request
-or client WebSocket data message. A newly connected plugin joins later requests.
-A reconnect does not replace a disconnected participant in an existing plan.
+Allow and Block carry no action list. Modify requires an `actions` array, which
+may be empty. Tagged variants prevent a reply from both blocking and submitting
+edits. Unknown variants and malformed action objects follow the strict protocol
+validation rules rather than being silently ignored.
 
-The broker request processor owns one current request throughout the chain:
+The broker dispatches each action directly to its known writer. It does not
+compare before/after context snapshots to discover edits. Allow skips write-back
+and parsing refresh; an empty list does the same. This reduces reply payloads and
+comparison work, while retaining initial context parsing and the plugin RPC.
 
-1. Build credential-filtered context from the current request and invoke the
-   selected participant through `PluginClient`.
-2. Allow preserves the current request. Modify validates and applies the entire
-   mutation, then refreshes derived context.
-3. The next participant receives the updated request. Later changes to the same
-   header or body replace earlier changes according to execution order.
-4. Block or a processing failure terminates the request. No intermediate request
-   version is forwarded.
-5. After all selected participants succeed, return the final request and parsed
-   annotations to the relay.
+Advance to `protocol_version = 2` because the context gains credential visibility
+and the reply gains typed actions. Update the broker, official delivery-plugin
+handshake, Rust/TypeScript/Python SDKs, schemas, and fixtures together. Reject older
+versions explicitly rather than adding dual-version runtime support. Keep v1
+documentation as historical material. `AgentEvent` does not gain a token field.
 
-Move the aggregation loop currently in `InspectionTask::decide` into the broker
-request processor. `PluginClient` provides invocation of one participant from
-the selected plan. Session objects remain private to `PluginServer`, which owns
-membership snapshots, IPC, reply correlation, and deadlines. The plugin service
-does not acquire model parsing or HTTP encoding logic.
+## Sequential execution and state ownership
 
-The following sequence shows how two plugins share one evolving request without
-exposing session objects to the request processor:
+Snapshot participating sessions in registration order for each pending request
+or client data message. New sessions join later requests; a reconnect cannot
+replace a disconnected participant in an existing plan.
+
+The broker owns the original transport request, its current JSON document where
+available, and the semantic state throughout processing:
+
+1. Build current context and invoke one selected participant through `PluginClient`.
+2. On Allow, reuse the current request and context. On Modify, read the explicit
+   action list; no old/new context comparison is needed.
+3. Validate the list, then apply its actions in order through the semantic writers
+   and transport operations as one committed result. Refresh affected parsed views.
+4. Invoke the next participant with that updated request, including the new token.
+5. On Block or failure, stop without forwarding any intermediate version. Otherwise,
+   return the final request and parsed annotations to the relay.
+
+Move the aggregation loop out of `InspectionTask::decide` into the broker request
+processor. The plugin service provides invocation of one participant in the
+selected plan while retaining private session ownership. It does not parse model
+requests or decide how a semantic field maps to a header or JSON location.
 
 ```mermaid
 sequenceDiagram
     participant M as MITM relay
     participant B as Broker request processor
-    participant S as Plugin service
-    participant P1 as Plugin A
-    participant P2 as Plugin B
-    M->>B: Request R0 and selected plugin plan
-    B->>S: Invoke participant A with context(R0)
-    S->>P1: InspectRequest on selected session
-    P1-->>S: Modify(M1)
-    S-->>B: Participant A decision
-    B->>B: Validate and apply M1 atomically, producing R1
-    B->>B: Refresh parsing and credential-filtered context
-    B->>S: Invoke participant B with context(R1)
-    S->>P2: InspectRequest on selected session
+    participant C as Agent parser and writer
+    participant P1 as Plugin A and SDK
+    participant P2 as Plugin B and SDK
+    M->>B: Original request R0 and selected plugin plan
+    B->>C: Prepare semantic context while retaining R0
+    C-->>B: Context C0 and internal write-back locations
+    B->>P1: InspectRequest with C0
+    P1->>P1: Read C0 and construct actions A1
+    P1-->>B: Modify with ordered actions A1
+    B->>C: Validate and apply A1 atomically to R0
+    C-->>B: Updated request R1 and refreshed context C1
+    B->>P2: InspectRequest with C1, including current token
     alt Plugin B allows
-        P2-->>S: Allow
-        S-->>B: Participant B decision
-        B-->>M: Final request R1 and final parsed annotations
+        P2-->>B: Allow without actions
+        B->>B: Reuse R1 and its parsed annotations
+        B-->>M: R1 ready for forwarding
     else Plugin B modifies
-        P2-->>S: Modify(M2)
-        S-->>B: Participant B decision
-        B->>B: Validate and apply M2, producing R2
-        B->>B: Refresh final parsed annotations
-        B-->>M: Final request R2 and final parsed annotations
+        P2->>P2: Read C1 and construct actions A2
+        P2-->>B: Modify with ordered actions A2
+        B->>C: Validate and apply A2 atomically, refresh context
+        C-->>B: Final request R2 and parsed annotations
+        B-->>M: R2 ready for forwarding
     else Plugin B blocks
-        P2-->>S: Block with safe reason
-        S-->>B: Participant B decision
-        B-->>M: Reject the request
-        Note over M,P2: Neither R0 nor R1 is forwarded
+        P2-->>B: Block with safe reason, without actions
+        B-->>M: Reject request
+        Note over M,P2: No version of this request is forwarded
     end
 ```
 
-The Modify branches above assume valid changes. An invalid mutation ends the
-chain before another participant is called or a request is forwarded.
+The Modify paths assume valid edits. Invalid edits stop before the next invocation.
+Later edits to the same field take precedence. Each Allow or Modify accepts that
+stage's result, not changes made by later plugins. Do not rerun the chain to seek
+a fixed point. A plugin checking final content must run last.
 
-Do not invoke modifying plugins concurrently, merge patches computed from stale
-requests, or rerun earlier plugins after the chain finishes. Allow applies only
-to the version that plugin inspected. A plugin that must validate final content
-belongs at the end of the chain.
+Registration order changes across restarts and reconnects. Keep the existing
+ordering mechanism; do not add priorities or a dependency graph. Fixed composition
+can live inside one plugin, or a deployment can coordinate handshake order,
+without treating connection order as a permanent policy guarantee.
 
-Registration order is not durable across restarts, and reconnecting changes the
-order for subsequent requests. Do not add priority or ordering configuration in
-this release. A deployment needing a fixed composition can implement that
-composition inside one plugin, or start plugins in handshake-completion order.
-Connection order alone is not a permanent policy guarantee.
+Retain the five-second budget per plugin, including invocation queueing time,
+and avoid automatic retries or a new configurable whole-chain deadline. Rejection
+does not roll back plugin side effects such as credential leases; their cleanup
+belongs to the plugin.
 
-Retain a five-second budget per plugin, including its invocation's queueing time.
-Do not add a separate configurable chain deadline. Calls are not automatically
-retried, because plugins may allocate resources or perform other side effects.
-Rejecting network traffic does not roll back those effects; leases and resource
-cleanup belong to the business plugin.
+## Writing semantic edits back to the original request
 
-## HTTP and HTTPS forwarding
+The current Agent projection is not a reversible representation of the complete
+provider request. For example, [conversation entries](../crates/abyss-plugin-protocol/src/event/conversation.rs#L19)
+retain roles, visible text, and correlation IDs rather than every original content
+block property. Never generate a complete provider request by serializing that
+projection.
 
-Keep the original wire body in the relay and maintain decoded content for plugin
-processing and observation. The final writer selects its representation as follows:
+Keep the original request and make targeted updates:
 
-| Mutation result | Request head | Request body |
+- **Model:** the protocol parser/writer identifies the model location in the
+  retained JSON document, including any message envelope. Change or remove only
+  that member. Preserve unrelated settings, images, unknown fields, and envelope
+  properties. A model edit can change JSON formatting, but not unrelated values.
+- **Authentication:** a target-aware authentication adapter identifies the token
+  carrier and its scheme. It extracts the token for context and writes the new
+  token back in the correct form. A missing initial token must still be injectable
+  when that binding is known. A JSON dialect alone is not enough to infer a target's
+  authentication scheme; use known target mappings or explicit configuration.
+- **No action for a field:** preserve that field as it appeared in the retained
+  request. Allow and empty action lists reuse the current representation.
+  The action enum identifies exactly which writers to invoke; no context diff,
+  dirty-tracking object graph, or universal request representation is needed.
+
+Initial model writers cover OpenAI Responses, OpenAI Chat Completions, and
+Anthropic Messages, including recognized Responses client request messages on
+WebSocket. Claude Web and other formats remain inspection-only until their own
+write-back rules are defined. Start authentication editing with supported
+single-token bindings, such as Bearer and API-key headers. A parser for observation
+does not automatically establish write support. Unsupported or ambiguous bindings
+remain read-only. Cookie sessions, request signing, and multi-field authentication
+need their own write-back contract before actions are enabled; no automatic
+re-signing is introduced.
+
+When setting a header-based token, replace all values of the adapter-selected
+credential header, using its defined scheme. Removing the token removes that
+credential. Do not rebuild every header from the filtered diagnostic view, and do
+not expose a plugin-selected header name. Unrelated headers are preserved.
+
+Validate action availability, value encodability, and size before committing a
+list. Keep action application private until the entire list succeeds; only then
+publish the next context or return a forwardable request. This does not require
+copying the whole context or a rollback framework: a failure terminates and
+discards the pending request. Refresh affected derived data after an accepted
+list and reuse it on Allow or an empty list. The broker may reparse after actions
+for simplicity, without comparing context versions. Plugins never need to parse
+or re-encode provider payloads themselves.
+
+Conversation and tool editing can add semantic action variants later. Each addition
+must define supported operations, the mapping to original items, and preservation of
+unmodified content. Adding, deleting, or reordering normalized conversation entries
+cannot be implemented safely just by serializing today's observation projection.
+
+## Internal forwarding and connection authentication
+
+HTTP and WebSocket distinctions remain inside the relay and write-back code.
+Read-only context facts tell a plugin what can be edited without requiring it
+to choose a transport-specific mutation variant.
+
+| Internal processing point | Authentication token | Model |
 | --- | --- | --- |
-| No changes | Existing forwarding behavior | Original wire bytes |
-| Ordinary headers changed only | Encode the final request head | Original wire bytes, content encoding, chunk framing, and trailers |
-| Body replaced | Remove old Content-Encoding, Transfer-Encoding, and Trailer; set one Content-Length from the replacement byte length | Replacement decoded bytes, without recompression or old trailers |
+| Ordinary model request | Writable when a supported credential binding exists | Writable when a supported request parser/writer identifies the location |
+| Connection setup, including WebSocket upgrade | Writable before the handshake is forwarded | Not writable when no model request body exists |
+| Model message on an established authenticated connection | Current connection token is readable but fixed | Writable when the message is a supported model request |
+| Unknown content or unsupported binding | Writable only if independently recognized for this request | Read-only without a supported model writer |
 
-Update encoding and length headers when applying a body replacement, before the
-next plugin receives context. The plugin sets Content-Type when needed; the
-broker does not infer it from JSON. Replacement body bytes are authoritative,
-and must not be regenerated by serializing the read-only `json` projection.
+Run the same `agent_request` callback during connection setup, even if no Agent
+body projection is available. That invocation can allocate credentials from target
+and available source context. The final handshake token is retained as connection
+state and exposed on later message contexts with `auth_token_writable = false`.
+Returning SetAuthToken or RemoveAuthToken at that point rejects the pending
+message. Do not silently reopen or reauthenticate the connection. A plugin can
+skip allocation when the flag is false. Model-dependent allocation cannot wait
+for a later message on a connection
+that must authenticate first.
 
-Reconstruct `CapturedBody` when replacing content, updating raw/decoded bytes,
-decoding status, and parsing caches together. New bytes must not inherit capture
-state describing the old compressed body. Validate and commit each mutation as
-a unit, without exposing a partially modified request.
+For HTTP, preserve the existing upstream connection/TLS order and local
+`100 Continue` handling. The gate controls application request writes. Keep the
+original wire body unless semantic editing changes its content:
 
-The relay owns framing and must not emit both Content-Length and
-Transfer-Encoding. See [RFC 9112 sections 6.2 and 6.3](https://www.rfc-editor.org/rfc/rfc9112.html#section-6.2).
+| Accepted change | Internal forwarding behavior |
+| --- | --- |
+| Token only | Encode the updated head; retain original body bytes, compression, chunk framing, and trailers |
+| Model in the body | Serialize the updated original JSON document; remove old Content-Encoding, Transfer-Encoding, and Trailer; set one Content-Length from the replacement bytes |
+| Allow or empty action list | Reuse the current forwarding representation |
 
-Plugins cannot directly modify connection/framing fields: Host, Content-Length,
-Transfer-Encoding, Content-Encoding, Trailer, Connection, Proxy-Connection, TE,
-Expect, Upgrade, Sec-WebSocket-*, or hop-by-hop fields named by Connection.
-Preserve existing Expect and upgrade handling. Ordinary application headers,
-including Authorization, Cookie, x-api-key, and Content-Type, use the same Set
-and Remove operations.
-
-Validate the transport boundary: legal header names/values, matching mutation
-type, reserved fields, and existing content limits. Client input errors retain
-their existing handling. Do not add provider-specific defensive rules. The
-mutating plugin updates or removes body signatures, digests, and application
-integrity fields; the broker does not infer signing algorithms.
-
-Update the request head retained in `DecodedClientFlow` as well as the head
-written upstream. The current `request_head_for_relay` call prepares bytes before
-inspection; a changed head must be encoded after plugin processing. Changing only
-capture or annotations while sending the original head would violate the contract.
-
-The following sequence covers a request with selected plugins. The plugin-chain
-step follows the sequential invocation described above. HTTPS illustrates the
-existing handshake order; mutation does not defer upstream connection setup.
+Body edits send uncompressed replacement bytes without old trailers. Preserve
+Content-Type and protocol envelopes. Never send both Content-Length and
+Transfer-Encoding; see [RFC 9112 sections 6.2 and 6.3](https://www.rfc-editor.org/rfc/rfc9112.html#section-6.2).
+Rebuild `CapturedBody` raw/decoded bytes, decoding state, and caches together.
+Encode the final request head after processing and update `DecodedClientFlow` too.
+Do not enable a writer for a signed request format without a supported signing
+contract; the broker must not knowingly forward a broken signature after editing.
 
 ```mermaid
 sequenceDiagram
     participant A as Agent
     participant M as MITM relay
     participant B as Broker request processor
-    participant H as Selected plugins via plugin service
-    participant P as Model provider
-    participant O as Agent observation
-    opt HTTPS setup before request processing
+    participant H as Selected semantic handlers and SDKs
+    participant U as Upstream
+    participant O as Observation
+    opt HTTPS setup
         A->>M: Client TLS handshake
-        M-->>A: Client TLS established
-        M->>P: Provider TLS handshake
-        P-->>M: Provider TLS established
+        M->>U: Upstream TLS handshake
     end
-    A->>M: Request head and any prefetched body bytes
-    M->>B: Select forwarding plan
-    B-->>M: Snapshot of connected request-processing sessions
+    A->>M: Request head and prefetched body
+    M->>B: Select connected request-processing sessions
+    B-->>M: Participant snapshot
     opt Expect 100-continue
         M-->>A: Local 100 Continue
     end
-    A->>M: Remaining request body
-    M->>M: Retain wire body and decode complete content
-    Note over M,P: No HTTP request head or body forwarded yet
+    A->>M: Remaining body
+    M->>M: Retain original bytes and decode complete content
+    Note over M,U: No application request bytes sent upstream
     alt Complete content available
-        M->>B: Current request R0
-        loop Each selected plugin, until block or failure
-            B->>H: InspectRequest with current filtered context
-            alt Decision arrives
-                H-->>B: Allow, Modify, or Block
-                opt Valid Modify
-                    B->>B: Apply changes and refresh derived context
-                end
+        M->>B: Original request
+        loop Selected participants until block or failure
+            B->>H: Current semantic context and writable facts
+            alt Handler replies Allow
+                H-->>B: Allow without actions
+                B->>B: Reuse current request and parsed context
+            else Handler replies Modify
+                H-->>B: Modify with ordered semantic actions
+                B->>B: Validate and apply actions atomically, refresh context
+            else Handler replies Block
+                H-->>B: Block with reason
+                Note over B,H: Stop processing, with no actions to apply
             else Session fails or deadline expires
-                Note over B,H: Stop the chain without retrying
+                Note over B,H: Stop without retry
             end
         end
-        alt All selected plugins succeed
+        alt Chain succeeds
             B-->>M: Final request and parsed annotations
-            M->>M: Prepare final head and select original or replacement body
-            M->>P: Shared writer sends final request
-            P-->>M: Provider response
-            M-->>A: Relay provider response
-            M-->>O: Final request and response capture
-        else A plugin blocks
-            B-->>M: Reject with safe reason
+            M->>U: Final head and original or updated body
+            U-->>M: Response
+            M-->>A: Relay response
+            M-->>O: Final request and response, with credentials redacted
+        else Handler blocks
+            B-->>M: Reject
             M-->>A: 403 agent_request_blocked
-            Note over M,P: No request version is forwarded
-        else Selected session fails or deadline expires
-            B-->>M: Reject inspection_unavailable
+        else Selected plugin unavailable
+            B-->>M: Reject
             M-->>A: 503 inspection_unavailable
-            Note over M,H: No automatic plugin retry
-        else Plugin returns an invalid mutation
-            B-->>M: Reject invalid_plugin_mutation
-            M-->>A: 502 invalid_plugin_mutation
-            Note over M,P: Do not fall back to the original request
+        else Action is invalid or its target is not writable
+            B-->>M: Reject
+            M-->>A: 502 invalid_agent_request_edit
         end
-    else Client body exceeds limits, times out, or cannot be decoded
-        M-->>A: Existing broker-origin 400, 408, 413, or 415
-        Note over M,H: No plugin decision on partial content
-        Note over M,P: No request bytes forwarded
+    else Client content error or read timeout
+        M-->>A: Existing 400, 408, 413, or 415
     end
 ```
 
-No selected plugins means the existing streaming path remains active. Original
-CONNECT handling and upstream TCP/TLS establishment order remain unchanged in
-both modes. The gate controls application request writes, not connection setup.
-
-## WebSocket forwarding
-
-The HTTP upgrade passes through the same request processor and can receive
-authentication headers. Its final request head becomes the connection's saved
-upgrade context. Later data messages cannot change that completed handshake.
-
-Process client data messages at the existing reassembly boundary. A plugin may
-replace the complete payload while preserving its text/binary type. Text must
-remain valid UTF-8; binary messages accept arbitrary bytes. Existing tungstenite
-handling owns framing and upstream masking; plugins do not handle frames, masks,
-or fragments. See [RFC 6455 section 5](https://www.rfc-editor.org/rfc/rfc6455.html#section-5).
-
-Control frames and server messages do not acquire mutation callbacks. Retain the
-current behavior that permits provider-to-Agent traffic while a client message
-waits for a decision. Preserve client message order with one pending client data
-message per connection.
-
-The following sequence starts after a successful upgrade. Reverse traffic may
-belong to an earlier allowed request; it does not release the pending message.
+For WebSocket messages, keep existing reassembly, text/binary type, framing, and
+masking through tungstenite. The semantic writer updates a recognized model
+request inside the message; there is no arbitrary payload replacement callback.
+Control frames and server messages are not editable. Process one pending client
+data message at a time while continuing reverse traffic.
 
 ```mermaid
 sequenceDiagram
     participant A as Agent
     participant M as WebSocket relay
-    participant B as Broker request processor
-    participant H as Selected plugins via plugin service
-    participant P as Model provider
-    A->>M: Client data message, possibly fragmented
-    M->>M: Reassemble within existing limits
-    M->>B: Select participants and process complete message
-    par Process pending client message
-        loop Selected sessions in registration order, until block or failure
-            B->>H: InspectRequest with current payload and message sequence
-            alt Decision arrives
-                H-->>B: Allow, Modify, or Block
-                opt Valid Modify
-                    B->>B: Apply changes and refresh derived context
-                end
-            else Session fails or deadline expires
-                Note over B,H: Stop the chain without retrying
-            end
-        end
-        B-->>M: Final payload or rejection
-    and Reverse direction remains active
-        P-->>M: Earlier response or control traffic
-        M-->>A: Continue forwarding reverse traffic
+    participant B as Broker and semantic handlers
+    participant U as Upstream
+    A->>M: Connection setup request
+    M->>B: Context with writable token and no writable model
+    B-->>M: Chain succeeds with final token
+    M->>U: Handshake with final credentials
+    U-->>M: Upgrade succeeds
+    M-->>A: Connection established
+    Note over M,B: Retain final token as connection state
+    A->>M: Complete client model message
+    par Process pending message
+        M->>B: Current token is readable but fixed, model may be writable
+        B->>B: Read decisions and apply each action list atomically
+        B-->>M: Final message or rejection
+    and Reverse direction stays active
+        U-->>M: Earlier response or control traffic
+        M-->>A: Continue reverse forwarding
     end
-    alt All selected plugins succeed
-        M->>M: Update message, captured body, and payload length together
-        M->>P: Send final payload with original text/binary type
-        Note over M,P: Existing library owns framing and masking
-        Note over A,M: Observe final content, then process the next client message
-    else A plugin blocks
-        M-->>A: Close 1008 with broker reason
-        M->>P: Close provider side
-        Note over M,P: No rejected-message payload is sent
-    else Session unavailable or mutation invalid
-        M-->>A: Close 1011 with broker reason
-        M->>P: Close provider side
-        Note over M,P: No original or intermediate payload is sent
+    alt Each participant returns Allow or valid Modify
+        M->>M: Update message, captured content, and payload length
+        M->>U: Final model message with original text or binary type
+    else Handler blocks
+        M-->>A: Close 1008
+        M->>U: Close upstream connection
+    else Token edit on fixed connection, other invalid edit, or plugin failure
+        M-->>A: Close 1011
+        M->>U: Close upstream connection
+        Note over M,U: Pending message is never sent
     end
 ```
 
-Replace `message`, `captured_body`, and payload length together. Forwarding,
-observation, and counters must not refer to different payloads. Byte counters
-retain their link-specific meaning: Agent bytes read may differ from upstream
-bytes written. Do not overwrite measured ingress traffic with replacement size.
-The stored upgrade request head must likewise reflect the final forwarded head.
+The diagram assumes a recognized, editable handshake binding; an unsupported
+binding remains read-only. Handshake rejection uses the HTTP errors above.
+Successful Allow or Modify does not imply the upstream has received the request;
+preserve existing completion/failure observation behavior. Ingress byte counters
+measure original bytes, while upstream counters measure what was actually sent.
 
-## Shared parsing, observation, and credentials
+## Credential visibility and observation
 
-After each mutation, headers/body, JSON, and Agent projection in the next context
-must describe one current request. Start with a simple rule: rebuild derived
-context after every successful Modify; consecutive Allow decisions can reuse it.
-Store the final parsed request in body extensions for completed-exchange
-observation. Never leave a pre-mutation `ParsedAgentRequest` attached to new content.
+This proposal intentionally changes the v1 inspection credential boundary.
+Request-processing plugins can read the selected model-service token through
+`context.auth_token`, including a token set by an earlier plugin. This supports
+preserving existing credentials as well as replacing them. Event-only plugins
+do not gain token access.
 
-Flow ID, request ID, source process, and destination metadata remain unchanged.
-Harness recognition and client declarations continue to derive from current
-request content, so changing recognition headers can change their interpretation.
-Those inferred fields are not authentication evidence.
+Continue filtering sensitive raw headers from diagnostic header views; expose
+only the credential covered by the selected binding through the semantic field.
+Do not add token values to `AgentEvent`, audit records, mutation logs, or errors.
+Avoid automatic Debug output of secret-bearing context/reply values. SDK error
+paths must not dump the complete IPC frame. No new permission system is added;
+v2 request handlers operate under the existing local plugin endpoint boundary.
 
-Observation uses the final request handed to forwarding and the corresponding
-response. If a plugin changes the requested model, the request content and model
-projection reflect the new value. Preserve existing completion/failure handling;
-Allow or Modify alone does not establish that the upstream received the request.
+Observation uses the final forwarded request and corresponding response with
+existing redaction. If the model changed, both request content and observed model
+reflect that change. Refresh cached `ParsedAgentRequest` values after body edits.
+Do not persist original/modified conversation pairs or body diffs in this release.
+Logs may record request ID, plugin ID, processing result, and action kinds/counts.
 
-Do not add separate original/modified conversation events or persist body diffs
-in this release. Runtime logs record request ID, plugin ID, decision, and mutation
-categories/counts, without logging mutation values or raw IPC replies.
-
-Preserve the existing credential boundary:
-
-- The broker retains the complete request internally. Context sent to every
-  plugin passes through the existing sensitive-header filter.
-- A plugin may write Authorization or other sensitive headers, but this does not
-  expose their values to subsequent plugins. Observation retains its redaction.
-- Mutation values must not leak through derived Debug output or invalid-reply
-  errors. Report error categories without echoing supplied values.
-- Header filtering does not identify arbitrary secrets in bodies. Complete-body
-  inspection and existing observation content policies continue to apply.
-
-No new plugin permission system is introduced. In v2, a local plugin declaring
-`agent_request` can modify requests, under the existing local endpoint permission
-boundary.
+Read-only process, Harness, and session facts remain context for policy, not proof
+of authorization. Header redaction also does not identify arbitrary secrets in
+request bodies; existing body observation policy continues to apply.
 
 ## Failure behavior and resource limits
 
-Reuse complete-request buffering and current limits: the default 16 MiB HTTP
-body limit, request-body read deadline, WebSocket message limits, and IPC frame
-limit. Replacement content is subject to the corresponding limits. Check that
-updated context fits the frame budget before invoking the next plugin.
-
 | Condition | Outcome |
 | --- | --- |
-| No request-processing plugins | Existing streaming path; no extra mutation buffering |
-| Explicit Block | Existing HTTP 403 / WebSocket 1008 |
-| Selected plugin times out, disconnects, or fails its handler | Existing HTTP 503 / WebSocket 1011 |
-| Invalid mutation: illegal header, wrong transport type, oversized replacement, etc. | HTTP 502 `invalid_plugin_mutation` / WebSocket 1011; no forwarding or fallback to the original request |
-| Original client body exceeds limits or has invalid encoding | Existing 413, 415, 400, and related handling |
+| No selected request plugins | Existing streaming behavior |
+| Explicit Block | HTTP 403 / WebSocket 1008; no pending request sent |
+| Selected plugin disconnects, times out, or fails its handler | HTTP 503 / WebSocket 1011 |
+| Action target is not writable, credential cannot be encoded, or applying actions exceeds content limits | HTTP 502 `invalid_agent_request_edit` / WebSocket 1011; no fallback to the original request |
+| Original client body is invalid, too large, or read times out | Existing 400/413/415/408 handling |
 
-Invalid plugin output is distinct from invalid client input; do not report it as
-a client 400/413. A reply that cannot be decoded follows the existing plugin
-session error path, ensuring that its pending request does not continue.
+A reply that cannot be decoded follows the existing session failure path. Invalid
+plugin actions are not client input errors. Validate and apply each list as a unit;
+never forward a partial result.
 
-Even a header-only mutation uses complete-request processing in this release.
-This reuses one callback, participant selection, and deadline model. The cost is
-that header-only use cases also inherit full buffering limits. Add a separate
-header stage only when concrete large-request or latency requirements justify
-it, without introducing a capability-mode matrix in advance.
+Reuse the current HTTP body limit (default 16 MiB), read deadlines, WebSocket
+message limits, and IPC frame limits. Check updated content and the next context
+against those limits. Even token-only editing initially uses existing complete
+request processing. A separate early header stage needs a concrete latency or
+large-request requirement, not a speculative callback framework.
 
-Normal forwarding with no plugins is existing behavior. This feature does not
-guarantee that a credential plugin remains connected. A business deployment can
-confirm plugin readiness before launching an Agent. Requiring a named plugin to
-remain present would be a separate mandatory-plugin policy, not an implicit
-property of mutation.
+No-plugin forwarding remains the existing behavior. Requiring a particular plugin
+to remain connected is a separate mandatory-plugin policy. A deployment can check
+readiness before starting an Agent; this feature does not imply that guarantee.
 
 ## Application example: API key allocation
 
-A credential allocation plugin implements the following request handler:
+A credential plugin reads the target, available identity context, and current
+`context.auth_token`. It can preserve an existing token with Allow, or allocate a
+replacement and return `Modify([SetAuthToken(token)])` when auth actions are
+supported. Allocation failure can return Block. The SDK serializes the explicit
+action; the plugin does not change context, construct an Authorization header,
+or choose between HTTP and WebSocket mutation types.
 
-1. Handle HTTP requests, including WebSocket upgrades; allow WebSocket data
-   messages unchanged. Check the target authority and available context, and
-   Allow requests outside the plugin's service scope.
-2. Obtain or reuse a credential according to application policy.
-3. Return an HTTP header Set operation replacing every Authorization value.
-4. Explicitly block or fail the handler if allocation fails, allowing the broker
-   to return an identifiable local error.
+Allocation identity, authorization, key pools, quotas, leases, caching, rotation,
+and remote allocation-service authentication stay in that plugin. Broker code
+only provides semantic editing and correct write-back. Explicit proxy traffic
+may lack reliable source-process identity, and inferred Harness/session facts
+must not be treated as authorization credentials.
 
-Key pools, allocation identity, authorization, quotas, caching, leases, rotation,
-and authentication to remote allocation services all belong to the plugin.
-The broker gains no credential database, allocation REST API, or provider-address
-configuration. Explicit proxy ingress has no reliable source-process identity;
-session IDs and inferred Harness identity are not authorization credentials.
-
-Set deliberately replaces existing credentials on matching requests. A business
-requirement to retain an existing user credential needs an explicit policy;
-it should not be implemented by exposing original secrets to every plugin.
-
-HTTP credentials can be injected per request. WebSocket handshake credentials
-are fixed when the connection is established; later messages cannot rotate them
-by editing Authorization. A broker also cannot make an Agent send a request if
-the Agent refuses to start without a local key setting. Such clients may need
-placeholder configuration supplied by their launcher. The broker replaces
-credentials on requests that actually pass through it.
+Connection credentials are allocated at setup and remain fixed for that connection.
+An Agent that refuses to start without a local key may still need placeholder
+configuration from its launcher; Abyss can only edit requests that reach it.
 
 ## Implementation and validation
 
 Implement in this order:
 
-1. **Protocol and SDKs:** define decision/mutation types and v2 schemas; update
-   Rust, TypeScript, and Python callback results, delivery-plugin handshake, and
-   fixtures. Preserve straightforward Allow/Block usage.
-2. **HTTP processing:** introduce the transport request value, sequential broker
-   invocation, and projection refresh. Implement header mutation, then body
-   replacement and framing, reusing the existing writer and capture lifecycle.
-3. **WebSocket and observation:** support upgrade headers and data-message
-   replacement; update final captures, parsed annotations, and counters. Add a
-   generic example plugin without an allocation service inside the broker.
-4. **Black-box validation and documentation:** exercise a real broker, a separate
-   plugin process, and a local upstream recording received requests. Update the
-   current protocol entry points, SDK examples, and broker usage guide.
+1. **Semantic contract and SDKs:** retain read-only context, add token visibility
+   and availability facts, define the four `ModifyAction` variants and v2 replies,
+   and serialize returned actions directly in every SDK. Update delivery-plugin
+   handshake and use common fixtures for all variants.
+2. **Parsing and write-back:** retain original requests, add authentication and
+   model writers beside existing protocol parsers, and dispatch actions directly.
+   Preserve unrelated fields and unsupported content without computing context diffs.
+3. **Broker and relay integration:** move sequential processing into the broker,
+   refresh semantic context between calls, update final bytes/captures, and keep
+   handshake credentials in connection state for later messages.
+4. **Validation and documentation:** add schemas/fixtures and a generic semantic
+   editing example; exercise a real broker, separate plugin process, and recording
+   upstream. Keep allocation services outside the broker.
 
-The acceptance checks are:
+Acceptance checks include:
 
-- Missing, existing, duplicate, or differently cased Authorization headers yield
-  only the plugin's intended values upstream. Unmodified headers remain intact.
-- Plugin A changes the body and plugin B reads the new version before modifying
-  or blocking it. Forwarded content and observation agree; rejection sends none
-  of that request's head/body upstream.
-- For ordinary, compressed, and chunked bodies, header-only mutation preserves
-  wire body bytes. Body replacement produces consistent length, encoding, and
-  trailer handling.
-- JSON/Agent projections and caches follow Modify. Unknown protocols can still
-  have headers and body changed.
-- WebSocket upgrade credential injection and text/binary message replacement
-  work, while reverse traffic continues during a pending decision.
-- Injected credentials do not appear in subsequent plugin context, events, or
-  error logs.
-- Invalid output, timeout, and disconnect prevent the pending request from
-  being sent. No-plugin and opaque TLS passthrough behavior remains unchanged.
-- A v1/v2 mismatch fails the handshake explicitly, and all three SDKs use the
-  same contract fixtures.
+- All SDKs preserve read-only callback semantics and serialize only the returned
+  decision. A token-only Modify sends one action and no context snapshot. Allow
+  and an empty list preserve current bytes/views; Block sends no pending request.
+- All four action variants round-trip through common fixtures. Lists retain order:
+  repeated Set/Remove actions produce the last specified value. Remove on an absent
+  supported field has no effect; RemoveModel deletes an explicit null member.
+  An invalid action rejects the whole list, even if a later action would overwrite it.
+- Token injection, preservation, replacement, and removal follow the selected
+  authentication binding; duplicate credential headers are replaced consistently.
+- Plugin A edits token/model and plugin B sees the accepted semantic values.
+  Later rejection prevents forwarding; later edits replace earlier values.
+- Model changes preserve unknown JSON fields, images, settings, and message
+  envelopes. Fields with no action retain missing/null distinctions. No body action
+  means no body reserialization.
+- Token-only edits retain compressed/chunked body bytes. Body edits produce correct
+  length/encoding/trailer handling and matching observations.
+- Unsupported fields remain inspectable but not editable. Edits submitted with
+  Modify fail explicitly; read-only metadata is never accepted from plugin replies.
+- WebSocket setup supports token allocation without a model body. Later message
+  contexts expose the fixed token, permit supported model edits, and reject token
+  changes while reverse traffic continues during pending processing.
+- Request plugins can see the token; event-only plugins, logs, and error output
+  cannot. Credential-bearing Debug/serialization error paths preserve this rule.
+- Timeouts, disconnects, frame/body limits, no-plugin streaming, opaque passthrough,
+  and v1/v2 handshake mismatches retain their defined outcomes.
 
-Use unit tests for validation and mutation application, and black-box tests for
-actual forwarded bytes and plugin lifecycle. Run formatting, lint, relevant
-crate tests, SDK contract tests, and request-blocking black-box regressions.
-This document is a proposal only; it does not change protocol, SDK, or runtime
-implementation.
+Use focused unit tests for action validation and application, SDK contract tests
+for read-only callbacks and action replies, and black-box tests for actual upstream
+bytes, plugin lifecycle, and observation. Run formatting, lint, relevant crate tests,
+and existing request-blocking regressions when implementing the proposal.
+This document changes no runtime code or protocol implementation.

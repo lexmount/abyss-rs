@@ -9,8 +9,9 @@ The implementation follows the structured-session model introduced in `4e24dcf`:
 request content uses `Conversation.entries`, and Harness declarations retain only
 the identities actually declared by the client.
 
-The proposed [plugin request mutation extension](request-mutation-design.md)
-builds on this synchronous boundary to let plugins modify requests before forwarding.
+The proposed [Agent request editing extension](request-mutation-design.md)
+builds on this synchronous boundary to let plugins edit semantic request fields
+before forwarding.
 
 Backward compatibility with earlier configuration and plugin protocols is not a
 requirement at this rollout stage. Update the broker, delivery plugin, Rust /
