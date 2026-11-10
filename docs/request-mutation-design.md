@@ -1,68 +1,90 @@
-# Broker 插件请求修改方案
+# Broker plugin request mutation
 
-状态：提案，尚未实现。代码基线：`2e1824a`。
+Status: proposed, not implemented. The source review is based on commit `2e1824a`.
 
-在现有转发前请求审查链路上增加修改能力：插件返回放行、修改或拒绝，broker 将修改应用到当前请求，后续插件处理修改后的请求，全部通过后再转发。API Key 自动分配是一个业务插件；broker 只提供通用的请求修改机制。
+Extend the existing before-forward request inspection boundary with mutation.
+A plugin returns Allow, Modify, or Block. The broker applies each modification
+to the current request, gives that updated request to the next plugin, and
+forwards only after the entire selected chain succeeds. Automatic API key
+allocation is one application implemented by a plugin; the broker supplies
+general request mutation primitives.
 
-本方案延续 [请求审查设计](request-blocking-design.md) 的接入、超时和网络策略边界。现行行为仍以 [v1 插件协议](../specs/broker-plugin-protocol/v1/README.md) 为准。
+This proposal builds on the connection lifecycle, deadlines, and network-policy
+boundaries in the [request inspection design](request-blocking-design.md).
+The [v1 plugin contract](../specs/broker-plugin-protocol/v1/README.md) continues
+to describe the implemented behavior until this proposal is adopted.
 
-## 1. 目标和首期范围
+## Scope and required behavior
 
-提供以下能力：
+The first release covers requests at these existing transport boundaries:
 
-| 请求位置 | 可修改内容 | 处理单位 |
+| Boundary | Mutable content | Processing unit |
 | --- | --- | --- |
-| 普通 HTTP 请求，包括解密后的 HTTPS | 请求头设置/删除、body 整体替换 | 一个完整请求 |
-| WebSocket upgrade 请求 | 普通请求头，例如 Authorization | 一次 HTTP 握手 |
-| WebSocket 客户端数据消息 | payload 整体替换，保留 text/binary 类型 | 一个重组后的完整消息 |
+| Ordinary HTTP, including intercepted HTTPS | Set/remove request headers; replace the entire body | One complete request |
+| WebSocket upgrade | Ordinary request headers, including Authorization | One HTTP handshake |
+| Client WebSocket data messages | Replace the entire payload, retaining text/binary type | One reassembled message |
 
-这些原语可支持凭据注入、模型参数调整、提示词处理、工具定义过滤等用途。业务逻辑放在插件内，broker 不提供 API Key 池、供应商分配策略或模型字段专用接口。
+These operations support credential injection, model parameter changes, prompt
+processing, and tool-definition filtering. Plugins own those decisions. The
+broker does not acquire API key pools, provider allocation rules, or APIs for
+editing particular model fields.
 
-首期保持 method、path/query、目标地址、Host、SNI、代理路由不变。上游连接可能在请求处理前已建立，目标重写需要单独处理连接与策略重新求值。响应 body、SSE 增量修改、原始 TCP/TLS 字节修改也不纳入本次实现。
+The following properties define the implementation:
 
-不引入 JSON Patch、脚本执行器、插件依赖图、通用中间件框架或新的插件端点。修改 JSON 的插件自行生成完整的新 body。将来确有响应修改需求时，再在响应转发边界定义对应契约。
+1. No HTTP request head/body or client WebSocket data message is sent upstream
+   until the selected plugin chain has completed successfully.
+2. Each plugin sees the modifications accepted from earlier plugins, subject to
+   the existing credential-header filtering. Modifications are applied in order.
+3. Forwarding, request projections, and observation use the same final request.
+   A modified capture must never accompany an unmodified upstream request.
+4. Network Block/Passthrough/Intercept decisions retain their existing meaning.
+   Connecting a plugin does not enable TLS decryption or reclassify opaque flows.
+5. With no request-processing plugins connected, retain the ordinary streaming
+   path without additional buffering or plugin RPC.
+6. Reuse the existing plugin connection, shared request parser, and relay stages.
+   Mutation must not create a separate HTTP or WebSocket relay implementation.
 
-## 2. 复用现有同步边界
+Keep the method, path/query, destination, Host, SNI, and outbound route unchanged
+in this release. Upstream connections may already exist at this boundary;
+destination rewriting would require separate connection and policy evaluation
+semantics. Response bodies, incremental SSE rewriting, and raw TCP/TLS mutation
+are outside this proposal.
 
-现有代码已经具备需要的主要机制：
+There is no JSON Patch language, script engine, plugin dependency graph, generic
+middleware framework, or new plugin endpoint. A plugin editing JSON produces
+the complete replacement body itself. Define a response-side contract at the
+response forwarding boundary when a concrete response mutation need arises.
 
-| 位置 | 当前能力 | 本次改动 |
+## Current implementation and change points
+
+The existing synchronous inspection path provides most of the required mechanism:
+
+| Existing component | Current behavior | Required change |
 | --- | --- | --- |
-| [forwarding.rs:39](../crates/abyss-mitm/src/transparent/forwarding.rs#L39) | `RequestForwardingControl` 在转发前等待裁决，只返回 annotations | 返回可转发的最终请求及其 annotations |
-| [relay.rs:636](../crates/abyss-mitm/src/transparent/relay.rs#L636) | 有插件时保留原始 wire body，完整解码后审查 | 根据修改结果选择原始 body 或替换 body，并生成正确的请求头 |
-| [request_control.rs:31](../crates/abyss-broker/src/proxy/request_control.rs#L31) | 构建请求投影并调用插件服务 | 持有当前请求，逐个调用插件、应用修改、更新投影 |
-| [inspection.rs:235](../crates/abyss-broker/src/plugin/inspection.rs#L235) | 所有插件依次审查同一份不可变 context | 每次调用接收当前 context，返回单个插件的决策 |
-| [request.rs:37](../crates/abyss-agent-hook/src/request.rs#L37) | 请求解析结果可供审查和观察复用 | 修改后重新生成派生信息，最终解析结果继续复用 |
-| [websocket.rs:286](../crates/abyss-mitm/src/transparent/websocket.rs#L286) | 完整客户端消息发送前等待裁决 | 用替换后的消息发送并构建观察数据 |
+| [Forwarding control:39](../crates/abyss-mitm/src/transparent/forwarding.rs#L39) | `RequestForwardingControl` waits before forwarding and returns annotations. | Return the final forwardable request with its annotations. |
+| [HTTP forwarding:636](../crates/abyss-mitm/src/transparent/relay.rs#L636) | Retains original wire bytes and decodes complete content when plugins are selected. | Select original or replacement body bytes and encode the final request head. |
+| [Broker request control:31](../crates/abyss-broker/src/proxy/request_control.rs#L31) | Builds a projection and submits the request to the plugin service. | Own the current request, call plugins sequentially, apply changes, and refresh projections. |
+| [Plugin inspection:235](../crates/abyss-broker/src/plugin/inspection.rs#L235) | Every selected plugin inspects the same immutable context. | Accept current context for each invocation and return that plugin's decision. |
+| [Request parser:37](../crates/abyss-agent-hook/src/request.rs#L37) | Shares parsed request results between inspection and observation. | Refresh derived data after mutation and retain the final parsed result for observation. |
+| [WebSocket forwarding:286](../crates/abyss-mitm/src/transparent/websocket.rs#L286) | Awaits a decision before sending a complete client message. | Send and observe the replacement message when one is supplied. |
 
-异步 `MitmHook` 继续负责观察。relay 不等待其处理结果，并允许在拥塞时丢弃任务，因此它不承担流量修改。
+Asynchronous `MitmHook` callbacks remain observers. The relay does not wait for
+their results, and their queue may drop work under pressure, so they cannot
+implement request mutation.
 
-```mermaid
-sequenceDiagram
-    participant R as MITM relay
-    participant B as Broker request processor
-    participant P1 as Plugin A
-    participant P2 as Plugin B
-    participant U as Upstream
-    R->>B: 完整请求 R0 + 插件快照
-    B->>P1: context(R0)
-    P1-->>B: Modify(M1)
-    B->>B: 校验并应用，得到 R1；刷新派生信息
-    B->>P2: context(R1)
-    P2-->>B: Allow
-    B-->>R: 最终请求 R1 + 最终解析结果
-    R->>U: 转发 R1
-    U-->>R: 响应
-    R->>R: 以 R1 和响应产生观察数据
-```
+`abyss-mitm` owns a protocol-independent mutable request value and the operations
+that validate and apply transport changes. The broker owns that value while
+processing plugins and converts wire mutations into transport operations.
+MITM must not depend on `abyss-plugin-protocol` or `abyss-agent-hook`.
 
-网络 Block/Passthrough/Intercept 的优先级和含义保持现状。opaque TLS passthrough 不进入本处理链，连接插件不会自动开启解密。请求处理只控制应用请求写入，不调整显式 CONNECT、上游 TCP 或 TLS 握手的既有顺序。
+## Plugin protocol and SDK contract
 
-## 3. 最小协议模型
+Retain the `agent_request` capability, `inspect_request` / `inspect_response`
+messages, and existing SDK request callback. Add Modify to `RequestDecision`.
+The existing capability name is retained; a recognized Agent or model protocol
+is not required for invocation. Unknown protocols remain eligible for mutation.
 
-沿用 `agent_request` capability、`inspect_request` / `inspect_response` 消息和 SDK 的请求回调，在原有 `RequestDecision` 中增加 `Modify`。这个名字沿用已有接口；调用仍不要求识别出某种 Agent，未知协议同样可以处理。
-
-以下为拟定的类型形状，并非当前已存在的 API：
+The following types illustrate the proposed API, not an implemented interface:
 
 ```rust
 enum RequestDecision {
@@ -87,7 +109,9 @@ enum HeaderMutation {
 }
 ```
 
-`Modify` 表示允许当前修改结果继续经过后续插件，不表示直接转发。wire 使用带 discriminator 的 decision 对象，避免 `allow=false` 同时携带修改等矛盾状态：
+Modify permits the resulting request to continue through the remaining plugins;
+it does not authorize immediate forwarding. Use a tagged decision object on the
+wire so a reply cannot simultaneously block a request and request modifications:
 
 ```json
 {
@@ -109,139 +133,432 @@ enum HeaderMutation {
 }
 ```
 
-具体语义：
+The mutation operations have these semantics:
 
-- Header 名称按 HTTP 的大小写不敏感语义处理；操作按数组顺序应用。
-- `Set` 删除该名称的全部旧值，再按给定顺序写入一个或多个值。`values` 不能为空；设置空值使用 `[""]`。`Remove` 删除全部同名值，不存在时无效果。
-- HTTP `body` 缺省或为 null 表示保留；`{"encoding":"utf8","content":""}` 表示替换为空 body。二进制沿用现有 base64 表达。
-- 不提供整组 headers 替换。插件看到的是经过凭据过滤的 context，用它重建全部 headers 会误删 broker 内保存的原始凭据。
-- HTTP 修改不能用于 WebSocket 数据消息，反之亦然。upgrade 阶段只允许 header 修改，不能增添 body 或改变握手类型。
-- `json`、`agent` 和 `harness` 是请求派生信息，只读；插件通过 header/body 修改真实请求。
+- Header names are case-insensitive. Apply operations in array order.
+- Set removes all existing values for that name and installs the supplied
+  values in order. The values array must be nonempty; `[""]` sets an empty
+  value. Remove deletes all matching values and has no effect if none exist.
+- An absent or null HTTP `body` keeps the body unchanged.
+  `{"encoding":"utf8","content":""}` replaces it with an empty body.
+  Binary content uses the existing base64 representation.
+- There is no replacement of the entire header collection. Plugin context has
+  credential headers removed; rebuilding all headers from that view would
+  unintentionally delete credentials retained inside the broker.
+- HTTP mutations do not apply to WebSocket data messages, or vice versa. An
+  upgrade accepts header changes only, without adding a body or changing the
+  handshake type.
+- `json`, `agent`, and `harness` are read-only derived views. Plugins modify the
+  actual headers/body, and the broker rebuilds those views.
 
-此变更改变了严格解码的回复结构，建议升级到 `protocol_version = 2`，同步更新 broker、官方 delivery plugin 和三个 SDK。保持一个当前运行协议，旧版本明确拒绝，不在本次增加双版本协商。新增 v2 规范和 fixtures，保留 v1 文档作为历史契约；`AgentEvent` 本身无需增加业务字段。
+The reply shape changes a strictly decoded contract. Advance the plugin wire
+version to `protocol_version = 2` and update the broker, official delivery plugin,
+and Rust, TypeScript, and Python SDKs together. Keep one current runtime protocol
+and explicitly reject older versions; do not add dual-version negotiation.
+Publish v2 schemas and fixtures while retaining the v1 documentation as a
+historical contract. `AgentEvent` needs no application-specific fields.
 
-## 4. 多插件执行与状态所有权
+## Sequential plugin execution and ownership
 
-每个 HTTP 请求或 WebSocket 数据消息开始处理时，固定当前参与插件列表，沿用注册顺序。处理过程中不加入新连接的插件，不将断开的参与者替换为重连 session。
+Snapshot the participating sessions in registration order for each HTTP request
+or client WebSocket data message. A newly connected plugin joins later requests.
+A reconnect does not replace a disconnected participant in an existing plan.
 
-broker 的请求处理器持有唯一的当前请求：
+The broker request processor owns one current request throughout the chain:
 
-1. 从当前请求生成经过凭据过滤的 context，调用当前插件。
-2. `Allow` 保留当前请求；`Modify` 校验整个修改并应用，再刷新派生信息。
-3. 后一个插件读取更新后的请求。同一 header 或 body 再次被修改时，按执行顺序覆盖。
-4. `Block` 或处理失败终止当前请求；此前的修改不会部分发送。
-5. 所有参与者通过后，才将最终请求交还 relay 转发。
+1. Build credential-filtered context from the current request and invoke the
+   selected participant through `PluginClient`.
+2. Allow preserves the current request. Modify validates and applies the entire
+   mutation, then refreshes derived context.
+3. The next participant receives the updated request. Later changes to the same
+   header or body replace earlier changes according to execution order.
+4. Block or a processing failure terminates the request. No intermediate request
+   version is forwarded.
+5. After all selected participants succeed, return the final request and parsed
+   annotations to the relay.
 
-不并行运行修改插件，不收集一组基于旧请求的 patch 后统一合并，也不在链结束后重新调用之前的插件。某插件的 Allow 只针对它当时看到的版本；需要检查最终内容的插件应处于链末尾。
+Move the aggregation loop currently in `InspectionTask::decide` into the broker
+request processor. `PluginClient` provides invocation of one participant from
+the selected plan. Session objects remain private to `PluginServer`, which owns
+membership snapshots, IPC, reply correlation, and deadlines. The plugin service
+does not acquire model parsing or HTTP encoding logic.
 
-注册顺序不是跨重启的持久顺序，重连会改变后续请求的排列。首期不增加 priority 或排序配置；如果业务必须保证固定组合顺序，可在一个插件内组合这些处理，或由启动方按握手完成顺序启动插件。不能把现有连接顺序当成永久策略保证。
+The following sequence shows how two plugins share one evolving request without
+exposing session objects to the request processor:
 
-实现上，将当前 `InspectionTask::decide` 的聚合循环移入 broker 请求处理器。`PluginClient` 提供针对 plan 中一个参与者的调用，session 对象仍由 `PluginServer` 私有持有；它继续负责连接快照、RPC、回复关联和超时。插件服务不引入模型解析或 HTTP 编码逻辑。
+```mermaid
+sequenceDiagram
+    participant M as MITM relay
+    participant B as Broker request processor
+    participant S as Plugin service
+    participant P1 as Plugin A
+    participant P2 as Plugin B
+    M->>B: Request R0 and selected plugin plan
+    B->>S: Invoke participant A with context(R0)
+    S->>P1: InspectRequest on selected session
+    P1-->>S: Modify(M1)
+    S-->>B: Participant A decision
+    B->>B: Validate and apply M1 atomically, producing R1
+    B->>B: Refresh parsing and credential-filtered context
+    B->>S: Invoke participant B with context(R1)
+    S->>P2: InspectRequest on selected session
+    alt Plugin B allows
+        P2-->>S: Allow
+        S-->>B: Participant B decision
+        B-->>M: Final request R1 and final parsed annotations
+    else Plugin B modifies
+        P2-->>S: Modify(M2)
+        S-->>B: Participant B decision
+        B->>B: Validate and apply M2, producing R2
+        B->>B: Refresh final parsed annotations
+        B-->>M: Final request R2 and final parsed annotations
+    else Plugin B blocks
+        P2-->>S: Block with safe reason
+        S-->>B: Participant B decision
+        B-->>M: Reject the request
+        Note over M,P2: Neither R0 nor R1 is forwarded
+    end
+```
 
-保留每个插件五秒的预算，包含其调用的排队时间；不额外增加全链预算配置。插件调用不自动重试，避免重复执行分配等副作用。网络请求被拒绝不意味着插件内的分配动作回滚，资源租约和回收由业务插件处理。
+The Modify branches above assume valid changes. An invalid mutation ends the
+chain before another participant is called or a request is forwarded.
 
-## 5. HTTP 转发的一致性
+Do not invoke modifying plugins concurrently, merge patches computed from stale
+requests, or rerun earlier plugins after the chain finishes. Allow applies only
+to the version that plugin inspected. A plugin that must validate final content
+belongs at the end of the chain.
 
-MITM 提供一个与模型协议无关的可修改请求值，以及校验/应用修改的方法。broker 持有并操作该值；MITM 不依赖 `abyss-plugin-protocol` 或 `abyss-agent-hook`。wire mutation 在 broker 边界转换成传输层修改操作。
+Registration order is not durable across restarts, and reconnecting changes the
+order for subsequent requests. Do not add priority or ordering configuration in
+this release. A deployment needing a fixed composition can implement that
+composition inside one plugin, or start plugins in handshake-completion order.
+Connection order alone is not a permanent policy guarantee.
 
-relay 保留原始 wire body，另行维护用于处理和观察的解码 body。最终发送规则固定为：
+Retain a five-second budget per plugin, including its invocation's queueing time.
+Do not add a separate configurable chain deadline. Calls are not automatically
+retried, because plugins may allocate resources or perform other side effects.
+Rejecting network traffic does not roll back those effects; leases and resource
+cleanup belong to the business plugin.
 
-| 修改情况 | 请求头 | 请求体 |
+## HTTP and HTTPS forwarding
+
+Keep the original wire body in the relay and maintain decoded content for plugin
+processing and observation. The final writer selects its representation as follows:
+
+| Mutation result | Request head | Request body |
 | --- | --- | --- |
-| 没有修改 | 沿用当前转发逻辑 | 保留原始 wire bytes |
-| 仅修改普通 header | 从最终请求头重新编码 | 保留原始 wire bytes、content encoding、chunk framing 和 trailers |
-| 替换 body | 清除旧 `Content-Encoding`、`Transfer-Encoding`、`Trailer`，按新字节数设置唯一 `Content-Length` | 发送替换后的解码字节，不重新压缩，不带旧 trailers |
+| No changes | Existing forwarding behavior | Original wire bytes |
+| Ordinary headers changed only | Encode the final request head | Original wire bytes, content encoding, chunk framing, and trailers |
+| Body replaced | Remove old Content-Encoding, Transfer-Encoding, and Trailer; set one Content-Length from the replacement byte length | Replacement decoded bytes, without recompression or old trailers |
 
-body 替换后的编码及长度 header 在应用该次修改时就更新，使后续插件看到一致的请求。`Content-Type` 由插件按需设置；broker 不根据 JSON 内容自动猜测。body 的替换内容就是要发送的字节，不从只读 `json` 字段再次序列化。
+Update encoding and length headers when applying a body replacement, before the
+next plugin receives context. The plugin sets Content-Type when needed; the
+broker does not infer it from JSON. Replacement body bytes are authoritative,
+and must not be regenerated by serializing the read-only `json` projection.
 
-替换 body 时重新构造对应的 `CapturedBody`，一起更新 raw/decoded bytes、解码状态和解析缓存，不能将新字节放进仍描述旧压缩内容的 capture 中。每次修改作为整体校验并提交，不留下只改了 header 或只改了 body 的中间状态。
+Reconstruct `CapturedBody` when replacing content, updating raw/decoded bytes,
+decoding status, and parsing caches together. New bytes must not inherit capture
+state describing the old compressed body. Validate and commit each mutation as
+a unit, without exposing a partially modified request.
 
-长度和传输编码由 relay 统一生成，不能同时发出冲突的 `Content-Length` 与 `Transfer-Encoding`。对应规则见 [RFC 9112 §6.2–6.3](https://www.rfc-editor.org/rfc/rfc9112.html#section-6.2)。
+The relay owns framing and must not emit both Content-Length and
+Transfer-Encoding. See [RFC 9112 sections 6.2 and 6.3](https://www.rfc-editor.org/rfc/rfc9112.html#section-6.2).
 
-插件不能直接修改由连接和 framing 管理的字段：`Host`、`Content-Length`、`Transfer-Encoding`、`Content-Encoding`、`Trailer`、`Connection`、`Proxy-Connection`、`TE`、`Expect`、`Upgrade`、`Sec-WebSocket-*`，以及 Connection 指定的逐跳字段。沿用现有 Expect/upgrade 转发处理。普通业务 header，包括 Authorization、Cookie、x-api-key、Content-Type，可通过统一操作修改。
+Plugins cannot directly modify connection/framing fields: Host, Content-Length,
+Transfer-Encoding, Content-Encoding, Trailer, Connection, Proxy-Connection, TE,
+Expect, Upgrade, Sec-WebSocket-*, or hop-by-hop fields named by Connection.
+Preserve existing Expect and upgrade handling. Ordinary application headers,
+including Authorization, Cookie, x-api-key, and Content-Type, use the same Set
+and Remove operations.
 
-只做边界必需的校验：header 名称和值合法、传输类型匹配、未修改保留字段、替换内容未超过现有限制。客户端格式问题继续使用现有错误；不增加每种供应商的专用防御规则。body 签名、摘要或应用层校验值由修改插件更新或删除，broker 不猜测业务签名算法。
+Validate the transport boundary: legal header names/values, matching mutation
+type, reserved fields, and existing content limits. Client input errors retain
+their existing handling. Do not add provider-specific defensive rules. The
+mutating plugin updates or removes body signatures, digests, and application
+integrity fields; the broker does not infer signing algorithms.
 
-必须同步更新 `DecodedClientFlow` 内用于转发和观察的 request head。当前 `request_head_for_relay` 在审查前取出待发送头的方式需要调整：有修改时在处理完成后构造发送头，不能仅替换 capture 或 annotations 而仍发送原始头。
+Update the request head retained in `DecodedClientFlow` as well as the head
+written upstream. The current `request_head_for_relay` call prepares bytes before
+inspection; a changed head must be encoded after plugin processing. Changing only
+capture or annotations while sending the original head would violate the contract.
 
-## 6. WebSocket 处理
+The following sequence covers a request with selected plugins. The plugin-chain
+step follows the sequential invocation described above. HTTPS illustrates the
+existing handshake order; mutation does not defer upstream connection setup.
 
-upgrade 仍作为 HTTP 请求经过同一处理器，可用于注入握手认证。握手结果固定连接的 headers；后续数据消息不能回头修改它们。
+```mermaid
+sequenceDiagram
+    participant A as Agent
+    participant M as MITM relay
+    participant B as Broker request processor
+    participant H as Selected plugins via plugin service
+    participant P as Model provider
+    participant O as Agent observation
+    opt HTTPS setup before request processing
+        A->>M: Client TLS handshake
+        M-->>A: Client TLS established
+        M->>P: Provider TLS handshake
+        P-->>M: Provider TLS established
+    end
+    A->>M: Request head and any prefetched body bytes
+    M->>B: Select forwarding plan
+    B-->>M: Snapshot of connected request-processing sessions
+    opt Expect 100-continue
+        M-->>A: Local 100 Continue
+    end
+    A->>M: Remaining request body
+    M->>M: Retain wire body and decode complete content
+    Note over M,P: No HTTP request head or body forwarded yet
+    alt Complete content available
+        M->>B: Current request R0
+        loop Each selected plugin, until block or failure
+            B->>H: InspectRequest with current filtered context
+            alt Decision arrives
+                H-->>B: Allow, Modify, or Block
+                opt Valid Modify
+                    B->>B: Apply changes and refresh derived context
+                end
+            else Session fails or deadline expires
+                Note over B,H: Stop the chain without retrying
+            end
+        end
+        alt All selected plugins succeed
+            B-->>M: Final request and parsed annotations
+            M->>M: Prepare final head and select original or replacement body
+            M->>P: Shared writer sends final request
+            P-->>M: Provider response
+            M-->>A: Relay provider response
+            M-->>O: Final request and response capture
+        else A plugin blocks
+            B-->>M: Reject with safe reason
+            M-->>A: 403 agent_request_blocked
+            Note over M,P: No request version is forwarded
+        else Selected session fails or deadline expires
+            B-->>M: Reject inspection_unavailable
+            M-->>A: 503 inspection_unavailable
+            Note over M,H: No automatic plugin retry
+        else Plugin returns an invalid mutation
+            B-->>M: Reject invalid_plugin_mutation
+            M-->>A: 502 invalid_plugin_mutation
+            Note over M,P: Do not fall back to the original request
+        end
+    else Client body exceeds limits, times out, or cannot be decoded
+        M-->>A: Existing broker-origin 400, 408, 413, or 415
+        Note over M,H: No plugin decision on partial content
+        Note over M,P: No request bytes forwarded
+    end
+```
 
-客户端数据消息在现有重组边界处理，插件可替换完整 payload。text 消息替换结果必须是有效 UTF-8；binary 消息接受任意字节，两者都保持原消息类型。由现有 tungstenite 负责重新编码和向上游发送时的 masking，插件不处理帧、mask 或分片。协议依据见 [RFC 6455 §5](https://www.rfc-editor.org/rfc/rfc6455.html#section-5)。
+No selected plugins means the existing streaming path remains active. Original
+CONNECT handling and upstream TCP/TLS establishment order remain unchanged in
+both modes. The gate controls application request writes, not connection setup.
 
-控制帧和服务端消息不增加修改回调。等待客户端消息裁决时，保留当前允许反向流量继续转发的行为。
+## WebSocket forwarding
 
-更新时应一起替换 `message`、`captured_body` 和 payload 长度，避免实际发送、Hook 观察、流量计数各自使用不同内容。upgrade 保存的请求头也必须采用最终版本。字节计数保留所在链路的含义：Agent 侧读入量可以与上游写出量不同，不用修改后长度覆盖已经测得的入口字节数。
+The HTTP upgrade passes through the same request processor and can receive
+authentication headers. Its final request head becomes the connection's saved
+upgrade context. Later data messages cannot change that completed handshake.
 
-## 7. 解析、观察与凭据
+Process client data messages at the existing reassembly boundary. A plugin may
+replace the complete payload while preserving its text/binary type. Text must
+remain valid UTF-8; binary messages accept arbitrary bytes. Existing tungstenite
+handling owns framing and upstream masking; plugins do not handle frames, masks,
+or fragments. See [RFC 6455 section 5](https://www.rfc-editor.org/rfc/rfc6455.html#section-5).
 
-每次修改后，后续 context 的 header/body、JSON 和 Agent 投影必须对应同一份当前请求。首期采用简单规则：成功应用 Modify 后重新构建派生 context；连续 Allow 可复用。最后一次解析结果写入 body extensions，供完成交换后的观察复用，不能留下修改前的 `ParsedAgentRequest`。
+Control frames and server messages do not acquire mutation callbacks. Retain the
+current behavior that permits provider-to-Agent traffic while a client message
+waits for a decision. Preserve client message order with one pending client data
+message per connection.
 
-flow_id、request_id、来源进程和目标等传输元数据保持不变。Harness 和客户端声明仍按当前请求内容解析，所以修改识别 header 可能改变识别结果；这些推断字段本身不是身份认证依据。
+The following sequence starts after a successful upgrade. Reverse traffic may
+belong to an earlier allowed request; it does not release the pending message.
 
-事件观察使用最终交给转发层的请求及其响应。例如插件将 model 改为另一个模型，事件中的请求内容和模型投影应对应新值。完成/失败的判定沿用现有观察行为，不把插件 Allow 或 Modify 当成上游已经收到请求。
+```mermaid
+sequenceDiagram
+    participant A as Agent
+    participant M as WebSocket relay
+    participant B as Broker request processor
+    participant H as Selected plugins via plugin service
+    participant P as Model provider
+    A->>M: Client data message, possibly fragmented
+    M->>M: Reassemble within existing limits
+    M->>B: Select participants and process complete message
+    par Process pending client message
+        loop Selected sessions in registration order, until block or failure
+            B->>H: InspectRequest with current payload and message sequence
+            alt Decision arrives
+                H-->>B: Allow, Modify, or Block
+                opt Valid Modify
+                    B->>B: Apply changes and refresh derived context
+                end
+            else Session fails or deadline expires
+                Note over B,H: Stop the chain without retrying
+            end
+        end
+        B-->>M: Final payload or rejection
+    and Reverse direction remains active
+        P-->>M: Earlier response or control traffic
+        M-->>A: Continue forwarding reverse traffic
+    end
+    alt All selected plugins succeed
+        M->>M: Update message, captured body, and payload length together
+        M->>P: Send final payload with original text/binary type
+        Note over M,P: Existing library owns framing and masking
+        Note over A,M: Observe final content, then process the next client message
+    else A plugin blocks
+        M-->>A: Close 1008 with broker reason
+        M->>P: Close provider side
+        Note over M,P: No rejected-message payload is sent
+    else Session unavailable or mutation invalid
+        M-->>A: Close 1011 with broker reason
+        M->>P: Close provider side
+        Note over M,P: No original or intermediate payload is sent
+    end
+```
 
-首期不新增原始/修改后双份会话事件，也不保存 body diff。运行日志只记录 request_id、plugin_id、决策和修改类别/数量，不输出修改值或原始 IPC 回复。
+Replace `message`, `captured_body`, and payload length together. Forwarding,
+observation, and counters must not refer to different payloads. Byte counters
+retain their link-specific meaning: Agent bytes read may differ from upstream
+bytes written. Do not overwrite measured ingress traffic with replacement size.
+The stored upgrade request head must likewise reflect the final forwarded head.
 
-凭据规则沿用当前边界：
+## Shared parsing, observation, and credentials
 
-- broker 内保存完整请求；发送给每个插件的 context 都重新经过现有敏感 header 过滤。
-- 插件可以写入 Authorization 等敏感字段，但后续插件不能因此读取它们；事件仍按现有规则脱敏。
-- 不能对 mutation 结构自动派生并输出包含凭据的 Debug；无效回复的错误也只报告原因类别。
-- header 过滤不承诺识别 body 中的任意秘密。body 处理沿用完整请求视图和已有事件内容策略。
+After each mutation, headers/body, JSON, and Agent projection in the next context
+must describe one current request. Start with a simple rule: rebuild derived
+context after every successful Modify; consecutive Allow decisions can reuse it.
+Store the final parsed request in body extensions for completed-exchange
+observation. Never leave a pre-mutation `ParsedAgentRequest` attached to new content.
 
-这不增加新的插件权限系统。声明 `agent_request` 的本地插件在 v2 中具备修改请求的能力；插件连接仍使用当前本地端点权限边界。
+Flow ID, request ID, source process, and destination metadata remain unchanged.
+Harness recognition and client declarations continue to derive from current
+request content, so changing recognition headers can change their interpretation.
+Those inferred fields are not authentication evidence.
 
-## 8. 失败与资源行为
+Observation uses the final request handed to forwarding and the corresponding
+response. If a plugin changes the requested model, the request content and model
+projection reflect the new value. Preserve existing completion/failure handling;
+Allow or Modify alone does not establish that the upstream received the request.
 
-沿用当前完整请求缓冲方式，包括 HTTP 默认 16 MiB 上限、请求体读取期限、WebSocket 消息限制和 IPC 帧限制。修改后的内容也受相同限制；每次发送给下一个插件前检查可编码的 context 大小。
+Do not add separate original/modified conversation events or persist body diffs
+in this release. Runtime logs record request ID, plugin ID, decision, and mutation
+categories/counts, without logging mutation values or raw IPC replies.
 
-| 情况 | 行为 |
+Preserve the existing credential boundary:
+
+- The broker retains the complete request internally. Context sent to every
+  plugin passes through the existing sensitive-header filter.
+- A plugin may write Authorization or other sensitive headers, but this does not
+  expose their values to subsequent plugins. Observation retains its redaction.
+- Mutation values must not leak through derived Debug output or invalid-reply
+  errors. Report error categories without echoing supplied values.
+- Header filtering does not identify arbitrary secrets in bodies. Complete-body
+  inspection and existing observation content policies continue to apply.
+
+No new plugin permission system is introduced. In v2, a local plugin declaring
+`agent_request` can modify requests, under the existing local endpoint permission
+boundary.
+
+## Failure behavior and resource limits
+
+Reuse complete-request buffering and current limits: the default 16 MiB HTTP
+body limit, request-body read deadline, WebSocket message limits, and IPC frame
+limit. Replacement content is subject to the corresponding limits. Check that
+updated context fits the frame budget before invoking the next plugin.
+
+| Condition | Outcome |
 | --- | --- |
-| 没有请求插件 | 保留当前流式路径，不为修改功能额外缓冲 |
-| 插件显式 Block | 沿用 HTTP 403 / WebSocket 1008 |
-| 已选插件超时、断开、handler 失败 | 沿用 HTTP 503 / WebSocket 1011 |
-| 插件返回非法 header、错误修改类型、过大替换内容等 | HTTP 502 `invalid_plugin_mutation` / WebSocket 1011；不转发当前请求，不回退到原请求 |
-| 客户端原始 body 过大或编码错误 | 沿用现有 413、415、400 等处理 |
+| No request-processing plugins | Existing streaming path; no extra mutation buffering |
+| Explicit Block | Existing HTTP 403 / WebSocket 1008 |
+| Selected plugin times out, disconnects, or fails its handler | Existing HTTP 503 / WebSocket 1011 |
+| Invalid mutation: illegal header, wrong transport type, oversized replacement, etc. | HTTP 502 `invalid_plugin_mutation` / WebSocket 1011; no forwarding or fallback to the original request |
+| Original client body exceeds limits or has invalid encoding | Existing 413, 415, 400, and related handling |
 
-插件产生的非法输出应与客户端输入错误区分，不把它报告成客户端的 400/413。回复不能完整解码时，通过当前插件会话错误路径终止，保证没有待修改请求继续转发。
+Invalid plugin output is distinct from invalid client input; do not report it as
+a client 400/413. A reply that cannot be decoded follows the existing plugin
+session error path, ensuring that its pending request does not continue.
 
-首期即使只设置一个 header，也复用完整请求处理路径。这避免新增 header/body 两套回调、两份插件选择与超时语义；代价是只改 header 的请求同样受完整缓冲限制。后续有明确的大请求或延迟需求时，再评估单独的 header 阶段，不预先加入 capability 模式矩阵。
+Even a header-only mutation uses complete-request processing in this release.
+This reuses one callback, participant selection, and deadline model. The cost is
+that header-only use cases also inherit full buffering limits. Add a separate
+header stage only when concrete large-request or latency requirements justify
+it, without introducing a capability-mode matrix in advance.
 
-没有插件连接时仍正常转发，这是现有插件机制的语义。因此本能力本身不保证“凭据插件始终在线”；业务部署需要在启动 Agent 前确认插件就绪。如需无插件时强制阻断，那是单独的必需插件策略，不作为此次修改能力的隐含行为。
+Normal forwarding with no plugins is existing behavior. This feature does not
+guarantee that a credential plugin remains connected. A business deployment can
+confirm plugin readiness before launching an Agent. Requiring a named plugin to
+remain present would be a separate mandatory-plugin policy, not an implicit
+property of mutation.
 
-## 9. API Key 分配插件示例
+## Application example: API key allocation
 
-插件在请求回调中执行：
+A credential allocation plugin implements the following request handler:
 
-1. 仅处理 HTTP 请求（含 WebSocket upgrade）；WebSocket 数据消息返回 Allow。检查目标 authority 等已有上下文，未匹配自身服务范围就 Allow。
-2. 按业务策略获取或复用凭据。
-3. 返回 HTTP header Set 操作，替换 Authorization 的全部旧值。
-4. 分配失败时明确拒绝或使 handler 失败，由 broker 返回可识别错误。
+1. Handle HTTP requests, including WebSocket upgrades; allow WebSocket data
+   messages unchanged. Check the target authority and available context, and
+   Allow requests outside the plugin's service scope.
+2. Obtain or reuse a credential according to application policy.
+3. Return an HTTP header Set operation replacing every Authorization value.
+4. Explicitly block or fail the handler if allocation fails, allowing the broker
+   to return an identifiable local error.
 
-API Key 池、分配身份、权限、配额、缓存、租约、轮换和远端服务认证都由插件实现。broker 不新增凭据数据库、token 分配 REST API 或供应商地址配置。显式代理没有可靠的 source_process；session_id、Harness 推断也不能直接当作授权身份。
+Key pools, allocation identity, authorization, quotas, caching, leases, rotation,
+and authentication to remote allocation services all belong to the plugin.
+The broker gains no credential database, allocation REST API, or provider-address
+configuration. Explicit proxy ingress has no reliable source-process identity;
+session IDs and inferred Harness identity are not authorization credentials.
 
-采用 Set 意味着匹配请求的旧凭据会被覆盖；如果业务要求“已有用户凭据则保留”，应另行明确这种策略，不通过暴露原始凭据给所有插件来实现。
+Set deliberately replaces existing credentials on matching requests. A business
+requirement to retain an existing user credential needs an explicit policy;
+it should not be implemented by exposing original secrets to every plugin.
 
-HTTP 请求可逐次注入；WebSocket 的握手凭据在连接建立时确定，后续消息不能靠修改 Authorization 轮换认证。插件也不能让一个在本地就拒绝无 Key 启动的 Agent 发出请求；这种客户端可能需要由启动集成提供占位配置。broker 负责替换经过它的请求中的凭据。
+HTTP credentials can be injected per request. WebSocket handshake credentials
+are fixed when the connection is established; later messages cannot rotate them
+by editing Authorization. A broker also cannot make an Agent send a request if
+the Agent refuses to start without a local key setting. Such clients may need
+placeholder configuration supplied by their launcher. The broker replaces
+credentials on requests that actually pass through it.
 
-## 10. 实施顺序与验证
+## Implementation and validation
 
-1. **协议与 SDK**：定义 decision/mutation 类型和 v2 schema，更新 Rust、TypeScript、Python 回调结果、delivery 握手及 fixtures。保留既有 Allow/Block 使用体验。
-2. **HTTP 处理链**：引入传输层可修改请求值，调整 broker 顺序调用和投影更新，完成 header 修改，再完成 body 替换及 framing。复用原 relay 的发送和捕获逻辑。
-3. **WebSocket 与观察**：接入 upgrade header、数据消息替换，更新最终 capture、解析 annotations 和计数。添加通用示例插件，凭据分配服务不进入 broker。
-4. **黑盒验证和文档**：真实 broker、独立插件进程、可记录输入的本地上游组成测试边界；同步更新当前协议入口、SDK 示例和 broker 使用说明。
+Implement in this order:
 
-核心验收场景：
+1. **Protocol and SDKs:** define decision/mutation types and v2 schemas; update
+   Rust, TypeScript, and Python callback results, delivery-plugin handshake, and
+   fixtures. Preserve straightforward Allow/Block usage.
+2. **HTTP processing:** introduce the transport request value, sequential broker
+   invocation, and projection refresh. Implement header mutation, then body
+   replacement and framing, reusing the existing writer and capture lifecycle.
+3. **WebSocket and observation:** support upgrade headers and data-message
+   replacement; update final captures, parsed annotations, and counters. Add a
+   generic example plugin without an allocation service inside the broker.
+4. **Black-box validation and documentation:** exercise a real broker, a separate
+   plugin process, and a local upstream recording received requests. Update the
+   current protocol entry points, SDK examples, and broker usage guide.
 
-- Authorization 原本缺失、存在、重复或大小写不同时，最终上游只收到插件设置的值；其他未修改 header 保留。
-- A 修改 body，B 根据新 body 再次修改或拒绝；上游最终内容和观察事件一致，拒绝时没有该请求头/body 写入。
-- 普通 body、压缩 body、chunked body：仅改 header 时保留原 wire body；替换 body 时长度、编码和 trailers 与发送内容一致。
-- Modify 后的 JSON/Agent 投影及缓存正确；未知协议的 header/body 也可修改。
-- WebSocket upgrade 注入认证成功；text/binary 消息替换正确；等待裁决时反向消息继续到达。
-- 注入的凭据不出现在后续插件 context、事件或错误日志中。
-- 插件非法输出、超时、断连均不发送当前请求；无插件和 TLS passthrough 保持原行为。
-- v1/v2 不匹配得到明确握手错误，三个 SDK 的契约测试使用一致 fixtures。
+The acceptance checks are:
 
-类型校验和应用语义使用单元测试，实际转发内容与插件生命周期使用黑盒测试；运行现有 fmt、lint、相关 crate 测试、SDK 契约和 request-blocking 黑盒回归。本文仅提出方案，本次不修改协议、SDK 或运行时代码。
+- Missing, existing, duplicate, or differently cased Authorization headers yield
+  only the plugin's intended values upstream. Unmodified headers remain intact.
+- Plugin A changes the body and plugin B reads the new version before modifying
+  or blocking it. Forwarded content and observation agree; rejection sends none
+  of that request's head/body upstream.
+- For ordinary, compressed, and chunked bodies, header-only mutation preserves
+  wire body bytes. Body replacement produces consistent length, encoding, and
+  trailer handling.
+- JSON/Agent projections and caches follow Modify. Unknown protocols can still
+  have headers and body changed.
+- WebSocket upgrade credential injection and text/binary message replacement
+  work, while reverse traffic continues during a pending decision.
+- Injected credentials do not appear in subsequent plugin context, events, or
+  error logs.
+- Invalid output, timeout, and disconnect prevent the pending request from
+  being sent. No-plugin and opaque TLS passthrough behavior remains unchanged.
+- A v1/v2 mismatch fails the handshake explicitly, and all three SDKs use the
+  same contract fixtures.
+
+Use unit tests for validation and mutation application, and black-box tests for
+actual forwarded bytes and plugin lifecycle. Run formatting, lint, relevant
+crate tests, SDK contract tests, and request-blocking black-box regressions.
+This document is a proposal only; it does not change protocol, SDK, or runtime
+implementation.
