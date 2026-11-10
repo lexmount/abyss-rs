@@ -52,10 +52,9 @@ impl HttpConnectProxy {
         let endpoint = config.target()?;
         let transport = ProxyTransport::new(config, &endpoint)?;
         let authorization = config
-            .credentials_file
-            .as_deref()
-            .map(ProxyAuthorization::load)
-            .transpose()?;
+            .load_credentials()?
+            .as_ref()
+            .map(ProxyAuthorization::new);
         Ok(Self {
             endpoint,
             transport,

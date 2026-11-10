@@ -44,6 +44,31 @@ pub struct UpstreamProxyConfig {
 #[error("invalid upstream proxy configuration: {0}")]
 pub struct UpstreamProxyConfigError(pub(super) &'static str);
 
+/// Parsed Basic credentials, deliberately without Debug/Serialize to avoid exposing secrets.
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+pub(super) struct ProxyCredentials {
+    pub(super) username: String,
+    pub(super) password: String,
+}
+
+impl ProxyCredentials {
+    fn validate(&self) -> Result<(), UpstreamProxyConfigError> {
+        if self.username.contains(':')
+            || self
+                .username
+                .chars()
+                .chain(self.password.chars())
+                .any(char::is_control)
+        {
+            return Err(UpstreamProxyConfigError(
+                "proxy username must not contain ':' and credentials must not contain control characters",
+            ));
+        }
+        Ok(())
+    }
+}
+
 impl UpstreamProxyConfig {
     /// Validates endpoint syntax and bounded positive timeouts without using DNS.
     ///
@@ -72,6 +97,27 @@ impl UpstreamProxyConfig {
             }
         }
         Ok(())
+    }
+
+    /// Loads and validates credentials when preparing a route snapshot.
+    /// Serialized configuration retains only the path, never these secret values.
+    pub(super) fn load_credentials(
+        &self,
+    ) -> Result<Option<ProxyCredentials>, UpstreamProxyConfigError> {
+        self.credentials_file
+            .as_deref()
+            .map(|path| {
+                let bytes = read_material(path, 16 * 1024)?;
+                let credentials: ProxyCredentials =
+                    serde_json::from_slice(&bytes).map_err(|_| {
+                        UpstreamProxyConfigError(
+                            "proxy credentials must be a JSON username/password object",
+                        )
+                    })?;
+                credentials.validate()?;
+                Ok(credentials)
+            })
+            .transpose()
     }
 
     pub(super) fn target(&self) -> Result<TargetAuthority, UpstreamProxyConfigError> {
