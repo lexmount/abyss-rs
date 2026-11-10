@@ -1,4 +1,4 @@
-"""Shared v2 action fixtures and callback input semantics."""
+"""Shared v1 action fixtures and callback input semantics."""
 
 import json
 import unittest
@@ -7,7 +7,7 @@ from pathlib import Path
 
 from abyss_sdk.plugin import AgentRequestContext, ModifyAction, RequestDecision
 
-FIXTURES = Path(__file__).resolve().parents[3] / "specs/broker-plugin-protocol/v2/fixtures"
+FIXTURES = Path(__file__).resolve().parents[3] / "specs/broker-plugin-protocol/v1/fixtures"
 
 
 class InspectionTests(unittest.TestCase):

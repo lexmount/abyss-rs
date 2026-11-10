@@ -102,7 +102,7 @@ where
             };
         write_json(
             &mut self.stream,
-            &BrokerMessage::BrokerHello(BrokerHello::v2()),
+            &BrokerMessage::BrokerHello(BrokerHello::v1()),
         )
         .await?;
         tracing::info!(plugin_id = %hello.plugin_id, "broker plugin session accepted");
@@ -286,7 +286,7 @@ mod tests {
     use crate::plugin::codec::{read_payload, write_json};
 
     #[tokio::test]
-    async fn accepts_v2_then_streams_events_and_a_shutdown_close() {
+    async fn accepts_v1_then_streams_events_and_a_shutdown_close() {
         let (mut client, server) = duplex(32 * 1024);
         let (events, _receiver) = broadcast::channel(64);
         let (shutdown_tx, shutdown_rx) = tokio::sync::watch::channel(false);
@@ -299,7 +299,7 @@ mod tests {
         .await
         .expect("PluginHello should write");
         let hello: BrokerHello = read_json(&mut client).await;
-        assert_eq!(hello.protocol_version.wire_value(), 2_u16);
+        assert_eq!(hello.protocol_version.wire_value(), 1_u16);
 
         let fixture: serde_json::Value =
             serde_json::from_str(include_str!("fixtures/agent-event.json"))
@@ -313,7 +313,7 @@ mod tests {
         let received = serde_json::to_value(received).expect("event should serialize");
         assert_eq!(
             received, fixture,
-            "v2 must forward every structured field unchanged"
+            "v1 must forward every structured field unchanged"
         );
         assert!(received.get("turn_index").is_none());
 
@@ -340,7 +340,7 @@ mod tests {
             &serde_json::json!({
                 "type": "plugin_hello",
                 "capabilities": ["agent_events"],
-                "protocol_version": 1_u16,
+                "protocol_version": 2_u16,
                 "plugin_id": "future-plugin"
             }),
         )
@@ -349,7 +349,7 @@ mod tests {
         let error: BrokerError = read_json(&mut client).await;
 
         assert_eq!(error.code, 1_u32);
-        assert!(error.reason.contains("unsupported protocol version 1"));
+        assert!(error.reason.contains("unsupported protocol version 2"));
         session
             .await
             .expect("session task should finish")
@@ -368,7 +368,7 @@ mod tests {
             &serde_json::json!({
                 "type": "plugin_hello",
                 "capabilities": ["agent_events"],
-                "protocol_version": 2_u16,
+                "protocol_version": 1_u16,
                 "plugin_id": "invalid plugin id"
             }),
         )

@@ -66,7 +66,7 @@ impl Server {
 fn context(id: &str) -> Arc<AgentRequestContext> {
     let message: BrokerMessage = serde_json::from_str(include_str!(concat!(
         env!("CARGO_MANIFEST_DIR"),
-        "/../../specs/broker-plugin-protocol/v2/fixtures/inspect-request.json"
+        "/../../specs/broker-plugin-protocol/v1/fixtures/inspect-request.json"
     )))
     .unwrap();
     let BrokerMessage::InspectRequest { mut context } = message else {

@@ -3,7 +3,7 @@
 Status: implemented. This document records the architecture and design rationale;
 the original source review below is based on commit `57c29ef`. For the concrete
 wire schema, limits and callback examples, see the
-[plugin contract](../specs/broker-plugin-protocol/v2/README.md) and
+[plugin contract](../specs/broker-plugin-protocol/v1/README.md) and
 [broker usage guide](../crates/abyss-broker/README.md).
 The implementation follows the structured-session model introduced in `4e24dcf`:
 request content uses `Conversation.entries`, and Harness declarations retain only

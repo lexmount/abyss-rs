@@ -1,6 +1,6 @@
 # Agent request editing through broker plugins
 
-Status: implemented with plugin protocol v2. Initial source analysis used commit `2e1824a`.
+Status: implemented with plugin protocol v1. Initial source analysis used commit `2e1824a`.
 
 Extend `agent_request` so a plugin reads a semantic Agent request context and
 returns Allow, Block, or Modify with an explicit list of semantic actions. The SDK
@@ -13,7 +13,7 @@ messages, and framing are internal implementation details. API key allocation is
 one application; allocation policy and credential storage belong to the plugin.
 
 This design builds on the [request inspection design](request-blocking-design.md).
-The [v2 plugin contract](../specs/broker-plugin-protocol/v2/README.md) describes the implemented wire format.
+The [v1 plugin contract](../specs/broker-plugin-protocol/v1/README.md) describes the implemented wire format.
 
 ## Scope and required behavior
 
@@ -198,7 +198,7 @@ and Python expose the equivalent read-only context and typed action variants.
 There is no mutable-context round trip, old-context copy, dirty tracking, or diff
 calculation in the SDK. The reply is constructed only from the returned result.
 
-Use a tagged result in the v2 `inspect_response`:
+Use a tagged result in the v1 `inspect_response`:
 
 ```json
 {
@@ -260,11 +260,11 @@ compare before/after context snapshots to discover edits. Allow skips write-back
 and parsing refresh; an empty list does the same. This reduces reply payloads and
 comparison work, while retaining initial context parsing and the plugin RPC.
 
-Advance to `protocol_version = 2` because the context gains credential visibility
-and the reply gains typed actions. Update the broker, official delivery-plugin
-handshake, Rust/TypeScript/Python SDKs, schemas, and fixtures together. Reject older
-versions explicitly rather than adding dual-version runtime support. Keep v1
-documentation as historical material. `AgentEvent` does not gain a token field.
+Extend the existing `protocol_version = 1` contract in place with credential
+visibility and typed modification actions. Update the broker, official delivery
+plugin, Rust/TypeScript/Python SDKs, schemas, and fixtures together. Keep one v1
+contract and decoder, without a new protocol version or compatibility layer.
+`AgentEvent` does not gain a token field.
 
 ## Sequential execution and state ownership
 
@@ -553,7 +553,7 @@ only the credential covered by the selected binding through the semantic field.
 Do not add token values to `AgentEvent`, audit records, mutation logs, or errors.
 Avoid automatic Debug output of secret-bearing context/reply values. SDK error
 paths must not dump the complete IPC frame. No new permission system is added;
-v2 request handlers operate under the existing local plugin endpoint boundary.
+v1 request handlers operate under the existing local plugin endpoint boundary.
 
 Observation uses the final forwarded request and corresponding response with
 existing redaction. If the model changed, both request content and observed model
@@ -613,9 +613,9 @@ configuration from its launcher; Abyss can only edit requests that reach it.
 Implement in this order:
 
 1. **Semantic contract and SDKs:** retain read-only context, add token visibility
-   and availability facts, define the four `ModifyAction` variants and v2 replies,
-   and serialize returned actions directly in every SDK. Update delivery-plugin
-   handshake and use common fixtures for all variants.
+   and availability facts, define the four `ModifyAction` variants and v1 replies,
+   and serialize returned actions directly in every SDK. Keep the delivery-plugin
+   handshake at v1 and use common fixtures for all variants.
 2. **Parsing and write-back:** retain original requests, add authentication and
    model writers beside existing protocol parsers, and dispatch actions directly.
    Preserve unrelated fields and unsupported content without computing context diffs.
@@ -652,7 +652,7 @@ Acceptance checks include:
 - Request plugins can see the token; event-only plugins, logs, and error output
   cannot. Credential-bearing Debug/serialization error paths preserve this rule.
 - Timeouts, disconnects, frame/body limits, no-plugin streaming, opaque passthrough,
-  and v1/v2 handshake mismatches retain their defined outcomes.
+  and unsupported protocol versions retain their defined outcomes.
 
 Use focused unit tests for action validation and application, SDK contract tests
 for read-only callbacks and action replies, and black-box tests for actual upstream

@@ -142,7 +142,7 @@ impl BrokerPlugin {
         self
     }
 
-    /// Connects, requests protocol version 2, and returns the Agent event stream.
+    /// Connects, requests protocol version 1, and returns the Agent event stream.
     ///
     /// # Errors
     ///
@@ -492,11 +492,11 @@ mod tests {
                 hello.capabilities,
                 vec![abyss_plugin_protocol::inspection::PluginCapability::AgentRequest]
             );
-            write_json(&mut stream, &BrokerMessage::BrokerHello(BrokerHello::v2()))
+            write_json(&mut stream, &BrokerMessage::BrokerHello(BrokerHello::v1()))
                 .await
                 .unwrap();
             let request: BrokerMessage = serde_json::from_str(include_str!(
-                "../../tests/fixtures/broker-plugin-protocol/v2/fixtures/inspect-request.json"
+                "../../tests/fixtures/broker-plugin-protocol/v1/fixtures/inspect-request.json"
             ))
             .unwrap();
             for expected in handler_decisions() {
@@ -546,12 +546,12 @@ mod tests {
         let server_task = tokio::spawn(async move {
             let hello: PluginHello = read_json(&mut server).await;
             assert_eq!(hello.plugin_id, "sdk-test-plugin");
-            assert_eq!(hello.protocol_version.wire_value(), 2_u16);
-            write_json(&mut server, &BrokerMessage::BrokerHello(BrokerHello::v2()))
+            assert_eq!(hello.protocol_version.wire_value(), 1_u16);
+            write_json(&mut server, &BrokerMessage::BrokerHello(BrokerHello::v1()))
                 .await
                 .expect("BrokerHello should write");
             let event: AgentEvent = serde_json::from_str(include_str!(
-                "../../tests/fixtures/broker-plugin-protocol/v2/fixtures/agent-event.json"
+                "../../tests/fixtures/broker-plugin-protocol/v1/fixtures/agent-event.json"
             ))
             .expect("published AgentEvent fixture should decode");
             write_json(

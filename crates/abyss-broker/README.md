@@ -76,7 +76,7 @@ WebSocket decisions close with 1008 or 1011 respectively. Without connected insp
 the existing streaming path is used. Network passthrough remains opaque and never
 enters Agent inspection.
 
-See the [plugin contract](../../specs/broker-plugin-protocol/v2/README.md) and
+See the [plugin contract](../../specs/broker-plugin-protocol/v1/README.md) and
 [Rust](../abyss-sdk/examples/request_inspection.rs),
 [TypeScript](../../sdks/typescript/examples/request-inspection.ts), and
 [Python](../../sdks/python/examples/request_inspection.py) callback examples.
@@ -290,7 +290,7 @@ Normalized Agent events are streamed to connected local plugins. Remote upload
 and authentication require a separate consumer, such as `abyss-delivery-plugin`;
 the broker does not require `product-config.json` or an upload endpoint. The
 plugin stream has no offline replay; local network diagnostics are a separate
-store. See the [plugin protocol](https://github.com/lexmount/abyss-rs/tree/main/specs/broker-plugin-protocol/v2)
+store. See the [plugin protocol](https://github.com/lexmount/abyss-rs/tree/main/specs/broker-plugin-protocol/v1)
 to implement a consumer.
 
 Licensed under GPL-3.0; see the included `LICENSE` file.

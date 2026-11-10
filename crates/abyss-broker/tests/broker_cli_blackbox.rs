@@ -455,9 +455,9 @@ fn custom_harness_emits_events_through_real_broker_flow_and_plugin_boundaries() 
         .expect("plugin should configure a read timeout");
     write_plugin_frame(
         &mut plugin,
-        &json!({"type":"plugin_hello", "capabilities":["agent_events"], "protocol_version": 2_u16, "plugin_id": "custom-harness-blackbox"}),
+        &json!({"type":"plugin_hello", "capabilities":["agent_events"], "protocol_version": 1_u16, "plugin_id": "custom-harness-blackbox"}),
     );
-    assert_eq!(read_plugin_frame(&mut plugin)["protocol_version"], 2_u16);
+    assert_eq!(read_plugin_frame(&mut plugin)["protocol_version"], 1_u16);
 
     let upstream =
         TcpListener::bind(loopback_ephemeral_addr()).expect("custom Harness upstream should bind");
@@ -718,10 +718,10 @@ fn broker_plugin_endpoint_accepts_a_v1_session_and_closes_it_on_shutdown() {
         .expect("plugin should configure a read timeout");
     write_plugin_frame(
         &mut plugin,
-        &json!({"type":"plugin_hello", "capabilities":["agent_events"], "protocol_version": 2_u16, "plugin_id": "blackbox-plugin"}),
+        &json!({"type":"plugin_hello", "capabilities":["agent_events"], "protocol_version": 1_u16, "plugin_id": "blackbox-plugin"}),
     );
     let hello = read_plugin_frame(&mut plugin);
-    assert_eq!(hello["protocol_version"], 2_u16);
+    assert_eq!(hello["protocol_version"], 1_u16);
 
     let stopped = broker.shutdown();
     assert_eq!(stopped.lifecycle, ProxyLifecycle::Stopped);
@@ -764,11 +764,11 @@ fn broker_plugin_named_pipe_accepts_a_v1_session_and_closes_it_on_shutdown() {
             .expect("plugin should connect to the broker Named Pipe");
         write_windows_plugin_frame(
             &mut plugin,
-            &json!({"type":"plugin_hello", "capabilities":["agent_events"], "protocol_version": 2_u16, "plugin_id": "blackbox-plugin"}),
+            &json!({"type":"plugin_hello", "capabilities":["agent_events"], "protocol_version": 1_u16, "plugin_id": "blackbox-plugin"}),
         )
         .await;
         let hello = read_windows_plugin_frame(&mut plugin).await;
-        assert_eq!(hello["protocol_version"], 2_u16);
+        assert_eq!(hello["protocol_version"], 1_u16);
         plugin
     });
 

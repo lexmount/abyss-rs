@@ -38,9 +38,9 @@ fn hermes_sdk_requests_are_identified_from_native_source_metadata() {
     plugin.set_read_timeout(Some(REST_TIMEOUT)).unwrap();
     write_plugin_frame(
         &mut plugin,
-        &json!({"type":"plugin_hello", "capabilities":["agent_events"], "protocol_version": 2_u16, "plugin_id": "hermes-blackbox"}),
+        &json!({"type":"plugin_hello", "capabilities":["agent_events"], "protocol_version": 1_u16, "plugin_id": "hermes-blackbox"}),
     );
-    assert_eq!(read_plugin_frame(&mut plugin)["protocol_version"], 2_u16);
+    assert_eq!(read_plugin_frame(&mut plugin)["protocol_version"], 1_u16);
 
     for (application, enabled, expected) in [
         (Some(HERMES_ID), true, Some("hermes")),

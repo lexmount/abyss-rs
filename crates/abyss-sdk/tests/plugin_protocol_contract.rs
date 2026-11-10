@@ -13,7 +13,7 @@ use serde::{Serialize, de::DeserializeOwned};
 use serde_json::Value;
 
 const EVENT_SCHEMA_ID: &str =
-    "https://schemas.lexmount.net/abyss/broker-plugin/v2/agent-event.schema.json";
+    "https://schemas.lexmount.net/abyss/broker-plugin/v1/agent-event.schema.json";
 
 struct PublishedContract {
     root: PathBuf,
@@ -76,7 +76,7 @@ fn structured_conversation_and_handshakes_round_trip() {
     for name in ["pluginHello", "brokerHello"] {
         assert_eq!(
             messages["$defs"][name]["properties"]["protocol_version"]["const"],
-            2_u16
+            1_u16
         );
     }
     let mut obsolete = fixture;
@@ -87,7 +87,7 @@ fn structured_conversation_and_handshakes_round_trip() {
     counted["turn_index"] = 1_u32.into();
     assert!(
         serde_json::from_value::<AgentEvent>(counted).is_err(),
-        "v2 has no collector-counted turn_index"
+        "v1 has no collector-counted turn_index"
     );
     assert!(schema["properties"].get("turn_index").is_none());
 }
@@ -106,7 +106,7 @@ fn conversation_carries_one_entry_per_block() {
     assert!(
         conversation["properties"].get("payloads").is_none()
             && entry["properties"].get("blocks").is_none(),
-        "v2 must not carry raw provider documents or original content blocks"
+        "v1 must not carry raw provider documents or original content blocks"
     );
     assert_eq!(entry["required"], serde_json::json!(["role", "text"]));
     assert_eq!(
@@ -126,10 +126,10 @@ fn conversation_carries_one_entry_per_block() {
 
     let fixture = contract.json("fixtures/agent-event.json");
     let event: AgentEvent =
-        serde_json::from_value(fixture.clone()).expect("the v2 fixture should decode");
+        serde_json::from_value(fixture.clone()).expect("the v1 fixture should decode");
     let entries = event
         .conversation
-        .expect("the v2 fixture should carry a conversation")
+        .expect("the v1 fixture should carry a conversation")
         .entries;
     assert_eq!(
         entries.iter().map(|entry| entry.role).collect::<Vec<_>>(),
@@ -153,13 +153,13 @@ fn conversation_carries_one_entry_per_block() {
     payloads["conversation"]["payloads"] = serde_json::json!([]);
     assert!(
         serde_json::from_value::<AgentEvent>(payloads).is_err(),
-        "decoded provider documents are not part of the v2 contract"
+        "decoded provider documents are not part of the v1 contract"
     );
     let mut blocks = fixture.clone();
     blocks["conversation"]["entries"][0]["blocks"] = serde_json::json!([]);
     assert!(
         serde_json::from_value::<AgentEvent>(blocks).is_err(),
-        "original content blocks are not part of the v2 contract"
+        "original content blocks are not part of the v1 contract"
     );
     let mut merged_tool = fixture.clone();
     merged_tool["conversation"]["entries"][0]["role"] = "tool".into();
@@ -192,7 +192,7 @@ fn conversation_carries_one_entry_per_block() {
 #[test]
 fn packaged_contract_matches_the_public_specification() {
     let specification =
-        PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../specs/broker-plugin-protocol/v2");
+        PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../specs/broker-plugin-protocol/v1");
     if !specification.is_dir() {
         // A packaged crate carries only its copy of the contract.
         return;
@@ -217,7 +217,7 @@ fn packaged_contract_matches_the_public_specification() {
         assert_eq!(
             fs::read(packaged.join(relative)).expect("packaged contract file should exist"),
             fs::read(specification.join(relative)).expect("specification file should exist"),
-            "SDK's packaged v2 {relative} must match the public specification"
+            "SDK's packaged v1 {relative} must match the public specification"
         );
     }
 }
@@ -226,7 +226,7 @@ impl PublishedContract {
     fn load() -> Self {
         Self {
             root: PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-                .join("tests/fixtures/broker-plugin-protocol/v2"),
+                .join("tests/fixtures/broker-plugin-protocol/v1"),
         }
     }
 
@@ -283,7 +283,7 @@ fn published_agent_event_fixture_matches_the_public_sdk() {
         event.get("event_type").is_none()
             && event.get("payload").is_none()
             && event.get("metadata").is_none(),
-        "the only version 2 Agent event should be flat and contain no unstructured metadata"
+        "the only version 1 Agent event should be flat and contain no unstructured metadata"
     );
     assert_eq!(
         event["conversation"]["entries"][2]["name"], "exec",
@@ -320,7 +320,7 @@ fn published_event_schema_defines_the_flat_typed_contract() {
     );
     assert_eq!(
         event_schema["$id"], EVENT_SCHEMA_ID,
-        "Agent event schema id should remain scoped to plugin protocol v2"
+        "Agent event schema id should remain scoped to plugin protocol v1"
     );
     let event_properties = event_schema["properties"]
         .as_object()
@@ -363,7 +363,7 @@ fn published_message_schema_defines_handshake_and_control_contracts() {
     );
     assert_eq!(
         message_schema["$id"],
-        "https://schemas.lexmount.net/abyss/broker-plugin/v2/messages.schema.json",
+        "https://schemas.lexmount.net/abyss/broker-plugin/v1/messages.schema.json",
         "message schema id should remain versioned"
     );
     assert_eq!(

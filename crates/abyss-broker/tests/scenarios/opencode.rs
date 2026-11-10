@@ -37,11 +37,11 @@ impl OpenCodeScenario {
         plugin.set_read_timeout(Some(REST_TIMEOUT)).unwrap();
         write_plugin_frame(
             &mut plugin,
-            &json!({"type":"plugin_hello", "capabilities":["agent_events"], "protocol_version": 2_u16, "plugin_id": "opencode-blackbox"}),
+            &json!({"type":"plugin_hello", "capabilities":["agent_events"], "protocol_version": 1_u16, "plugin_id": "opencode-blackbox"}),
         );
         assert_eq!(
             read_plugin_frame(&mut plugin)["protocol_version"],
-            2_u16,
+            1_u16,
             "the broker must accept the plugin handshake"
         );
         let client = Client::builder()

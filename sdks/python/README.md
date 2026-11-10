@@ -32,8 +32,8 @@ Return Allow, Block with a safe reason, or Modify with explicit Set/Remove actio
 for the selected auth token or model. `auth_token_writable` and `model_writable`
 indicate supported edits. See the [model override example](examples/request_modification.py). The SDK sends only the decision; it never diffs context.
 Request handlers can read `auth_token`; event subscribers cannot.
-See the [v2 wire contract](https://github.com/lexmount/abyss-rs/tree/main/specs/broker-plugin-protocol/v2).
-Broker and plugins must upgrade together from v1. A selected
+See the [v1 wire contract](https://github.com/lexmount/abyss-rs/tree/main/specs/broker-plugin-protocol/v1).
+Broker and SDKs share the updated v1 contract. A selected
 plugin that fails or does not respond within five seconds fails that request.
 Disconnecting the last inspection plugin restores normal streaming for future
 requests. Network policy Block and opaque TLS Passthrough never invoke this callback.

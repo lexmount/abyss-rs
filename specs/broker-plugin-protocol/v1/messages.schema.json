@@ -161,8 +161,7 @@
       "required": [
         "type",
         "request_id",
-        "allow",
-        "reason"
+        "decision"
       ],
       "properties": {
         "type": {
@@ -171,13 +170,112 @@
         "request_id": {
           "type": "string"
         },
-        "allow": {
-          "type": "boolean"
-        },
-        "reason": {
-          "type": [
-            "string",
-            "null"
+        "decision": {
+          "oneOf": [
+            {
+              "type": "object",
+              "additionalProperties": false,
+              "required": [
+                "action"
+              ],
+              "properties": {
+                "action": {
+                  "const": "allow"
+                }
+              }
+            },
+            {
+              "type": "object",
+              "additionalProperties": false,
+              "required": [
+                "action",
+                "reason"
+              ],
+              "properties": {
+                "action": {
+                  "const": "block"
+                },
+                "reason": {
+                  "type": "string"
+                }
+              }
+            },
+            {
+              "type": "object",
+              "additionalProperties": false,
+              "required": [
+                "action",
+                "actions"
+              ],
+              "properties": {
+                "action": {
+                  "const": "modify"
+                },
+                "actions": {
+                  "type": "array",
+                  "items": {
+                    "oneOf": [
+                      {
+                        "type": "object",
+                        "additionalProperties": false,
+                        "required": [
+                          "op",
+                          "value"
+                        ],
+                        "properties": {
+                          "op": {
+                            "const": "set_auth_token"
+                          },
+                          "value": {
+                            "type": "string"
+                          }
+                        }
+                      },
+                      {
+                        "type": "object",
+                        "additionalProperties": false,
+                        "required": [
+                          "op"
+                        ],
+                        "properties": {
+                          "op": {
+                            "const": "remove_auth_token"
+                          }
+                        }
+                      },
+                      {
+                        "type": "object",
+                        "additionalProperties": false,
+                        "required": [
+                          "op",
+                          "value"
+                        ],
+                        "properties": {
+                          "op": {
+                            "const": "set_model"
+                          },
+                          "value": {
+                            "type": "string"
+                          }
+                        }
+                      },
+                      {
+                        "type": "object",
+                        "additionalProperties": false,
+                        "required": [
+                          "op"
+                        ],
+                        "properties": {
+                          "op": {
+                            "const": "remove_model"
+                          }
+                        }
+                      }
+                    ]
+                  }
+                }
+              }
+            }
           ]
         }
       }

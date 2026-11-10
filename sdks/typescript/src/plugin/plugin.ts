@@ -134,7 +134,7 @@ export class BrokerPlugin {
           ...(this.#events ? ["agent_events"] : []),
           ...(this.#inspect === undefined ? [] : ["agent_request"]),
         ],
-        protocol_version: 2,
+        protocol_version: 1,
         plugin_id: this.#consumerId,
       });
       const response = await frames.next();
@@ -148,7 +148,7 @@ export class BrokerPlugin {
         );
       }
       const hello = response.value as Partial<BrokerHello>;
-      if (hello.type !== "broker_hello" || hello.protocol_version !== 2) {
+      if (hello.type !== "broker_hello" || hello.protocol_version !== 1) {
         throw new BrokerPluginError(
           "broker returned an invalid handshake response",
         );

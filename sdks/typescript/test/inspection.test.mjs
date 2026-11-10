@@ -30,7 +30,7 @@ for (const decision of [
     const request = JSON.parse(
       await readFile(
         new URL(
-          "../../../specs/broker-plugin-protocol/v2/fixtures/inspect-request.json",
+          "../../../specs/broker-plugin-protocol/v1/fixtures/inspect-request.json",
           import.meta.url,
         ),
         "utf8",
@@ -49,7 +49,7 @@ for (const decision of [
         assert.deepEqual(hello.capabilities, ["agent_request"]);
         await writeJsonFrame(socket, {
           type: "broker_hello",
-          protocol_version: 2,
+          protocol_version: 1,
         });
         await writeJsonFrame(socket, request);
         assert.deepEqual((await frames.next()).value, {

@@ -52,7 +52,7 @@ class Plugin:
             self.stream,
             {
                 "type": "plugin_hello",
-                "protocol_version": 2,
+                "protocol_version": 1,
                 "plugin_id": "blackbox",
                 "capabilities": capabilities or ["agent_request"],
             },

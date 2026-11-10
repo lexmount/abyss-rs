@@ -7,7 +7,7 @@ fn context() -> Arc<InspectionRequest> {
     let message: abyss_plugin_protocol::message::BrokerMessage =
         serde_json::from_str(include_str!(concat!(
             env!("CARGO_MANIFEST_DIR"),
-            "/../../specs/broker-plugin-protocol/v2/fixtures/inspect-request.json"
+            "/../../specs/broker-plugin-protocol/v1/fixtures/inspect-request.json"
         )))
         .unwrap();
     let abyss_plugin_protocol::message::BrokerMessage::InspectRequest { context } = message else {
@@ -125,7 +125,7 @@ async fn caller_cancellation_cancels_server_task_and_session_waiter() {
     };
     let message: BrokerMessage = serde_json::from_str(include_str!(concat!(
         env!("CARGO_MANIFEST_DIR"),
-        "/../../specs/broker-plugin-protocol/v2/fixtures/inspect-request.json"
+        "/../../specs/broker-plugin-protocol/v1/fixtures/inspect-request.json"
     )))
     .unwrap();
     let BrokerMessage::InspectRequest { context } = message else {

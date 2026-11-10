@@ -1,4 +1,4 @@
-"""Length-prefixed JSON codec for plugin protocol version 2."""
+"""Length-prefixed JSON codec for plugin protocol version 1."""
 
 import json
 import struct

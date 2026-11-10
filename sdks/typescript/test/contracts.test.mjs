@@ -6,7 +6,7 @@ import { decodeAgentEvent } from "../dist/event.js";
 import { BrokerClient } from "../dist/index.js";
 
 const fixtureUrl = new URL(
-  "../../../specs/broker-plugin-protocol/v2/fixtures/agent-event.json",
+  "../../../specs/broker-plugin-protocol/v1/fixtures/agent-event.json",
   import.meta.url,
 );
 

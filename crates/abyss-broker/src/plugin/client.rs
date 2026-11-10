@@ -99,7 +99,7 @@ mod tests {
         }
         let message = serde_json::from_str(include_str!(concat!(
             env!("CARGO_MANIFEST_DIR"),
-            "/../../specs/broker-plugin-protocol/v2/fixtures/inspect-request.json"
+            "/../../specs/broker-plugin-protocol/v1/fixtures/inspect-request.json"
         )))
         .unwrap();
         let abyss_plugin_protocol::message::BrokerMessage::InspectRequest { context } = message
