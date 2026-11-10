@@ -1,6 +1,6 @@
 //! Shared startup configuration for protocol-based next-hop connections.
 
-use std::time::Duration;
+use std::{io::Read as _, path::PathBuf, time::Duration};
 
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
@@ -12,7 +12,7 @@ use crate::TargetAuthority;
 #[serde(rename_all = "snake_case")]
 #[non_exhaustive]
 pub enum UpstreamProxyProtocol {
-    /// HTTP/1.1 CONNECT over a plain TCP connection to the proxy.
+    /// HTTP/1.1 CONNECT over TCP or verified TLS, selected by the endpoint scheme.
     HttpConnect,
 }
 
@@ -22,12 +22,19 @@ pub enum UpstreamProxyProtocol {
 pub struct UpstreamProxyConfig {
     /// The handshake spoken to the next hop, independent of its implementation.
     pub protocol: UpstreamProxyProtocol,
-    /// HTTP endpoint with an explicit port and no credentials or URL parameters.
+    /// HTTP or HTTPS endpoint with an explicit port and no credentials or URL parameters.
     pub endpoint: String,
+    /// Absolute path to additional PEM roots for the HTTPS proxy only.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub ca_file: Option<PathBuf>,
+    /// Absolute path to a JSON object containing Basic proxy username and password.
+    /// Contents are loaded when the configuration is applied, never serialized here.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub credentials_file: Option<PathBuf>,
     /// Shared budget for proxy DNS and TCP connection establishment.
     #[serde(default = "default_timeout_ms")]
     pub connect_timeout_ms: u64,
-    /// Budget for writing CONNECT and receiving its complete response headers.
+    /// Shared budget for proxy TLS, writing CONNECT and receiving its response headers.
     #[serde(default = "default_timeout_ms")]
     pub handshake_timeout_ms: u64,
 }
@@ -35,7 +42,7 @@ pub struct UpstreamProxyConfig {
 /// An invalid upstream configuration, without echoing potentially secret input.
 #[derive(Debug, Error)]
 #[error("invalid upstream proxy configuration: {0}")]
-pub struct UpstreamProxyConfigError(&'static str);
+pub struct UpstreamProxyConfigError(pub(super) &'static str);
 
 impl UpstreamProxyConfig {
     /// Validates endpoint syntax and bounded positive timeouts without using DNS.
@@ -45,6 +52,18 @@ impl UpstreamProxyConfig {
     /// Returns an error for unsupported transports, credentials, or invalid limits.
     pub fn validate(&self) -> Result<(), UpstreamProxyConfigError> {
         let _endpoint = self.target()?;
+        if self.ca_file.is_some() && !self.endpoint.starts_with("https://") {
+            return Err(UpstreamProxyConfigError(
+                "ca_file requires an https:// proxy",
+            ));
+        }
+        for path in self.ca_file.iter().chain(&self.credentials_file) {
+            if !path.is_absolute() {
+                return Err(UpstreamProxyConfigError(
+                    "proxy file paths must be absolute",
+                ));
+            }
+        }
         for timeout in [self.connect_timeout_ms, self.handshake_timeout_ms] {
             if !(1..=120_000).contains(&timeout) {
                 return Err(UpstreamProxyConfigError(
@@ -59,8 +78,9 @@ impl UpstreamProxyConfig {
         let authority = self
             .endpoint
             .strip_prefix("http://")
+            .or_else(|| self.endpoint.strip_prefix("https://"))
             .ok_or(UpstreamProxyConfigError(
-                "endpoint must use http://; proxy TLS is not supported",
+                "endpoint must use http:// or https://",
             ))?;
         let authority = authority.strip_suffix('/').unwrap_or(authority);
         if authority.contains(['/', '?', '#', '@']) {
@@ -80,6 +100,41 @@ impl UpstreamProxyConfig {
     pub(super) const fn handshake_timeout(&self) -> Duration {
         Duration::from_millis(self.handshake_timeout_ms)
     }
+}
+
+/// Reads bounded local configuration material without including its contents in errors.
+pub(super) fn read_material(
+    path: &std::path::Path,
+    limit: u64,
+) -> Result<Vec<u8>, UpstreamProxyConfigError> {
+    // Reject special files before opening: opening a FIFO can itself block.
+    let metadata = std::fs::metadata(path)
+        .map_err(|_| UpstreamProxyConfigError("cannot inspect proxy configuration material"))?;
+    if !metadata.is_file() || metadata.len() > limit {
+        return Err(UpstreamProxyConfigError(
+            "proxy configuration material must be a bounded regular file",
+        ));
+    }
+    let file = std::fs::File::open(path)
+        .map_err(|_| UpstreamProxyConfigError("cannot open proxy configuration material"))?;
+    let metadata = file
+        .metadata()
+        .map_err(|_| UpstreamProxyConfigError("cannot inspect proxy configuration material"))?;
+    if !metadata.is_file() || metadata.len() > limit {
+        return Err(UpstreamProxyConfigError(
+            "proxy configuration material must be a bounded regular file",
+        ));
+    }
+    let mut bytes = Vec::new();
+    file.take(limit.saturating_add(1))
+        .read_to_end(&mut bytes)
+        .map_err(|_| UpstreamProxyConfigError("cannot read proxy configuration material"))?;
+    if u64::try_from(bytes.len()).unwrap_or(u64::MAX) > limit {
+        return Err(UpstreamProxyConfigError(
+            "proxy configuration material exceeds its size limit",
+        ));
+    }
+    Ok(bytes)
 }
 
 const fn default_timeout_ms() -> u64 {

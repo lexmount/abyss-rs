@@ -50,6 +50,7 @@ test-blackbox-broker-explicit:
 test-blackbox-broker-upstream:
 	cargo build --locked --package abyss-broker
 	python3 scripts/blackbox_abyss_broker_upstream.py
+	python3 scripts/blackbox_abyss_broker_https_upstream.py
 
 .PHONY: test-blackbox-broker-transparent-upstream
 test-blackbox-broker-transparent-upstream:

@@ -84,7 +84,7 @@ See the [plugin contract](../../specs/broker-plugin-protocol/v1/README.md) and
 ## Forward through another explicit proxy
 
 Add an upstream table to `broker-config.toml` when the broker should use a
-next-hop HTTP proxy:
+next-hop HTTP or HTTPS proxy:
 
 ```toml
 [proxy]
@@ -110,15 +110,55 @@ hostnames are passed to the proxy without local resolution. Both intercepted
 and passthrough traffic use the configured proxy, with no direct fallback on
 failure. This setting does not route delivery-plugin or CLI download traffic.
 
-The initial implementation supports unauthenticated HTTP/1.1 CONNECT over TCP.
-It does not require a new CA or credential file. HTTPS proxy endpoints, proxy
-authentication and SOCKS5 are not yet supported.
+HTTP/1.1 CONNECT supports both plain TCP (`http://`) and verified TLS
+(`https://`) to the proxy, with optional Basic proxy authentication equivalent to
+curl's `-U user:password`. For example:
+
+```toml
+[proxy.upstream]
+protocol = "http_connect"
+endpoint = "https://proxy.example.com:8001"
+credentials_file = "/absolute/path/proxy-credentials.json"
+# Optional additional roots for a private proxy CA; public CAs work without it.
+# ca_file = "/absolute/path/proxy-ca.pem"
+```
+
+Create the broker-readable credentials file with owner-only permissions
+(`chmod 600` on Unix):
+
+```json
+{"username":"user-USERNAME","password":"PASSWORD"}
+```
+
+The broker sends these credentials only in the proxy's CONNECT request; Agent
+proxy credentials are never reused. Basic authentication also works with HTTP
+proxies, where the proxy connection is unencrypted. Usernames cannot contain
+colons; passwords can. Control characters are rejected. Endpoint URLs cannot
+contain credentials. Configuration responses, persisted policy and diagnostics
+carry file paths, never credential contents.
+
+HTTPS always checks the proxy certificate chain and endpoint DNS name or IP
+against public WebPKI roots plus the optional PEM bundle. Proxy trust is separate
+from the target's trust and the Agent-facing MITM CA. There is no verification
+bypass. SOCKS5, client-certificate authentication, Digest/NTLM and HTTP/2 CONNECT
+are not supported.
+
+Both file paths must be absolute and local to the broker. The CA bundle is limited
+to 1 MiB and the JSON credentials file to 16 KiB. Files are loaded into each route
+snapshot at startup or `PUT /v1/network/config`; editing them alone does not update
+a running route. Reapply the network configuration to rotate credentials or CAs.
+Invalid material rejects the update and retains the active route. The
+`handshake_timeout_ms` budget covers proxy TLS and CONNECT together.
+
 The next hop must permit CONNECT to each required target port, including port
 80 for plaintext HTTP. Avoid routing the next hop back into Abyss.
 
 Proxy preparation failures appear in authenticated network diagnostics under
 `abyss_to_upstream_proxy`. `proxy_status` records a rejected CONNECT status
 separately from provider `http_status`; unresolved target addresses stay null.
+Proxy TLS failures use `upstream_proxy_tls_error` with stage `tls_handshake`;
+missing or rejected credentials produce proxy status 407 and
+`upstream_proxy_auth_required`.
 
 See [the design and API compatibility notes](../../docs/upstream-proxy-design.md)
 for the flow model and validation plan.

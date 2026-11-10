@@ -112,6 +112,8 @@ pub enum FlowOperation {
     ResolveProxy,
     /// Connect to the next-hop proxy's TCP endpoint.
     ConnectProxyTcp,
+    /// Establish verified TLS between Abyss and the next-hop HTTPS proxy.
+    ConnectProxyTls,
     /// Negotiate an HTTP CONNECT target tunnel.
     ProxyConnectHandshake,
     /// Connect to the provider's TCP endpoint.
@@ -159,6 +161,7 @@ impl FlowOperation {
             Self::WriteAgentContinueResponse => "write_agent_continue_response",
             Self::ResolveProxy => "resolve_proxy",
             Self::ConnectProxyTcp => "connect_proxy_tcp",
+            Self::ConnectProxyTls => "connect_proxy_tls",
             Self::ProxyConnectHandshake => "proxy_connect_handshake",
             Self::ConnectProviderTcp => "connect_provider_tcp",
             Self::ConnectProviderTls => "connect_provider_tls",
@@ -191,6 +194,7 @@ impl FlowOperation {
             "write_agent_continue_response" => Self::WriteAgentContinueResponse,
             "resolve_proxy" => Self::ResolveProxy,
             "connect_proxy_tcp" => Self::ConnectProxyTcp,
+            "connect_proxy_tls" => Self::ConnectProxyTls,
             "proxy_connect_handshake" => Self::ProxyConnectHandshake,
             "connect_provider_tcp" => Self::ConnectProviderTcp,
             "connect_provider_tls" => Self::ConnectProviderTls,

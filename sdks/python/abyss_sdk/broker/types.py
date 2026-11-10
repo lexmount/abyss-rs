@@ -137,6 +137,8 @@ class _UpstreamProxyRequired(TypedDict):
 
 
 class UpstreamProxyConfig(_UpstreamProxyRequired, total=False):
+    ca_file: str
+    credentials_file: str
     connect_timeout_ms: int
     handshake_timeout_ms: int
 

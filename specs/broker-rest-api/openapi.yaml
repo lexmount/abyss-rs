@@ -296,8 +296,14 @@ components:
           enum: [http_connect]
         endpoint:
           type: string
-          description: HTTP URL with an explicit nonzero port. No credentials, path, query, fragment, or TLS-to-proxy transport.
+          description: HTTP or HTTPS URL with an explicit nonzero port. No credentials, path, query, or fragment. HTTPS verifies the proxy certificate and endpoint hostname or IP.
           examples: ["http://127.0.0.1:3128"]
+        ca_file:
+          type: string
+          description: Absolute broker-local path to additional PEM CA certificates for the HTTPS proxy only. Requires an HTTPS endpoint; public WebPKI roots remain trusted.
+        credentials_file:
+          type: string
+          description: Absolute broker-local path to a JSON object with username and password strings for Basic proxy authentication. Loaded at configuration application; credentials are never returned or persisted in this API.
         connect_timeout_ms:
           type: integer
           minimum: 1
@@ -305,6 +311,7 @@ components:
           default: 10000
         handshake_timeout_ms:
           type: integer
+          description: Shared deadline for proxy TLS and HTTP CONNECT negotiation.
           minimum: 1
           maximum: 120000
           default: 10000

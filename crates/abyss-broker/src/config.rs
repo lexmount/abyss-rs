@@ -773,7 +773,7 @@ socket_path = "run/flow.sock"
             );
         }
         for endpoint in [
-            "https://proxy.example:443",
+            "ftp://proxy.example:443",
             "http://user:secret@proxy.example:3128",
             "http://proxy.example:0",
         ] {

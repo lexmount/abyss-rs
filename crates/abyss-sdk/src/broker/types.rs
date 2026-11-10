@@ -300,12 +300,18 @@ pub struct NetworkConfig {
 pub struct UpstreamProxyConfig {
     /// Handshake protocol supported by the broker.
     pub protocol: UpstreamProxyProtocol,
-    /// HTTP URL with an explicit port and no credentials.
+    /// HTTP or HTTPS URL with an explicit port and no credentials.
     pub endpoint: String,
+    /// Absolute broker-local path to additional PEM roots for the HTTPS proxy only.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub ca_file: Option<String>,
+    /// Absolute broker-local path to a JSON Basic username/password object.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub credentials_file: Option<String>,
     /// DNS and TCP establishment budget; omitted uses the broker default.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub connect_timeout_ms: Option<u64>,
-    /// CONNECT response budget; omitted uses the broker default.
+    /// Proxy TLS and CONNECT budget; omitted uses the broker default.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub handshake_timeout_ms: Option<u64>,
 }
@@ -315,6 +321,6 @@ pub struct UpstreamProxyConfig {
 #[non_exhaustive]
 #[serde(rename_all = "snake_case")]
 pub enum UpstreamProxyProtocol {
-    /// HTTP/1.1 CONNECT over TCP.
+    /// HTTP/1.1 CONNECT over TCP or verified TLS.
     HttpConnect,
 }
