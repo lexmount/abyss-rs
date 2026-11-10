@@ -1,0 +1,7 @@
+{
+  "type": "inspect_response",
+  "request_id": "request-123",
+  "decision": {
+    "action": "allow"
+  }
+}

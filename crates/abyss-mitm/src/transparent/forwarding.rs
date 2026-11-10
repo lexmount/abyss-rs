@@ -18,6 +18,8 @@ pub struct RequestView<'a> {
     pub body: &'a CapturedBody,
     /// HTTP request or complete WebSocket data message and its flow-local order.
     pub transport: RequestTransport,
+    /// Maximum decoded replacement size at this forwarding boundary.
+    pub max_body_bytes: usize,
 }
 
 /// Request transport facts known before forwarding.
@@ -49,7 +51,7 @@ pub trait RequestForwardingControl: Send + Sync {
         &self,
         plan: Self::Plan,
         request: RequestView<'_>,
-    ) -> impl Future<Output = Result<http::Extensions, LocalRejection>> + Send;
+    ) -> impl Future<Output = Result<super::RequestForwardingResult, LocalRejection>> + Send;
 }
 
 /// Default transport behavior with no inspection stage or body retention.
@@ -66,8 +68,8 @@ impl RequestForwardingControl for UncontrolledForwarding {
         &self,
         (): (),
         _request: RequestView<'_>,
-    ) -> impl Future<Output = Result<http::Extensions, LocalRejection>> + Send {
-        std::future::ready(Ok(http::Extensions::new()))
+    ) -> impl Future<Output = Result<super::RequestForwardingResult, LocalRejection>> + Send {
+        std::future::ready(Ok(super::RequestForwardingResult::default()))
     }
 }
 

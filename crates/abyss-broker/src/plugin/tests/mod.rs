@@ -35,7 +35,7 @@ async fn one_real_listener_broadcasts_the_same_event_to_two_plugins() {
         .await
         .expect("broker event sink should accept the event");
 
-    // Both plugins negotiate v1, whose frames are not `AgentEvent`s.
+    // Both plugins negotiate v2, whose frames are not `AgentEvent`s.
     let first_event: serde_json::Value = read_json(&mut first).await;
     let second_event: serde_json::Value = read_json(&mut second).await;
     assert_eq!(first_event["event_id"], "evt-123");
@@ -91,8 +91,8 @@ async fn connect_capabilities(
     let hello: BrokerHello = read_json(&mut stream).await;
     assert_eq!(
         hello.protocol_version.wire_value(),
-        1_u16,
-        "broker should negotiate plugin protocol version 1"
+        2_u16,
+        "broker should negotiate plugin protocol version 2"
     );
     stream
 }

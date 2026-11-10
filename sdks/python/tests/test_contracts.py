@@ -11,7 +11,7 @@ FIXTURE = (
     Path(__file__).resolve().parents[3]
     / "specs"
     / "broker-plugin-protocol"
-    / "v1"
+    / "v2"
     / "fixtures"
     / "agent-event.json"
 )

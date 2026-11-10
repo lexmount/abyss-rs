@@ -1,0 +1,322 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://schemas.lexmount.net/abyss/broker-plugin/v2/inspection.schema.json",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "flow_id",
+    "request_id",
+    "ingress",
+    "destination",
+    "method",
+    "path",
+    "destination_host",
+    "server_name",
+    "authority",
+    "proxy_endpoint",
+    "source_process",
+    "websocket",
+    "sequence",
+    "message_type",
+    "headers",
+    "body",
+    "json",
+    "parsing_status",
+    "harness",
+    "agent",
+    "auth_token",
+    "auth_token_writable",
+    "model_writable"
+  ],
+  "properties": {
+    "flow_id": {
+      "type": "string"
+    },
+    "request_id": {
+      "type": "string"
+    },
+    "ingress": {
+      "type": "string"
+    },
+    "destination": {
+      "type": "string"
+    },
+    "method": {
+      "type": "string"
+    },
+    "path": {
+      "type": "string"
+    },
+    "destination_host": {
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "server_name": {
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "authority": {
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "proxy_endpoint": {
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "source_process": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/sourceProcess"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "websocket": {
+      "type": "boolean"
+    },
+    "sequence": {
+      "type": "integer",
+      "minimum": 1
+    },
+    "message_type": {
+      "enum": [
+        "text",
+        "binary",
+        null
+      ]
+    },
+    "headers": {
+      "type": "array",
+      "items": {
+        "type": "array",
+        "items": {
+          "type": "string"
+        },
+        "minItems": 2,
+        "maxItems": 2
+      }
+    },
+    "body": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "encoding",
+        "content"
+      ],
+      "properties": {
+        "encoding": {
+          "enum": [
+            "utf8",
+            "base64"
+          ]
+        },
+        "content": {
+          "type": "string"
+        }
+      }
+    },
+    "json": {},
+    "parsing_status": {
+      "enum": [
+        "parsed",
+        "unknown_protocol",
+        "invalid_payload"
+      ]
+    },
+    "harness": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/harness"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "agent": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/agentRequest"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "auth_token": {
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "auth_token_writable": {
+      "type": "boolean"
+    },
+    "model_writable": {
+      "type": "boolean"
+    }
+  },
+  "$defs": {
+    "sourceProcess": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "pid",
+        "pid_version",
+        "name",
+        "executable_path",
+        "application_id",
+        "entry_point",
+        "working_directory"
+      ],
+      "properties": {
+        "pid": {
+          "type": [
+            "integer",
+            "null"
+          ],
+          "minimum": 0
+        },
+        "pid_version": {
+          "type": [
+            "integer",
+            "null"
+          ],
+          "minimum": 0
+        },
+        "name": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "executable_path": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "application_id": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "entry_point": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "working_directory": {
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      }
+    },
+    "harness": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "id",
+        "version",
+        "turn_id",
+        "purpose",
+        "subagent_id",
+        "parent_subagent_id"
+      ],
+      "properties": {
+        "id": {
+          "type": "string"
+        },
+        "version": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "turn_id": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "purpose": {
+          "enum": [
+            "session_title",
+            "compaction",
+            "prewarm",
+            null
+          ]
+        },
+        "subagent_id": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "parent_subagent_id": {
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      }
+    },
+    "agentRequest": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "protocol",
+        "provider",
+        "model",
+        "conversation",
+        "attachments",
+        "tools",
+        "previous_response_id"
+      ],
+      "properties": {
+        "protocol": {
+          "type": "string"
+        },
+        "provider": {
+          "type": "string"
+        },
+        "model": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "conversation": {
+          "$ref": "agent-event.schema.json#/$defs/conversation"
+        },
+        "attachments": {
+          "type": "array",
+          "items": {
+            "$ref": "agent-event.schema.json#/$defs/imageAttachment"
+          }
+        },
+        "tools": {},
+        "previous_response_id": {
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      }
+    }
+  }
+}

@@ -64,9 +64,9 @@ fn workbuddy_builtin_persists_policy_and_publishes_correlated_events() {
     plugin.set_read_timeout(Some(REST_TIMEOUT)).unwrap();
     write_plugin_frame(
         &mut plugin,
-        &json!({"type":"plugin_hello", "capabilities":["agent_events"], "protocol_version": 1_u16, "plugin_id": "workbuddy-blackbox"}),
+        &json!({"type":"plugin_hello", "capabilities":["agent_events"], "protocol_version": 2_u16, "plugin_id": "workbuddy-blackbox"}),
     );
-    assert_eq!(read_plugin_frame(&mut plugin)["protocol_version"], 1_u16);
+    assert_eq!(read_plugin_frame(&mut plugin)["protocol_version"], 2_u16);
 
     let identities = [
         ("Electron", Some("com.tencent.workbuddy.mac")),

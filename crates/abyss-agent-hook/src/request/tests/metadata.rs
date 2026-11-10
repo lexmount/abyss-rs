@@ -155,6 +155,7 @@ fn parse_metadata(path: &str, payload: &Value, transport: RequestTransport) -> [
     let body = CapturedBody::from_bytes(serde_json::to_vec(&payload).unwrap().into());
     let inspected = AgentRequestParser::parse(
         &RequestView {
+            max_body_bytes: usize::MAX,
             flow: &flow,
             head: &head,
             body: &body,

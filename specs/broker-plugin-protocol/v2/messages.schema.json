@@ -1,0 +1,284 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://schemas.lexmount.net/abyss/broker-plugin/v2/messages.schema.json",
+  "title": "Abyss broker plugin protocol version 2 frame payloads",
+  "oneOf": [
+    {
+      "$ref": "#/$defs/pluginHello"
+    },
+    {
+      "$ref": "#/$defs/brokerHello"
+    },
+    {
+      "$ref": "#/$defs/brokerError"
+    },
+    {
+      "$ref": "#/$defs/brokerClose"
+    },
+    {
+      "$ref": "#/$defs/agentEvent"
+    },
+    {
+      "$ref": "#/$defs/inspectRequest"
+    },
+    {
+      "$ref": "#/$defs/inspectResponse"
+    }
+  ],
+  "$defs": {
+    "pluginHello": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "type",
+        "protocol_version",
+        "plugin_id",
+        "capabilities"
+      ],
+      "properties": {
+        "protocol_version": {
+          "const": 2
+        },
+        "plugin_id": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128,
+          "pattern": "^[a-zA-Z0-9._-]+$"
+        },
+        "type": {
+          "const": "plugin_hello"
+        },
+        "capabilities": {
+          "type": "array",
+          "items": {
+            "enum": [
+              "agent_events",
+              "agent_request"
+            ]
+          },
+          "minItems": 1
+        }
+      }
+    },
+    "brokerHello": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "type",
+        "protocol_version"
+      ],
+      "properties": {
+        "protocol_version": {
+          "const": 2
+        },
+        "type": {
+          "const": "broker_hello"
+        }
+      }
+    },
+    "brokerError": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "type",
+        "code",
+        "reason"
+      ],
+      "properties": {
+        "code": {
+          "enum": [
+            1,
+            2,
+            3
+          ]
+        },
+        "reason": {
+          "type": "string"
+        },
+        "type": {
+          "const": "broker_error"
+        }
+      }
+    },
+    "brokerClose": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "type",
+        "code",
+        "reason"
+      ],
+      "properties": {
+        "code": {
+          "enum": [
+            100,
+            101
+          ]
+        },
+        "reason": {
+          "type": "string"
+        },
+        "type": {
+          "const": "broker_close"
+        }
+      }
+    },
+    "agentEvent": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "type",
+        "event"
+      ],
+      "properties": {
+        "type": {
+          "const": "agent_event"
+        },
+        "event": {
+          "$ref": "agent-event.schema.json"
+        }
+      }
+    },
+    "inspectRequest": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "type",
+        "context"
+      ],
+      "properties": {
+        "type": {
+          "const": "inspect_request"
+        },
+        "context": {
+          "$ref": "inspection.schema.json"
+        }
+      }
+    },
+    "inspectResponse": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "type",
+        "request_id",
+        "decision"
+      ],
+      "properties": {
+        "type": {
+          "const": "inspect_response"
+        },
+        "request_id": {
+          "type": "string"
+        },
+        "decision": {
+          "oneOf": [
+            {
+              "type": "object",
+              "additionalProperties": false,
+              "required": [
+                "action"
+              ],
+              "properties": {
+                "action": {
+                  "const": "allow"
+                }
+              }
+            },
+            {
+              "type": "object",
+              "additionalProperties": false,
+              "required": [
+                "action",
+                "reason"
+              ],
+              "properties": {
+                "action": {
+                  "const": "block"
+                },
+                "reason": {
+                  "type": "string"
+                }
+              }
+            },
+            {
+              "type": "object",
+              "additionalProperties": false,
+              "required": [
+                "action",
+                "actions"
+              ],
+              "properties": {
+                "action": {
+                  "const": "modify"
+                },
+                "actions": {
+                  "type": "array",
+                  "items": {
+                    "oneOf": [
+                      {
+                        "type": "object",
+                        "additionalProperties": false,
+                        "required": [
+                          "op",
+                          "value"
+                        ],
+                        "properties": {
+                          "op": {
+                            "const": "set_auth_token"
+                          },
+                          "value": {
+                            "type": "string"
+                          }
+                        }
+                      },
+                      {
+                        "type": "object",
+                        "additionalProperties": false,
+                        "required": [
+                          "op"
+                        ],
+                        "properties": {
+                          "op": {
+                            "const": "remove_auth_token"
+                          }
+                        }
+                      },
+                      {
+                        "type": "object",
+                        "additionalProperties": false,
+                        "required": [
+                          "op",
+                          "value"
+                        ],
+                        "properties": {
+                          "op": {
+                            "const": "set_model"
+                          },
+                          "value": {
+                            "type": "string"
+                          }
+                        }
+                      },
+                      {
+                        "type": "object",
+                        "additionalProperties": false,
+                        "required": [
+                          "op"
+                        ],
+                        "properties": {
+                          "op": {
+                            "const": "remove_model"
+                          }
+                        }
+                      }
+                    ]
+                  }
+                }
+              }
+            }
+          ]
+        }
+      }
+    }
+  }
+}

@@ -116,6 +116,7 @@ async fn responses_tool_output_image_reaches_inspection_and_both_observation_mod
     );
     let mut captured = body(&request);
     let view = RequestView {
+        max_body_bytes: usize::MAX,
         flow: &flow,
         head: &head,
         body: &captured,
@@ -194,6 +195,7 @@ async fn http_prepared_requests_reuse_the_same_projection_and_emit_identical_eve
             Response::new(body(&response)),
         );
         let view = RequestView {
+            max_body_bytes: usize::MAX,
             flow: &flow,
             head: &head,
             body: &request_body,
@@ -259,6 +261,7 @@ fn websocket_messages_retain_their_own_request_result_through_terminal_assembly(
         let payload = json!({"type":"response.create","response":{"model":model,"input":text,"previous_response_id":"prior","client_metadata":{"turn":"current"}}});
         let mut captured = body(&payload);
         let prepared = AgentRequestParser::prepare(&RequestView {
+            max_body_bytes: usize::MAX,
             flow: &flow,
             head: &upgrade,
             body: &captured,

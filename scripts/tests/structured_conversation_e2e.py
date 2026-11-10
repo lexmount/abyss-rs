@@ -307,13 +307,13 @@ def main():
                     hello = json.loads(
                         read_exact(struct.unpack("!I", read_exact(4))[0])
                     )
-                    assert hello["protocol_version"] == 1
+                    assert hello["protocol_version"] == 2
 
                     def send(value):
                         data = json.dumps(value).encode()
                         stream.sendall(struct.pack("!I", len(data)) + data)
 
-                    send({"protocol_version": 1})
+                    send({"protocol_version": 2})
                     for event in events:
                         send(event)
                     for _ in range(100):

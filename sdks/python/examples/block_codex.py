@@ -9,12 +9,11 @@ def inspect(context: AgentRequestContext) -> RequestDecision:
     blocked = (
         context.harness is not None and context.harness.id == "codex" and context.agent is not None
     )
-    return RequestDecision(
-        not blocked,
-        "Blocked by abyss-broker: Codex model requests are disabled by example.block-codex."
-        if blocked
-        else None,
-    )
+    if blocked:
+        return RequestDecision.block(
+            "Blocked by abyss-broker: Codex model requests are disabled by example.block-codex."
+        )
+    return RequestDecision.allow()
 
 
 if __name__ == "__main__":

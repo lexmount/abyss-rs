@@ -142,7 +142,7 @@ impl BrokerPlugin {
         self
     }
 
-    /// Connects, requests protocol version 1, and returns the Agent event stream.
+    /// Connects, requests protocol version 2, and returns the Agent event stream.
     ///
     /// # Errors
     ///
@@ -460,6 +460,21 @@ mod tests {
     use crate::plugin::codec::{read_payload, write_json};
 
     #[cfg(unix)]
+    fn handler_decisions() -> [crate::plugin::RequestDecision; 3] {
+        use crate::plugin::{ModifyAction, RequestDecision};
+        [
+            RequestDecision::Allow,
+            RequestDecision::Block("test policy".to_owned()),
+            RequestDecision::Modify(Box::new([
+                ModifyAction::SetAuthToken("allocated".to_owned()),
+                ModifyAction::RemoveAuthToken,
+                ModifyAction::SetModel("new".to_owned()),
+                ModifyAction::RemoveModel,
+            ])),
+        ]
+    }
+
+    #[cfg(unix)]
     #[tokio::test]
     async fn request_handler_uses_the_same_session_and_returns_a_correlated_decision() {
         let endpoint =
@@ -477,24 +492,25 @@ mod tests {
                 hello.capabilities,
                 vec![abyss_plugin_protocol::inspection::PluginCapability::AgentRequest]
             );
-            write_json(&mut stream, &BrokerMessage::BrokerHello(BrokerHello::v1()))
+            write_json(&mut stream, &BrokerMessage::BrokerHello(BrokerHello::v2()))
                 .await
                 .unwrap();
             let request: BrokerMessage = serde_json::from_str(include_str!(
-                "../../tests/fixtures/broker-plugin-protocol/v1/fixtures/inspect-request.json"
+                "../../tests/fixtures/broker-plugin-protocol/v2/fixtures/inspect-request.json"
             ))
             .unwrap();
-            write_json(&mut stream, &request).await.unwrap();
-            let payload = read_payload(&mut stream).await.unwrap().unwrap();
-            let reply: abyss_plugin_protocol::message::PluginMessage =
-                serde_json::from_slice(&payload).unwrap();
-            let abyss_plugin_protocol::message::PluginMessage::InspectResponse(reply) = reply
-            else {
-                panic!("expected decision");
-            };
-            assert_eq!(reply.request_id, "request-123");
-            assert!(!reply.allow, "handler block must reach the broker");
-            assert_eq!(reply.reason.as_deref(), Some("test policy"));
+            for expected in handler_decisions() {
+                write_json(&mut stream, &request).await.unwrap();
+                let payload = read_payload(&mut stream).await.unwrap().unwrap();
+                let reply: abyss_plugin_protocol::message::PluginMessage =
+                    serde_json::from_slice(&payload).unwrap();
+                let abyss_plugin_protocol::message::PluginMessage::InspectResponse(reply) = reply
+                else {
+                    panic!("expected decision");
+                };
+                assert_eq!(reply.request_id, "request-123");
+                assert_eq!(reply.decision, expected);
+            }
             write_json(
                 &mut stream,
                 &BrokerMessage::BrokerClose(BrokerClose::new(
@@ -505,16 +521,16 @@ mod tests {
             .await
             .unwrap();
         });
+        let mut decisions = handler_decisions().into_iter();
         let close = BrokerPlugin::new("sdk-inspector")
             .with_endpoint(endpoint.to_string_lossy())
-            .on_agent_request(|context| async move {
+            .on_agent_request(move |context| {
                 assert_eq!(
                     context.agent.as_ref().unwrap().model.as_deref(),
                     Some("gpt-test")
                 );
-                Ok::<_, std::convert::Infallible>(crate::plugin::RequestDecision::Block(
-                    "test policy".to_owned(),
-                ))
+                let decision = decisions.next().unwrap();
+                async move { Ok::<_, std::convert::Infallible>(decision) }
             })
             .run()
             .await
@@ -530,12 +546,12 @@ mod tests {
         let server_task = tokio::spawn(async move {
             let hello: PluginHello = read_json(&mut server).await;
             assert_eq!(hello.plugin_id, "sdk-test-plugin");
-            assert_eq!(hello.protocol_version.wire_value(), 1_u16);
-            write_json(&mut server, &BrokerMessage::BrokerHello(BrokerHello::v1()))
+            assert_eq!(hello.protocol_version.wire_value(), 2_u16);
+            write_json(&mut server, &BrokerMessage::BrokerHello(BrokerHello::v2()))
                 .await
                 .expect("BrokerHello should write");
             let event: AgentEvent = serde_json::from_str(include_str!(
-                "../../tests/fixtures/broker-plugin-protocol/v1/fixtures/agent-event.json"
+                "../../tests/fixtures/broker-plugin-protocol/v2/fixtures/agent-event.json"
             ))
             .expect("published AgentEvent fixture should decode");
             write_json(

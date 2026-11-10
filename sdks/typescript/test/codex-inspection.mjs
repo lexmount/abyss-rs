@@ -49,8 +49,8 @@ const close = await new BrokerPlugin({
       });
     }
     return blocked
-      ? { allow: false, reason: "SDK black-box policy" }
-      : { allow: true };
+      ? { action: "block", reason: "SDK black-box policy" }
+      : { action: "allow" };
   },
 }).run((event) =>
   record({

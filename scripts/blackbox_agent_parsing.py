@@ -51,7 +51,11 @@ class Provider(socketserver.BaseRequestHandler):
                 response = json.dumps(
                     {
                         "type": "response.completed",
-                        "response": response_for("/v1/responses", payload["input"]),
+                        "response": response_for(
+                            "/v1/responses",
+                            payload["input"],
+                            getattr(self.server, "response_model", "provider-model"),
+                        ),
                     }
                 ).encode()
                 self.request.sendall(
@@ -61,7 +65,11 @@ class Provider(socketserver.BaseRequestHandler):
         data = exact(self.request, int(headers.get(b"content-length", b"0")))
         self.server.bodies.append(data)
         path = head.split(b" ", 2)[1].decode()
-        response = json.dumps(response_for(path, "answer")).encode()
+        response = json.dumps(
+            response_for(
+                path, "answer", getattr(self.server, "response_model", "provider-model")
+            )
+        ).encode()
         coding = b""
         if b"content-encoding" in headers:
             assert json.loads(gzip.decompress(data))
@@ -75,8 +83,8 @@ class Provider(socketserver.BaseRequestHandler):
         )
 
 
-def response_for(path, text):
-    common = {"id": f"response-{text}", "model": "provider-model"}
+def response_for(path, text, model="provider-model"):
+    common = {"id": f"response-{text}", "model": model}
     if path.endswith("responses"):
         common.update(
             output=[
@@ -112,7 +120,7 @@ class Plugin:
             self.stream,
             {
                 "type": "plugin_hello",
-                "protocol_version": 1,
+                "protocol_version": 2,
                 "plugin_id": "parsing-parity",
                 "capabilities": ["agent_events"]
                 + (["agent_request"] if inspect else []),
@@ -135,8 +143,7 @@ class Plugin:
                         {
                             "type": "inspect_response",
                             "request_id": context["request_id"],
-                            "allow": True,
-                            "reason": None,
+                            "decision": {"action": "allow"},
                         },
                     )
                 else:

@@ -62,8 +62,7 @@ class AgentEventStream(Iterator[AgentEvent]):
                     {
                         "type": "inspect_response",
                         "request_id": context.request_id,
-                        "allow": decision.allow,
-                        "reason": decision.reason,
+                        "decision": decision.to_dict(),
                     },
                 )
         except StopIteration:
@@ -101,7 +100,7 @@ class BrokerPlugin:
         self._events = agent_events
 
     def connect(self) -> AgentEventStream:
-        """Connect, perform the version 1 handshake, and return the event stream."""
+        """Connect, perform the version 2 handshake, and return the event stream."""
 
         endpoint = resolve_plugin_endpoint(self._endpoint)
         transport = connect_plugin_transport(endpoint)
@@ -110,7 +109,7 @@ class BrokerPlugin:
                 transport,
                 {
                     "type": "plugin_hello",
-                    "protocol_version": 1,
+                    "protocol_version": 2,
                     "plugin_id": self._plugin_id,
                     "capabilities": (["agent_events"] if self._events else [])
                     + (["agent_request"] if self._inspect else []),
@@ -125,7 +124,7 @@ class BrokerPlugin:
             if (
                 not isinstance(response, Mapping)
                 or response.get("type") != "broker_hello"
-                or response.get("protocol_version") != 1
+                or response.get("protocol_version") != 2
             ):
                 raise BrokerPluginError("broker returned an invalid handshake response")
             return AgentEventStream(transport, self._inspect)

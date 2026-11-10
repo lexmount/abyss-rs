@@ -9,7 +9,7 @@ use thiserror::Error;
 #[serde(try_from = "u16", into = "u16")]
 pub enum PluginProtocolVersion {
     /// Handshake, live stream, and structured Agent event contract.
-    V1,
+    V2,
 }
 
 impl PluginProtocolVersion {
@@ -17,7 +17,7 @@ impl PluginProtocolVersion {
     #[must_use]
     pub const fn wire_value(self) -> u16 {
         match self {
-            Self::V1 => 1,
+            Self::V2 => 2,
         }
     }
 }
@@ -33,7 +33,7 @@ impl TryFrom<u16> for PluginProtocolVersion {
 
     fn try_from(version: u16) -> Result<Self, Self::Error> {
         match version {
-            1 => Ok(Self::V1),
+            2 => Ok(Self::V2),
             version => Err(UnsupportedPluginProtocolVersion { version }),
         }
     }
@@ -67,11 +67,11 @@ pub struct PluginHello {
 }
 
 impl PluginHello {
-    /// Creates a version 1 plugin handshake.
+    /// Creates a version 2 plugin handshake.
     #[must_use]
     pub fn new(plugin_id: String) -> Self {
         Self {
-            protocol_version: PluginProtocolVersion::V1,
+            protocol_version: PluginProtocolVersion::V2,
             plugin_id,
             capabilities: vec![crate::inspection::PluginCapability::AgentEvents],
         }
@@ -121,11 +121,11 @@ pub struct BrokerHello {
 }
 
 impl BrokerHello {
-    /// Creates a version 1 broker handshake response.
+    /// Creates a version 2 broker handshake response.
     #[must_use]
-    pub const fn v1() -> Self {
+    pub const fn v2() -> Self {
         Self {
-            protocol_version: PluginProtocolVersion::V1,
+            protocol_version: PluginProtocolVersion::V2,
         }
     }
 }
@@ -150,7 +150,7 @@ pub struct BrokerClose {
     pub reason: String,
 }
 
-/// Stable handshake rejection meanings defined by protocol version 1.
+/// Stable handshake rejection meanings defined by protocol version 2.
 #[derive(Clone, Copy, Debug)]
 #[non_exhaustive]
 pub enum BrokerErrorCode {
@@ -174,7 +174,7 @@ impl BrokerErrorCode {
     }
 }
 
-/// Stable deliberate-close meanings defined by protocol version 1.
+/// Stable deliberate-close meanings defined by protocol version 2.
 #[derive(Clone, Copy, Debug)]
 #[non_exhaustive]
 pub enum BrokerCloseCode {
@@ -196,7 +196,7 @@ impl BrokerCloseCode {
 }
 
 impl BrokerError {
-    /// Creates a typed version 1 handshake rejection payload.
+    /// Creates a typed version 2 handshake rejection payload.
     #[must_use]
     pub fn new<T>(code: BrokerErrorCode, reason: T) -> Self
     where
@@ -210,7 +210,7 @@ impl BrokerError {
 }
 
 impl BrokerClose {
-    /// Creates a typed version 1 deliberate-close payload.
+    /// Creates a typed version 2 deliberate-close payload.
     #[must_use]
     pub fn new<T>(code: BrokerCloseCode, reason: T) -> Self
     where
@@ -234,13 +234,13 @@ mod tests {
 
     #[test]
     fn unsupported_protocol_version_is_rejected() {
-        let error = serde_json::from_value::<PluginProtocolVersion>(json!(2_u16))
-            .expect_err("protocol version 2 must be rejected");
+        let error = serde_json::from_value::<PluginProtocolVersion>(json!(1_u16))
+            .expect_err("protocol version 1 must be rejected");
 
         assert!(
             error
                 .to_string()
-                .contains("unsupported broker plugin protocol version 2"),
+                .contains("unsupported broker plugin protocol version 1"),
             "error should identify the unsupported protocol version"
         );
     }
@@ -251,7 +251,7 @@ mod tests {
             "sample-plugin".to_owned(),
         )))
         .expect("plugin hello should serialize");
-        let broker_hello = serde_json::to_value(BrokerMessage::BrokerHello(BrokerHello::v1()))
+        let broker_hello = serde_json::to_value(BrokerMessage::BrokerHello(BrokerHello::v2()))
             .expect("broker hello should serialize");
 
         assert_eq!(plugin_hello["type"], "plugin_hello");
@@ -261,16 +261,16 @@ mod tests {
             serde_json::json!(["agent_events"])
         );
         assert_eq!(
-            plugin_hello["protocol_version"], 1_u16,
-            "hello must request v1"
+            plugin_hello["protocol_version"], 2_u16,
+            "hello must request v2"
         );
         assert_eq!(
             plugin_hello["plugin_id"], "sample-plugin",
             "plugin id must be stable"
         );
         assert_eq!(
-            broker_hello["protocol_version"], 1_u16,
-            "broker hello must confirm plugin protocol v1"
+            broker_hello["protocol_version"], 2_u16,
+            "broker hello must confirm plugin protocol v2"
         );
     }
 

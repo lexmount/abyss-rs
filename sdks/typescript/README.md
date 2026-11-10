@@ -96,7 +96,13 @@ Agent projection when implementing a policy; unknown protocols still reach the
 handler. Credential headers are omitted and explicit proxy process fields are absent.
 Return a safe block reason that does not contain the rejected content.
 
-All selected plugins must allow before the broker forwards the request. A selected
+Plugins run in registration order, and each sees earlier accepted modifications.
+Return Allow, Block with a safe reason, or Modify with explicit Set/Remove actions
+for the selected auth token or model. `auth_token_writable` and `model_writable`
+indicate supported edits. See the [model override example](examples/request-modification.ts). The SDK sends only the decision; it never diffs context.
+Request handlers can read `auth_token`; event subscribers cannot.
+See the [v2 wire contract](https://github.com/lexmount/abyss-rs/tree/main/specs/broker-plugin-protocol/v2).
+Broker and plugins must upgrade together from v1. A selected
 plugin that fails or does not respond within five seconds fails that request.
 Disconnecting the last inspection plugin restores normal streaming for future
 requests. Network policy Block and opaque TLS Passthrough never invoke this callback.

@@ -7,5 +7,5 @@ pub mod event;
 pub mod inspection;
 pub mod message;
 
-/// Maximum UTF-8 JSON payload accepted in one version 1 frame.
+/// Maximum UTF-8 JSON payload accepted in one version 2 frame.
 pub const MAX_JSON_FRAME_BYTES: u32 = 64 * 1024 * 1024;

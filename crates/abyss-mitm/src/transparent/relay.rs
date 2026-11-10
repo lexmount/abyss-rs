@@ -213,7 +213,7 @@ where
         forward_controlled_request(
             &mut self.stream,
             upstream,
-            &self.first_request,
+            &mut self.first_request,
             &self.request_head_buffer,
             &self.context,
             max_body_bytes,
@@ -636,7 +636,7 @@ enum BodyFraming {
 async fn forward_controlled_request<R, W, C: super::RequestForwardingControl>(
     client: &mut R,
     upstream: &mut W,
-    request: &Request<()>,
+    request: &mut Request<()>,
     head_buffer: &Http1HeadBuffer,
     flow: &FlowContext,
     max_body_bytes: usize,
@@ -651,7 +651,6 @@ where
     })?;
     let handle_expect_continue =
         has_expect_continue(request) && !matches!(body_framing, BodyFraming::Empty);
-    let request_head = request_head_for_relay(request, head_buffer, handle_expect_continue)?;
     // Prefetched bytes after an upgrade head belong to WebSocket reassembly.
     // The upgrade lifecycle retains that same buffer for the message reader.
     let buffered_body = if is_websocket_upgrade_request(request) {
@@ -666,6 +665,7 @@ where
 
     // Both modes use the same framing reader. Inspection changes its destination
     // to bounded wire storage; no request head is written until the decision.
+    let mut edited_head = false;
     let retained = if let Some(plan) = plan {
         let prepared = RequestInspection {
             request,
@@ -675,7 +675,13 @@ where
         .retain_and_inspect(client, body_framing, max_body_bytes, control, plan)
         .await;
         match prepared {
-            Ok(retained) => Some(retained),
+            Ok((wire, capture, head)) => {
+                if let Some(head) = head {
+                    *request = head;
+                    edited_head = true;
+                }
+                Some((wire, capture))
+            }
             Err(rejection) => {
                 rejection.response_error(client).await?;
                 return Err(rejection.into());
@@ -683,6 +689,17 @@ where
         }
     } else {
         None
+    };
+    let request_head = if edited_head && !is_websocket_upgrade_request(request) {
+        Cow::Owned(
+            http_request_head_without_relay_headers(request, handle_expect_continue).map_err(
+                |source| {
+                    TransparentFlowError::http1(FlowOperation::WriteProviderRequestHead, source)
+                },
+            )?,
+        )
+    } else {
+        request_head_for_relay(request, head_buffer, handle_expect_continue)?
     };
     upstream
         .write_all(&request_head)
@@ -742,11 +759,11 @@ impl RequestInspection<'_> {
         limit: usize,
         control: &C,
         plan: C::Plan,
-    ) -> Result<(retained::RetainedBody, BodyCapture), super::LocalRejection>
+    ) -> Result<(retained::RetainedBody, BodyCapture, Option<Request<()>>), super::LocalRejection>
     where
         R: AsyncRead + Unpin,
     {
-        let (wire, mut capture) = self.retain_body(client, framing, limit).await?;
+        let (mut wire, mut capture) = self.retain_body(client, framing, limit).await?;
         let headers = self.request.headers().clone();
         capture.body = tokio::task::spawn_blocking(move || {
             let mut body = capture.body;
@@ -786,7 +803,7 @@ impl RequestInspection<'_> {
                 ));
             }
         }
-        let annotations = control
+        let result = control
             .before_forward(
                 plan,
                 super::RequestView {
@@ -794,11 +811,23 @@ impl RequestInspection<'_> {
                     head: self.request,
                     body: &capture.body,
                     transport: super::RequestTransport::Http,
+                    max_body_bytes: limit,
                 },
             )
             .await?;
-        capture.body.extensions_mut().extend(annotations);
-        Ok((wire, capture))
+        if let Some(body) = result.body {
+            wire.bytes = body.bytes().to_vec();
+            capture.forwarded_bytes = u64::try_from(wire.bytes.len()).map_err(|_| {
+                self.reject(
+                    StatusCode::BAD_GATEWAY,
+                    "invalid_agent_request_edit",
+                    "Edited body is too large",
+                )
+            })?;
+            capture.body = body;
+        }
+        capture.body.extensions_mut().extend(result.annotations);
+        Ok((wire, capture, result.head))
     }
 
     async fn retain_body<R: AsyncRead + Unpin>(
@@ -1712,7 +1741,7 @@ mod tests {
         forward_controlled_request(
             client,
             upstream,
-            request,
+            &mut request.clone(),
             head_buffer,
             flow,
             max_body_bytes,

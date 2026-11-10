@@ -1,4 +1,4 @@
-/** Length-prefixed JSON codec for plugin protocol version 1. */
+/** Length-prefixed JSON codec for plugin protocol version 2. */
 
 import type { Socket } from "node:net";
 

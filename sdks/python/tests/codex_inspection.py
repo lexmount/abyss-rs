@@ -54,7 +54,7 @@ class Evidence:
                     "allow": not blocked,
                 }
             )
-        return RequestDecision(not blocked, "SDK black-box policy" if blocked else None)
+        return RequestDecision.block("SDK black-box policy") if blocked else RequestDecision.allow()
 
     def event(self, event):
         self.record(

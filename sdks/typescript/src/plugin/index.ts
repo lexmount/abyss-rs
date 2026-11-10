@@ -28,5 +28,6 @@ export type {
   RequestSourceProcess,
   RequestHarness,
   RequestDecision,
+  ModifyAction,
   RequestHandler,
 } from "./inspection.js";

@@ -1,6 +1,6 @@
 //! Request-only Agent inspection values exchanged on a broker plugin session.
 
-use serde::{Deserialize, Serialize};
+use serde::{Deserialize, Serialize, Serializer, ser::SerializeStruct as _};
 use serde_json::Value;
 
 use crate::event::{Conversation, EventPurpose, ImageAttachment, LlmProvider};
@@ -108,7 +108,7 @@ pub struct AgentRequestProjection {
 }
 
 /// Complete decision context for one HTTP request or client WebSocket data message.
-#[derive(Debug, Deserialize, Serialize)]
+#[derive(Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct AgentRequestContext {
     /// Stable physical flow identity.
@@ -150,8 +150,24 @@ pub struct AgentRequestContext {
     pub parsing_status: RequestParsingStatus,
     /// Available request-side Harness identity and declarations.
     pub harness: Option<RequestHarness>,
+    /// Selected model-service credential, without its authentication scheme prefix.
+    pub auth_token: Option<String>,
+    /// Whether token actions can be applied at this forwarding boundary.
+    pub auth_token_writable: bool,
+    /// Whether model actions have a supported protocol write-back location.
+    pub model_writable: bool,
     /// Known Agent request projection.
     pub agent: Option<AgentRequestProjection>,
+}
+
+impl std::fmt::Debug for AgentRequestContext {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter
+            .debug_struct("AgentRequestContext")
+            .field("request_id", &self.request_id)
+            .field("parsing_status", &self.parsing_status)
+            .finish_non_exhaustive()
+    }
 }
 
 /// Plugin reply correlated to one inspection on this connection.
@@ -160,34 +176,157 @@ pub struct AgentRequestContext {
 pub struct InspectResponse {
     /// Broker request identifier from the inspection context.
     pub request_id: String,
-    /// Whether this plugin permits forwarding.
-    pub allow: bool,
-    /// Safe client-facing reason. Must not echo sensitive request content.
-    pub reason: Option<String>,
+    /// Explicit forwarding decision and optional semantic actions.
+    pub decision: RequestDecision,
 }
 
-/// Decision returned by SDK request handlers.
-#[derive(Debug)]
+/// Semantic edits supported by the broker; values are never included in Debug.
+#[derive(Serialize, PartialEq, Eq)]
+#[serde(
+    tag = "op",
+    content = "value",
+    rename_all = "snake_case",
+    deny_unknown_fields
+)]
+#[non_exhaustive]
+pub enum ModifyAction {
+    /// Set the credential selected by the target's authentication binding.
+    SetAuthToken(String),
+    /// Remove the selected credential.
+    RemoveAuthToken,
+    /// Set the requested model without changing the target or protocol.
+    SetModel(String),
+    /// Remove the model member, including an explicit null.
+    RemoveModel,
+}
+
+impl<'de> Deserialize<'de> for ModifyAction {
+    fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        #[derive(Deserialize)]
+        #[serde(tag = "op", rename_all = "snake_case", deny_unknown_fields)]
+        #[expect(
+            clippy::empty_enum_variants_with_brackets,
+            reason = "serde unit variants ignore extra fields; empty struct variants enforce the wire schema"
+        )]
+        enum WireAction {
+            SetAuthToken { value: String },
+            RemoveAuthToken {},
+            SetModel { value: String },
+            RemoveModel {},
+        }
+        Ok(match WireAction::deserialize(deserializer)? {
+            WireAction::SetAuthToken { value } => Self::SetAuthToken(value),
+            WireAction::RemoveAuthToken {} => Self::RemoveAuthToken,
+            WireAction::SetModel { value } => Self::SetModel(value),
+            WireAction::RemoveModel {} => Self::RemoveModel,
+        })
+    }
+}
+
+impl std::fmt::Debug for ModifyAction {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter.write_str(match self {
+            Self::SetAuthToken(_) => "SetAuthToken(<redacted>)",
+            Self::RemoveAuthToken => "RemoveAuthToken",
+            Self::SetModel(_) => "SetModel(<redacted>)",
+            Self::RemoveModel => "RemoveModel",
+        })
+    }
+}
+
+/// Decision returned by SDK request handlers. Context remains read-only.
+#[derive(Debug, PartialEq, Eq)]
 #[non_exhaustive]
 pub enum RequestDecision {
-    /// Permit this request.
+    /// Continue without editing the current request.
     Allow,
     /// Reject this request with a safe explanation.
     Block(String),
+    /// Apply the ordered actions before invoking the next plugin.
+    Modify(Box<[ModifyAction]>),
 }
 
 impl RequestDecision {
     /// Encodes a handler decision for its original request.
     #[must_use]
-    pub fn into_response(self, request_id: String) -> InspectResponse {
-        let (allow, reason) = match self {
-            Self::Allow => (true, None),
-            Self::Block(reason) => (false, Some(reason)),
-        };
+    pub const fn into_response(self, request_id: String) -> InspectResponse {
         InspectResponse {
             request_id,
-            allow,
-            reason,
+            decision: self,
+        }
+    }
+}
+
+impl Serialize for RequestDecision {
+    fn serialize<S: Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        let fields = if matches!(self, Self::Allow) { 1 } else { 2 };
+        let mut object = serializer.serialize_struct("RequestDecision", fields)?;
+        match self {
+            Self::Allow => object.serialize_field("action", "allow")?,
+            Self::Block(reason) => {
+                object.serialize_field("action", "block")?;
+                object.serialize_field("reason", reason)?;
+            }
+            Self::Modify(actions) => {
+                object.serialize_field("action", "modify")?;
+                object.serialize_field("actions", actions)?;
+            }
+        }
+        object.end()
+    }
+}
+
+impl<'de> Deserialize<'de> for RequestDecision {
+    fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        #[derive(Deserialize)]
+        #[serde(tag = "action", rename_all = "snake_case", deny_unknown_fields)]
+        #[expect(
+            clippy::empty_enum_variants_with_brackets,
+            reason = "serde unit variants ignore extra fields; empty struct variants enforce the wire schema"
+        )]
+        enum WireDecision {
+            Allow {},
+            Block { reason: String },
+            Modify { actions: Box<[ModifyAction]> },
+        }
+        Ok(match WireDecision::deserialize(deserializer)? {
+            WireDecision::Allow {} => Self::Allow,
+            WireDecision::Block { reason } => Self::Block(reason),
+            WireDecision::Modify { actions } => Self::Modify(actions),
+        })
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use serde_json::json;
+
+    #[test]
+    fn decisions_round_trip_explicit_actions_without_context() {
+        for value in [
+            json!({"action":"allow"}),
+            json!({"action":"block","reason":"policy"}),
+            json!({"action":"modify","actions":[]}),
+            json!({"action":"modify","actions":[{"op":"set_auth_token","value":"private-token"},{"op":"remove_auth_token"},{"op":"set_model","value":"new"},{"op":"remove_model"}]}),
+        ] {
+            let decision: RequestDecision = serde_json::from_value(value.clone()).unwrap();
+            assert!(!format!("{decision:?}").contains("private-token"));
+            assert_eq!(serde_json::to_value(decision).unwrap(), value);
+        }
+        for invalid in [
+            json!({"action":"allow","actions":[]}),
+            json!({"action":"block"}),
+            json!({"action":"modify","actions":[{"op":"set_auth_token"}]}),
+            json!({"action":"modify","actions":[{"op":"set_auth_token","value":null}]}),
+            json!({"action":"modify","actions":[{"op":"remove_model","value":"bad"}]}),
+            json!({"action":"modify","actions":[{"op":"remove_model","value":null}]}),
+            json!({"action":"modify","actions":[{"op":"replace_body","value":"bad"}]}),
+        ] {
+            assert!(
+                serde_json::from_value::<RequestDecision>(invalid.clone()).is_err(),
+                "unexpectedly accepted {invalid}"
+            );
         }
     }
 }

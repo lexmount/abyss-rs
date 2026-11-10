@@ -3,6 +3,10 @@
 #[cfg(test)]
 mod tests;
 
+mod auth;
+mod edit;
+pub use edit::{RequestActionError, RequestActions};
+
 use std::sync::Arc;
 
 use abyss_mitm::{RequestTransport, RequestView, TransparentProtocol};
@@ -105,7 +109,7 @@ impl AgentRequestParser {
             }),
         };
         let harness = Self::harness(request, config, payload);
-        AgentRequestContext {
+        let mut context = AgentRequestContext {
             flow_id: request.flow.flow_id.to_string(),
             request_id,
             ingress: request.flow.ingress.source_label().to_owned(),
@@ -145,8 +149,13 @@ impl AgentRequestParser {
             json: json.cloned(),
             parsing_status,
             harness,
+            auth_token: None,
+            auth_token_writable: false,
+            model_writable: false,
             agent,
-        }
+        };
+        RequestActions::new(request).annotate(request, &mut context);
+        context
     }
 
     fn headers(request: &RequestView<'_>) -> Vec<(String, String)> {

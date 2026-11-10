@@ -1,6 +1,6 @@
 # Agent request editing through broker plugins
 
-Status: proposed, not implemented. Source analysis is based on commit `2e1824a`.
+Status: implemented with plugin protocol v2. Initial source analysis used commit `2e1824a`.
 
 Extend `agent_request` so a plugin reads a semantic Agent request context and
 returns Allow, Block, or Modify with an explicit list of semantic actions. The SDK
@@ -12,9 +12,8 @@ The public API describes Agent requests. HTTP headers, JSON locations, WebSocket
 messages, and framing are internal implementation details. API key allocation is
 one application; allocation policy and credential storage belong to the plugin.
 
-This proposal builds on the [request inspection design](request-blocking-design.md).
-The [v1 plugin contract](../specs/broker-plugin-protocol/v1/README.md) describes the
-implemented behavior until this proposal is adopted.
+This design builds on the [request inspection design](request-blocking-design.md).
+The [v2 plugin contract](../specs/broker-plugin-protocol/v2/README.md) describes the implemented wire format.
 
 ## Scope and required behavior
 
@@ -52,7 +51,7 @@ The implementation must preserve these properties:
 There is no public header-operation list, whole-body replacement, or
 `RequestMutation::Http / WebSocket` enum. Response editing, arbitrary traffic
 rewriting, JSON Patch, and a universal protocol conversion framework are outside
-this proposal. Internal transport code still handles HTTP and WebSocket correctly.
+this design. Internal transport code still handles HTTP and WebSocket correctly.
 
 ## Current implementation and change points
 
@@ -199,7 +198,7 @@ and Python expose the equivalent read-only context and typed action variants.
 There is no mutable-context round trip, old-context copy, dirty tracking, or diff
 calculation in the SDK. The reply is constructed only from the returned result.
 
-Use a tagged result in the proposed v2 `inspect_response`:
+Use a tagged result in the v2 `inspect_response`:
 
 ```json
 {
@@ -356,7 +355,8 @@ Keep the original request and make targeted updates:
   carrier and its scheme. It extracts the token for context and writes the new
   token back in the correct form. A missing initial token must still be injectable
   when that binding is known. A JSON dialect alone is not enough to infer a target's
-  authentication scheme; use known target mappings or explicit configuration.
+  authentication scheme. Use an existing supported credential header, or the known
+  host mappings below. No new configuration surface is introduced.
 - **No action for a field:** preserve that field as it appeared in the retained
   request. Allow and empty action lists reuse the current representation.
   The action enum identifies exactly which writers to invoke; no context diff,
@@ -366,7 +366,9 @@ Initial model writers cover OpenAI Responses, OpenAI Chat Completions, and
 Anthropic Messages, including recognized Responses client request messages on
 WebSocket. Claude Web and other formats remain inspection-only until their own
 write-back rules are defined. Start authentication editing with supported
-single-token bindings, such as Bearer and API-key headers. A parser for observation
+single-token bindings: Bearer, `x-api-key`, and `anthropic-api-key`. Existing
+headers identify compatible gateways. Without a credential header, `api.openai.com`
+and `chatgpt.com` use Bearer; `api.anthropic.com` uses `x-api-key`. A parser for observation
 does not automatically establish write support. Unsupported or ambiguous bindings
 remain read-only. Cookie sessions, request signing, and multi-field authentication
 need their own write-back contract before actions are enabled; no automatic
@@ -540,7 +542,7 @@ measure original bytes, while upstream counters measure what was actually sent.
 
 ## Credential visibility and observation
 
-This proposal intentionally changes the v1 inspection credential boundary.
+This design intentionally changes the v1 inspection credential boundary.
 Request-processing plugins can read the selected model-service token through
 `context.auth_token`, including a token set by an earlier plugin. This supports
 preserving existing credentials as well as replacing them. Event-only plugins
@@ -655,5 +657,6 @@ Acceptance checks include:
 Use focused unit tests for action validation and application, SDK contract tests
 for read-only callbacks and action replies, and black-box tests for actual upstream
 bytes, plugin lifecycle, and observation. Run formatting, lint, relevant crate tests,
-and existing request-blocking regressions when implementing the proposal.
-This document changes no runtime code or protocol implementation.
+and existing request-blocking regressions when changing this implementation.
+Run `make test-blackbox-request-modification` for real broker forwarding checks.
+The implementation also preserves the request-blocking and SDK regression suites.

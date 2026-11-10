@@ -535,7 +535,7 @@ mod tests {
     #[test]
     fn uploads_tool_activity_only_inside_the_conversation() {
         let event: AgentEvent = serde_json::from_str(include_str!(
-            "../../../specs/broker-plugin-protocol/v1/fixtures/agent-event.json"
+            "../../../specs/broker-plugin-protocol/v2/fixtures/agent-event.json"
         ))
         .expect("fixture should decode");
         let request = IngestEventsRequest::try_from(event).expect("event should translate");
@@ -554,7 +554,7 @@ mod tests {
     #[test]
     fn sends_the_declared_ids_as_top_level_fields() {
         let event: AgentEvent = serde_json::from_str(include_str!(
-            "../../../specs/broker-plugin-protocol/v1/fixtures/agent-event.json"
+            "../../../specs/broker-plugin-protocol/v2/fixtures/agent-event.json"
         ))
         .expect("fixture should decode");
         let request = IngestEventsRequest::try_from(event).expect("event should translate");
@@ -572,7 +572,7 @@ mod tests {
     #[test]
     fn sends_the_conversation_as_a_top_level_field() {
         let event: AgentEvent = serde_json::from_str(include_str!(
-            "../../../specs/broker-plugin-protocol/v1/fixtures/agent-event.json"
+            "../../../specs/broker-plugin-protocol/v2/fixtures/agent-event.json"
         ))
         .expect("fixture should decode");
         let expected = serde_json::to_value(&event.conversation).unwrap();
@@ -596,7 +596,7 @@ mod tests {
     #[test]
     fn stores_the_omitted_categories_as_backend_metadata() {
         let mut event: AgentEvent = serde_json::from_str(include_str!(
-            "../../../specs/broker-plugin-protocol/v1/fixtures/agent-event.json"
+            "../../../specs/broker-plugin-protocol/v2/fixtures/agent-event.json"
         ))
         .expect("fixture should decode");
         event.omitted = vec![
@@ -694,7 +694,7 @@ mod tests {
     #[test]
     fn carries_exchange_placement() {
         let mut event: AgentEvent = serde_json::from_str(include_str!(
-            "../../../specs/broker-plugin-protocol/v1/fixtures/agent-event.json"
+            "../../../specs/broker-plugin-protocol/v2/fixtures/agent-event.json"
         ))
         .expect("fixture should decode");
         event.agent.name = "claude-code".to_owned();
@@ -723,7 +723,7 @@ mod tests {
     #[test]
     fn retains_prewarm_purpose_and_observed_usage_for_backend_accounting() {
         let mut event: AgentEvent = serde_json::from_str(include_str!(
-            "../../../specs/broker-plugin-protocol/v1/fixtures/agent-event.json"
+            "../../../specs/broker-plugin-protocol/v2/fixtures/agent-event.json"
         ))
         .expect("fixture should decode");
         event.purpose = Some(abyss_sdk::plugin::EventPurpose::Prewarm);

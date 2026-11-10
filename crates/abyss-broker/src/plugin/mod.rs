@@ -134,7 +134,7 @@ impl PluginServer {
                             // A live event has no receipt or replay if nobody subscribes.
                             drop(self.events.send(event));
                         }
-                        Some(PluginCommand::InspectRequest { plan, context, first_deadline, reply }) => {
+                        Some(PluginCommand::InspectRequest { participant, context, first_deadline, reply }) => {
                             // Completed tasks must not consume active request capacity.
                             while let Some(completed) = inspections.try_join_next() {
                                 Self::log_completed_inspection(completed);
@@ -143,7 +143,7 @@ impl PluginServer {
                                 let _sent = reply.send(Err(InspectionError::Unavailable));
                             } else {
                                 inspections.spawn(InspectionTask::new(
-                                    &self.inspections, &plan, context, first_deadline, reply,
+                                    &self.inspections, &participant, context, first_deadline, reply,
                                 ).run());
                             }
                         }

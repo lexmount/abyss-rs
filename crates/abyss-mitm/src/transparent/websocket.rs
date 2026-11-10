@@ -285,14 +285,14 @@ where
                 };
                 if let Some(transport) = transport && let Some(plan) = control.plan() {
                     let mut body = super::CapturedBody::from_bytes(forwarded.message.clone().into_data());
-                    let annotations = {
-                    let decision = control.before_forward(plan, super::RequestView { flow, head: &upgrade.request, body: &body, transport });
+                    let result = {
+                    let decision = control.before_forward(plan, super::RequestView { flow, head: &upgrade.request, body: &body, transport, max_body_bytes: WebSocketConfig::default().max_message_size.unwrap_or(usize::MAX) });
                     tokio::pin!(decision);
                     loop {
                         tokio::select! {
                             result = &mut decision => {
                                 match result {
-                                    Ok(annotations) => break annotations,
+                                    Ok(result) => break result,
                                     Err(rejection) => {
                                         client_ws.reject(&rejection).await?;
                                         return Err(rejection.into());
@@ -307,7 +307,21 @@ where
                         }
                     }
                     };
-                    body.extensions_mut().extend(annotations);
+                    if let Some(replacement) = result.body {
+                        forwarded.message = match transport {
+                            super::RequestTransport::WebSocketText { .. } => {
+                                let text = String::from_utf8(replacement.bytes().to_vec()).map_err(|_| {
+                                    super::LocalRejection::new(http::StatusCode::BAD_GATEWAY,
+                                        "invalid_agent_request_edit", "Edited text is not UTF-8", flow.flow_id.to_string())
+                                })?;
+                                Message::Text(text.into())
+                            }
+                            _ => Message::Binary(replacement.bytes_ref().clone()),
+                        };
+                        forwarded.payload_bytes = payload_len(&forwarded.message)?;
+                        body = replacement;
+                    }
+                    body.extensions_mut().extend(result.annotations);
                     forwarded.captured_body = Some(body);
                 }
                 forwarded.submit_hook_message(flow, upgrade, &mut sequence, hooks)?;

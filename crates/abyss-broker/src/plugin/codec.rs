@@ -189,7 +189,7 @@ mod tests {
     #[tokio::test]
     async fn round_trips_one_length_prefixed_json_payload() {
         let (mut writer, mut reader) = duplex(256);
-        write_json(&mut writer, &BrokerHello::v1())
+        write_json(&mut writer, &BrokerHello::v2())
             .await
             .expect("frame should encode");
 
@@ -200,7 +200,7 @@ mod tests {
         let hello: BrokerHello =
             serde_json::from_slice(&payload).expect("payload should decode as BrokerHello");
 
-        assert_eq!(hello.protocol_version.wire_value(), 1_u16);
+        assert_eq!(hello.protocol_version.wire_value(), 2_u16);
     }
 
     #[tokio::test]

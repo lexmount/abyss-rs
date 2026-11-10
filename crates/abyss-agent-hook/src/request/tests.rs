@@ -1,5 +1,6 @@
 //! Inspection projections preserve request content independently of audit settings.
 
+mod edit;
 mod metadata;
 mod reuse;
 
@@ -37,6 +38,7 @@ fn inspection_reuses_conversation_tools_and_harness_recognition_without_audit() 
     let config: crate::HarnessUsageConfig = serde_json::from_value(serde_json::json!({"harnesses":{"codex":{"enabled":false}}, "content":{"conversation_text":false,"tool_calls":false,"images":false}})).unwrap();
     let result = AgentRequestParser::parse(
         &RequestView {
+            max_body_bytes: usize::MAX,
             flow: &flow,
             head: &head,
             body: &body,
@@ -95,6 +97,7 @@ fn unknown_and_invalid_requests_keep_full_content() {
         let body = CapturedBody::from_bytes(b"private plaintext".to_vec().into());
         let result = AgentRequestParser::parse(
             &RequestView {
+                max_body_bytes: usize::MAX,
                 flow: &flow,
                 head: &head,
                 body: &body,
@@ -157,6 +160,7 @@ fn request_and_observation_share_each_http_dialect_projection() {
         let body = CapturedBody::from_bytes(serde_json::to_vec(&payload).unwrap().into());
         let inspected = AgentRequestParser::parse(
             &RequestView {
+                max_body_bytes: usize::MAX,
                 flow: &flow,
                 head: &head,
                 body: &body,
@@ -228,6 +232,7 @@ fn websocket_prewarm_uses_the_shared_request_projection_and_preserves_message_id
     let body = CapturedBody::from_bytes(bytes.to_vec().into());
     let inspected = AgentRequestParser::parse(
         &RequestView {
+            max_body_bytes: usize::MAX,
             flow: &flow,
             head: &head,
             body: &body,

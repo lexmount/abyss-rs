@@ -9,7 +9,7 @@ await new BrokerPlugin({
       message.text.includes("PRIVATE KEY"),
     );
     return detected
-      ? { allow: false, reason: "Private key detected" }
-      : { allow: true };
+      ? { action: "block", reason: "Private key detected" }
+      : { action: "allow" };
   },
 }).run();

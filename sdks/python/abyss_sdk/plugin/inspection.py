@@ -1,7 +1,7 @@
 """Complete request context and decisions for broker plugin inspection."""
 
-from collections.abc import Mapping
-from dataclasses import dataclass
+from collections.abc import Iterable, Mapping
+from dataclasses import dataclass, field
 from typing import Any, Callable, Literal, Optional
 
 from ..event import (
@@ -14,11 +14,60 @@ from ..event import (
 
 
 @dataclass(frozen=True)
-class RequestDecision:
-    """A safe reason must never echo sensitive request content."""
+class ModifyAction:
+    """One explicit semantic operation; credential values are excluded from repr."""
 
-    allow: bool
+    op: Literal["set_auth_token", "remove_auth_token", "set_model", "remove_model"]
+    value: Optional[str] = field(default=None, repr=False)
+
+    @classmethod
+    def set_auth_token(cls, token: str) -> "ModifyAction":
+        return cls("set_auth_token", token)
+
+    @classmethod
+    def remove_auth_token(cls) -> "ModifyAction":
+        return cls("remove_auth_token")
+
+    @classmethod
+    def set_model(cls, model: str) -> "ModifyAction":
+        return cls("set_model", model)
+
+    @classmethod
+    def remove_model(cls) -> "ModifyAction":
+        return cls("remove_model")
+
+    def to_dict(self) -> dict[str, Any]:
+        if self.op in ("set_auth_token", "set_model"):
+            return {"op": self.op, "value": self.value}
+        return {"op": self.op}
+
+
+@dataclass(frozen=True)
+class RequestDecision:
+    """Explicit result; the SDK never compares or returns the callback context."""
+
+    action: Literal["allow", "block", "modify"]
     reason: Optional[str] = None
+    actions: tuple[ModifyAction, ...] = ()
+
+    @classmethod
+    def allow(cls) -> "RequestDecision":
+        return cls("allow")
+
+    @classmethod
+    def block(cls, reason: str) -> "RequestDecision":
+        return cls("block", reason=reason)
+
+    @classmethod
+    def modify(cls, actions: Iterable[ModifyAction]) -> "RequestDecision":
+        return cls("modify", actions=tuple(actions))
+
+    def to_dict(self) -> dict[str, Any]:
+        if self.action == "modify":
+            return {"action": self.action, "actions": [action.to_dict() for action in self.actions]}
+        if self.action == "block":
+            return {"action": self.action, "reason": self.reason}
+        return {"action": self.action}
 
 
 @dataclass(frozen=True)
@@ -97,6 +146,9 @@ class AgentRequestContext:
     json: Any
     parsing_status: Literal["parsed", "unknown_protocol", "invalid_payload"]
     harness: Optional[RequestHarness]
+    auth_token: Optional[str] = field(repr=False)
+    auth_token_writable: bool
+    model_writable: bool
     agent: Optional[AgentRequestProjection]
 
     @classmethod

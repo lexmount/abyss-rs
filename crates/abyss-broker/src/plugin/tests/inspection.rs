@@ -51,14 +51,22 @@ impl Server {
         let client = self.client.clone();
         let plan = client.inspection_plan().expect("inspector connected");
         let context = context(id);
-        tokio::spawn(async move { client.inspect(plan, context).await })
+        tokio::spawn(async move {
+            for participant in plan.participants() {
+                let decision = client.inspect(participant, context.clone()).await?;
+                if !matches!(decision, InspectionDecision::Allow) {
+                    return Ok(decision);
+                }
+            }
+            Ok(InspectionDecision::Allow)
+        })
     }
 }
 
 fn context(id: &str) -> Arc<AgentRequestContext> {
     let message: BrokerMessage = serde_json::from_str(include_str!(concat!(
         env!("CARGO_MANIFEST_DIR"),
-        "/../../specs/broker-plugin-protocol/v1/fixtures/inspect-request.json"
+        "/../../specs/broker-plugin-protocol/v2/fixtures/inspect-request.json"
     )))
     .unwrap();
     let BrokerMessage::InspectRequest { mut context } = message else {
@@ -82,8 +90,11 @@ async fn reply(stream: &mut UnixStream, id: &str, allow: bool) {
         stream,
         &PluginMessage::InspectResponse(InspectResponse {
             request_id: id.to_owned(),
-            allow,
-            reason: (!allow).then(|| "Test policy".to_owned()),
+            decision: if allow {
+                InspectionDecision::Allow
+            } else {
+                InspectionDecision::Block("Test policy".to_owned())
+            },
         }),
     )
     .await
@@ -139,9 +150,7 @@ async fn waiting_inspections_do_not_block_events_new_connections_or_other_decisi
     reply(&mut plugin, "second", false).await;
     assert_eq!(
         second.await.unwrap(),
-        Ok(InspectionDecision::Block {
-            reason: Some("Test policy".to_owned())
-        })
+        Ok(InspectionDecision::Block("Test policy".to_owned()))
     );
     assert!(!first.is_finished());
     reply(&mut plugin, "first", true).await;
@@ -183,7 +192,10 @@ async fn reconnect_cannot_replace_a_selected_session_and_shutdown_wakes_callers(
     )
     .await;
     assert_eq!(
-        server.client.inspect(plan, context("stale")).await,
+        server
+            .client
+            .inspect(plan.participants().next().unwrap(), context("stale"))
+            .await,
         Err(InspectionError::Unavailable)
     );
     let pending = server.inspect("current");

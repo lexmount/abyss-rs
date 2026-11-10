@@ -1,0 +1,55 @@
+{
+  "type": "inspect_request",
+  "context": {
+    "flow_id": "flow-123",
+    "request_id": "request-123",
+    "ingress": "explicit_proxy",
+    "destination": "127.0.0.1:443",
+    "method": "POST",
+    "path": "/v1/responses",
+    "destination_host": "api.openai.com",
+    "server_name": "api.openai.com",
+    "authority": "api.openai.com",
+    "proxy_endpoint": null,
+    "source_process": null,
+    "websocket": false,
+    "sequence": 1,
+    "message_type": null,
+    "headers": [
+      [
+        "content-type",
+        "application/json"
+      ]
+    ],
+    "body": {
+      "encoding": "utf8",
+      "content": "{\"model\":\"gpt-test\",\"input\":\"hello\"}"
+    },
+    "json": {
+      "model": "gpt-test",
+      "input": "hello"
+    },
+    "parsing_status": "parsed",
+    "harness": null,
+    "agent": {
+      "protocol": "openai_responses",
+      "provider": "openai",
+      "model": "gpt-test",
+      "conversation": {
+        "entries": [
+          {
+            "role": "user",
+            "text": "hello"
+          }
+        ],
+        "completeness": "complete"
+      },
+      "attachments": [],
+      "tools": null,
+      "previous_response_id": null
+    },
+    "auth_token": null,
+    "auth_token_writable": true,
+    "model_writable": true
+  }
+}
