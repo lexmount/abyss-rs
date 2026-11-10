@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Derive reproducible broker-only CDN archives from a verified endpoint release."""
+"""Derive reproducible broker-only archives from a verified endpoint release."""
 
 from __future__ import annotations
 
@@ -23,7 +23,7 @@ def broker_archive_name(tag: str, target: str) -> str:
 
 def package_brokers(release: Path, output: Path, revision: str) -> None:
     archives = sorted([*release.glob("*.tar.gz"), *release.glob("*.zip")])
-    # Validate the complete input checksum list before deriving any CDN assets.
+    # Validate the complete input checksum list before deriving broker assets.
     checksums = "".join(
         f"{hashlib.sha256(path.read_bytes()).hexdigest()}  {path.name}\n"
         for path in archives
@@ -109,7 +109,7 @@ def main() -> None:
     parser.add_argument("--revision", required=True)
     args = parser.parse_args()
     package_brokers(args.release, args.output, args.revision)
-    print(f"Packaged broker CDN release in {args.output}")
+    print(f"Packaged broker release in {args.output}")
 
 
 if __name__ == "__main__":

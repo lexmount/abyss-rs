@@ -17,10 +17,9 @@ ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(ROOT / "scripts/ci"))
 
 from assemble_release import assemble
-from package_broker import package_brokers
-from package_cli import package
-from publish_cos import release_files
-from verify_release import read_artifact
+from package_broker import broker_archive_name, package_brokers
+from package_cli import TARGETS, package
+from verify_release import check_promotion, read_artifact
 
 MACOS = "aarch64-apple-darwin"
 LINUX = "x86_64-unknown-linux-musl"
@@ -225,14 +224,24 @@ class ReleaseArtifactTests(unittest.TestCase):
             ):
                 package(target, self.binaries, self.output, "v999.0.0", variant)
 
-    def test_broker_cdn_archives_preserve_verified_binaries_and_provenance(
+    def test_broker_archives_preserve_verified_binaries_and_provenance(
         self,
     ) -> None:
         assemble(self.artifacts, self.output, self.revision)
         broker_output = self.root / "broker"
         package_brokers(self.output, broker_output, self.revision)
-        assets = release_files(broker_output, f"v{self.version}")
-        self.assertEqual(len(assets), 4)
+        names = sorted(broker_archive_name(f"v{self.version}", target) for target in TARGETS)
+        self.assertEqual(
+            {path.name for path in broker_output.iterdir()}, {*names, "SHA256SUMS"}
+        )
+        assets = [broker_output / name for name in [*names, "SHA256SUMS"]]
+        self.assertEqual(
+            assets[-1].read_text(),
+            "".join(
+                f"{hashlib.sha256(path.read_bytes()).hexdigest()}  {path.name}\n"
+                for path in assets[:-1]
+            ),
+        )
         for archive in assets[:-1]:
             if archive.suffix == ".zip":
                 executable = "abyss-broker.exe"
@@ -262,7 +271,7 @@ class ReleaseArtifactTests(unittest.TestCase):
                     for name, data in files.items()
                 },
             )
-        # A retry from the same verified release must upload identical bytes.
+        # Repackaging the same verified release must produce identical bytes.
         retry_output = self.root / "broker-retry"
         package_brokers(self.output, retry_output, self.revision)
         for asset in assets:
@@ -270,7 +279,7 @@ class ReleaseArtifactTests(unittest.TestCase):
                 asset.read_bytes(), (retry_output / asset.name).read_bytes()
             )
 
-    def test_broker_cdn_packaging_rejects_corruption_and_wrong_revision(self) -> None:
+    def test_broker_packaging_rejects_corruption_and_wrong_revision(self) -> None:
         assemble(self.artifacts, self.output, self.revision)
         broker_output = self.root / "broker"
         with self.assertRaisesRegex(ValueError, "different revision"):
@@ -281,7 +290,7 @@ class ReleaseArtifactTests(unittest.TestCase):
             package_brokers(self.output, broker_output, self.revision)
         self.assertFalse(broker_output.exists())
 
-    def test_broker_cdn_packaging_rejects_missing_target(self) -> None:
+    def test_broker_packaging_rejects_missing_target(self) -> None:
         assemble(self.artifacts, self.output, self.revision)
         next(self.output.glob("*.zip")).unlink()
         (self.output / "SHA256SUMS").write_text(
@@ -292,6 +301,24 @@ class ReleaseArtifactTests(unittest.TestCase):
         )
         with self.assertRaisesRegex(ValueError, "all three targets"):
             package_brokers(self.output, self.root / "broker", self.revision)
+
+
+class ReleasePromotionTests(unittest.TestCase):
+    def test_late_old_tag_cannot_replace_a_newer_release(self) -> None:
+        with self.assertRaisesRegex(ValueError, "v1.2.4 is published"):
+            check_promotion("v1.2.3", ["v1.2.4"])
+        with self.assertRaisesRegex(ValueError, "v1.10.0 is published"):
+            check_promotion("v1.9.99", ["v1.10.0"])
+
+    def test_promotion_compares_numeric_versions_and_allows_retries(self) -> None:
+        check_promotion("v1.10.0", ["v1.9.99", "typescript-sdk-v9.0.0"])
+        check_promotion("v1.10.0", ["v1.10.0"])
+        check_promotion("v1.10.0", [])
+
+    def test_promotion_requires_a_stable_release_tag(self) -> None:
+        for tag in ("main", "v1.2.3-rc.1", "v1.2.3/../../releases/latest"):
+            with self.subTest(tag=tag), self.assertRaisesRegex(ValueError, "stable"):
+                check_promotion(tag, [])
 
 
 if __name__ == "__main__":

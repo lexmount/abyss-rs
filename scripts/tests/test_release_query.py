@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Exercise standalone query artifacts and the all-platform CDN release boundary."""
+"""Exercise standalone query artifacts and the all-platform release boundary."""
 
 from __future__ import annotations
 
@@ -22,9 +22,9 @@ from package_query import (
     assemble_queries,
     checksum_line,
     package_query,
+    query_archive_name,
     read_query_artifact,
 )
-from publish_cos import release_files
 
 
 class QueryReleaseTests(unittest.TestCase):
@@ -90,12 +90,16 @@ class QueryReleaseTests(unittest.TestCase):
                 retry = package_query(target, self.binaries, self.root / "retry", None)
                 self.assertEqual(archive.read_bytes(), retry.read_bytes())
 
-    def test_assembled_release_satisfies_publisher_contract(self) -> None:
+    def test_assembled_release_contains_all_archives_and_checksums(self) -> None:
         assemble_queries(self.artifacts, self.output, self.revision)
-        assets = release_files(self.output, f"v{self.version}", "abyss-query")
-        self.assertEqual(len(assets), 4)
-        self.assertEqual(assets[-1].name, "SHA256SUMS")
-        self.assertEqual(set(self.output.iterdir()), set(assets))
+        names = sorted(query_archive_name(f"v{self.version}", target) for target in TARGETS)
+        self.assertEqual(
+            {path.name for path in self.output.iterdir()}, {*names, "SHA256SUMS"}
+        )
+        self.assertEqual(
+            (self.output / "SHA256SUMS").read_text(),
+            "".join(checksum_line(self.output / name) for name in names),
+        )
         for target, archive in self.archives.items():
             self.assertEqual(
                 archive.read_bytes(), (self.output / archive.name).read_bytes()

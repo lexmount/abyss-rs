@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Package, verify, and assemble standalone abyss-query CDN releases."""
+"""Package, verify, and assemble standalone abyss-query releases."""
 
 from __future__ import annotations
 
@@ -243,7 +243,7 @@ def main() -> None:
         print(package_query(args.target, args.binaries, args.output, args.tag))
     elif args.command == "assemble":
         assemble_queries(args.artifacts, args.output, args.revision)
-        print(f"Assembled query CDN release in {args.output}")
+        print(f"Assembled query release in {args.output}")
     else:
         for archive in args.archives:
             if args.smoke:

@@ -16,6 +16,17 @@ from pathlib import Path
 from package_cli import ABI_HEADER, BINARIES, METADATA_FILE, TARGETS, WINDOWS_TARGET
 
 
+def check_promotion(tag: str, published_tags: list[str]) -> None:
+    """Prevent a delayed tag run from replacing a newer GitHub latest release."""
+    if not re.fullmatch(r"v[0-9]+\.[0-9]+\.[0-9]+", tag):
+        raise ValueError("release publication requires a stable v<version> tag")
+    version = tuple(int(part) for part in tag[1:].split("."))
+    for published in published_tags:
+        if re.fullmatch(r"v[0-9]+\.[0-9]+\.[0-9]+", published):
+            if tuple(int(part) for part in published[1:].split(".")) > version:
+                raise ValueError(f"refusing to promote {tag}: {published} is published")
+
+
 def read_artifact(archive: Path) -> tuple[dict, dict[str, bytes]]:
     if archive.suffix == ".zip":
         with zipfile.ZipFile(archive) as bundle:
