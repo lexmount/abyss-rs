@@ -90,22 +90,10 @@ impl RequestActions {
     #[must_use]
     pub fn new(request: &RequestView<'_>) -> Self {
         let auth = AuthBinding::detect(request);
-        let headers = request.head.headers();
-        let signed = headers.contains_key("signature")
-            || headers.contains_key("signature-input")
-            || headers
-                .get(http::header::AUTHORIZATION)
-                .is_some_and(|value| value.as_bytes().starts_with(b"AWS4-HMAC-"));
         Self {
             auth,
-            auth_writable: !signed
-                && auth.is_some()
-                && matches!(request.transport, RequestTransport::Http),
-            model: if signed {
-                None
-            } else {
-                ModelLocation::detect(request)
-            },
+            auth_writable: auth.is_some() && matches!(request.transport, RequestTransport::Http),
+            model: ModelLocation::detect(request),
         }
     }
 

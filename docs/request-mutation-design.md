@@ -370,9 +370,8 @@ single-token bindings: Bearer, `x-api-key`, and `anthropic-api-key`. Existing
 headers identify compatible gateways. Without a credential header, `api.openai.com`
 and `chatgpt.com` use Bearer; `api.anthropic.com` uses `x-api-key`. A parser for observation
 does not automatically establish write support. Unsupported or ambiguous bindings
-remain read-only. Cookie sessions, request signing, and multi-field authentication
-need their own write-back contract before actions are enabled; no automatic
-re-signing is introduced.
+remain read-only. Cookie sessions and multi-field authentication
+need their own write-back contract before actions are enabled.
 
 When setting a header-based token, replace all values of the adapter-selected
 credential header, using its defined scheme. Removing the token removes that
@@ -430,8 +429,6 @@ Content-Type and protocol envelopes. Never send both Content-Length and
 Transfer-Encoding; see [RFC 9112 sections 6.2 and 6.3](https://www.rfc-editor.org/rfc/rfc9112.html#section-6.2).
 Rebuild `CapturedBody` raw/decoded bytes, decoding state, and caches together.
 Encode the final request head after processing and update `DecodedClientFlow` too.
-Do not enable a writer for a signed request format without a supported signing
-contract; the broker must not knowingly forward a broken signature after editing.
 
 ```mermaid
 sequenceDiagram

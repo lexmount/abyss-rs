@@ -74,7 +74,7 @@ or `anthropic-api-key` header. With no such header, `api.openai.com` and
 `chatgpt.com` bind Bearer, and `api.anthropic.com` binds `x-api-key`. Unknown or
 ambiguous bindings are not writable. Model writers cover OpenAI Responses,
 Chat Completions, Anthropic Messages and Responses WebSocket `response.create`,
-including its nested `response` form. Known signed requests are not writable.
+including its nested `response` form.
 
 `inspect_request.context` carries lossless decoded content (`utf8` text or base64
 binary), complete JSON when available, request-side Agent projection, Harness

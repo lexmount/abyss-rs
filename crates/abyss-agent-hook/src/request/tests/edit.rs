@@ -211,36 +211,28 @@ fn invalid_tokens_have_value_free_errors() {
 }
 
 #[test]
-fn unsupported_and_signed_requests_remain_inspectable() {
-    for (path, signed) in [("/unknown", false), ("/v1/responses", true)] {
-        let mut source = EditableRequest::new(path, &json!({"model":null}));
-        source
-            .head
-            .headers_mut()
-            .insert("authorization", "Bearer readable-secret".parse().unwrap());
-        if signed {
-            source
-                .head
-                .headers_mut()
-                .insert("signature-input", "sig=()".parse().unwrap());
-        }
-        let view = source.view(RequestTransport::Http);
-        let context = AgentRequestParser::parse(
-            &view,
-            &crate::HarnessUsageConfig::default(),
-            "request".to_owned(),
-        );
-        assert_eq!(context.auth_token.as_deref(), Some("readable-secret"));
-        assert!(!format!("{context:?}").contains("readable-secret"));
-        assert!(!context.model_writable);
-        assert_eq!(context.auth_token_writable, !signed);
-        let actions = RequestActions::new(&view);
-        let mut editor = RequestEditor::new(view);
-        assert!(matches!(
-            actions.apply(&mut editor, Box::new([ModifyAction::RemoveModel])),
-            Err(RequestActionError::ModelUnavailable)
-        ));
-    }
+fn unsupported_requests_remain_inspectable() {
+    let mut source = EditableRequest::new("/unknown", &json!({"model":null}));
+    source
+        .head
+        .headers_mut()
+        .insert("authorization", "Bearer readable-secret".parse().unwrap());
+    let view = source.view(RequestTransport::Http);
+    let context = AgentRequestParser::parse(
+        &view,
+        &crate::HarnessUsageConfig::default(),
+        "request".to_owned(),
+    );
+    assert_eq!(context.auth_token.as_deref(), Some("readable-secret"));
+    assert!(!format!("{context:?}").contains("readable-secret"));
+    assert!(!context.model_writable);
+    assert!(context.auth_token_writable);
+    let actions = RequestActions::new(&view);
+    let mut editor = RequestEditor::new(view);
+    assert!(matches!(
+        actions.apply(&mut editor, Box::new([ModifyAction::RemoveModel])),
+        Err(RequestActionError::ModelUnavailable)
+    ));
     let source = EditableRequest::new("/v1/responses", &json!({"model":null}));
     let mut editor = RequestEditor::new(source.view(RequestTransport::Http));
     RequestActions::new(&editor.view())
