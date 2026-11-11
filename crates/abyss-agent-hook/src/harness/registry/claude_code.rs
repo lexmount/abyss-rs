@@ -42,6 +42,26 @@ pub(super) fn declare(source: &DeclarationSource<'_>) -> AgentDeclaration {
 
 pub(super) struct ClaudeCodeDetector;
 
+impl ClaudeCodeDetector {
+    pub(super) fn has_explicit_source(flow: &FlowContext) -> bool {
+        flow.source_process.as_ref().is_some_and(|source| {
+            match source.application_id.as_deref() {
+                Some("com.anthropic.claude-code") => true,
+                Some(
+                    "com.anthropic.claudefordesktop" | "com.anthropic.claudefordesktop.helper",
+                ) => false,
+                _ => source.executable_path.as_deref().is_some_and(|path| {
+                    // Desktop installs Code in its own lowercase claude.app bundle.
+                    // Keep that executable distinct even without a signing identity.
+                    let path = path.to_ascii_lowercase();
+                    path.contains("/claude-code/")
+                        && path.ends_with("/claude.app/contents/macos/claude")
+                }),
+            }
+        })
+    }
+}
+
 impl HarnessDetector for ClaudeCodeDetector {
     fn detect(
         &self,
@@ -72,7 +92,7 @@ impl HarnessDetector for ClaudeCodeDetector {
         ]
         .iter()
         .any(|marker| combined.contains(marker));
-        if !process && !marked {
+        if !Self::has_explicit_source(flow) && !process && !marked {
             return None;
         }
         Some(HarnessDetection {

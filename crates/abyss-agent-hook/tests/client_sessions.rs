@@ -33,6 +33,9 @@ struct Scenario {
     hook: HarnessUsageHook<Arc<RecordingSink>>,
 }
 
+#[path = "client_sessions/claude.rs"]
+mod claude;
+
 #[tokio::test]
 async fn opencode_native_sessions_and_declared_turns_survive_protocol_changes() {
     let scenario = Scenario::new(json!({}));

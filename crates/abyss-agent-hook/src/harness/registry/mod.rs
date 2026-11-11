@@ -100,6 +100,15 @@ impl HarnessRegistry {
                 !matches!(detection.harness_id.as_str(), "codex" | "claude-code")
             });
         }
+        // Desktop/Cowork can proxy Messages requests with Code fingerprints.
+        // Its explicit identity wins before policy filtering; the Desktop
+        // detector already excludes the separately identified bundled Code.
+        if detections
+            .iter()
+            .any(|detection| detection.harness_id.as_str() == "claude-desktop")
+        {
+            detections.retain(|detection| detection.harness_id.as_str() != "claude-code");
+        }
         if apply_audit_policy {
             detections
                 .retain(|detection| config.enabled_for_harness(detection.harness_id.as_str()));
@@ -179,8 +188,8 @@ mod tests {
     use std::net::SocketAddr;
 
     use abyss_mitm::{
-        CapturedBody, FlowContext, HttpExchange, OriginalDestination, TransparentProtocol,
-        WebSocketDirection, WebSocketMessage,
+        CapturedBody, FlowContext, HttpExchange, OriginalDestination, SourceProcess,
+        TransparentProtocol, WebSocketDirection, WebSocketMessage,
     };
     use http::{HeaderMap, Request, Response};
 
@@ -348,5 +357,40 @@ mod tests {
             )
             .is_none()
         );
+    }
+
+    #[test]
+    fn claude_inspection_identity_is_independent_of_audit_enablement() {
+        let mut flow = FlowContext::from_optional_addrs(
+            None,
+            None,
+            OriginalDestination::from(SocketAddr::from(([127, 0, 0, 1], 443))),
+            TransparentProtocol::PlainHttp,
+            None,
+        );
+        let config = serde_json::from_value::<HarnessUsageConfig>(serde_json::json!({
+            "harnesses": {
+                "claude-desktop": {"enabled": false},
+                "claude-code": {"enabled": false}
+            }
+        }))
+        .unwrap();
+        let mut headers = HeaderMap::new();
+        headers.insert("user-agent", "claude/1.0.0".parse().unwrap());
+        headers.insert("anthropic-client-platform", "desktop_app".parse().unwrap());
+        for (application_id, expected) in [
+            ("com.anthropic.claudefordesktop.helper", "claude-desktop"),
+            ("com.anthropic.claude-code", "claude-code"),
+        ] {
+            flow.source_process = Some(
+                SourceProcess::new(None, None, None)
+                    .with_application_id(Some(application_id.to_owned())),
+            );
+            assert!(HarnessRegistry::detect(&flow, &headers, "/v1/messages", &config).is_none());
+            let detected =
+                HarnessRegistry::recognize(&flow, &headers, "/v1/messages", &config, false)
+                    .unwrap();
+            assert_eq!(detected.harness_id.as_str(), expected);
+        }
     }
 }
