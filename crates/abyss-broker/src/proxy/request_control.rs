@@ -7,7 +7,7 @@ use abyss_agent_hook::{AgentRequestParser, HooksRuntimeConfig, RequestActions};
 use abyss_mitm::{
     LocalRejection, RequestEditor, RequestForwardingControl, RequestForwardingResult, RequestView,
 };
-use axum::http::{Extensions, StatusCode};
+use axum::http::StatusCode;
 
 use crate::plugin::{InspectionDecision, InspectionError, InspectionPlan, PluginClient};
 
@@ -108,8 +108,6 @@ impl RequestForwardingControl for RequestControl {
                 }
             }
         }
-        let mut annotations = Extensions::new();
-        annotations.insert(parsed);
-        Ok(request.finish(annotations))
+        Ok(request.finish(parsed))
     }
 }

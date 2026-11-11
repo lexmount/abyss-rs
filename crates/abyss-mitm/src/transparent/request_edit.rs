@@ -65,9 +65,14 @@ impl<'a> RequestEditor<'a> {
         self.body = Some(CapturedBody::from_bytes(bytes));
     }
 
-    /// Releases only the accepted replacements to the transport writer.
+    /// Releases accepted replacements with typed data for later observation.
     #[must_use]
-    pub fn finish(self, annotations: Extensions) -> RequestForwardingResult {
+    pub fn finish<T: Clone + Send + Sync + 'static>(
+        self,
+        annotation: T,
+    ) -> RequestForwardingResult {
+        let mut annotations = Extensions::new();
+        annotations.insert(annotation);
         RequestForwardingResult {
             head: self.head,
             body: self.body,

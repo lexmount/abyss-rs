@@ -161,7 +161,7 @@ fn authentication_binding_uses_carrier_or_known_host_without_guessing_from_proto
                 )
                 .unwrap();
             assert!(
-                request.finish(http::Extensions::new()).body.is_none(),
+                request.finish(()).body.is_none(),
                 "auth-only edits retain original bytes"
             );
         }
