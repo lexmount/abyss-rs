@@ -396,15 +396,11 @@ mod tests {
         .unwrap();
         let mut headers = HeaderMap::new();
         headers.insert("user-agent", "claude/1.0.0".parse().unwrap());
-        headers.insert("anthropic-client-platform", "desktop_app".parse().unwrap());
-        for (application_id, expected) in [
-            ("com.anthropic.claudefordesktop.helper", "claude-desktop"),
-            ("com.anthropic.claude-code", "claude-code"),
+        for (name, expected) in [
+            ("Claude Helper", "claude-desktop"),
+            ("claude", "claude-code"),
         ] {
-            flow.source_process = Some(
-                SourceProcess::new(None, None, None)
-                    .with_application_id(Some(application_id.to_owned())),
-            );
+            flow.source_process = Some(SourceProcess::new(None, Some(name.to_owned()), None));
             assert!(HarnessRegistry::detect(&flow, &headers, "/v1/messages", &config).is_none());
             let detected =
                 HarnessRegistry::recognize(&flow, &headers, "/v1/messages", &config, false)

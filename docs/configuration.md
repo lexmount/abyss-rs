@@ -195,9 +195,9 @@ Harness, Cursor, WorkBuddy, OpenCode. Custom Harnesses follow in ascending Harne
 ID order. Observation enablement is checked after selection: disabling the first
 match suppresses its events instead of falling through to another identity.
 Hermes precedes its Codex/Claude Code compatibility fingerprints; see
-[client setup and session handling](hermes.md). Claude Desktop/Cowork similarly
-precedes generic Claude Code fingerprints, while Desktop-bundled Code is
-identified separately by its application identity or executable layout.
+[client setup and session handling](hermes.md). Claude Desktop precedes Claude
+Code. Requests from Cowork or Desktop-bundled Code that match both existing
+detectors are therefore attributed to `claude-desktop`.
 Request headers provide attribution, not authenticated process identity.
 
 Cursor Local is built in as `cursor`; see [supported clients and native session

@@ -21,14 +21,7 @@ fn desktop_sources() -> Vec<SourceProcess> {
         )
         .with_application_id(Some("com.anthropic.claudefordesktop.helper".to_owned())),
         SourceProcess::new(None, None, None)
-            .with_application_id(Some("com.anthropic.claudefordesktop".to_owned())),
-        // A known Desktop application identity outranks a misleading parent directory.
-        SourceProcess::new(
-            None,
-            Some("Claude".to_owned()),
-            Some("/Users/test/claude-code/Claude.app/Contents/MacOS/Claude".to_owned()),
-        )
-        .with_application_id(Some("com.anthropic.claudefordesktop".to_owned())),
+            .with_application_id(Some("com.anthropic.claudefordesktop.helper".to_owned())),
     ]
 }
 
@@ -97,7 +90,7 @@ async fn cowork_desktop_headers_identify_proxy_requests_without_process_metadata
 }
 
 #[tokio::test]
-async fn desktop_bundled_claude_code_preserves_its_identity_and_declarations() {
+async fn desktop_bundled_claude_code_uses_first_matching_harness() {
     for app in ["Claude", "Claude-3p"] {
         for application_id in [None, Some("com.anthropic.claude-code")] {
             let scenario = Scenario::new(json!({}));
@@ -105,7 +98,6 @@ async fn desktop_bundled_claude_code_preserves_its_identity_and_declarations() {
                 .http_from_source(
                     &[
                         ("user-agent", "claude-code/2.1.321"),
-                        ("anthropic-client-platform", "desktop_app"),
                         ("x-claude-code-session-id", "code-session"),
                         ("x-claude-code-prompt-id", "code-turn"),
                     ],
@@ -117,33 +109,13 @@ async fn desktop_bundled_claude_code_preserves_its_identity_and_declarations() {
             let events = scenario.sink.0.lock();
             assert_eq!(events.len(), 2, "{app} {application_id:?}");
             for event in events.iter() {
-                assert_eq!(event.agent.name, "claude-code");
-                assert_eq!(event.agent.version.as_deref(), Some("2.1.321"));
+                // The existing Desktop path matcher precedes the Code detector.
+                assert_eq!(event.agent.name, "claude-desktop");
                 assert_eq!(event.session_id, "code-session");
-                assert_eq!(event.turn_id.as_deref(), Some("code-turn"));
+                assert!(event.turn_id.is_none());
             }
         }
     }
-}
-
-#[tokio::test]
-async fn claude_code_application_identity_is_sufficient_without_names_or_headers() {
-    let scenario = Scenario::new(json!({}));
-    scenario
-        .http_from_source(
-            &[],
-            "/v1/messages",
-            "code-reply",
-            Some(
-                SourceProcess::new(None, None, None)
-                    .with_application_id(Some("com.anthropic.claude-code".to_owned())),
-            ),
-        )
-        .await;
-    let events = scenario.sink.0.lock();
-    assert_eq!(events.len(), 2);
-    assert!(events.iter().all(|event| event.agent.name == "claude-code"));
-    drop(events);
 }
 
 #[tokio::test]
@@ -153,8 +125,12 @@ async fn claude_identity_is_resolved_before_enablement_policy() {
         .map(|source| ("claude-desktop", source))
         .collect::<Vec<_>>();
     sources.push((
-        "claude-code",
+        "claude-desktop",
         bundled_code_source("Claude", Some("com.anthropic.claude-code")),
+    ));
+    sources.push((
+        "claude-code",
+        SourceProcess::new(None, Some("claude".to_owned()), None),
     ));
     for (expected, source) in sources {
         for desktop_enabled in [true, false] {
