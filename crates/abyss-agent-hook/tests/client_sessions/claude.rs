@@ -119,7 +119,7 @@ async fn desktop_bundled_claude_code_uses_first_matching_harness() {
 }
 
 #[tokio::test]
-async fn claude_identity_is_resolved_before_enablement_policy() {
+async fn claude_first_enabled_match_follows_existing_policy_filtering() {
     let mut sources = desktop_sources()
         .into_iter()
         .map(|source| ("claude-desktop", source))
@@ -132,7 +132,7 @@ async fn claude_identity_is_resolved_before_enablement_policy() {
         "claude-code",
         SourceProcess::new(None, Some("claude".to_owned()), None),
     ));
-    for (expected, source) in sources {
+    for (first_match, source) in sources {
         for desktop_enabled in [true, false] {
             for code_enabled in [true, false] {
                 let scenario = Scenario::new(json!({"harness_usage": {"config": {
@@ -149,14 +149,24 @@ async fn claude_identity_is_resolved_before_enablement_policy() {
                         Some(source.clone()),
                     )
                     .await;
-                let enabled = if expected == "claude-desktop" {
-                    desktop_enabled
+                let expected = if first_match == "claude-desktop" && desktop_enabled {
+                    Some("claude-desktop")
+                } else if code_enabled {
+                    Some("claude-code")
                 } else {
-                    code_enabled
+                    None
                 };
                 let events = scenario.sink.0.lock();
-                assert_eq!(events.len(), if enabled { 2 } else { 0 }, "{expected}");
-                assert!(events.iter().all(|event| event.agent.name == expected));
+                assert_eq!(
+                    events.len(),
+                    if expected.is_some() { 2 } else { 0 },
+                    "{source:?}"
+                );
+                assert!(
+                    events
+                        .iter()
+                        .all(|event| Some(event.agent.name.as_str()) == expected)
+                );
                 drop(events);
             }
         }

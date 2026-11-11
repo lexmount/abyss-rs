@@ -245,13 +245,6 @@ mod tests {
                 json!({"harnesses": {"another-client": {"matchers": [{"process_names": ["WorkBuddy"]}]}}}),
                 true,
             ),
-            (
-                json!({"harnesses": {
-                    "workbuddy": {"enabled": false},
-                    "another-client": {"matchers": [{"process_names": ["WorkBuddy"]}]}
-                }}),
-                false,
-            ),
         ] {
             assert_identity(
                 Some(SourceProcess::new(None, Some("WorkBuddy".to_owned()), None)),

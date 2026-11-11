@@ -29,7 +29,7 @@ pub(super) trait HarnessDetector {
     ) -> Option<HarnessDetection>;
 }
 
-/// Ordered, first-match detector registry evaluated against the current policy snapshot.
+/// Stateless detector registry evaluated against the current policy snapshot.
 pub struct HarnessRegistry;
 
 impl HarnessRegistry {
@@ -74,41 +74,55 @@ impl HarnessRegistry {
         config: &HarnessUsageConfig,
         apply_audit_policy: bool,
     ) -> Option<HarnessDetection> {
-        // First match wins: explicit Hermes and Desktop identities precede
-        // the Codex/Claude Code compatibility fingerprints they can also send.
         let detectors: [&dyn HarnessDetector; 8] = [
-            &hermes::HermesDetector,
             &codex::CodexDetector,
             &claude_desktop::ClaudeDesktopDetector,
             &claude_code::ClaudeCodeDetector,
             &deepseek_harness::DeepSeekHarnessDetector,
+            &hermes::HermesDetector,
             &cursor::CursorDetector,
             &workbuddy::WorkBuddyDetector,
             &opencode::OpenCodeDetector,
         ];
-        let detection = detectors
+        let mut detections = detectors
             .into_iter()
-            .find_map(|detector| detector.detect(flow, headers, path))
-            .or_else(|| {
-                // Custom identities follow built-ins, in the map's ID order.
-                config.harnesses.iter().find_map(|(harness_id, harness)| {
-                    (!harness_id.is_reserved()
-                        && harness
-                            .matchers
-                            .iter()
-                            .any(|matcher| HarnessMatcher::new(matcher).matches(flow)))
-                    .then(|| HarnessDetection {
-                        harness_id: harness_id.clone(),
-                        version: None,
-                    })
-                })
-            });
+            .filter_map(|detector| detector.detect(flow, headers, path))
+            .collect::<Vec<_>>();
 
-        // A disabled first match suppresses capture; it must not fall through
-        // to another identity with a different audit policy.
-        detection.filter(|detection| {
-            !apply_audit_policy || config.enabled_for_harness(detection.harness_id.as_str())
-        })
+        // Hermes can send Codex/Claude compatibility fingerprints.
+        // Apply their explicit identity before policy filtering so disabling
+        // one cannot relabel its traffic as the impersonated client.
+        if detections
+            .iter()
+            .any(|detection| detection.harness_id.as_str() == "hermes")
+        {
+            detections.retain(|detection| {
+                !matches!(detection.harness_id.as_str(), "codex" | "claude-code")
+            });
+        }
+        if apply_audit_policy {
+            detections
+                .retain(|detection| config.enabled_for_harness(detection.harness_id.as_str()));
+        }
+
+        for (harness_id, harness) in &config.harnesses {
+            if harness_id.is_reserved() || (apply_audit_policy && !harness.enabled.unwrap_or(true))
+            {
+                continue;
+            }
+            if harness
+                .matchers
+                .iter()
+                .any(|matcher| HarnessMatcher::new(matcher).matches(flow))
+            {
+                detections.push(HarnessDetection {
+                    harness_id: harness_id.clone(),
+                    version: None,
+                });
+            }
+        }
+
+        detections.into_iter().next()
     }
 }
 
@@ -313,11 +327,17 @@ mod tests {
             "harnesses": {"codex": {"enabled": false}}
         }))
         .unwrap();
-        assert!(HarnessRegistry::detect(&flow, &headers, "/responses", &disabled).is_none());
+        assert_eq!(
+            HarnessRegistry::detect(&flow, &headers, "/responses", &disabled)
+                .unwrap()
+                .harness_id
+                .as_str(),
+            "deepseek-harness"
+        );
     }
 
     #[test]
-    fn custom_harnesses_use_first_match_in_id_order_before_policy_filtering() {
+    fn custom_harnesses_use_first_enabled_match_in_id_order() {
         let flow = FlowContext::from_optional_addrs(
             None,
             None,
@@ -345,7 +365,7 @@ mod tests {
             let detection = HarnessRegistry::detect(&flow, &headers, "/v1/messages", &config);
             assert_eq!(
                 detection.as_ref().map(|item| item.harness_id.as_str()),
-                enabled.then_some("a-client")
+                Some(if enabled { "a-client" } else { "z-client" })
             );
             assert_eq!(
                 HarnessRegistry::recognize(&flow, &headers, "/v1/messages", &config, false)

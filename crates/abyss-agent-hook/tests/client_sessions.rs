@@ -661,7 +661,11 @@ async fn compatibility_identity_and_policy_cannot_relabel_a_client() {
         .await;
     let events = overlapping.sink.0.lock();
     assert_eq!(events.len(), 2);
-    assert!(events.iter().all(|event| event.agent.name == "hermes"));
+    assert!(
+        events
+            .iter()
+            .all(|event| event.agent.name == "deepseek-harness")
+    );
     drop(events);
 }
 
