@@ -22,6 +22,7 @@ mod passthrough;
 mod plain_http;
 mod protocol;
 mod relay;
+mod request_edit;
 mod tls;
 mod tls_flow;
 mod tls_http;
@@ -52,6 +53,7 @@ pub use self::hook::{
 };
 pub use self::io::PrefixedDuplexStream;
 pub use self::io::{BoxedDuplexStream, DuplexStream, TrafficDirection, TrafficObserver};
+pub use self::request_edit::{RequestEditor, RequestForwardingResult};
 pub use self::types::{
     FlowIngress, FlowOperation, InterceptedHttpOutcome, OriginalDestination, TlsErrorSide,
     TransparentFlowError, TransparentFlowOutcome, TransparentFlowSource,

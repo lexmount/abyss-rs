@@ -1,6 +1,7 @@
 //! Pending-decision cleanup and connection membership invariants.
 
 use super::*;
+use crate::plugin::InspectionPlan;
 
 fn context() -> Arc<InspectionRequest> {
     let message: abyss_plugin_protocol::message::BrokerMessage =
@@ -37,8 +38,7 @@ async fn timeout_and_cancellation_remove_waiters_and_late_replies_are_ignored() 
     );
     registration.session.reply(InspectResponse {
         request_id: request.request_id.clone(),
-        allow: true,
-        reason: None,
+        decision: InspectionDecision::Allow,
     });
     let session = registration.session.clone();
     let pending = tokio::spawn(async move {
@@ -71,7 +71,10 @@ async fn selected_disconnect_fails_current_request_and_future_requests_use_curre
     let plan = InspectionPlan {
         sessions: participants.borrow().clone(),
     };
-    let snapshot = registry.select(&plan).unwrap();
+    let snapshot: Vec<_> = plan
+        .participants()
+        .map(|participant| registry.select(&participant).unwrap())
+        .collect();
     assert!(
         Arc::ptr_eq(&snapshot[0], &first.session),
         "registration order must be stable"
@@ -94,7 +97,9 @@ async fn selected_disconnect_fails_current_request_and_future_requests_use_curre
     );
     assert_eq!(participants.borrow().len(), 1);
     assert!(
-        registry.select(&plan).is_err(),
+        registry
+            .select(&plan.participants().next().unwrap())
+            .is_err(),
         "a disconnected identity cannot be replaced"
     );
     assert!(
@@ -130,7 +135,7 @@ async fn caller_cancellation_cancels_server_task_and_session_waiter() {
     let task = tokio::spawn(
         InspectionTask::new(
             &registry,
-            &plan,
+            &plan.participants().next().unwrap(),
             context,
             Instant::now() + DECISION_TIMEOUT,
             reply,

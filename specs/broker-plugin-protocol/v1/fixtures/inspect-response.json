@@ -1,6 +1,8 @@
 {
   "type": "inspect_response",
   "request_id": "request-123",
-  "allow": false,
-  "reason": "Private key detected"
+  "decision": {
+    "action": "block",
+    "reason": "Private key detected"
+  }
 }

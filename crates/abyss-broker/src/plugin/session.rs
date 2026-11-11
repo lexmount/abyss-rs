@@ -111,7 +111,7 @@ where
         let read = async {
             while let Some(payload) = read_payload(&mut reader).await? {
                 let message: PluginMessage = serde_json::from_slice(&payload)
-                    .map_err(|source| PluginFrameError::Json { source })?;
+                    .map_err(|_| PluginSessionError::InvalidMessage)?;
                 match (message, registration_ref) {
                     (PluginMessage::InspectResponse(response), Some(registration)) => {
                         registration.session.reply(response);

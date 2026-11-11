@@ -88,3 +88,8 @@ test-install-cli:
 
 test-blackbox-local:
 	bash scripts/tests/blackbox_local_environment.sh
+
+.PHONY: test-blackbox-request-modification
+test-blackbox-request-modification:
+	cargo build --locked --package abyss-broker
+	python3 scripts/blackbox_request_modification.py

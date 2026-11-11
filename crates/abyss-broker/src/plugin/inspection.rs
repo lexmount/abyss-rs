@@ -22,14 +22,13 @@ use tokio::{
 };
 use uuid::Uuid;
 
-use super::message::{InspectionDecision, InspectionError, InspectionPlan};
+use super::message::{InspectionDecision, InspectionError, InspectionParticipant};
 
 /// A decision includes queueing and reply time. There are no retries.
 pub(super) const DECISION_TIMEOUT: Duration = Duration::from_secs(5);
 const SESSION_CAPACITY: usize = 64;
 
-/// The same encoded context is sent to every selected plugin without re-parsing
-/// or re-serializing the request. Oversized contexts fail before session writes.
+/// Encoded context for one selected participant. Oversized contexts fail before writes.
 pub(super) struct InspectionRequest {
     pub(super) request_id: String,
     pub(super) frame: super::codec::EncodedFrame,
@@ -81,19 +80,14 @@ impl InspectionRegistry {
 
     fn select(
         &self,
-        plan: &InspectionPlan,
-    ) -> Result<Vec<Arc<InspectionSession>>, InspectionError> {
-        let sessions = self.sessions.lock();
-        plan.sessions
+        participant: &InspectionParticipant,
+    ) -> Result<Arc<InspectionSession>, InspectionError> {
+        self.sessions
+            .lock()
             .iter()
-            .map(|id| {
-                sessions
-                    .iter()
-                    .find(|session| session.id == *id)
-                    .cloned()
-                    .ok_or(InspectionError::Unavailable)
-            })
-            .collect()
+            .find(|session| session.id == participant.id)
+            .cloned()
+            .ok_or(InspectionError::Unavailable)
     }
 
     pub(super) fn register(
@@ -187,7 +181,7 @@ impl InspectionSession {
 
 /// One server-dispatched command; the server owns its task and cancellation.
 pub(super) struct InspectionTask {
-    sessions: Result<Vec<Arc<InspectionSession>>, InspectionError>,
+    session: Result<Arc<InspectionSession>, InspectionError>,
     context: Arc<AgentRequestContext>,
     first_deadline: Instant,
     reply: oneshot::Sender<Result<InspectionDecision, InspectionError>>,
@@ -196,13 +190,13 @@ pub(super) struct InspectionTask {
 impl InspectionTask {
     pub(super) fn new(
         registry: &InspectionRegistry,
-        plan: &InspectionPlan,
+        participant: &InspectionParticipant,
         context: Arc<AgentRequestContext>,
         first_deadline: Instant,
         reply: oneshot::Sender<Result<InspectionDecision, InspectionError>>,
     ) -> Self {
         Self {
-            sessions: registry.select(plan),
+            session: registry.select(participant),
             context,
             first_deadline,
             reply,
@@ -215,7 +209,7 @@ impl InspectionTask {
     )]
     pub(super) async fn run(self) {
         let Self {
-            sessions,
+            session,
             context,
             first_deadline,
             mut reply,
@@ -223,21 +217,17 @@ impl InspectionTask {
         let result = tokio::select! {
             biased;
             () = reply.closed() => return,
-            result = Self::decide(sessions, context, first_deadline) => result,
+            result = Self::decide(session, context, first_deadline) => result,
         };
         let _sent = reply.send(result);
     }
 
-    #[expect(
-        clippy::arithmetic_side_effects,
-        reason = "the fixed five-second deadline fits Instant's range"
-    )]
     async fn decide(
-        sessions: Result<Vec<Arc<InspectionSession>>, InspectionError>,
+        session: Result<Arc<InspectionSession>, InspectionError>,
         context: Arc<AgentRequestContext>,
-        mut deadline: Instant,
+        deadline: Instant,
     ) -> Result<InspectionDecision, InspectionError> {
-        let sessions = sessions?;
+        let session = session?;
         let request = Arc::new(
             InspectionRequest::new(context).map_err(|error| match error {
                 super::codec::PluginFrameError::PayloadTooLarge { .. } => {
@@ -246,21 +236,10 @@ impl InspectionTask {
                 _ => InspectionError::Encoding,
             })?,
         );
-        for session in sessions {
-            if Instant::now() >= deadline {
-                return Err(InspectionError::Unavailable);
-            }
-            let response = session
-                .inspect(request.clone(), deadline)
-                .await
-                .map_err(|()| InspectionError::Unavailable)?;
-            if !response.allow {
-                return Ok(InspectionDecision::Block {
-                    reason: response.reason,
-                });
-            }
-            deadline = Instant::now() + DECISION_TIMEOUT;
-        }
-        Ok(InspectionDecision::Allow)
+        let response = session
+            .inspect(request, deadline)
+            .await
+            .map_err(|()| InspectionError::Unavailable)?;
+        Ok(response.decision)
     }
 }

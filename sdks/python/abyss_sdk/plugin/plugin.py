@@ -62,8 +62,7 @@ class AgentEventStream(Iterator[AgentEvent]):
                     {
                         "type": "inspect_response",
                         "request_id": context.request_id,
-                        "allow": decision.allow,
-                        "reason": decision.reason,
+                        "decision": decision.to_dict(),
                     },
                 )
         except StopIteration:

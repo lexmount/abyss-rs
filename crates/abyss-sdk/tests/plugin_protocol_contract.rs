@@ -205,6 +205,8 @@ fn packaged_contract_matches_the_public_specification() {
         "inspection.schema.json",
         "fixtures/inspect-request.json",
         "fixtures/inspect-response.json",
+        "fixtures/inspect-response-allow.json",
+        "fixtures/inspect-response-modify.json",
         "fixtures/agent-event-frame.json",
         "fixtures/agent-event.json",
         "fixtures/broker-close.json",
@@ -443,6 +445,12 @@ fn published_message_schema_defines_handshake_and_control_contracts() {
 fn inspection_frames_round_trip_the_current_contract() {
     let contract = PublishedContract::load();
     contract.assert_fixture_round_trip::<BrokerMessage>("inspect-request.json");
-    contract.assert_fixture_round_trip::<PluginMessage>("inspect-response.json");
+    for fixture in [
+        "inspect-response.json",
+        "inspect-response-allow.json",
+        "inspect-response-modify.json",
+    ] {
+        contract.assert_fixture_round_trip::<PluginMessage>(fixture);
+    }
     contract.assert_fixture_round_trip::<BrokerMessage>("agent-event-frame.json");
 }

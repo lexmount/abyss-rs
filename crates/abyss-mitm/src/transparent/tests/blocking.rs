@@ -32,7 +32,8 @@ impl RequestForwardingControl for DecisionControl {
         &self,
         (): (),
         request: RequestView<'_>,
-    ) -> impl std::future::Future<Output = Result<http::Extensions, LocalRejection>> + Send {
+    ) -> impl std::future::Future<Output = Result<crate::RequestForwardingResult, LocalRejection>> + Send
+    {
         self.calls.fetch_add(1, Ordering::Relaxed);
         assert_eq!(
             request.body.json().unwrap()["input"],
@@ -49,7 +50,10 @@ impl RequestForwardingControl for DecisionControl {
         } else {
             let mut annotations = http::Extensions::new();
             annotations.insert(Arc::new("prepared request".to_owned()));
-            Ok(annotations)
+            Ok(crate::RequestForwardingResult {
+                annotations,
+                ..Default::default()
+            })
         })
     }
 }

@@ -1,5 +1,6 @@
 //! Inspection projections preserve request content independently of audit settings.
 
+mod edit;
 mod metadata;
 mod reuse;
 

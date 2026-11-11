@@ -47,6 +47,9 @@
       "attachments": [],
       "tools": null,
       "previous_response_id": null
-    }
+    },
+    "auth_token": null,
+    "auth_token_writable": true,
+    "model_writable": true
   }
 }

@@ -49,7 +49,7 @@ pub trait RequestForwardingControl: Send + Sync {
         &self,
         plan: Self::Plan,
         request: RequestView<'_>,
-    ) -> impl Future<Output = Result<http::Extensions, LocalRejection>> + Send;
+    ) -> impl Future<Output = Result<super::RequestForwardingResult, LocalRejection>> + Send;
 }
 
 /// Default transport behavior with no inspection stage or body retention.
@@ -66,8 +66,8 @@ impl RequestForwardingControl for UncontrolledForwarding {
         &self,
         (): (),
         _request: RequestView<'_>,
-    ) -> impl Future<Output = Result<http::Extensions, LocalRejection>> + Send {
-        std::future::ready(Ok(http::Extensions::new()))
+    ) -> impl Future<Output = Result<super::RequestForwardingResult, LocalRejection>> + Send {
+        std::future::ready(Ok(super::RequestForwardingResult::default()))
     }
 }
 

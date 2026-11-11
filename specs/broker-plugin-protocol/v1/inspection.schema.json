@@ -23,7 +23,10 @@
     "json",
     "parsing_status",
     "harness",
-    "agent"
+    "agent",
+    "auth_token",
+    "auth_token_writable",
+    "model_writable"
   ],
   "properties": {
     "flow_id": {
@@ -149,6 +152,18 @@
           "type": "null"
         }
       ]
+    },
+    "auth_token": {
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "auth_token_writable": {
+      "type": "boolean"
+    },
+    "model_writable": {
+      "type": "boolean"
     }
   },
   "$defs": {

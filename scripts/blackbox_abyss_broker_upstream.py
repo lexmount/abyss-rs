@@ -175,7 +175,9 @@ class NextHop(socketserver.BaseRequestHandler):
             return
         if host == "tls.invalid":
             destination = self.server.tls_origin.server_address
-        elif host == "plain.invalid" or host == "127.0.0.1":
+        elif host in getattr(
+            self.server, "plain_hosts", ("plain.invalid", "127.0.0.1")
+        ):
             destination = self.server.origin.server_address
         else:
             raise AssertionError(f"unexpected test target: {host}:{port}")

@@ -1,0 +1,23 @@
+{
+  "type": "inspect_response",
+  "request_id": "request-123",
+  "decision": {
+    "action": "modify",
+    "actions": [
+      {
+        "op": "set_auth_token",
+        "value": "fixture-token"
+      },
+      {
+        "op": "remove_auth_token"
+      },
+      {
+        "op": "set_model",
+        "value": "example-model"
+      },
+      {
+        "op": "remove_model"
+      }
+    ]
+  }
+}

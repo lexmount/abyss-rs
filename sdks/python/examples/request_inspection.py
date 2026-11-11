@@ -7,7 +7,7 @@ def inspect(context: AgentRequestContext) -> RequestDecision:
     detected = context.agent is not None and any(
         "PRIVATE KEY" in message.text for message in context.agent.conversation.entries
     )
-    return RequestDecision(not detected, "Private key detected" if detected else None)
+    return RequestDecision.block("Private key detected") if detected else RequestDecision.allow()
 
 
 if __name__ == "__main__":

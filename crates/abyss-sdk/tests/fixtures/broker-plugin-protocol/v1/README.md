@@ -42,7 +42,7 @@ sequenceDiagram
     Broker-->>Plugin: broker_hello
     Relay->>Broker: complete decoded request + flow metadata
     Broker->>Plugin: inspect_request (context.request_id)
-    Plugin-->>Broker: inspect_response (request_id, allow, reason)
+    Plugin-->>Broker: inspect_response (request_id, decision)
     Broker-->>Relay: forward or reject
     opt independent observation subscription
         Broker-->>Plugin: agent_event (event)
@@ -52,8 +52,29 @@ sequenceDiagram
 ## Request decisions
 
 ```json
-{"type":"inspect_response","request_id":"request-123","allow":false,"reason":"Private key detected"}
+{ "type": "inspect_response", "request_id": "request-123", "decision": { "action": "modify", "actions": [{ "op": "set_auth_token", "value": "allocated-token" }] } }
 ```
+
+The v1 reply contains exactly one tagged `decision`:
+
+- `{"action":"allow"}` retains the current request.
+- `{"action":"block","reason":"safe explanation"}` rejects the request.
+- `{"action":"modify","actions":[...]}` applies explicit semantic actions.
+
+Actions are `set_auth_token` / `set_model` with a string `value`, or
+`remove_auth_token` / `remove_model` without a value. Lists execute in order; the
+last action for a field wins. An empty list is equivalent to Allow. Invalid edits
+reject the pending request before any upstream bytes are written.
+
+The callback context is read-only input. SDKs send the returned decision directly;
+they do not compare context snapshots. `auth_token` exposes the selected token only
+to request handlers. `auth_token_writable` and `model_writable` describe supported
+writes, not plugin permissions. Auth binding uses an existing Bearer, `x-api-key`,
+or `anthropic-api-key` header. With no such header, `api.openai.com` and
+`chatgpt.com` bind Bearer, and `api.anthropic.com` binds `x-api-key`. Unknown or
+ambiguous bindings are not writable. Model writers cover OpenAI Responses,
+Chat Completions, Anthropic Messages and Responses WebSocket `response.create`,
+including its nested `response` form.
 
 `inspect_request.context` carries lossless decoded content (`utf8` text or base64
 binary), complete JSON when available, request-side Agent projection, Harness
@@ -78,8 +99,8 @@ WebSocket declarations combine connection headers with the current message's
 `client_metadata`, without inheriting an upgrade request's turn.
 
 The broker snapshots connected inspection sessions in registration order per HTTP
-request or complete client WebSocket data message. All selected plugins must allow;
-the first rejection stops evaluation. Replies are correlated on the same session.
+request or complete client WebSocket data message. Plugins run sequentially; each sees prior accepted edits.
+The first rejection stops evaluation. Replies are correlated on the same session.
 Late replies are ignored. A selected session's disconnect, handler failure, queue
 exhaustion or five-second decision deadline rejects the current request with
 `inspection_unavailable`. Waiters are removed on cancellation and disconnect.
@@ -92,12 +113,17 @@ must finish its inspected HTTP body within 30 seconds, or receives 408
 `inspection_body_timeout`. Rejected or
 uninspectable requests send no HTTP request head/body bytes to the provider.
 Provider TCP/TLS setup retains its existing order. Allowed bodies use their original
-wire framing and content encoding. Oversized bodies receive 413, unsupported encoding
+wire framing and content encoding when only credentials change. Model edits retain
+unrelated JSON values and use identity encoding with a new Content-Length, removing
+Transfer-Encoding, Content-Encoding and Trailer. Invalid edits receive 502
+`invalid_agent_request_edit`. Oversized bodies receive 413, unsupported encoding
 415, invalid encoding/body 400, plugin rejection 403 `agent_request_blocked`, and
 inspection failure 503 `inspection_unavailable`. Local errors identify `abyss-broker`.
 The HTTP upgrade is inspected before its head is forwarded. After upgrade,
 WebSocket inspection runs on complete client data messages; reverse
-traffic can continue while a decision is pending. Rejection closes with 1008 and
+traffic can continue while a decision is pending. The final upgrade credential
+is readable but fixed on subsequent message contexts. Model edits preserve text
+or binary message type. Invalid edits close with 1011. Rejection closes with 1008 and
 inspection failure with 1011. Control frames are not inspected. Reassembly keeps
 the relay's existing 64 MiB message and 16 MiB frame limits; exceeding them with
 an inspector connected closes with 1009. These transport limits also apply when

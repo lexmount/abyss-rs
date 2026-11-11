@@ -1,5 +1,5 @@
 //! Channel-only handle for event publication and synchronous plugin decisions.
-//! Session membership, IPC encoding and decision aggregation belong to `PluginServer`.
+//! Session membership, IPC encoding and decision dispatch belong to `PluginServer`.
 
 use std::{convert::Infallible, future::Future, sync::Arc};
 
@@ -13,7 +13,9 @@ use uuid::Uuid;
 
 use super::{
     inspection::DECISION_TIMEOUT,
-    message::{InspectionDecision, InspectionError, InspectionPlan, PluginCommand},
+    message::{
+        InspectionDecision, InspectionError, InspectionParticipant, InspectionPlan, PluginCommand,
+    },
 };
 
 #[derive(Debug, Clone)]
@@ -41,29 +43,22 @@ impl PluginClient {
         })
     }
 
-    /// Submits already parsed context and awaits the server's final decision.
+    /// Submits already parsed context to one selected participant.
     #[expect(
         clippy::arithmetic_side_effects,
         reason = "five seconds per live local session cannot exhaust Instant's range"
     )]
     pub async fn inspect(
         &self,
-        plan: InspectionPlan,
+        participant: InspectionParticipant,
         context: Arc<AgentRequestContext>,
     ) -> Result<InspectionDecision, InspectionError> {
-        let started = Instant::now();
-        let first_deadline = started + DECISION_TIMEOUT;
-        // Keep the existing per-session budget. Server queueing consumes the
-        // first session's budget; cancellation also bounds an unresponsive server.
-        let deadline = plan
-            .sessions
-            .iter()
-            .fold(started, |deadline, _| deadline + DECISION_TIMEOUT);
+        let first_deadline = Instant::now() + DECISION_TIMEOUT;
         let (reply, response) = oneshot::channel();
-        timeout_at(deadline, async {
+        timeout_at(first_deadline, async {
             self.commands
                 .send(PluginCommand::InspectRequest {
-                    plan,
+                    participant,
                     context,
                     first_deadline,
                     reply,
@@ -114,7 +109,15 @@ mod tests {
         let started = Instant::now();
         assert_eq!(
             client
-                .inspect(client.inspection_plan().unwrap(), context.clone())
+                .inspect(
+                    client
+                        .inspection_plan()
+                        .unwrap()
+                        .participants()
+                        .next()
+                        .unwrap(),
+                    context.clone()
+                )
                 .await,
             Err(InspectionError::Unavailable)
         );
@@ -132,7 +135,15 @@ mod tests {
         let started = Instant::now();
         assert_eq!(
             client
-                .inspect(client.inspection_plan().unwrap(), context)
+                .inspect(
+                    client
+                        .inspection_plan()
+                        .unwrap()
+                        .participants()
+                        .next()
+                        .unwrap(),
+                    context
+                )
                 .await,
             Err(InspectionError::Unavailable)
         );

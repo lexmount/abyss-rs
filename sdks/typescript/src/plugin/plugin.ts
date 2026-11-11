@@ -85,8 +85,7 @@ export class PluginConnection implements AsyncIterable<AgentEvent> {
         await writeJsonFrame(this.#socket, {
           type: "inspect_response",
           request_id: frame.context.request_id,
-          allow: decision.allow,
-          reason: decision.allow ? null : decision.reason,
+          decision,
         });
       }
     } catch (error) {

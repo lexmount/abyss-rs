@@ -13,12 +13,21 @@ pub struct InspectionPlan {
     pub(super) sessions: Arc<[Uuid]>,
 }
 
-/// Final decision after all selected plugin sessions have been considered.
-#[derive(Debug, PartialEq)]
-pub enum InspectionDecision {
-    Allow,
-    Block { reason: Option<String> },
+/// Opaque participant selected for one request; session ownership stays in the server.
+pub struct InspectionParticipant {
+    pub(super) id: Uuid,
 }
+
+impl InspectionPlan {
+    /// Iterates the request's fixed registration order without selecting new sessions.
+    pub fn participants(&self) -> impl Iterator<Item = InspectionParticipant> + '_ {
+        self.sessions
+            .iter()
+            .map(|id| InspectionParticipant { id: *id })
+    }
+}
+
+pub use abyss_plugin_protocol::inspection::RequestDecision as InspectionDecision;
 
 /// Plugin-service failures; the caller owns their HTTP or WebSocket representation.
 #[derive(Debug, Error, PartialEq)]
@@ -34,7 +43,7 @@ pub enum InspectionError {
 pub(super) enum PluginCommand {
     PublishEvent(Arc<AgentEvent>),
     InspectRequest {
-        plan: InspectionPlan,
+        participant: InspectionParticipant,
         context: Arc<AgentRequestContext>,
         first_deadline: Instant,
         reply: oneshot::Sender<Result<InspectionDecision, InspectionError>>,

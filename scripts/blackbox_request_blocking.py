@@ -91,8 +91,13 @@ class Plugin:
             {
                 "type": "inspect_response",
                 "request_id": context["request_id"],
-                "allow": allow,
-                "reason": None if allow else "Private key detected",
+                "decision": allow
+                if isinstance(allow, dict)
+                else (
+                    {"action": "allow"}
+                    if allow
+                    else {"action": "block", "reason": "Private key detected"}
+                ),
             },
         )
 
@@ -482,7 +487,7 @@ def checks(broker, origin, endpoint):
 
     def sdk_decision(context):
         seen.append(context)
-        return RequestDecision(False, "SDK policy")
+        return RequestDecision.block("SDK policy")
 
     sdk_stream = BrokerPlugin(
         "python-inspector", endpoint, on_agent_request=sdk_decision, agent_events=False
