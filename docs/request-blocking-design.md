@@ -642,9 +642,10 @@ parsing reuses the prepared result, while the existing response accumulator call
 the protocol response parser and the same terminal `assemble_exchange` for both
 paths. Multiple messages and turns on one connection retain their own identities.
 
-Harness detection enriches the context but does not gate inspection. An unknown,
-disabled-for-audit, or ambiguously identified Harness must still reach the
-selected request inspector. Likewise, `hooks.harness_usage.enabled` and content
+Harness detection enriches the context but does not gate inspection. Requests
+from an unknown or disabled-for-audit Harness still reach the selected request
+inspector; overlapping Harness matches use the first detector in registry order.
+Likewise, `hooks.harness_usage.enabled` and content
 retention switches govern audit output, not the content visible to a connected
 plugin that declared request inspection support.
 Separate Harness evidence matching from the current audit-enabled filtering in

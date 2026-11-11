@@ -648,8 +648,8 @@ async fn compatibility_identity_and_policy_cannot_relabel_a_client() {
             }
         }
     }
-    let ambiguous = Scenario::new(json!({}));
-    ambiguous
+    let overlapping = Scenario::new(json!({}));
+    overlapping
         .http(
             &[
                 ("x-hermes-session-id", "h"),
@@ -659,7 +659,10 @@ async fn compatibility_identity_and_policy_cannot_relabel_a_client() {
             "resp-1",
         )
         .await;
-    assert!(ambiguous.sink.0.lock().is_empty());
+    let events = overlapping.sink.0.lock();
+    assert_eq!(events.len(), 2);
+    assert!(events.iter().all(|event| event.agent.name == "hermes"));
+    drop(events);
 }
 
 #[tokio::test]
@@ -781,9 +784,12 @@ async fn hermes_source_matching_remains_exact_and_respects_policy() {
     }
     let source = SourceProcess::new(None, Some("python3.14".to_owned()), None)
         .with_application_id(Some("com.nousresearch.hermes.managed-python".to_owned()));
-    for policy in [
-        json!({"harnesses": {"hermes": {"enabled": false}}}),
-        json!({"harnesses": {"another-agent": {"matchers": [{"application_ids": ["com.nousresearch.hermes.managed-python"]}]}}}),
+    for (policy, enabled) in [
+        (json!({"harnesses": {"hermes": {"enabled": false}}}), false),
+        (
+            json!({"harnesses": {"another-agent": {"matchers": [{"application_ids": ["com.nousresearch.hermes.managed-python"]}]}}}),
+            true,
+        ),
     ] {
         let scenario = Scenario::new(json!({"harness_usage": {"config": policy}}));
         scenario
@@ -794,6 +800,9 @@ async fn hermes_source_matching_remains_exact_and_respects_policy() {
                 Some(source.clone()),
             )
             .await;
-        assert!(scenario.sink.0.lock().is_empty());
+        let events = scenario.sink.0.lock();
+        assert_eq!(events.len(), if enabled { 2 } else { 0 });
+        assert!(events.iter().all(|event| event.agent.name == "hermes"));
+        drop(events);
     }
 }

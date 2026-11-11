@@ -189,11 +189,16 @@ Custom Harnesses can declare `process_names` and `application_ids` matchers in
 `runtime-policy.toml`; these use exact matches against platform-supplied source
 metadata.
 Populated fields in one matcher must all match; values within a field and
-separate matchers are alternatives. Exactly one enabled Harness must match.
-Hermes is also built in; see [client setup and session handling](hermes.md).
-Its explicit identity takes precedence over Codex/Claude Code compatibility
-fingerprints, including when capture for that client is disabled. Other ambiguous
-matches are skipped. Request headers provide attribution, not authenticated process identity.
+separate matchers are alternatives. The first matching Harness wins. Built-ins
+are tried in this order: Hermes, Codex, Claude Desktop, Claude Code, DeepSeek
+Harness, Cursor, WorkBuddy, OpenCode. Custom Harnesses follow in ascending Harness
+ID order. Observation enablement is checked after selection: disabling the first
+match suppresses its events instead of falling through to another identity.
+Hermes precedes its Codex/Claude Code compatibility fingerprints; see
+[client setup and session handling](hermes.md). Claude Desktop/Cowork similarly
+precedes generic Claude Code fingerprints, while Desktop-bundled Code is
+identified separately by its application identity or executable layout.
+Request headers provide attribution, not authenticated process identity.
 
 Cursor Local is built in as `cursor`; see [supported clients and native session
 headers](cursor.md). The ordinary Cursor cloud CLI uses a separate, unsupported

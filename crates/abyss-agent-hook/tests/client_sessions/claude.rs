@@ -249,7 +249,7 @@ async fn standalone_claude_code_keeps_legacy_detection_without_desktop_identity(
 }
 
 #[tokio::test]
-async fn claude_desktop_conflicts_with_unrelated_agents_are_still_rejected() {
+async fn overlapping_desktop_requests_use_the_first_builtin_match() {
     for source in desktop_sources() {
         let scenario = Scenario::new(json!({}));
         scenario
@@ -263,6 +263,9 @@ async fn claude_desktop_conflicts_with_unrelated_agents_are_still_rejected() {
                 Some(source),
             )
             .await;
-        assert!(scenario.sink.0.lock().is_empty());
+        let events = scenario.sink.0.lock();
+        assert_eq!(events.len(), 2);
+        assert!(events.iter().all(|event| event.agent.name == "codex"));
+        drop(events);
     }
 }
