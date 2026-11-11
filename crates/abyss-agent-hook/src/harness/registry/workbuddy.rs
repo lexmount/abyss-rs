@@ -235,15 +235,21 @@ mod tests {
     }
 
     #[test]
-    fn builtin_respects_disabled_policy_and_ambiguous_custom_identity() {
-        for config in [
-            json!({"harnesses": {"workbuddy": {"enabled": false}}}),
-            json!({"harnesses": {"another-client": {"matchers": [{"process_names": ["WorkBuddy"]}]}}}),
+    fn builtin_precedes_custom_matches_and_respects_disabled_policy() {
+        for (config, expected) in [
+            (
+                json!({"harnesses": {"workbuddy": {"enabled": false}}}),
+                false,
+            ),
+            (
+                json!({"harnesses": {"another-client": {"matchers": [{"process_names": ["WorkBuddy"]}]}}}),
+                true,
+            ),
         ] {
             assert_identity(
                 Some(SourceProcess::new(None, Some("WorkBuddy".to_owned()), None)),
                 &serde_json::from_value(config).unwrap(),
-                false,
+                expected,
             );
         }
     }

@@ -122,17 +122,7 @@ impl HarnessRegistry {
             }
         }
 
-        if detections.len() != 1 {
-            if detections.len() > 1 {
-                let harnesses = detections
-                    .iter()
-                    .map(|detection| detection.harness_id.as_str())
-                    .collect::<Vec<_>>();
-                tracing::warn!(?harnesses, "ambiguous Harness detection; skipping event");
-            }
-            return None;
-        }
-        detections.pop()
+        detections.into_iter().next()
     }
 }
 
@@ -179,8 +169,8 @@ mod tests {
     use std::net::SocketAddr;
 
     use abyss_mitm::{
-        CapturedBody, FlowContext, HttpExchange, OriginalDestination, TransparentProtocol,
-        WebSocketDirection, WebSocketMessage,
+        CapturedBody, FlowContext, HttpExchange, OriginalDestination, SourceProcess,
+        TransparentProtocol, WebSocketDirection, WebSocketMessage,
     };
     use http::{HeaderMap, Request, Response};
 
@@ -324,9 +314,67 @@ mod tests {
         .unwrap();
         assert!(HarnessRegistry::detect(&flow, &headers, "/responses", &disabled).is_none());
 
-        // Preserve the registry's rejection of conflicting Harness identities.
+        // Codex is the first matching detector, even with another client's marker.
         headers.insert("x-codex-turn-metadata", "{}".parse().unwrap());
-        assert!(HarnessRegistry::detect(&flow, &headers, "/responses", &config).is_none());
+        assert_eq!(
+            HarnessRegistry::detect(&flow, &headers, "/responses", &config)
+                .unwrap()
+                .harness_id
+                .as_str(),
+            "codex"
+        );
+        let disabled = serde_json::from_value::<HarnessUsageConfig>(serde_json::json!({
+            "harnesses": {"codex": {"enabled": false}}
+        }))
+        .unwrap();
+        assert_eq!(
+            HarnessRegistry::detect(&flow, &headers, "/responses", &disabled)
+                .unwrap()
+                .harness_id
+                .as_str(),
+            "deepseek-harness"
+        );
+    }
+
+    #[test]
+    fn custom_harnesses_use_first_enabled_match_in_id_order() {
+        let flow = FlowContext::from_optional_addrs(
+            None,
+            None,
+            OriginalDestination::from(SocketAddr::from(([127, 0, 0, 1], 443))),
+            TransparentProtocol::PlainHttp,
+            Some(SourceProcess::new(
+                None,
+                Some("custom-agent".to_owned()),
+                None,
+            )),
+        );
+        for enabled in [true, false] {
+            // Definition order does not override the map's deterministic ID order.
+            let config = serde_json::from_value::<HarnessUsageConfig>(serde_json::json!({
+                "harnesses": {
+                    "z-client": {"matchers": [{"process_names": ["custom-agent"]}]},
+                    "a-client": {
+                        "enabled": enabled,
+                        "matchers": [{"process_names": ["custom-agent"]}]
+                    }
+                }
+            }))
+            .unwrap();
+            let headers = HeaderMap::new();
+            let detection = HarnessRegistry::detect(&flow, &headers, "/v1/messages", &config);
+            assert_eq!(
+                detection.as_ref().map(|item| item.harness_id.as_str()),
+                Some(if enabled { "a-client" } else { "z-client" })
+            );
+            assert_eq!(
+                HarnessRegistry::recognize(&flow, &headers, "/v1/messages", &config, false)
+                    .unwrap()
+                    .harness_id
+                    .as_str(),
+                "a-client"
+            );
+        }
     }
 
     #[test]
@@ -348,5 +396,36 @@ mod tests {
             )
             .is_none()
         );
+    }
+
+    #[test]
+    fn claude_inspection_identity_is_independent_of_audit_enablement() {
+        let mut flow = FlowContext::from_optional_addrs(
+            None,
+            None,
+            OriginalDestination::from(SocketAddr::from(([127, 0, 0, 1], 443))),
+            TransparentProtocol::PlainHttp,
+            None,
+        );
+        let config = serde_json::from_value::<HarnessUsageConfig>(serde_json::json!({
+            "harnesses": {
+                "claude-desktop": {"enabled": false},
+                "claude-code": {"enabled": false}
+            }
+        }))
+        .unwrap();
+        let mut headers = HeaderMap::new();
+        headers.insert("user-agent", "claude/1.0.0".parse().unwrap());
+        for (name, expected) in [
+            ("Claude Helper", "claude-desktop"),
+            ("claude", "claude-code"),
+        ] {
+            flow.source_process = Some(SourceProcess::new(None, Some(name.to_owned()), None));
+            assert!(HarnessRegistry::detect(&flow, &headers, "/v1/messages", &config).is_none());
+            let detected =
+                HarnessRegistry::recognize(&flow, &headers, "/v1/messages", &config, false)
+                    .unwrap();
+            assert_eq!(detected.harness_id.as_str(), expected);
+        }
     }
 }
