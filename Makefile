@@ -93,3 +93,4 @@ test-blackbox-local:
 test-blackbox-request-modification:
 	cargo build --locked --package abyss-broker
 	python3 scripts/blackbox_request_modification.py
+	python3 scripts/blackbox_provider_switch.py

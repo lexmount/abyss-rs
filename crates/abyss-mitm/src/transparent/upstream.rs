@@ -7,15 +7,171 @@
 
 use std::{sync::Arc, time::Duration};
 
+use http::Uri;
 use tokio::{net::TcpStream, time};
 use tokio_rustls::{TlsConnector, rustls};
 
 use crate::tls;
 
 use super::{
-    BoxedDuplexStream, DestinationAddress, FlowOperation, TlsErrorSide, TrafficDirection,
-    TrafficObserver, TransparentFlowError, accepted_flow::UpstreamConnection, io::ObservedStream,
+    BoxedDuplexStream, DestinationAddress, FlowContext, FlowOperation, LocalRejection, MitmEngine,
+    MitmTimeouts, TlsDecryptionAction, TlsDecryptionContext, TlsDecryptionPolicy, TlsErrorSide,
+    TrafficDirection, TrafficObserver, TransparentFlowError, accepted_flow::UpstreamConnection,
+    io::ObservedStream,
 };
+
+/// Opens the final HTTP upstream after request inspection has selected its target.
+pub(super) struct RequestUpstream {
+    connection: UpstreamConnection,
+    server_name: Option<String>,
+    tls_config: Arc<rustls::ClientConfig>,
+    timeouts: MitmTimeouts,
+    policy: Arc<TlsDecryptionPolicy>,
+    observer: Option<Arc<dyn TrafficObserver>>,
+}
+
+impl RequestUpstream {
+    pub(super) fn new(
+        connection: UpstreamConnection,
+        server_name: Option<String>,
+        engine: &MitmEngine,
+        observer: Option<Arc<dyn TrafficObserver>>,
+    ) -> Self {
+        Self {
+            connection,
+            server_name,
+            tls_config: engine.upstream_tls_config.clone(),
+            timeouts: engine.timeouts.clone(),
+            policy: engine.tls_decryption_policy(),
+            observer,
+        }
+    }
+
+    pub(super) async fn connect(
+        self,
+        target: Option<&Uri>,
+        flow: &FlowContext,
+    ) -> Result<BoxedDuplexStream, TransparentFlowError> {
+        let Some(target) = target else {
+            return self.connect_original(flow).await;
+        };
+        let default_port = if target.scheme_str() == Some("https") {
+            443
+        } else {
+            80
+        };
+        let authority = crate::TargetAuthority::from_host_port(
+            target.host().unwrap_or_default(),
+            target.port_u16().unwrap_or(default_port),
+        )
+        .map_err(|_| TransparentFlowError::Io {
+            operation: FlowOperation::ConnectProviderTcp,
+            source: std::io::Error::new(
+                std::io::ErrorKind::InvalidInput,
+                "invalid upstream target",
+            ),
+        })?;
+        let hostname = match authority.host() {
+            crate::TargetHost::Dns(name) => name.clone(),
+            crate::TargetHost::Ip(address) => address.to_string(),
+        };
+        let decision = self.policy.decide(TlsDecryptionContext::new(
+            Some(&hostname),
+            flow.source_process.as_ref(),
+        ));
+        if decision.action() == TlsDecryptionAction::Block {
+            let mut rejection = LocalRejection::new(
+                http::StatusCode::FORBIDDEN,
+                "network_blocked",
+                "Model service target blocked by abyss-broker",
+                flow.flow_id.to_string(),
+            );
+            rejection.rule_id = decision.matched_rule_id().map(str::to_owned);
+            return Err(rejection.into());
+        }
+        let proxy = match self.connection {
+            UpstreamConnection::HttpConnect { proxy, .. }
+            | UpstreamConnection::Prepared {
+                proxy: Some(proxy), ..
+            } => Some(proxy),
+            _ => None,
+        };
+        let connection = if let Some(proxy) = proxy {
+            UpstreamConnection::HttpConnect {
+                proxy,
+                target: authority.clone(),
+            }
+        } else {
+            let stream = time::timeout(
+                self.timeouts.upstream_connect,
+                TcpStream::connect((hostname.as_str(), authority.port())),
+            )
+            .await
+            .map_err(|_| TransparentFlowError::Timeout {
+                operation: FlowOperation::ConnectProviderTcp,
+                timeout: self.timeouts.upstream_connect,
+            })?
+            .map_err(|source| TransparentFlowError::Io {
+                operation: FlowOperation::ConnectProviderTcp,
+                source,
+            })?;
+            UpstreamConnection::Prepared {
+                stream: Box::new(stream),
+                proxy: None,
+            }
+        };
+        if target.scheme_str() == Some("https") {
+            Ok(Box::new(
+                connect_upstream_tls_with_observer(
+                    connection,
+                    &DestinationAddress::Unknown,
+                    &hostname,
+                    self.tls_config,
+                    self.timeouts.upstream_connect,
+                    self.timeouts.upstream_tls_handshake,
+                    self.observer,
+                )
+                .await?,
+            ))
+        } else {
+            connect_upstream_with_observer(
+                connection,
+                &DestinationAddress::Unknown,
+                self.timeouts.upstream_connect,
+                self.observer,
+            )
+            .await
+        }
+    }
+
+    async fn connect_original(
+        self,
+        flow: &FlowContext,
+    ) -> Result<BoxedDuplexStream, TransparentFlowError> {
+        if let Some(server_name) = self.server_name {
+            Ok(Box::new(
+                connect_upstream_tls_with_observer(
+                    self.connection,
+                    &flow.original_destination,
+                    &server_name,
+                    self.tls_config,
+                    self.timeouts.upstream_connect,
+                    self.timeouts.upstream_tls_handshake,
+                    self.observer,
+                )
+                .await?,
+            ))
+        } else {
+            connect_upstream_with_observer(
+                self.connection,
+                &flow.original_destination,
+                self.timeouts.upstream_connect,
+                self.observer,
+            )
+            .await
+        }
+    }
+}
 
 /// Opens or reuses an upstream stream and observes bytes read from it.
 pub(super) async fn connect_upstream_with_observer(
@@ -25,7 +181,7 @@ pub(super) async fn connect_upstream_with_observer(
     observer: Option<Arc<dyn TrafficObserver>>,
 ) -> Result<BoxedDuplexStream, TransparentFlowError> {
     match upstream {
-        UpstreamConnection::Prepared(stream) => {
+        UpstreamConnection::Prepared { stream, .. } => {
             tracing::info!(
                 original_destination = %original_destination,
                 "MITM reusing ingress-prepared upstream connection"
@@ -183,7 +339,10 @@ mod tests {
 
         let (prepared, mut peer) = tokio::io::duplex(32);
         let mut stream = connect_upstream_with_observer(
-            UpstreamConnection::Prepared(Box::new(prepared)),
+            UpstreamConnection::Prepared {
+                stream: Box::new(prepared),
+                proxy: None,
+            },
             &DestinationAddress::Unknown,
             Duration::from_secs(1),
             None,

@@ -17,7 +17,7 @@ from ..event import (
 class ModifyAction:
     """One explicit semantic operation; credential values are excluded from repr."""
 
-    op: Literal["set_auth_token", "remove_auth_token", "set_model", "remove_model"]
+    op: Literal["set_auth_token", "remove_auth_token", "set_model", "remove_model", "set_base_url"]
     value: Optional[str] = field(default=None, repr=False)
 
     @classmethod
@@ -36,8 +36,12 @@ class ModifyAction:
     def remove_model(cls) -> "ModifyAction":
         return cls("remove_model")
 
+    @classmethod
+    def set_base_url(cls, base_url: str) -> "ModifyAction":
+        return cls("set_base_url", base_url)
+
     def to_dict(self) -> dict[str, Any]:
-        if self.op in ("set_auth_token", "set_model"):
+        if self.op in ("set_auth_token", "set_model", "set_base_url"):
             return {"op": self.op, "value": self.value}
         return {"op": self.op}
 
@@ -149,6 +153,8 @@ class AgentRequestContext:
     auth_token: Optional[str] = field(repr=False)
     auth_token_writable: bool
     model_writable: bool
+    base_url: Optional[str]
+    base_url_writable: bool
     agent: Optional[AgentRequestProjection]
 
     @classmethod

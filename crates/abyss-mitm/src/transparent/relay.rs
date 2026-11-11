@@ -1,7 +1,7 @@
 //! HTTP/1 exchange capture and relay.
 //!
 //! This module converts a transparent byte stream into one complete HTTP/1
-//! exchange for hooks while still forwarding bytes to the original upstream and
+//! exchange for hooks while still forwarding bytes to the selected upstream and
 //! back to the client.
 //!
 //! Relay owns the first decoded request head plus any bytes already read after
@@ -32,11 +32,12 @@ use crate::http1::{
 };
 
 use super::{
-    BodyDecodingStatus, CapturedBody, FlowContext, FlowOperation, HttpExchange, LocalRejection,
-    MitmTimeouts, RequestForwardingControl, RequestForwardingResult, RequestTransport, RequestView,
-    TransparentFlowError, TransparentProtocol,
+    BodyDecodingStatus, BoxedDuplexStream, CapturedBody, FlowContext, FlowOperation, HttpExchange,
+    LocalRejection, MitmTimeouts, RequestForwardingControl, RequestForwardingResult,
+    RequestTransport, RequestView, TransparentFlowError, TransparentProtocol,
     content_encoding::ContentDecoder,
     hook::HookDispatcher,
+    upstream::RequestUpstream,
     utils::{
         content_length, has_expect_continue, http_request_head_without_relay_headers, is_chunked,
         is_websocket_upgrade_request, status_has_no_body, websocket_request_head_bytes,
@@ -140,38 +141,38 @@ where
     S: AsyncRead + AsyncWrite + Unpin + Send,
 {
     #[tracing::instrument(level = "trace", skip_all)]
-    pub(super) async fn relay_to<U, C: super::RequestForwardingControl>(
-        self,
-        upstream: U,
+    pub(super) async fn relay_to<C: super::RequestForwardingControl>(
+        mut self,
+        upstream: RequestUpstream,
         hooks: &HookDispatcher,
         timeouts: MitmTimeouts,
         max_body_bytes: usize,
         control: &C,
-    ) -> Result<RelayOutcome, TransparentFlowError>
-    where
-        U: AsyncRead + AsyncWrite + Unpin + Send,
-    {
+    ) -> Result<RelayOutcome, TransparentFlowError> {
         // Keep the top-level relay as a protocol dispatcher. All details about
         // body framing, downgrade handling, and WebSocket stream construction
         // live behind the branch-specific helpers.
+        let (upstream, capture) = self
+            .forward_http_request_to(upstream, max_body_bytes, control)
+            .await?;
         if is_websocket_upgrade_request(&self.first_request) {
             return self
-                .relay_websocket_to(upstream, hooks, timeouts, max_body_bytes, control)
+                .relay_websocket_to(upstream, capture, hooks, timeouts, max_body_bytes, control)
                 .await;
         }
 
-        self.relay_plain_http_to(upstream, hooks, timeouts, max_body_bytes, control)
+        self.relay_plain_http_to(upstream, capture, hooks, timeouts, max_body_bytes)
             .await
     }
 
     #[tracing::instrument(level = "trace", skip_all)]
-    async fn relay_plain_http_to<U, C: super::RequestForwardingControl>(
-        mut self,
-        mut upstream: U,
+    async fn relay_plain_http_to<U>(
+        self,
+        upstream: U,
+        request_capture: MessageCapture,
         hooks: &HookDispatcher,
         timeouts: MitmTimeouts,
         max_body_bytes: usize,
-        control: &C,
     ) -> Result<RelayOutcome, TransparentFlowError>
     where
         U: AsyncRead + AsyncWrite + Unpin + Send,
@@ -182,13 +183,6 @@ where
         // `forward_http_response_and_submit` is also used by WebSocket upgrade
         // attempts whose upstream response is not 101, because those responses
         // are ordinary HTTP responses with ordinary body framing.
-        // Forward the request first because the upstream cannot produce a
-        // response until it receives the client's complete first request. The
-        // helper mirrors bytes to upstream and captures the decoded body for
-        // the eventual hook event.
-        let request_capture =
-            Box::pin(self.forward_http_request_to(&mut upstream, max_body_bytes, control)).await?;
-
         let response = decode_response_from_upstream(upstream, timeouts).await?;
         self.forward_http_response_and_submit(
             response,
@@ -201,28 +195,38 @@ where
     }
 
     #[tracing::instrument(level = "trace", skip_all)]
-    async fn forward_http_request_to<U, C: super::RequestForwardingControl>(
+    async fn forward_http_request_to<C: super::RequestForwardingControl>(
         &mut self,
-        upstream: &mut U,
+        upstream: RequestUpstream,
         max_body_bytes: usize,
         control: &C,
-    ) -> Result<MessageCapture, TransparentFlowError>
-    where
-        U: AsyncWrite + Unpin + Send,
-    {
+    ) -> Result<(BoxedDuplexStream, MessageCapture), TransparentFlowError> {
         // This method exists so the high-level flow does not need to know the
-        // exact HTTP body framing rules. `forward_controlled_request` owns the byte-level
+        // exact HTTP body framing rules. `RequestRelay` owns the byte-level
         // preservation and capture logic.
-        forward_controlled_request(
+        let relay = prepare_controlled_request(
             &mut self.stream,
-            upstream,
             &mut self.first_request,
             &self.request_head_buffer,
             &self.context,
             max_body_bytes,
             control,
         )
-        .await
+        .await?;
+        let mut upstream = match upstream
+            .connect(relay.upstream.as_ref(), &self.context)
+            .await
+        {
+            Ok(upstream) => upstream,
+            Err(error) => {
+                if let TransparentFlowError::Rejected(rejection) = &error {
+                    rejection.response_error(&mut self.stream).await?;
+                }
+                return Err(error);
+            }
+        };
+        let capture = relay.forward(&mut self.stream, &mut upstream).await?;
+        Ok((upstream, capture))
     }
 
     #[tracing::instrument(level = "trace", skip_all)]
@@ -291,8 +295,9 @@ where
 
     #[tracing::instrument(level = "trace", skip_all)]
     async fn relay_websocket_to<U, C: super::RequestForwardingControl>(
-        mut self,
-        mut upstream: U,
+        self,
+        upstream: U,
+        request_capture: MessageCapture,
         hooks: &HookDispatcher,
         timeouts: MitmTimeouts,
         max_body_bytes: usize,
@@ -304,9 +309,6 @@ where
         // A WebSocket attempt still starts as HTTP/1. Only after upstream
         // returns 101 may both streams be interpreted as WebSocket frame
         // streams.
-        let request_capture = self
-            .forward_http_request_to(&mut upstream, max_body_bytes, control)
-            .await?;
         let response = decode_response_from_upstream(upstream, timeouts).await?;
 
         if response.head.status() != StatusCode::SWITCHING_PROTOCOLS {
@@ -632,21 +634,19 @@ enum BodyFraming {
 
 /// Copy the first request to upstream and capture the decoded request body.
 ///
-/// Prepare the request, handle local negotiation, inspect when configured, and
-/// forward only after the control stage succeeds.
+/// Prepare the request, handle local negotiation, and inspect before connecting
+/// to the selected upstream and releasing application bytes.
 #[tracing::instrument(level = "trace", skip_all)]
-async fn forward_controlled_request<R, W, C: super::RequestForwardingControl>(
+async fn prepare_controlled_request<'a, R, C: super::RequestForwardingControl>(
     client: &mut R,
-    upstream: &mut W,
-    request: &mut Request<()>,
-    head_buffer: &Http1HeadBuffer,
-    flow: &FlowContext,
+    request: &'a mut Request<()>,
+    head_buffer: &'a Http1HeadBuffer,
+    flow: &'a FlowContext,
     max_body_bytes: usize,
     control: &C,
-) -> Result<MessageCapture, TransparentFlowError>
+) -> Result<RequestRelay<'a>, TransparentFlowError>
 where
     R: AsyncRead + AsyncWrite + Unpin,
-    W: AsyncWrite + Unpin,
 {
     let mut relay = RequestRelay::new(request, head_buffer, flow, max_body_bytes)?;
     let plan = control.plan();
@@ -657,7 +657,7 @@ where
         rejection.response_error(client).await?;
         return Err(rejection.into());
     }
-    relay.forward(client, upstream).await
+    Ok(relay)
 }
 
 /// Request preparation, inspection, and forwarding details for the relay flow.
@@ -671,6 +671,7 @@ struct RequestRelay<'a> {
     handle_expect_continue: bool,
     edited_head: bool,
     retained: Option<(RetainedBody, BodyCapture)>,
+    upstream: Option<http::Uri>,
 }
 
 impl<'a> RequestRelay<'a> {
@@ -701,6 +702,7 @@ impl<'a> RequestRelay<'a> {
             handle_expect_continue,
             edited_head: false,
             retained: None,
+            upstream: None,
         })
     }
 
@@ -775,6 +777,7 @@ impl<'a> RequestRelay<'a> {
             capture.body = body;
         }
         capture.body.extensions_mut().extend(result.annotations);
+        self.upstream = result.upstream;
         self.retained = Some((wire, capture));
     }
 
@@ -1705,8 +1708,8 @@ mod tests {
 
     use super::{
         BodyDirection, ChunkedBodyCapture, HTTP1_100_CONTINUE, MAX_INITIAL_BODY_CAPTURE_CAPACITY,
-        MessageCapture, forward_chunked_body, forward_controlled_request,
-        initial_body_capture_capacity, shutdown_completed_agent_stream,
+        MessageCapture, forward_chunked_body, initial_body_capture_capacity,
+        prepare_controlled_request, shutdown_completed_agent_stream,
     };
 
     #[test]
@@ -1734,16 +1737,17 @@ mod tests {
         flow: &FlowContext,
         max_body_bytes: usize,
     ) -> Result<MessageCapture, TransparentFlowError> {
-        forward_controlled_request(
+        let mut request = request.clone();
+        let relay = prepare_controlled_request(
             client,
-            upstream,
-            &mut request.clone(),
+            &mut request,
             head_buffer,
             flow,
             max_body_bytes,
             &UncontrolledForwarding,
         )
-        .await
+        .await?;
+        relay.forward(client, upstream).await
     }
 
     #[tokio::test(start_paused = true)]

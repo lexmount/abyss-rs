@@ -470,6 +470,7 @@ mod tests {
                 ModifyAction::RemoveAuthToken,
                 ModifyAction::SetModel("new".to_owned()),
                 ModifyAction::RemoveModel,
+                ModifyAction::SetBaseUrl("https://provider.example/v1".to_owned()),
             ])),
         ]
     }

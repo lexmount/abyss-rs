@@ -5,6 +5,7 @@ mod tests;
 
 mod auth;
 mod edit;
+mod endpoint;
 pub use edit::{RequestActionError, RequestActions};
 
 use std::sync::Arc;
@@ -152,6 +153,8 @@ impl AgentRequestParser {
             auth_token: None,
             auth_token_writable: false,
             model_writable: false,
+            base_url: None,
+            base_url_writable: false,
             agent,
         };
         RequestActions::new(request).annotate(request, &mut context);

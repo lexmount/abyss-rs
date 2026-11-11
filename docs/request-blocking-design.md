@@ -92,7 +92,7 @@ Previously allowed requests cannot be recalled.
 | [TLS policy:18](../crates/abyss-mitm/src/transparent/decrypt_policy.rs#L18) | `Intercept` or `Passthrough`; source and destination selectors already exist. | Add `Block` to this policy, preserving ordered rule evaluation and metadata-only decisions. |
 | [Explicit ingress:146](../crates/abyss-broker/src/ingress/explicit.rs#L146) | Prepares upstream before acknowledging CONNECT; source process is absent. | Preserve the existing metadata; enforce the MITM policy, including `Block`, before releasing client application traffic. |
 | [HTTP request forwarding:639](../crates/abyss-mitm/src/transparent/relay.rs#L639) | Writes the request head, then streams and captures the body. | Add a buffered inspection branch before the first upstream request write. |
-| [TLS HTTP handling:123](../crates/abyss-mitm/src/transparent/tls_http.rs#L123) | Establishes provider TLS before decoding the client HTTP request. | Preserve the handshake order; gate HTTP request writes in the relay after decoding and inspection. |
+| [TLS HTTP handling:123](../crates/abyss-mitm/src/transparent/tls_http.rs#L123) | Completes client TLS, then decodes and inspects the HTTP request. | Open provider TLS after inspection selects the final target; gate all HTTP request writes. |
 | [WebSocket relay:212](../crates/abyss-mitm/src/transparent/websocket.rs#L212) | Submits an observation and forwards each client message immediately. | Await inspection before forwarding client data messages. |
 | [Agent Hook coordinator:58](../crates/abyss-agent-hook/src/hook.rs#L58) | Detects and parses a completed exchange. | Refactor the existing parsing pipeline to expose request-only results shared by inspection and observation. |
 | [Broker plugin server:65](../crates/abyss-broker/src/plugin/mod.rs#L65) | Owns local plugin sessions and broadcasts completed Agent events. | Extend this service with the request-inspection capability and broker-owned decision orchestration. |
@@ -388,14 +388,12 @@ view; request metadata and common forwarding logic are shared.
 7. On block, send a local error and close the request connection. Do not create a
    fabricated provider response or token-usage event.
 
-Preserve the existing TCP connection, CONNECT tunnel, and TLS handshake order.
-For intercepted HTTPS, the broker still completes client TLS and provider TLS
-before decoding the HTTP request. Buffer and inspect the request before the
-relay's first upstream request write; an established provider TLS stream does
-not imply that any HTTP headers or body have been forwarded. Do not move
-provider TLS setup behind the plugin decision or add deferred connection
-machinery for Agent inspection. This keeps connection setup out of the work
-that must run after the hook allows the request.
+The [request editing extension](request-mutation-design.md#selecting-a-model-service)
+now defers provider TLS until inspection has selected the final target. Client TLS
+still completes before decoding the request. Explicit ingress may already have
+prepared the original TCP connection or CONNECT tunnel; a target change discards
+that stream. A rejected request sends no HTTP application bytes, and transparent
+interception does not open the provider connection before the decision.
 
 An early CONNECT block before `prepare_upstream()` is an optional network-policy
 optimization, subject to the rule-order constraint above. The implementation
@@ -1016,7 +1014,7 @@ required parts of the final feature.
    preparation, framing reader, writer, and completion stages. Compose streaming input or
    buffered inspection into those stages, with local rejection before the first
    upstream request write. Do not duplicate the existing relay implementation.
-   Preserve the existing upstream connection and TLS handshake order. Use a
+   Open upstream TLS after inspection chooses the final target. Use a
    concrete in-process transport control to verify the forwarding boundary.
 3. **Broker plugin inspection.** Update the current protocol on the existing
    endpoint with capability declaration, connection membership, tagged messages,
@@ -1050,9 +1048,9 @@ Acceptance tests should prove the boundary, not merely check decision enums:
   assert zero provider HTTP request bytes, including the head and any prefetched
   body. Cover explicit HTTP/CONNECT and platform ingress, direct and configured
   upstream routing. Separately account for permitted TCP/TLS/tunnel handshakes.
-- For intercepted HTTPS, verify provider TLS still completes before Agent
-  inspection runs. While the hook is pending and after a rejection, the provider
-  must receive zero HTTP request bytes even though its TLS connection exists.
+- For intercepted HTTPS, verify provider TLS starts after Agent inspection.
+  While the hook is pending and after a rejection, the provider must receive
+  zero HTTP request bytes. Explicit ingress may retain a prepared TCP tunnel.
 - Use one set of Agent parser fixtures and expected request projections for
   request-only inspection, completed-exchange parsing, and applicable client
   WebSocket messages. Compare conversation/instructions, tools, requested model,

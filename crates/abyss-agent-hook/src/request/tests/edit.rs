@@ -5,12 +5,129 @@ use abyss_plugin_protocol::inspection::ModifyAction;
 use serde_json::json;
 
 use super::*;
-use crate::{RequestActionError, RequestActions};
+use crate::{HarnessUsageConfig, RequestActionError, RequestActions};
 
 struct EditableRequest {
     flow: FlowContext,
     head: Request<()>,
     body: CapturedBody,
+}
+
+#[test]
+fn provider_actions_replace_prefix_preserve_operation_and_refresh_context() {
+    for (path, operation) in [
+        ("/backend-api/codex/responses", "/responses"),
+        ("/v1/responses/compact", "/responses/compact"),
+        ("/v1/chat/completions", "/chat/completions"),
+        (
+            "/gateway/responses/v1/chat/completions",
+            "/chat/completions",
+        ),
+        ("/v1/messages", "/messages"),
+    ] {
+        let source = EditableRequest::new(
+            &format!("{path}?api-version=test"),
+            &json!({"input":"hi", "messages":[], "model":"original"}),
+        );
+        let mut request = RequestEditor::new(source.view(RequestTransport::Http));
+        let actions = RequestActions::new(&request.view());
+        for base in [
+            "https://first.test/v2/",
+            "http://[::1]:8123/gateway/",
+            "http://127.0.0.1:8123/gateway/",
+        ] {
+            actions
+                .apply(
+                    &mut request,
+                    Box::new([ModifyAction::SetBaseUrl(base.into())]),
+                )
+                .unwrap();
+            assert_eq!(
+                request.view().head.uri().to_string(),
+                format!("{}{operation}?api-version=test", base.trim_end_matches('/'))
+            );
+            assert_eq!(request.view().body.bytes(), source.body.bytes());
+        }
+        actions
+            .apply(
+                &mut request,
+                Box::new([
+                    ModifyAction::SetAuthToken("new-provider-token".into()),
+                    ModifyAction::SetModel("provider-model".into()),
+                ]),
+            )
+            .unwrap();
+        let context = AgentRequestParser::parse(
+            &request.view(),
+            &HarnessUsageConfig::default(),
+            "routed".into(),
+        );
+        assert_eq!(
+            context.base_url.as_deref(),
+            Some("http://127.0.0.1:8123/gateway")
+        );
+        assert!(context.base_url_writable);
+        assert_eq!(context.auth_token.as_deref(), Some("new-provider-token"));
+        assert_eq!(
+            context.agent.unwrap().model.as_deref(),
+            Some("provider-model")
+        );
+        assert_eq!(request.view().head.headers()["host"], "127.0.0.1:8123");
+        let result = request.finish(());
+        assert_eq!(result.upstream.unwrap().host(), Some("127.0.0.1"));
+    }
+}
+
+#[test]
+fn base_url_requires_an_http_origin_and_rejects_established_websocket_changes() {
+    let source = EditableRequest::new("/v1/responses", &json!({"input":"hi"}));
+    for base in [
+        "relative/path",
+        "ftp://provider.test",
+        "https://user:pass@provider.test",
+        "https://provider.test?q=1",
+        "https://provider.test/#fragment",
+        "https://provider.test:70000",
+        "https://provider.test:0",
+        "https://provider.test:invalid",
+    ] {
+        let mut request = RequestEditor::new(source.view(RequestTransport::Http));
+        let error = RequestActions::new(&request.view()).apply(
+            &mut request,
+            Box::new([ModifyAction::SetBaseUrl(base.into())]),
+        );
+        assert!(
+            matches!(error, Err(RequestActionError::InvalidBaseUrl)),
+            "{base}"
+        );
+    }
+    let mut request =
+        RequestEditor::new(source.view(RequestTransport::WebSocketText { sequence: 1 }));
+    assert!(matches!(
+        RequestActions::new(&request.view()).apply(
+            &mut request,
+            Box::new([ModifyAction::SetBaseUrl("https://provider.test".into())])
+        ),
+        Err(RequestActionError::BaseUrlUnavailable)
+    ));
+}
+
+#[test]
+fn websocket_upgrade_can_select_a_provider_without_a_body() {
+    let mut source = EditableRequest::new("/backend-api/codex/responses", &json!({}));
+    source.body = CapturedBody::from_bytes(Vec::new().into());
+    let mut request = RequestEditor::new(source.view(RequestTransport::Http));
+    let actions = RequestActions::new(&request.view());
+    actions
+        .apply(
+            &mut request,
+            Box::new([ModifyAction::SetBaseUrl("https://provider.test/v1".into())]),
+        )
+        .unwrap();
+    assert_eq!(
+        request.view().head.uri(),
+        "https://provider.test/v1/responses"
+    );
 }
 
 impl EditableRequest {

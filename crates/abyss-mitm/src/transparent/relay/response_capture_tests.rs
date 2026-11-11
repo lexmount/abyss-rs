@@ -25,6 +25,19 @@ use crate::{FlowOperation, HookFuture, HttpExchange, MitmHook, TransparentFlowEr
 const HEAD: &[u8] = b"HTTP/1.1 200 OK\r\nTransfer-Encoding: chunked\r\n\r\n";
 const PAYLOAD: &[u8] = b"data: [DONE]\n\n";
 
+fn prepared_upstream(stream: Stream) -> super::RequestUpstream {
+    let engine = crate::MitmEngine::from_ca(&crate::transparent::tests::test_ca()).unwrap();
+    super::RequestUpstream::new(
+        crate::transparent::accepted_flow::UpstreamConnection::Prepared {
+            stream: Box::new(stream),
+            proxy: None,
+        },
+        None,
+        &engine,
+        None,
+    )
+}
+
 struct Observer(mpsc::UnboundedSender<HttpExchange>);
 
 impl MitmHook for Observer {
@@ -167,7 +180,7 @@ async fn relay_case(buffered: bool, complete: bool, error_kind: io::ErrorKind) {
         fail_after,
         error_kind,
     );
-    let upstream = Stream::new(reads, usize::MAX, io::ErrorKind::Other);
+    let upstream = prepared_upstream(Stream::new(reads, usize::MAX, io::ErrorKind::Other));
     let hooks = HookDispatcher::default();
     let (sender, mut events) = mpsc::unbounded_channel();
     hooks.push(Observer(sender));
@@ -239,7 +252,11 @@ async fn start_relay(
     tokio::task::JoinHandle<Result<super::RelayOutcome, TransparentFlowError>>,
     mpsc::UnboundedReceiver<HttpExchange>,
 ) {
-    let upstream = Stream::new(response_reads, usize::MAX, io::ErrorKind::Other);
+    let upstream = prepared_upstream(Stream::new(
+        response_reads,
+        usize::MAX,
+        io::ErrorKind::Other,
+    ));
     let hooks = HookDispatcher::default();
     let (sender, events) = mpsc::unbounded_channel();
     hooks.push(Observer(sender));

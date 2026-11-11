@@ -173,7 +173,9 @@ class NextHop(socketserver.BaseRequestHandler):
             return
         if host == "eof.invalid":
             return
-        if host == "tls.invalid":
+        if host in getattr(self.server, "routes", {}):
+            destination = self.server.routes[host]
+        elif host == "tls.invalid":
             destination = self.server.tls_origin.server_address
         elif host in getattr(
             self.server, "plain_hosts", ("plain.invalid", "127.0.0.1")

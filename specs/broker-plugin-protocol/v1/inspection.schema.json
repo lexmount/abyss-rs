@@ -26,7 +26,9 @@
     "agent",
     "auth_token",
     "auth_token_writable",
-    "model_writable"
+    "model_writable",
+    "base_url",
+    "base_url_writable"
   ],
   "properties": {
     "flow_id": {
@@ -163,6 +165,15 @@
       "type": "boolean"
     },
     "model_writable": {
+      "type": "boolean"
+    },
+    "base_url": {
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "base_url_writable": {
       "type": "boolean"
     }
   },

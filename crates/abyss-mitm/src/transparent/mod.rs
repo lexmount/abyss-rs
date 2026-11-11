@@ -63,6 +63,7 @@ pub use self::types::{
 #[cfg(test)]
 mod tests {
     mod blocking;
+    mod provider_switch;
     mod proxy_chain;
     use std::{
         future,
@@ -1346,7 +1347,7 @@ mod tests {
         mitm
     }
 
-    fn test_ca() -> crate::CertificateAuthority {
+    pub(super) fn test_ca() -> crate::CertificateAuthority {
         // Transparent-flow tests generate CA material directly, bypassing
         // CaStore's provider setup, so install it before rcgen key generation.
         crate::install_default_crypto_provider();

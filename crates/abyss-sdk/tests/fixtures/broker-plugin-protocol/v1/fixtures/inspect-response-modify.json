@@ -17,6 +17,10 @@
       },
       {
         "op": "remove_model"
+      },
+      {
+        "op": "set_base_url",
+        "value": "https://provider.example/v1"
       }
     ]
   }

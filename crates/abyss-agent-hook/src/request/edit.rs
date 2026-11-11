@@ -1,11 +1,11 @@
 //! Applies explicit Agent actions to their original protocol locations.
-//! No context diff, routing changes, or reconstruction from observation projections.
+//! No context diff or reconstruction from observation projections.
 
 use abyss_mitm::{RequestEditor, RequestTransport, RequestView};
 use abyss_plugin_protocol::inspection::{AgentRequestContext, ModifyAction};
 use serde_json::Value;
 
-use super::auth::AuthBinding;
+use super::{auth::AuthBinding, endpoint::ModelEndpoint};
 use crate::protocol::{AnthropicProtocol, LlmProtocol, OpenAiProtocol, ProtocolDetector};
 
 /// Safe error categories for plugin edits; action values are never echoed.
@@ -21,6 +21,12 @@ pub enum RequestActionError {
     /// The token cannot be represented in the selected credential header.
     #[error("Invalid authentication token encoding")]
     InvalidToken,
+    /// The request has no editable model endpoint, or its connection is established.
+    #[error("Base URL actions are unavailable for this request")]
+    BaseUrlUnavailable,
+    /// Model API base URLs need an HTTP(S) authority and optional path prefix.
+    #[error("Invalid model API base URL")]
+    InvalidBaseUrl,
     /// The edited document could not be encoded.
     #[error("Edited model request could not be encoded")]
     Encoding,
@@ -34,6 +40,7 @@ pub struct RequestActions {
     auth: Option<AuthBinding>,
     auth_writable: bool,
     model: Option<ModelLocation>,
+    endpoint: Option<ModelEndpoint>,
 }
 
 #[derive(Clone, Copy)]
@@ -94,6 +101,7 @@ impl RequestActions {
             auth,
             auth_writable: auth.is_some() && matches!(request.transport, RequestTransport::Http),
             model: ModelLocation::detect(request),
+            endpoint: ModelEndpoint::detect(request),
         }
     }
 
@@ -105,6 +113,12 @@ impl RequestActions {
             .map(str::to_owned);
         context.auth_token_writable = self.auth_writable;
         context.model_writable = self.model.is_some();
+        context.base_url = self
+            .endpoint
+            .as_ref()
+            .and_then(|endpoint| endpoint.base_url(request));
+        context.base_url_writable =
+            self.endpoint.is_some() && matches!(request.transport, RequestTransport::Http);
     }
 
     /// Applies the ordered list privately; callers discard the request on error.
@@ -136,6 +150,18 @@ impl RequestActions {
                 }
                 ModifyAction::RemoveModel => {
                     self.model_object(request, &mut document)?.remove("model");
+                }
+                ModifyAction::SetBaseUrl(base_url) => {
+                    let view = request.view();
+                    if !matches!(view.transport, RequestTransport::Http) {
+                        return Err(RequestActionError::BaseUrlUnavailable);
+                    }
+                    let endpoint = self
+                        .endpoint
+                        .as_ref()
+                        .ok_or(RequestActionError::BaseUrlUnavailable)?;
+                    let (uri, authority) = endpoint.target(&base_url, view.head.uri().query())?;
+                    request.set_upstream(uri, authority);
                 }
                 _ => return Err(RequestActionError::UnsupportedAction),
             }

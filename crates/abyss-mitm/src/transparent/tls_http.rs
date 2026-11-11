@@ -1,8 +1,8 @@
 //! HTTPS transparent flow handling.
 //!
 //! HTTPS flows require two TLS roles: accept client TLS with a generated leaf
-//! certificate, then open upstream TLS to the original destination using the
-//! client's SNI as the server name.
+//! certificate, then inspect the HTTP request before opening upstream TLS to
+//! its final destination. Client and provider TLS identities stay independent.
 
 use std::{net::SocketAddr, sync::Arc};
 
@@ -13,7 +13,7 @@ use super::{
     InterceptedHttpOutcome, MitmEngine, SourceProcess, TransparentFlowError,
     TransparentFlowOutcome, TransparentProtocol, accepted_flow::UpstreamConnection,
     client_hello::InspectedClientHello, relay::DecodedClientFlow, tls_flow::ClientTlsFlow,
-    upstream::connect_upstream_tls_with_observer, utils::request_host,
+    upstream::RequestUpstream, utils::request_host,
 };
 
 pub(super) struct TlsHttpFlow {
@@ -118,19 +118,12 @@ impl TlsHttpFlow {
             })??;
         ingress.validate_tls_server_name(Some(&client_tls.server_name))?;
 
-        // Preserve transparent routing semantics: connect to the OS original
-        // destination IP:port, but use the ClientHello SNI as upstream TLS
-        // server name for SNI and certificate verification.
-        let upstream_tls = connect_upstream_tls_with_observer(
+        let upstream = RequestUpstream::new(
             upstream,
-            &original_destination,
-            &client_tls.server_name,
-            engine.upstream_tls_config.clone(),
-            engine.timeouts.upstream_connect,
-            engine.timeouts.upstream_tls_handshake,
-            traffic_observer.clone(),
-        )
-        .await?;
+            Some(client_tls.server_name.clone()),
+            engine,
+            traffic_observer,
+        );
 
         let protocol = TransparentProtocol::TlsHttp {
             server_name: client_tls.server_name,
@@ -161,7 +154,7 @@ impl TlsHttpFlow {
             "MITM decoded TLS HTTP/1 request head"
         );
         let relay = Box::pin(decoded.relay_to(
-            upstream_tls,
+            upstream,
             &engine.hooks,
             engine.timeouts.clone(),
             engine.max_http1_body_bytes,

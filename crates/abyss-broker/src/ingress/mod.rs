@@ -435,7 +435,6 @@ impl PlatformFlow {
     }
 
     /// Selects a configured next hop for a normalized transparent flow.
-    #[cfg(any(target_os = "macos", target_os = "windows"))]
     #[must_use]
     pub fn with_upstream_proxy(
         mut self,
@@ -450,7 +449,6 @@ impl PlatformFlow {
     /// Attaches an established tunnel without changing target TLS handling.
     #[must_use]
     pub fn with_prepared_stream(mut self, upstream: abyss_mitm::BoxedDuplexStream) -> Self {
-        self.configured_upstream = None;
         self.prepared_upstream = Some(upstream);
         self
     }

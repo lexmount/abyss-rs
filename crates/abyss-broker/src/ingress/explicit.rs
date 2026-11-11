@@ -172,6 +172,10 @@ impl IngressConnection for ExplicitConnection {
         }
 
         let destination_host = Some(target.host().to_string());
+        let configured_upstream = self
+            .upstream
+            .clone()
+            .map(|proxy| (proxy.excluding_endpoint(self.listen_addr), target.clone()));
         let ingress = FlowIngress::ExplicitProxy {
             protocol,
             target,
@@ -188,8 +192,11 @@ impl IngressConnection for ExplicitConnection {
             destination_host,
             None,
         );
-        Ok(PlatformFlow::new(self.client, metadata)
-            .with_ingress(ingress)
+        let mut flow = PlatformFlow::new(self.client, metadata).with_ingress(ingress);
+        if let Some((proxy, target)) = configured_upstream {
+            flow = flow.with_upstream_proxy(proxy, target);
+        }
+        Ok(flow
             .with_prepared_stream(upstream)
             .with_read_prefix(client_prefix))
     }

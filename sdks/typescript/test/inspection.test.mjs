@@ -18,6 +18,7 @@ for (const decision of [
       { op: "remove_auth_token" },
       { op: "set_model", value: "new" },
       { op: "remove_model" },
+      { op: "set_base_url", value: "https://provider.example/v1" },
     ],
   },
 ])

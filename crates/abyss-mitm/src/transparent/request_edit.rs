@@ -2,7 +2,7 @@
 //! Semantic action selection belongs to the broker and Agent protocol layer.
 
 use bytes::Bytes;
-use http::{Extensions, HeaderMap, Request, header};
+use http::{Extensions, HeaderMap, HeaderValue, Request, Uri, header};
 
 use super::{CapturedBody, RequestTransport, RequestView};
 
@@ -15,6 +15,8 @@ pub struct RequestForwardingResult {
     pub body: Option<CapturedBody>,
     /// Parsing results for the final request.
     pub annotations: Extensions,
+    /// Explicit upstream URL selected before opening the provider connection.
+    pub upstream: Option<Uri>,
 }
 
 /// Borrowed original request with replacements allocated only when edited.
@@ -22,6 +24,7 @@ pub struct RequestEditor<'a> {
     original: RequestView<'a>,
     head: Option<Request<()>>,
     body: Option<CapturedBody>,
+    upstream: Option<Uri>,
 }
 
 impl<'a> RequestEditor<'a> {
@@ -32,6 +35,7 @@ impl<'a> RequestEditor<'a> {
             original,
             head: None,
             body: None,
+            upstream: None,
         }
     }
 
@@ -51,6 +55,14 @@ impl<'a> RequestEditor<'a> {
         self.head
             .get_or_insert_with(|| self.original.head.clone())
             .headers_mut()
+    }
+
+    /// Selects a validated absolute URL and its matching HTTP authority.
+    pub fn set_upstream(&mut self, uri: Uri, authority: HeaderValue) {
+        let head = self.head.get_or_insert_with(|| self.original.head.clone());
+        head.headers_mut().insert(header::HOST, authority);
+        *head.uri_mut() = uri.clone();
+        self.upstream = Some(uri);
     }
 
     /// Installs identity-encoded content and resets obsolete body parsing state.
@@ -77,6 +89,7 @@ impl<'a> RequestEditor<'a> {
             head: self.head,
             body: self.body,
             annotations,
+            upstream: self.upstream,
         }
     }
 }

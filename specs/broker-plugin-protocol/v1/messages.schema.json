@@ -270,6 +270,22 @@
                             "const": "remove_model"
                           }
                         }
+                      },
+                      {
+                        "type": "object",
+                        "additionalProperties": false,
+                        "required": [
+                          "op",
+                          "value"
+                        ],
+                        "properties": {
+                          "op": {
+                            "const": "set_base_url"
+                          },
+                          "value": {
+                            "type": "string"
+                          }
+                        }
                       }
                     ]
                   }

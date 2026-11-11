@@ -50,6 +50,8 @@
     },
     "auth_token": null,
     "auth_token_writable": true,
-    "model_writable": true
+    "model_writable": true,
+    "base_url": "https://api.openai.com/v1",
+    "base_url_writable": true
   }
 }

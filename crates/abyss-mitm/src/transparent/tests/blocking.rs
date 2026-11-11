@@ -88,11 +88,18 @@ async fn exchange(
     let relay = tokio::spawn(async move { engine.handle_flow_with_control(flow, &control).await });
     let wire_length = wire.len();
     let provider = tokio::spawn(async move {
+        if reject || limit < 20 {
+            assert!(
+                tokio::time::timeout(std::time::Duration::from_millis(100), listener.accept())
+                    .await
+                    .is_err(),
+                "rejected requests must not open an upstream connection"
+            );
+            return Vec::new();
+        }
         let (mut stream, _) = listener.accept().await.unwrap();
         let mut received = Vec::new();
-        if reject || limit < 20 {
-            stream.read_to_end(&mut received).await.unwrap();
-        } else {
+        {
             let head = super::read_http_head(&mut stream).await;
             received.extend_from_slice(head.as_bytes());
             let length = wire_length.saturating_sub(head.len());
@@ -290,26 +297,10 @@ async fn network_block_closes_tls_without_provider_connection_or_client_mitm() {
 }
 
 #[tokio::test]
-async fn provider_tls_completes_before_request_inspection_but_receives_no_rejected_http() {
+async fn rejected_tls_request_never_opens_provider_connection() {
     let ca = super::test_ca();
     let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
     let destination = listener.local_addr().unwrap();
-    let acceptor = tokio_rustls::TlsAcceptor::from(
-        crate::tls::MitmTlsAuthority::from_ca(&ca)
-            .unwrap()
-            .server_config_for_sni("example.test")
-            .await
-            .unwrap(),
-    );
-    let (ready, handshake) = tokio::sync::oneshot::channel();
-    let provider = tokio::spawn(async move {
-        let (stream, _) = listener.accept().await.unwrap();
-        let mut stream = acceptor.accept(stream).await.unwrap();
-        ready.send(()).unwrap();
-        let mut bytes = Vec::new();
-        let _closed = stream.read_to_end(&mut bytes).await;
-        bytes
-    });
     let (client, server) = super::connected_pair().await;
     let flow = AcceptedTcpFlow::new(
         server,
@@ -334,10 +325,6 @@ async fn provider_tls_completes_before_request_inspection_but_receives_no_reject
         )
         .await
         .unwrap();
-    tokio::time::timeout(std::time::Duration::from_secs(2), handshake)
-        .await
-        .expect("provider TLS must finish before the client sends HTTP")
-        .unwrap();
     client.write_all(b"POST /v1/responses HTTP/1.1\r\nHost: example.test\r\nContent-Length: 18\r\n\r\n{\"input\":\"secret\"}").await.unwrap();
     let mut response = Vec::new();
     client.read_to_end(&mut response).await.unwrap();
@@ -350,7 +337,9 @@ async fn provider_tls_completes_before_request_inspection_but_receives_no_reject
         "request must be rejected after TLS setup"
     );
     assert!(
-        provider.await.unwrap().is_empty(),
-        "provider TLS must carry no rejected HTTP bytes"
+        tokio::time::timeout(std::time::Duration::from_millis(30), listener.accept())
+            .await
+            .is_err(),
+        "rejected requests must not connect to the provider"
     );
 }

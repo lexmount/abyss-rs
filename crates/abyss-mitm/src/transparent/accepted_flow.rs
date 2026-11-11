@@ -19,7 +19,10 @@ pub(super) enum UpstreamConnection {
     /// Connect to the normalized original destination inside the MITM pipeline.
     Deferred,
     /// Reuse a stream established while accepting an explicit proxy request.
-    Prepared(BoxedDuplexStream),
+    Prepared {
+        stream: BoxedDuplexStream,
+        proxy: Option<crate::outbound::HttpConnectProxy>,
+    },
     /// A configured next hop; target DNS and routing belong to that proxy.
     HttpConnect {
         proxy: crate::outbound::HttpConnectProxy,
@@ -224,7 +227,17 @@ impl AcceptedTcpFlow {
     /// Reuses a byte tunnel, including any bytes read during its handshake.
     #[must_use]
     pub fn with_prepared_stream(mut self, upstream: BoxedDuplexStream) -> Self {
-        self.upstream = UpstreamConnection::Prepared(upstream);
+        let proxy = match self.upstream {
+            UpstreamConnection::HttpConnect { proxy, .. }
+            | UpstreamConnection::Prepared {
+                proxy: Some(proxy), ..
+            } => Some(proxy),
+            _ => None,
+        };
+        self.upstream = UpstreamConnection::Prepared {
+            stream: upstream,
+            proxy,
+        };
         self
     }
 

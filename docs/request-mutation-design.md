@@ -17,12 +17,13 @@ The [v1 plugin contract](../specs/broker-plugin-protocol/v1/README.md) describes
 
 ## Scope and required behavior
 
-The first release provides actions for two semantic values. Both are read from
+The first release provides actions for three semantic values. Both are read from
 context; edits are expressed only through returned actions.
 
 | Read-only value | Allowed actions | Write-back behavior |
 | --- | --- | --- |
 | `context.auth_token` | `SetAuthToken`, `RemoveAuthToken` | Update or remove the credential selected by the target's authentication adapter; the token excludes header names and scheme prefixes |
+| `context.base_url` | `SetBaseUrl` | Select the model API origin and path prefix, retaining the operation and query |
 | `context.agent.model`, when an Agent projection exists | `SetModel`, `RemoveModel` | Update or remove the model field selected by the recognized request protocol |
 
 Plugins also receive already parsed conversation, tools, attachments, protocol,
@@ -40,8 +41,9 @@ The implementation must preserve these properties:
    including the current authentication token.
 3. The final semantic context, forwarded request, and observed request describe
    the same content. Credential values remain excluded from observation output.
-4. Source identity, request/flow IDs, destination, method, path/query, Host, SNI,
-   and outbound route remain read-only. Editing a model does not reroute a request.
+4. Source identity, request/flow IDs, physical destination, method, and query remain
+   read-only. `SetBaseUrl` changes the logical target, path prefix, HTTP Host and
+   upstream TLS identity together. Editing only a model does not reroute a request.
 5. No selected request plugins means the existing streaming path, without extra
    mutation buffering or RPC. Network Block/Passthrough/Intercept behavior stays
    unchanged; connecting a plugin does not enable TLS decryption.
@@ -97,7 +99,7 @@ crates; the broker connects those layers using transport-neutral request values.
 ## Semantic context and plugin API
 
 Keep the `agent_request` capability and the read-only callback context. Retain the
-existing request metadata and Agent projection, adding the current token and two
+existing request metadata and Agent projection, adding the current token, base URL and
 facts describing which action targets are writable. This is an API sketch;
 existing context fields and asynchronous callback details are abbreviated:
 
@@ -106,6 +108,8 @@ struct AgentRequestContext {
     pub auth_token: Option<String>,
     pub auth_token_writable: bool,
     pub model_writable: bool,
+    pub base_url: Option<String>,
+    pub base_url_writable: bool,
     pub agent: Option<AgentRequestProjection>,
     // Existing request metadata and diagnostic views are omitted.
 }
@@ -121,6 +125,7 @@ enum ModifyAction {
     RemoveAuthToken,
     SetModel(String),
     RemoveModel,
+    SetBaseUrl(String),
 }
 
 fn agent_request(context: &AgentRequestContext) -> RequestDecision {
@@ -141,7 +146,7 @@ status, token, model, conversation, tools, attachments, and diagnostic content.
 a model body. There is no mutable request object and no second editable model
 value. Broker updates become visible in the next plugin's context.
 
-`auth_token_writable` and `model_writable` indicate whether the corresponding
+`auth_token_writable`, `model_writable`, and `base_url_writable` indicate whether the corresponding
 Set/Remove actions are supported for this invocation. They describe write-back
 availability, not plugin permissions. On an established authenticated connection,
 the token is readable but auth actions are unavailable. If no authentication
@@ -243,6 +248,7 @@ Each `ModifyAction` has one wire form:
 | `RemoveAuthToken` | `{"op":"remove_auth_token"}` |
 | `SetModel(model)` | `{"op":"set_model","value":"model-b"}` |
 | `RemoveModel` | `{"op":"remove_model"}` |
+| `SetBaseUrl(base_url)` | `{"op":"set_base_url","value":"https://provider.example/v1"}` |
 
 Set requires a string value; Remove has no value. There is no null sentinel,
 complete request snapshot, or raw JSON patch. A token-only modification sends
@@ -414,13 +420,13 @@ skip allocation when the flag is false. Model-dependent allocation cannot wait
 for a later message on a connection
 that must authenticate first.
 
-For HTTP, preserve the existing upstream connection/TLS order and local
-`100 Continue` handling. The gate controls application request writes. Keep the
-original wire body unless semantic editing changes its content:
+For HTTP, keep local `100 Continue` handling and finish the plugin chain before
+opening upstream TLS. Use the final target to open the upstream connection. Keep
+the original wire body unless semantic editing changes its content:
 
 | Accepted change | Internal forwarding behavior |
 | --- | --- |
-| Token only | Encode the updated head; retain original body bytes, compression, chunk framing, and trailers |
+| Token and/or base URL only | Encode the updated head; retain original body bytes, compression, chunk framing, and trailers |
 | Model in the body | Serialize the updated original JSON document; remove old Content-Encoding, Transfer-Encoding, and Trailer; set one Content-Length from the replacement bytes |
 | Allow or empty action list | Reuse the current forwarding representation |
 
@@ -440,7 +446,6 @@ sequenceDiagram
     participant O as Observation
     opt HTTPS setup
         A->>M: Client TLS handshake
-        M->>U: Upstream TLS handshake
     end
     A->>M: Request head and prefetched body
     M->>B: Select connected request-processing sessions
@@ -469,7 +474,9 @@ sequenceDiagram
             end
         end
         alt Chain succeeds
-            B-->>M: Final request and parsed annotations
+            B-->>M: Final request, selected target and parsed annotations
+            M->>M: Check target network Block policy
+            M->>U: Connect final target via configured route; TLS uses final host
             M->>U: Final head and original or updated body
             U-->>M: Response
             M-->>A: Relay response
@@ -535,6 +542,66 @@ binding remains read-only. Handshake rejection uses the HTTP errors above.
 Successful Allow or Modify does not imply the upstream has received the request;
 preserve existing completion/failure observation behavior. Ingress byte counters
 measure original bytes, while upstream counters measure what was actually sent.
+
+## Selecting a model service
+
+`SetBaseUrl` replaces the model API origin and path prefix. The semantic writer
+recognizes Responses, Chat Completions, and Messages operation paths, including
+suboperations such as `/responses/compact`. It retains the operation suffix and
+original query; it does not append to an earlier plugin's prefix.
+
+| Original request | Selected base URL | Forwarded URL |
+| --- | --- | --- |
+| `https://chatgpt.com/backend-api/codex/responses` | `https://api.deepseek.com` | `https://api.deepseek.com/responses` |
+| `https://api.openai.com/v1/responses/compact?q=1` | `https://gateway.example/models` | `https://gateway.example/models/responses/compact?q=1` |
+| `https://api.openai.com/v1/chat/completions` | `http://localhost:8080/v1` | `http://localhost:8080/v1/chat/completions` |
+
+Base URLs accept HTTP or HTTPS, a host, optional port and path prefix. Userinfo,
+query and fragment are invalid in a base URL. Credential and model changes remain
+separate actions, so a plugin can select all three in one decision. The existing
+credential carrier is retained. Providers must accept the same API dialect and
+credential header: this feature does not translate Responses into Chat Completions
+or convert between Bearer and provider-specific authentication schemes.
+
+Each later plugin sees the current `base_url`, authority, path, parsed provider,
+model and token. Original destination, client TLS server name, ingress and process
+metadata still describe the incoming physical flow. Observation parses the final
+request. Unknown operation paths have no writable base URL.
+
+MITM opens the final upstream only after the chain succeeds. Host, connection
+host/port, TLS SNI and certificate verification use that target. A configured
+next-hop proxy also handles the selected target; there is no direct fallback.
+The existing network Block policy is checked against the selected target before
+connecting. Client-facing TLS continues to use the original name and certificate.
+Explicit proxy ingress can have already prepared an original TCP connection or
+CONNECT tunnel; a route change closes it unused and opens the selected route.
+The original destination therefore still needs to accept that initial connection.
+
+A WebSocket upgrade can select a base URL without a model body. After upgrade,
+`base_url` remains readable and `base_url_writable` is false. A later base URL action
+rejects the message, just like changing connection credentials; Abyss does not
+reopen an established WebSocket. No base URL action means the original route is
+retained, including its original destination IP.
+
+```mermaid
+sequenceDiagram
+    participant A as Agent
+    participant M as MITM relay
+    participant P as Request plugin chain
+    participant N as Configured next hop or direct connector
+    participant D as Selected model service
+    A->>M: TLS for original provider, then model request
+    M->>P: Context with original base URL, token and model
+    P-->>M: Modify(SetBaseUrl, SetAuthToken, SetModel)
+    Note over M,P: Later plugins see accepted edits; any rejection stops forwarding
+    M->>M: Apply final Host/path and check target network Block policy
+    M->>N: Connect selected host and port
+    N->>D: TCP connection or CONNECT tunnel
+    M->>D: TLS with selected host SNI and certificate verification
+    M->>D: Same API operation with selected token and model
+    D-->>M: Compatible response stream
+    M-->>A: Relay response over original client connection
+```
 
 ## Credential visibility and observation
 
@@ -610,7 +677,7 @@ configuration from its launcher; Abyss can only edit requests that reach it.
 Implement in this order:
 
 1. **Semantic contract and SDKs:** retain read-only context, add token visibility
-   and availability facts, define the four `ModifyAction` variants and v1 replies,
+   and availability facts, define the five `ModifyAction` variants and v1 replies,
    and serialize returned actions directly in every SDK. Keep the delivery-plugin
    handshake at v1 and use common fixtures for all variants.
 2. **Parsing and write-back:** retain original requests, add authentication and
@@ -628,7 +695,7 @@ Acceptance checks include:
 - All SDKs preserve read-only callback semantics and serialize only the returned
   decision. A token-only Modify sends one action and no context snapshot. Allow
   and an empty list preserve current bytes/views; Block sends no pending request.
-- All four action variants round-trip through common fixtures. Lists retain order:
+- All five action variants round-trip through common fixtures. Lists retain order:
   repeated Set/Remove actions produce the last specified value. Remove on an absent
   supported field has no effect; RemoveModel deletes an explicit null member.
   An invalid action rejects the whole list, even if a later action would overwrite it.
@@ -655,5 +722,7 @@ Use focused unit tests for action validation and application, SDK contract tests
 for read-only callbacks and action replies, and black-box tests for actual upstream
 bytes, plugin lifecycle, and observation. Run formatting, lint, relevant crate tests,
 and existing request-blocking regressions when changing this implementation.
-Run `make test-blackbox-request-modification` for real broker forwarding checks.
+Run `make test-blackbox-request-modification` for real broker forwarding and provider
+switching checks, including next-hop routing, target Block policy and fixed WebSocket
+routes. Transport tests verify new-target TLS SNI and certificate identity.
 The implementation also preserves the request-blocking and SDK regression suites.
