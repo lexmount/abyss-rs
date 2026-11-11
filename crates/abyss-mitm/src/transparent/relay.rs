@@ -21,8 +21,6 @@
 //! captured prefix for hooks and continues forwarding the full HTTP message on
 //! the wire.
 
-use std::{borrow::Cow, time::Duration};
-
 use bytes::Bytes;
 use http::{Method, Request, Response, StatusCode};
 use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt};
@@ -36,14 +34,14 @@ use super::{
     TransparentProtocol,
     content_encoding::ContentDecoder,
     hook::HookDispatcher,
-    utils::{
-        content_length, has_expect_continue, http_request_head_without_relay_headers, is_chunked,
-        is_websocket_upgrade_request, status_has_no_body, websocket_request_head_bytes,
-    },
+    utils::{content_length, is_chunked, is_websocket_upgrade_request, status_has_no_body},
     websocket::{WebSocketRelayOutcome, WebSocketUpgrade, relay_websocket_messages},
 };
 
+mod request;
 mod retained;
+
+use request::RequestRelay;
 
 #[cfg(test)]
 mod response_capture_tests;
@@ -54,9 +52,6 @@ mod response_capture_tests;
 /// `max_body_bytes` controls how much decoded body data hooks may retain, while
 /// this constant controls the size of each socket read/write step.
 const RELAY_CHUNK_BYTES: usize = 16 * 1024;
-
-/// Inspected requests must become complete within a finite retention window.
-const INSPECTION_BODY_TIMEOUT: Duration = Duration::from_secs(30);
 
 /// Maximum allocation made from an untrusted Content-Length before bytes arrive.
 ///
@@ -629,9 +624,8 @@ enum BodyFraming {
 
 /// Copy the first request to upstream and capture the decoded request body.
 ///
-/// Relay preserves the original request head bytes except for locally handled
-/// `Expect: 100-continue` negotiation. `head_buffer` still carries any body
-/// bytes already read while decoding the head.
+/// Prepare the request, handle local negotiation, inspect when configured, and
+/// forward only after the control stage succeeds.
 #[tracing::instrument(level = "trace", skip_all)]
 async fn forward_controlled_request<R, W, C: super::RequestForwardingControl>(
     client: &mut R,
@@ -646,296 +640,16 @@ where
     R: AsyncRead + AsyncWrite + Unpin,
     W: AsyncWrite + Unpin,
 {
-    let body_framing = request_body_framing(request).map_err(|source| {
-        TransparentFlowError::http1(FlowOperation::ReadAgentRequestBody, source)
-    })?;
-    let handle_expect_continue =
-        has_expect_continue(request) && !matches!(body_framing, BodyFraming::Empty);
-    // Prefetched bytes after an upgrade head belong to WebSocket reassembly.
-    // The upgrade lifecycle retains that same buffer for the message reader.
-    let buffered_body = if is_websocket_upgrade_request(request) {
-        &[][..]
-    } else {
-        head_buffer.buffered_body()
-    };
+    let mut relay = RequestRelay::new(request, head_buffer, flow, max_body_bytes)?;
     let plan = control.plan();
-    if handle_expect_continue {
-        send_continue_response_to_client(client, request, flow).await?;
-    }
-
-    // Both modes use the same framing reader. Inspection changes its destination
-    // to bounded wire storage; no request head is written until the decision.
-    let mut edited_head = false;
-    let retained = if let Some(plan) = plan {
-        let prepared = RequestInspection {
-            request,
-            buffered_body,
-            flow,
-        }
-        .retain_and_inspect(client, body_framing, max_body_bytes, control, plan)
-        .await;
-        match prepared {
-            Ok((wire, capture, head)) => {
-                if let Some(head) = head {
-                    *request = head;
-                    edited_head = true;
-                }
-                Some((wire, capture))
-            }
-            Err(rejection) => {
-                rejection.response_error(client).await?;
-                return Err(rejection.into());
-            }
-        }
-    } else {
-        None
-    };
-    let request_head = if edited_head && !is_websocket_upgrade_request(request) {
-        Cow::Owned(
-            http_request_head_without_relay_headers(request, handle_expect_continue).map_err(
-                |source| {
-                    TransparentFlowError::http1(FlowOperation::WriteProviderRequestHead, source)
-                },
-            )?,
-        )
-    } else {
-        request_head_for_relay(request, head_buffer, handle_expect_continue)?
-    };
-    upstream
-        .write_all(&request_head)
-        .await
-        .map_err(|source| TransparentFlowError::Io {
-            operation: FlowOperation::WriteProviderRequestHead,
-            source,
-        })?;
-    let body_capture = if let Some((wire, mut capture)) = retained {
-        capture.forwarded_bytes = usize_to_u64(wire.bytes.len())?;
-        upstream
-            .write_all(&wire.bytes)
-            .await
-            .map_err(|source| TransparentFlowError::Io {
-                operation: FlowOperation::WriteProviderRequestBody,
-                source,
-            })?;
-        capture
-    } else {
-        Box::pin(forward_body(
-            client,
-            upstream,
-            body_framing,
-            buffered_body,
-            max_body_bytes,
-            BodyDirection::Request,
-        ))
-        .await?
-    };
-    upstream
-        .flush()
-        .await
-        .map_err(|source| TransparentFlowError::Io {
-            operation: FlowOperation::WriteProviderRequestHead,
-            source,
-        })?;
-    Ok(MessageCapture {
-        forwarded_bytes: add_len(
-            usize_to_u64(request_head.len())?,
-            body_capture.forwarded_bytes,
-        )?,
-        body: body_capture.body,
-        agent_write_error: body_capture.agent_write_error,
-    })
-}
-
-struct RequestInspection<'a> {
-    request: &'a Request<()>,
-    buffered_body: &'a [u8],
-    flow: &'a FlowContext,
-}
-
-impl RequestInspection<'_> {
-    async fn retain_and_inspect<R, C: super::RequestForwardingControl>(
-        &self,
-        client: &mut R,
-        framing: BodyFraming,
-        limit: usize,
-        control: &C,
-        plan: C::Plan,
-    ) -> Result<(retained::RetainedBody, BodyCapture, Option<Request<()>>), super::LocalRejection>
-    where
-        R: AsyncRead + Unpin,
+    relay.handle_expect_continue(client).await?;
+    if let Some(plan) = plan
+        && let Err(rejection) = relay.inspect(client, control, plan).await
     {
-        let (mut wire, mut capture) = self.retain_body(client, framing, limit).await?;
-        let headers = self.request.headers().clone();
-        capture.body = tokio::task::spawn_blocking(move || {
-            let mut body = capture.body;
-            ContentDecoder::decode_body(&headers, &mut body, false);
-            body
-        })
-        .await
-        .map_err(|_| {
-            self.reject(
-                StatusCode::SERVICE_UNAVAILABLE,
-                "inspection_unavailable",
-                "Request decoder unavailable",
-            )
-        })?;
-        match capture.body.decoding_status() {
-            super::BodyDecodingStatus::Complete => {}
-            super::BodyDecodingStatus::Truncated | super::BodyDecodingStatus::BudgetExceeded => {
-                return Err(self.reject(
-                    StatusCode::PAYLOAD_TOO_LARGE,
-                    "inspection_body_too_large",
-                    "Decoded request exceeds inspection limit",
-                ));
-            }
-            super::BodyDecodingStatus::UnsupportedEncoding
-            | super::BodyDecodingStatus::UnsupportedTransferEncoding => {
-                return Err(self.reject(
-                    StatusCode::UNSUPPORTED_MEDIA_TYPE,
-                    "unsupported_request_encoding",
-                    "Unsupported request encoding",
-                ));
-            }
-            _ => {
-                return Err(self.reject(
-                    StatusCode::BAD_REQUEST,
-                    "invalid_request_encoding",
-                    "Invalid request encoding",
-                ));
-            }
-        }
-        let result = control
-            .before_forward(
-                plan,
-                super::RequestView {
-                    flow: self.flow,
-                    head: self.request,
-                    body: &capture.body,
-                    transport: super::RequestTransport::Http,
-                },
-            )
-            .await?;
-        if let Some(body) = result.body {
-            wire.bytes = body.bytes().to_vec();
-            capture.body = body;
-        }
-        capture.body.extensions_mut().extend(result.annotations);
-        Ok((wire, capture, result.head))
+        rejection.response_error(client).await?;
+        return Err(rejection.into());
     }
-
-    async fn retain_body<R: AsyncRead + Unpin>(
-        &self,
-        client: &mut R,
-        framing: BodyFraming,
-        limit: usize,
-    ) -> Result<(retained::RetainedBody, BodyCapture), super::LocalRejection> {
-        if matches!(framing, BodyFraming::ContentLength(length) if length > limit) {
-            return Err(self.reject(
-                StatusCode::PAYLOAD_TOO_LARGE,
-                "inspection_body_too_large",
-                "Request exceeds inspection limit",
-            ));
-        }
-        let mut wire = retained::RetainedBody::new(limit);
-        let read = forward_body(
-            client,
-            &mut wire,
-            framing,
-            self.buffered_body,
-            limit,
-            BodyDirection::Request,
-        );
-        let captured = tokio::time::timeout(INSPECTION_BODY_TIMEOUT, read)
-            .await
-            .map_err(|_| {
-                self.reject(
-                    StatusCode::REQUEST_TIMEOUT,
-                    "inspection_body_timeout",
-                    "Request body was not completed within 30 seconds",
-                )
-            })?;
-        let capture = captured.map_err(|error| {
-            if matches!(error, TransparentFlowError::Io { ref source, .. } if source.kind() == std::io::ErrorKind::FileTooLarge) {
-                self.reject(StatusCode::PAYLOAD_TOO_LARGE, "inspection_body_too_large", "Request exceeds inspection limit")
-            } else {
-                self.reject(StatusCode::BAD_REQUEST, "invalid_request_body", "Incomplete or invalid request body")
-            }
-        })?;
-        Ok((wire, capture))
-    }
-
-    fn reject(
-        &self,
-        status: StatusCode,
-        code: &'static str,
-        reason: &'static str,
-    ) -> super::LocalRejection {
-        super::LocalRejection::new(status, code, reason, self.flow.flow_id.to_string())
-    }
-}
-
-fn request_head_for_relay<'a>(
-    request: &'a Request<()>,
-    head_buffer: &'a Http1HeadBuffer,
-    strip_expect_continue: bool,
-) -> Result<Cow<'a, [u8]>, TransparentFlowError> {
-    if is_websocket_upgrade_request(request) {
-        return websocket_request_head_bytes(request)
-            .map(Cow::Owned)
-            .map_err(|source| {
-                TransparentFlowError::http1(FlowOperation::WriteProviderRequestHead, source)
-            });
-    }
-    if strip_expect_continue {
-        return Ok(Cow::Owned(
-            http_request_head_without_relay_headers(request, strip_expect_continue).map_err(
-                |source| {
-                    TransparentFlowError::http1(FlowOperation::WriteProviderRequestHead, source)
-                },
-            )?,
-        ));
-    }
-    Ok(Cow::Borrowed(head_buffer.head_bytes()))
-}
-
-async fn send_continue_response_to_client<W>(
-    client: &mut W,
-    request: &Request<()>,
-    flow: &FlowContext,
-) -> Result<(), TransparentFlowError>
-where
-    W: AsyncWrite + Unpin,
-{
-    // `Expect: 100-continue` is still part of the same HTTP request: the client
-    // sends the head, waits for an interim `100 Continue`, and only then sends
-    // the body. A full HTTP/1 proxy would forward the head upstream, relay the
-    // upstream `100 Continue` back to the client, then continue with the final
-    // response. This relay currently models the first exchange as
-    // request-head + complete request-body -> final response-head, so it does
-    // not read or expose upstream interim 1xx responses before the request body
-    // has been copied. Reply locally and strip `Expect` from the upstream head
-    // so the upstream receives a normal body-bearing request.
-    client
-        .write_all(HTTP1_100_CONTINUE)
-        .await
-        .map_err(|source| TransparentFlowError::Io {
-            operation: FlowOperation::WriteAgentContinueResponse,
-            source,
-        })?;
-    client
-        .flush()
-        .await
-        .map_err(|source| TransparentFlowError::Io {
-            operation: FlowOperation::WriteAgentContinueResponse,
-            source,
-        })?;
-    tracing::info!(
-        protocol = ?flow.protocol,
-        method = %request.method(),
-        target_path = %request.uri().path(),
-        "MITM handled HTTP/1 Expect: 100-continue locally"
-    );
-    Ok(())
+    relay.forward(client, upstream).await
 }
 
 /// Copy the first response to the client and capture the decoded response body.
@@ -1755,21 +1469,12 @@ mod tests {
             .decode_request_head_with_timeout(Duration::from_secs(1))
             .await
             .unwrap();
-        let (mut stream, request, head_buffer) = decoded.into_parts();
+        let (mut stream, mut request, head_buffer) = decoded.into_parts();
         let flow = test_flow();
-        let result = super::RequestInspection {
-            request: &request,
-            buffered_body: head_buffer.buffered_body(),
-            flow: &flow,
-        }
-        .retain_and_inspect(
-            &mut stream,
-            super::BodyFraming::ContentLength(100),
-            1024,
-            &crate::UncontrolledForwarding,
-            (),
-        )
-        .await;
+        let result = super::RequestRelay::new(&mut request, &head_buffer, &flow, 1024)
+            .unwrap()
+            .inspect(&mut stream, &crate::UncontrolledForwarding, ())
+            .await;
         let Err(rejection) = result else {
             panic!("partial requests must time out");
         };
