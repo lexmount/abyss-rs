@@ -18,8 +18,6 @@ pub struct RequestView<'a> {
     pub body: &'a CapturedBody,
     /// HTTP request or complete WebSocket data message and its flow-local order.
     pub transport: RequestTransport,
-    /// Maximum decoded replacement size at this forwarding boundary.
-    pub max_body_bytes: usize,
 }
 
 /// Request transport facts known before forwarding.

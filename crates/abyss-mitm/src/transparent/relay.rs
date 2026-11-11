@@ -708,7 +708,8 @@ where
             operation: FlowOperation::WriteProviderRequestHead,
             source,
         })?;
-    let body_capture = if let Some((wire, capture)) = retained {
+    let body_capture = if let Some((wire, mut capture)) = retained {
+        capture.forwarded_bytes = usize_to_u64(wire.bytes.len())?;
         upstream
             .write_all(&wire.bytes)
             .await
@@ -811,19 +812,11 @@ impl RequestInspection<'_> {
                     head: self.request,
                     body: &capture.body,
                     transport: super::RequestTransport::Http,
-                    max_body_bytes: limit,
                 },
             )
             .await?;
         if let Some(body) = result.body {
             wire.bytes = body.bytes().to_vec();
-            capture.forwarded_bytes = u64::try_from(wire.bytes.len()).map_err(|_| {
-                self.reject(
-                    StatusCode::BAD_GATEWAY,
-                    "invalid_agent_request_edit",
-                    "Edited body is too large",
-                )
-            })?;
             capture.body = body;
         }
         capture.body.extensions_mut().extend(result.annotations);

@@ -24,11 +24,6 @@ pub struct RequestEditor<'a> {
     body: Option<CapturedBody>,
 }
 
-/// An edit that cannot fit the existing transport body budget.
-#[derive(Debug, thiserror::Error)]
-#[error("Edited request exceeds the forwarding limit")]
-pub struct RequestEditTooLarge;
-
 impl<'a> RequestEditor<'a> {
     /// Retains the original capture without cloning its JSON or byte contents.
     #[must_use]
@@ -48,7 +43,6 @@ impl<'a> RequestEditor<'a> {
             head: self.head.as_ref().unwrap_or(self.original.head),
             body: self.body.as_ref().unwrap_or(self.original.body),
             transport: self.original.transport,
-            max_body_bytes: self.original.max_body_bytes,
         }
     }
 
@@ -60,13 +54,7 @@ impl<'a> RequestEditor<'a> {
     }
 
     /// Installs identity-encoded content and resets obsolete body parsing state.
-    ///
-    /// # Errors
-    /// Returns an error when the replacement exceeds the forwarding limit.
-    pub fn replace_body(&mut self, bytes: Bytes) -> Result<(), RequestEditTooLarge> {
-        if bytes.len() > self.original.max_body_bytes {
-            return Err(RequestEditTooLarge);
-        }
+    pub fn replace_body(&mut self, bytes: Bytes) {
         if matches!(self.original.transport, RequestTransport::Http) {
             let headers = self.headers_mut();
             headers.remove(header::CONTENT_ENCODING);
@@ -75,37 +63,6 @@ impl<'a> RequestEditor<'a> {
             headers.insert(header::CONTENT_LENGTH, bytes.len().into());
         }
         self.body = Some(CapturedBody::from_bytes(bytes));
-        Ok(())
-    }
-
-    /// Checks the HTTP head budget after applying a list of header/body edits.
-    ///
-    /// # Errors
-    /// Returns an error when the encoded head would exceed the decoder's limit.
-    pub fn validate_head(&self) -> Result<(), RequestEditTooLarge> {
-        let Some(head) = &self.head else {
-            return Ok(());
-        };
-        let target_len = head
-            .uri()
-            .path_and_query()
-            .map_or(1, |target| target.as_str().len());
-        let length = head.headers().iter().fold(
-            head.method()
-                .as_str()
-                .len()
-                .saturating_add(target_len)
-                .saturating_add(14),
-            |size, (name, value)| {
-                size.saturating_add(name.as_str().len())
-                    .saturating_add(value.as_bytes().len())
-                    .saturating_add(4)
-            },
-        );
-        if length > crate::http1::MAX_HTTP1_HEADER_BYTES {
-            return Err(RequestEditTooLarge);
-        }
-        Ok(())
     }
 
     /// Releases only the accepted replacements to the transport writer.

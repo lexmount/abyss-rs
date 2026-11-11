@@ -51,7 +51,6 @@ fn both_http_modes_call_one_response_parser_and_one_shared_assembler() {
             CapturedBody::from_bytes(br#"{"model":"requested","input":"hello"}"#.to_vec().into());
         if inspected {
             let parsed = AgentRequestParser::prepare(&RequestView {
-                max_body_bytes: usize::MAX,
                 flow: &flow,
                 head: &head,
                 body: &body,

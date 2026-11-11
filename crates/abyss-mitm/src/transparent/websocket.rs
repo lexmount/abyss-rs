@@ -286,7 +286,7 @@ where
                 if let Some(transport) = transport && let Some(plan) = control.plan() {
                     let mut body = super::CapturedBody::from_bytes(forwarded.message.clone().into_data());
                     let result = {
-                    let decision = control.before_forward(plan, super::RequestView { flow, head: &upgrade.request, body: &body, transport, max_body_bytes: WebSocketConfig::default().max_message_size.unwrap_or(usize::MAX) });
+                    let decision = control.before_forward(plan, super::RequestView { flow, head: &upgrade.request, body: &body, transport });
                     tokio::pin!(decision);
                     loop {
                         tokio::select! {

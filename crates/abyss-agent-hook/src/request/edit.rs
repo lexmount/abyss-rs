@@ -21,9 +21,6 @@ pub enum RequestActionError {
     /// The token cannot be represented in the selected credential header.
     #[error("Invalid authentication token encoding")]
     InvalidToken,
-    /// Resulting content exceeds the existing forwarding limit.
-    #[error("Edited request exceeds the forwarding limit")]
-    TooLarge,
     /// The edited document could not be encoded.
     #[error("Edited model request could not be encoded")]
     Encoding,
@@ -125,7 +122,7 @@ impl RequestActions {
     /// Applies the ordered list privately; callers discard the request on error.
     ///
     /// # Errors
-    /// Returns a value-free error for unavailable, malformed, or oversized actions.
+    /// Returns a value-free error for unavailable or malformed actions.
     pub fn apply(
         &self,
         request: &mut RequestEditor<'_>,
@@ -157,13 +154,9 @@ impl RequestActions {
         }
         if let Some(document) = document {
             let bytes = serde_json::to_vec(&document).map_err(|_| RequestActionError::Encoding)?;
-            request
-                .replace_body(bytes.into())
-                .map_err(|_| RequestActionError::TooLarge)?;
+            request.replace_body(bytes.into());
         }
-        request
-            .validate_head()
-            .map_err(|_| RequestActionError::TooLarge)
+        Ok(())
     }
 
     fn writable_auth(&self) -> Result<AuthBinding, RequestActionError> {

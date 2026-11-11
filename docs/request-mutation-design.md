@@ -379,9 +379,8 @@ credential header, using its defined scheme. Removing the token removes that
 credential. Do not rebuild every header from the filtered diagnostic view, and do
 not expose a plugin-selected header name. Unrelated headers are preserved.
 
-Validate action availability, value encodability, and size before committing a
-list. Keep action application private until the entire list succeeds; only then
-publish the next context or return a forwardable request. This does not require
+Validate action availability and value encodability before committing a list.
+Keep action application private until the entire list succeeds; only then publish the next context or return a forwardable request. This does not require
 copying the whole context or a rollback framework: a failure terminates and
 discards the pending request. Refresh affected derived data after an accepted
 list and reuse it on Allow or an empty list. The broker may reparse after actions
@@ -572,18 +571,19 @@ request bodies; existing body observation policy continues to apply.
 | No selected request plugins | Existing streaming behavior |
 | Explicit Block | HTTP 403 / WebSocket 1008; no pending request sent |
 | Selected plugin disconnects, times out, or fails its handler | HTTP 503 / WebSocket 1011 |
-| Action target is not writable, credential cannot be encoded, or applying actions exceeds content limits | HTTP 502 `invalid_agent_request_edit` / WebSocket 1011; no fallback to the original request |
+| Action target is not writable or the credential cannot be encoded | HTTP 502 `invalid_agent_request_edit` / WebSocket 1011; no fallback to the original request |
 | Original client body is invalid, too large, or read times out | Existing 400/413/415/408 handling |
 
 A reply that cannot be decoded follows the existing session failure path. Invalid
 plugin actions are not client input errors. Validate and apply each list as a unit;
 never forward a partial result.
 
-Reuse the current HTTP body limit (default 16 MiB), read deadlines, WebSocket
-message limits, and IPC frame limits. Check updated content and the next context
-against those limits. Even token-only editing initially uses existing complete
-request processing. A separate early header stage needs a concrete latency or
-large-request requirement, not a speculative callback framework.
+Existing request retention, read deadlines, WebSocket decoding, and IPC framing
+keep their limits at those boundaries. Request editing adds no separate body or
+header size checks, and `RequestView` carries no size-limit metadata. Even
+token-only editing initially uses existing complete request processing. A separate
+early header stage needs a concrete latency or large-request requirement, not a
+speculative callback framework.
 
 No-plugin forwarding remains the existing behavior. Requiring a particular plugin
 to remain connected is a separate mandatory-plugin policy. A deployment can check

@@ -46,7 +46,6 @@ impl RequestForwardingControl for RequestControl {
             &config.harness_usage.config,
             request_id.clone(),
         ));
-        let mut modified = false;
         let mut participants = plan.participants().peekable();
         while let Some(participant) = participants.next() {
             match self.plugins.inspect(participant, context.clone()).await {
@@ -63,7 +62,6 @@ impl RequestForwardingControl for RequestControl {
                             request_id.clone(),
                         )
                     })?;
-                    modified = true;
                     parsed = AgentRequestParser::prepare(&request.view());
                     if participants.peek().is_some() {
                         let mut updated = AgentRequestParser::parse_prepared(
@@ -94,9 +92,6 @@ impl RequestForwardingControl for RequestControl {
                 }
                 Err(error) => {
                     let (status, code) = match error {
-                        InspectionError::PayloadTooLarge if modified => {
-                            (StatusCode::BAD_GATEWAY, "invalid_agent_request_edit")
-                        }
                         InspectionError::PayloadTooLarge => {
                             (StatusCode::PAYLOAD_TOO_LARGE, "inspection_body_too_large")
                         }

@@ -38,7 +38,6 @@ impl EditableRequest {
             head: &self.head,
             body: &self.body,
             transport,
-            max_body_bytes: 4096,
         }
     }
 }
@@ -198,7 +197,7 @@ fn websocket_edits_preserve_envelope_and_cannot_change_connection_token() {
 }
 
 #[test]
-fn invalid_and_oversized_edits_have_value_free_errors() {
+fn invalid_tokens_have_value_free_errors() {
     let source = EditableRequest::new("/v1/responses", &json!({"model":null,"input":[]}));
     let mut request = RequestEditor::new(source.view(RequestTransport::Http));
     let actions = RequestActions::new(&request.view());
@@ -209,20 +208,6 @@ fn invalid_and_oversized_edits_have_value_free_errors() {
         )
         .unwrap_err();
     assert!(!error.to_string().contains("private"));
-    assert!(matches!(
-        actions.apply(
-            &mut request,
-            Box::new([ModifyAction::SetModel("x".repeat(4096))])
-        ),
-        Err(RequestActionError::TooLarge)
-    ));
-    assert!(matches!(
-        actions.apply(
-            &mut request,
-            Box::new([ModifyAction::SetAuthToken("x".repeat(64 * 1024))])
-        ),
-        Err(RequestActionError::TooLarge)
-    ));
 }
 
 #[test]
