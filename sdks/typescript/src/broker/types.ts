@@ -137,6 +137,10 @@ export interface NetworkObservationsResponse {
 export interface UpstreamProxyConfig {
   protocol: "http_connect";
   endpoint: string;
+  /** Absolute broker-local PEM path; extends trust for the HTTPS proxy only. */
+  ca_file?: string;
+  /** Absolute broker-local JSON path containing Basic username and password. */
+  credentials_file?: string;
   connect_timeout_ms?: number;
   handshake_timeout_ms?: number;
 }

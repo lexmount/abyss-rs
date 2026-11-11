@@ -308,6 +308,9 @@ pub enum NetworkErrorCode {
     /// TCP establishment to the next hop failed.
     #[serde(rename = "upstream_proxy_tcp_error")]
     UpstreamProxyTcp,
+    /// TLS establishment or server certificate verification failed at the proxy.
+    #[serde(rename = "upstream_proxy_tls_error")]
+    UpstreamProxyTls,
     /// CONNECT negotiation failed or was rejected.
     #[serde(rename = "upstream_proxy_connect_error")]
     UpstreamProxyConnect,
@@ -371,6 +374,7 @@ impl NetworkErrorCode {
             Self::InspectionUnavailable => "inspection_unavailable",
             Self::UpstreamProxyDns => "upstream_proxy_dns_error",
             Self::UpstreamProxyTcp => "upstream_proxy_tcp_error",
+            Self::UpstreamProxyTls => "upstream_proxy_tls_error",
             Self::UpstreamProxyConnect => "upstream_proxy_connect_error",
             Self::UpstreamProxyAuthRequired => "upstream_proxy_auth_required",
             Self::AgentProtocol => "agent_protocol_error",
@@ -399,6 +403,7 @@ impl NetworkErrorCode {
             "inspection_unavailable" => Some(Self::InspectionUnavailable),
             "upstream_proxy_dns_error" => Some(Self::UpstreamProxyDns),
             "upstream_proxy_tcp_error" => Some(Self::UpstreamProxyTcp),
+            "upstream_proxy_tls_error" => Some(Self::UpstreamProxyTls),
             "upstream_proxy_connect_error" => Some(Self::UpstreamProxyConnect),
             "upstream_proxy_auth_required" => Some(Self::UpstreamProxyAuthRequired),
             "agent_protocol_error" => Some(Self::AgentProtocol),
@@ -437,6 +442,7 @@ impl NetworkErrorCode {
                 Some(match stage {
                     NetworkStage::DnsResolution => Self::UpstreamProxyDns,
                     NetworkStage::TcpConnect => Self::UpstreamProxyTcp,
+                    NetworkStage::TlsHandshake => Self::UpstreamProxyTls,
                     _ => Self::UpstreamProxyConnect,
                 })
             }
@@ -910,12 +916,14 @@ impl From<FlowOperation> for NetworkLocation {
         let (hop, direction, stage) = match operation {
             FlowOperation::ResolveProxy
             | FlowOperation::ConnectProxyTcp
+            | FlowOperation::ConnectProxyTls
             | FlowOperation::ProxyConnectHandshake => (
                 NetworkHop::AbyssToUpstreamProxy,
                 NetworkDirection::Bidirectional,
                 match operation {
                     FlowOperation::ResolveProxy => NetworkStage::DnsResolution,
                     FlowOperation::ConnectProxyTcp => NetworkStage::TcpConnect,
+                    FlowOperation::ConnectProxyTls => NetworkStage::TlsHandshake,
                     _ => NetworkStage::ResponseHeaders,
                 },
             ),

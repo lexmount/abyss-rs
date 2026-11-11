@@ -66,6 +66,8 @@ async fn run_tls_chain(action: TlsDecryptionAction, transparent: bool) {
     let proxy_address = servers.proxy_address;
     let connector = HttpConnectProxy::new(&UpstreamProxyConfig {
         protocol: UpstreamProxyProtocol::HttpConnect,
+        ca_file: None,
+        credentials_file: None,
         endpoint: format!("http://{proxy_address}"),
         connect_timeout_ms: 1000,
         handshake_timeout_ms: 1000,

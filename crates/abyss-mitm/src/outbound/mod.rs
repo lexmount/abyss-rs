@@ -1,12 +1,16 @@
 //! Next-hop proxy negotiation producing a target byte stream for existing TLS.
 //!
-//! This layer owns only proxy TCP and CONNECT. It neither changes CA trust nor
+//! This layer owns proxy TCP, optional verified TLS and authenticated CONNECT. It never changes target CA trust nor
 //! handles target TLS, HTTP requests, Agent parsing, or proxy product APIs.
 
+mod authentication;
 mod config;
 mod http_connect;
 mod listener;
+mod transport;
 
+#[cfg(test)]
+mod secure_tests;
 #[cfg(test)]
 mod tests;
 
@@ -38,6 +42,8 @@ pub enum ProxyConnectStage {
     ResolveProxy,
     /// Connect to the proxy's TCP listener.
     ConnectProxy,
+    /// Verify and establish TLS with the HTTPS proxy.
+    TlsHandshake,
     /// Negotiate the target tunnel with HTTP CONNECT.
     Handshake,
 }

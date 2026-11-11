@@ -159,6 +159,8 @@ impl ProxyFixture {
 fn config(address: SocketAddr) -> UpstreamProxyConfig {
     UpstreamProxyConfig {
         protocol: super::UpstreamProxyProtocol::HttpConnect,
+        ca_file: None,
+        credentials_file: None,
         endpoint: format!("http://{address}"),
         connect_timeout_ms: 1000,
         handshake_timeout_ms: 1000,
@@ -169,7 +171,7 @@ fn config(address: SocketAddr) -> UpstreamProxyConfig {
 fn rejects_unsupported_and_ambiguous_configuration() {
     let mut candidate = config("127.0.0.1:3128".parse().expect("endpoint"));
     for endpoint in [
-        "https://proxy.test:443",
+        "ftp://proxy.test:443",
         "socks5://proxy.test:1080",
         "http://proxy.test",
         "http://proxy.test:0",
@@ -212,8 +214,8 @@ fn rejects_unsupported_and_ambiguous_configuration() {
 fn configuration_rejects_unknown_protocols_and_fields() {
     for json in [
         r#"{"protocol":"socks5","endpoint":"http://localhost:3128"}"#,
-        r#"{"protocol":"http_connect","endpoint":"http://localhost:3128","ca_file":"private.pem"}"#,
-        r#"{"protocol":"http_connect","endpoint":"http://localhost:3128","credentials_file":"secret"}"#,
+        r#"{"protocol":"http_connect","endpoint":"http://localhost:3128","insecure":true}"#,
+        r#"{"protocol":"http_connect","endpoint":"http://localhost:3128","password":"secret"}"#,
     ] {
         assert!(
             serde_json::from_str::<UpstreamProxyConfig>(json).is_err(),

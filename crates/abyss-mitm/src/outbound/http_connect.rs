@@ -13,7 +13,8 @@ use crate::{BoxedDuplexStream, TargetAuthority, transparent::PrefixedDuplexStrea
 
 use super::{
     ListenerEndpoint, ProxyConnectStage, ProxySocketInitializer, UpstreamProxyConfig,
-    UpstreamProxyConfigError, UpstreamProxyError,
+    UpstreamProxyConfigError, UpstreamProxyError, authentication::ProxyAuthorization,
+    transport::ProxyTransport,
 };
 
 const MAX_HEADER_BYTES: usize = 16 * 1024;
@@ -24,6 +25,8 @@ const MAX_INFORMATIONAL_RESPONSES: usize = 8;
 #[derive(Clone)]
 pub struct HttpConnectProxy {
     endpoint: TargetAuthority,
+    transport: ProxyTransport,
+    authorization: Option<ProxyAuthorization>,
     connect_timeout: Duration,
     handshake_timeout: Duration,
     socket_initializer: Option<Arc<dyn ProxySocketInitializer>>,
@@ -43,11 +46,19 @@ impl HttpConnectProxy {
     ///
     /// # Errors
     ///
-    /// Returns an error when the endpoint or timeouts are invalid.
+    /// Returns an error when the endpoint, timeouts, CA bundle or credentials are invalid.
     pub fn new(config: &UpstreamProxyConfig) -> Result<Self, UpstreamProxyConfigError> {
         config.validate()?;
+        let endpoint = config.target()?;
+        let transport = ProxyTransport::new(config, &endpoint)?;
+        let authorization = config
+            .load_credentials()?
+            .as_ref()
+            .map(ProxyAuthorization::new);
         Ok(Self {
-            endpoint: config.target()?,
+            endpoint,
+            transport,
+            authorization,
             connect_timeout: config.connect_timeout(),
             handshake_timeout: config.handshake_timeout(),
             socket_initializer: None,
@@ -120,21 +131,30 @@ impl HttpConnectProxy {
                 }
             }
         }
-        let mut stream = self.connect_tcp(&addresses, deadline).await?;
+        let stream = self.connect_tcp(&addresses, deadline).await?;
         let proxy_peer = stream
             .peer_addr()
             .map_err(|source| UpstreamProxyError::Io {
                 stage: ProxyConnectStage::ConnectProxy,
                 source,
             })?;
-        let prefix = time::timeout(self.handshake_timeout, Self::handshake(&mut stream, target))
+        let deadline = Instant::now().checked_add(self.handshake_timeout).ok_or(
+            UpstreamProxyError::Protocol {
+                reason: "handshake deadline exceeds the monotonic clock range",
+            },
+        )?;
+        let mut stream = self
+            .transport
+            .connect(stream, deadline, self.handshake_timeout)
+            .await?;
+        let prefix = time::timeout_at(deadline, self.handshake(&mut stream, target))
             .await
             .map_err(|_elapsed| UpstreamProxyError::Timeout {
                 stage: ProxyConnectStage::Handshake,
                 timeout: self.handshake_timeout,
             })??;
         Ok(ConnectedTunnel {
-            stream: PrefixedDuplexStream::new(prefix.into_boxed_slice(), Box::new(stream)).boxed(),
+            stream: PrefixedDuplexStream::new(prefix.into_boxed_slice(), stream).boxed(),
             proxy_peer,
         })
     }
@@ -215,14 +235,20 @@ impl HttpConnectProxy {
     }
 
     async fn handshake(
-        stream: &mut TcpStream,
+        &self,
+        stream: &mut BoxedDuplexStream,
         target: &TargetAuthority,
     ) -> Result<Vec<u8>, UpstreamProxyError> {
-        let request = format!("CONNECT {target} HTTP/1.1\r\nHost: {target}\r\n\r\n");
+        let mut request = format!("CONNECT {target} HTTP/1.1\r\nHost: {target}\r\n");
+        if let Some(authorization) = &self.authorization {
+            authorization.append_to(&mut request);
+        }
+        request.push_str("\r\n");
         stream
             .write_all(request.as_bytes())
             .await
             .map_err(handshake_io)?;
+        stream.flush().await.map_err(handshake_io)?;
         let mut buffer = Vec::new();
         let mut informational = 0_usize;
         loop {

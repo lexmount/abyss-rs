@@ -1,9 +1,15 @@
 # Abyss Broker Upstream Proxy Chain Design
 
-Status: implemented for explicit ingress, macOS Network Extension, and Windows
-WFP ingress. Proxy TLS, authentication and SOCKS5 remain deferred.
-See [transparent routing](transparent-upstream-routing.md) for the platform
-boundary and durable network configuration API added after the initial release.
+Status: HTTP/1.1 CONNECT over HTTP or verified HTTPS, with optional Basic proxy
+authentication, is implemented for explicit ingress, macOS Network Extension,
+and Windows WFP ingress. SOCKS5 remains deferred.
+See [transparent routing](transparent-upstream-routing.md) and the
+[broker configuration guide](../crates/abyss-broker/README.md#forward-through-another-explicit-proxy)
+for the current transport, credential-file, CA-file and durable hot-update contract.
+
+The sections below record the original plain-HTTP first-release design. Its
+deferred TLS, authentication, transparent-ingress and hot-update features have
+since been implemented as described in those current guides.
 
 Add a protocol-oriented upstream connector to the broker. Agents continue to
 connect to Abyss, which establishes a bidirectional byte stream to the logical

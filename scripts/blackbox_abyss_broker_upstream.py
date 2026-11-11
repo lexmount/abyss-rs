@@ -61,6 +61,7 @@ class LocalServer(socketserver.ThreadingTCPServer):
         self.release_sse = threading.Event()
         self.tls = None
         self.reject = False
+        self.proxy_authorization = None
         self.thread = threading.Thread(target=self.serve_forever, daemon=True)
         self.thread.start()
 
@@ -126,19 +127,39 @@ class Origin(socketserver.BaseRequestHandler):
 
 class NextHop(socketserver.BaseRequestHandler):
     def handle(self):
-        request = read_head(self.request)
+        stream = self.request
+        if self.server.tls:
+            stream = self.server.tls.wrap_socket(stream, server_side=True)
+        with stream:
+            self.relay(stream)
+
+    def relay(self, stream):
+        request = read_head(stream)
         self.server.requests.append(request)
         method, authority, version = request.split(b"\r\n", 1)[0].split()
         assert method == b"CONNECT" and version == b"HTTP/1.1", request
-        assert b"authorization" not in request.lower(), (
-            "credentials escaped into CONNECT"
-        )
+        headers = {
+            name.lower(): value.strip()
+            for line in request.split(b"\r\n")[1:]
+            if b":" in line
+            for name, value in [line.split(b":", 1)]
+        }
+        expected = self.server.proxy_authorization
+        if expected is None:
+            assert b"authorization" not in request.lower(), (
+                "credentials escaped into CONNECT"
+            )
+        elif headers.get(b"proxy-authorization") != expected:
+            stream.sendall(
+                b"HTTP/1.1 407 Proxy Authentication Required\r\nProxy-Authenticate: Basic realm=proxy\r\n\r\n"
+            )
+            return
         host, port = authority.decode("ascii").rsplit(":", 1)
         status = {"auth.invalid": 407, "denied.invalid": 403}.get(host)
         if self.server.reject:
             status = 403
         if status:
-            self.request.sendall(
+            stream.sendall(
                 f"HTTP/1.1 {status} Private reason\r\nProxy-Authenticate: Secret challenge\r\n\r\nSecret body".encode(
                     "ascii"
                 )
@@ -148,7 +169,7 @@ class NextHop(socketserver.BaseRequestHandler):
             time.sleep(0.7)
             return
         if host == "broken.invalid":
-            self.request.sendall(b"invalid response\r\n\r\n")
+            stream.sendall(b"invalid response\r\n\r\n")
             return
         if host == "eof.invalid":
             return
@@ -160,18 +181,20 @@ class NextHop(socketserver.BaseRequestHandler):
             raise AssertionError(f"unexpected test target: {host}:{port}")
         with socket.create_connection(destination, timeout=5) as target:
             # Use a legal non-200 response and a misleading body length.
-            self.request.sendall(
-                b"HTTP/1.1 201 Tunnel ready\r\nContent-Length: 9000\r\n\r\n"
-            )
-            readers = [self.request, target]
+            stream.sendall(b"HTTP/1.1 201 Tunnel ready\r\nContent-Length: 9000\r\n\r\n")
+            readers = [stream, target]
             while readers:
-                ready, _, _ = select.select(readers, [], [], 5)
+                ready = [
+                    source
+                    for source in readers
+                    if isinstance(source, ssl.SSLSocket) and source.pending()
+                ]
+                if not ready:
+                    ready, _, _ = select.select(readers, [], [], 5)
                 if not ready:
                     return
                 for source in ready:
-                    destination_stream = (
-                        target if source is self.request else self.request
-                    )
+                    destination_stream = target if source is stream else stream
                     chunk = source.recv(8192)
                     if chunk:
                         destination_stream.sendall(chunk)

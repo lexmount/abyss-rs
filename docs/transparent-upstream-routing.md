@@ -41,11 +41,22 @@ unresolved locally. With no logical hostname, CONNECT uses the original IP,
 including bracketed IPv6. Direct mode continues using the OS destination, and
 TLS server identity remains the ClientHello SNI. Upstream TLS trust is unchanged.
 
-The protocol is currently HTTP/1.1 CONNECT over TCP, with a configured HTTP URL
-and bounded connection/handshake timeouts. A single next hop is configured;
+The protocol is HTTP/1.1 CONNECT over TCP or verified TLS, selected by an HTTP or
+HTTPS endpoint URL, with bounded connection/handshake timeouts. HTTPS validates
+the proxy hostname or IP using public WebPKI roots plus an optional `ca_file` PEM
+bundle. Optional `credentials_file` supplies a JSON username/password object for
+Basic proxy authentication (curl `-U` semantics). Both paths must be absolute and
+broker-local. See the [broker configuration example](../crates/abyss-broker/README.md#forward-through-another-explicit-proxy).
+
+Proxy TLS and CONNECT share the handshake deadline. Credentials are sent only
+after the HTTPS proxy certificate is verified, only to that proxy, and never in
+target requests. Proxy CA additions do not change target TLS trust. Credential
+and CA material is validated and loaded before a route is published; only file
+paths are serialized into configuration. To rotate material, reapply the route.
+Existing connections keep their snapshots. A single next hop is configured;
 additional hops belong to that proxy. There are no assumptions about proxy
-software, vendor configuration files, or process names. Authentication, SOCKS,
-and TLS to the proxy are outside the supported contract.
+software, vendor configuration files, or process names. SOCKS, proxy mTLS,
+Digest/NTLM and HTTP/2 CONNECT remain outside the supported contract.
 
 ```mermaid
 flowchart LR
@@ -91,6 +102,8 @@ CONNECT failure never falls back to direct routing. Proxy 407/403 diagnostics
 remain separate from provider HTTP statuses and do not retain proxy response
 bodies or authentication challenges. Existing SSE/WebSocket/TLS streams are not
 migrated when settings change. Plugin delivery is outside this routing policy.
+Proxy certificate and TLS failures use `upstream_proxy_tls_error`, with hop
+`abyss_to_upstream_proxy` and stage `tls_handshake`, distinct from target TLS errors.
 
 Validation includes MITM unit tests with a configured next hop and captured TLS
 response bodies, durable configuration tests, and the real broker black-box

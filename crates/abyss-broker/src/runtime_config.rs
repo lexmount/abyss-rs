@@ -327,7 +327,13 @@ impl RuntimePolicyTransaction {
         &mut self,
         config: NetworkConfig,
     ) -> Result<NetworkConfig, BrokerError> {
-        let validated = NetworkRuntime::validate(config.clone())?;
+        let validation_config = config.clone();
+        let validated =
+            tokio::task::spawn_blocking(move || NetworkRuntime::validate(validation_config))
+                .await
+                .map_err(|source| {
+                    BrokerError::task("load upstream proxy configuration", source)
+                })??;
         let candidate = RuntimePolicies {
             network: Some(config.clone()),
             ..self.current.clone()
