@@ -50,9 +50,9 @@ pub struct NetworkSnapshot {
 }
 
 impl NetworkSnapshot {
-    /// Borrows the validated next hop without changing this connection's route.
-    pub const fn proxy(&self) -> Option<&HttpConnectProxy> {
-        self.proxy.as_ref()
+    /// Explicit proxy connections have no trusted native source attribution.
+    pub fn proxy(&self) -> Option<&HttpConnectProxy> {
+        self.for_source(None)
     }
 
     /// Selects using native process metadata, before any target DNS or connection.
