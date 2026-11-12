@@ -42,7 +42,7 @@
     "audit",
     "broker"
   ],
-  "license": "GPL-3.0-only",
+  "license": "MIT",
   "repository": {
     "type": "git",
     "url": "git+https://github.com/lexmount/abyss-rs.git",

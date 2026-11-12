@@ -152,3 +152,7 @@ flowchart LR
     MITM <-->|upstream traffic| Provider
     Delivery -->|authenticated event upload| EventAPI
 ```
+
+## License
+
+Licensed under the [MIT License](LICENSE).

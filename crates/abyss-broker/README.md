@@ -332,4 +332,4 @@ plugin stream has no offline replay; local network diagnostics are a separate
 store. See the [plugin protocol](https://github.com/lexmount/abyss-rs/tree/main/specs/broker-plugin-protocol/v1)
 to implement a consumer.
 
-Licensed under GPL-3.0; see the included `LICENSE` file.
+Licensed under MIT; see the included `LICENSE` file.

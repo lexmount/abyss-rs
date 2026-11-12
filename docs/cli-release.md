@@ -82,7 +82,7 @@ the actual CLI command availability before accepting its declared feature set.
 Downstream builds should pin the release, source revision, and archive digest,
 then verify the archive before product signing changes its executable bytes.
 The Git tag identifies the corresponding source available from GitHub's source
-archive. The binaries remain covered by this repository's GPL license.
+archive. The binaries remain covered by this repository's MIT license.
 
 ## Build and publish
 
