@@ -11,6 +11,7 @@ use std::{
     net::SocketAddr,
     pin::Pin,
     sync::Arc,
+    time::SystemTime,
 };
 
 use bytes::Bytes;
@@ -307,20 +308,28 @@ pub struct HttpExchange {
     pub request: Request<CapturedBody>,
     /// Captured response with structured HTTP metadata and body.
     pub response: Response<CapturedBody>,
+    /// When the request was flushed to the upstream connection.
+    pub request_sent_at: SystemTime,
+    /// When the upstream response framing completed.
+    pub response_ended_at: SystemTime,
 }
 
 impl HttpExchange {
-    /// Creates one complete HTTP exchange for hook dispatch.
+    /// Creates one complete HTTP exchange that did not pass the relay, such as
+    /// a replayed capture: both wire moments are the time of this call.
     #[must_use]
-    pub const fn new(
+    pub fn new(
         flow: FlowContext,
         request: Request<CapturedBody>,
         response: Response<CapturedBody>,
     ) -> Self {
+        let now = SystemTime::now();
         Self {
             flow,
             request,
             response,
+            request_sent_at: now,
+            response_ended_at: now,
         }
     }
 }
@@ -363,12 +372,16 @@ pub struct WebSocketMessage {
     pub text: Option<String>,
     /// Binary payload when the frame sequence represents a binary message.
     pub binary: Option<Bytes>,
+    /// When the message passed the relay: a client message just before it is
+    /// sent upstream, an upstream message once it was read.
+    pub at: SystemTime,
 }
 
 impl WebSocketMessage {
-    /// Creates a decoded WebSocket message event.
+    /// Creates a decoded WebSocket message event that did not pass the relay:
+    /// its wire moment is the time of this call.
     #[must_use]
-    pub const fn new(
+    pub fn new(
         flow: FlowContext,
         upgrade_request: Request<()>,
         upgrade_response: Response<()>,
@@ -386,6 +399,7 @@ impl WebSocketMessage {
             sequence,
             text,
             binary,
+            at: SystemTime::now(),
         }
     }
 }
@@ -1261,6 +1275,8 @@ mod tests {
                     br#"{"ok":true}"#,
                 )))
                 .expect("test response should build"),
+            request_sent_at: std::time::SystemTime::UNIX_EPOCH,
+            response_ended_at: std::time::SystemTime::UNIX_EPOCH,
         }
     }
 
@@ -1288,6 +1304,7 @@ mod tests {
             sequence: 1,
             text: Some(text.to_owned()),
             binary: None,
+            at: std::time::SystemTime::UNIX_EPOCH,
         }
     }
 }

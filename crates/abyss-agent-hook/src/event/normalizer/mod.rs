@@ -9,7 +9,7 @@ use abyss_plugin_protocol::event::{
     LlmContext, LlmProvider, TokenUsage as PluginTokenUsage,
 };
 use base64::{Engine as _, engine::general_purpose::STANDARD};
-use chrono::{DateTime, SecondsFormat, TimeDelta, Utc};
+use chrono::{DateTime, SecondsFormat, Utc};
 use serde::Serialize;
 use serde_json::{Value, json};
 use thiserror::Error;
@@ -368,33 +368,6 @@ struct EventSide<'a> {
     declared: Declared<'a>,
 }
 
-/// Generates strictly increasing collector timestamps for one normalized
-/// provider exchange. Provider request and response events are created only
-/// after the terminal response arrives, so wall-clock reads can otherwise
-/// collapse to the same timestamp. Timestamps are emitted at microsecond
-/// precision, so each step is at least one microsecond.
-struct EventTimestampSequence {
-    previous: Option<DateTime<Utc>>,
-}
-
-impl EventTimestampSequence {
-    const fn new() -> Self {
-        Self { previous: None }
-    }
-
-    fn next(&mut self) -> DateTime<Utc> {
-        let now = Utc::now();
-        let observed_at = self.previous.map_or(now, |previous| {
-            let monotonic = previous
-                .checked_add_signed(TimeDelta::microseconds(1))
-                .unwrap_or(previous);
-            now.max(monotonic)
-        });
-        self.previous = Some(observed_at);
-        observed_at
-    }
-}
-
 fn events_for_parsed_exchange(
     config: &HarnessUsageHookConfig,
     parts: &ParsedEventParts<'_>,
@@ -419,7 +392,6 @@ fn events_for_parsed_exchange(
     }
 
     let mut events = Vec::new();
-    let mut timestamps = EventTimestampSequence::new();
     let request_usage = parts.usage.request_side();
     if request_has_content || !request_usage.is_empty() {
         events.push(usage_event(
@@ -435,7 +407,7 @@ fn events_for_parsed_exchange(
                 content,
                 declared,
             },
-            timestamps.next(),
+            passthrough.request_at,
         ));
     }
 
@@ -454,7 +426,7 @@ fn events_for_parsed_exchange(
                 content,
                 declared,
             },
-            timestamps.next(),
+            passthrough.response_at,
         ));
     }
 
@@ -1022,6 +994,8 @@ mod tests {
             &http::Uri::from_static("/v1/messages?beta=true"),
             &http::HeaderMap::new(),
             &response,
+            std::time::SystemTime::UNIX_EPOCH,
+            std::time::SystemTime::UNIX_EPOCH,
         );
         let parsed = anthropic_messages_exchange();
         let normalize = |declaration: &AgentDeclaration| {

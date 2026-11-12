@@ -21,7 +21,10 @@
 //! captured prefix for hooks and continues forwarding the full HTTP message on
 //! the wire.
 
-use std::{borrow::Cow, time::Duration};
+use std::{
+    borrow::Cow,
+    time::{Duration, SystemTime},
+};
 
 use bytes::Bytes;
 use http::{Method, Request, Response, StatusCode};
@@ -532,6 +535,9 @@ struct MessageCapture {
     forwarded_bytes: u64,
     /// Final client write error, retained alongside the complete response.
     agent_write_error: Option<TransparentFlowError>,
+    /// When the message finished on the upstream side: a request once flushed
+    /// upstream, a response once its framing completed.
+    at: SystemTime,
 }
 
 /// Selects the log message for the first exchange just submitted to hooks.
@@ -574,6 +580,7 @@ fn empty_message_capture(forwarded_bytes: u64) -> MessageCapture {
         body: CapturedBody::from_bytes(Bytes::new()),
         forwarded_bytes,
         agent_write_error: None,
+        at: SystemTime::now(),
     }
 }
 
@@ -617,6 +624,8 @@ fn submit_captured_exchange(
         flow,
         request,
         response,
+        request_sent_at: request_capture.at,
+        response_ended_at: response_capture.at,
     };
     hooks.submit(exchange.clone());
     log_captured_exchange(
@@ -850,6 +859,7 @@ impl<'a> RequestRelay<'a> {
             forwarded_bytes: add_len(head_bytes, capture.forwarded_bytes)?,
             body: capture.body,
             agent_write_error: capture.agent_write_error,
+            at: SystemTime::now(),
         })
     }
 
@@ -1042,6 +1052,7 @@ where
         )?,
         body: body_capture.body,
         agent_write_error: body_capture.agent_write_error,
+        at: SystemTime::now(),
     })
 }
 
