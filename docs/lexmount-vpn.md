@@ -108,4 +108,16 @@ Evidence is maintained in `artifacts/lexmount-vpn` in the coordinator workspace.
 Native Windows source routing and final installer consumption remain part of the
 cross-repository acceptance work and are reported separately from local passes.
 Companion designs: AbyssApp, abyss-services and abyss-backend
-`docs/lexmount-vpn.md`. PR links and tested revisions will be added at handoff.
+`docs/lexmount-vpn.md`. Exact tested revisions are recorded in the task report.
+
+## Coordinated review
+
+- [Endpoint PR 85](https://github.com/lexmount/abyss-rs/pull/85) and [runtime design](https://github.com/lexmount/abyss-rs/blob/task/lexmount-vpn/docs/lexmount-vpn.md).
+- [Desktop PR 86](https://github.com/lexmount/AbyssApp/pull/86) and [product design](https://github.com/lexmount/AbyssApp/blob/task/lexmount-vpn/docs/lexmount-vpn.md).
+- [Services PR 25](https://github.com/lexmount/abyss-services/pull/25) and [service design](https://github.com/lexmount/abyss-services/blob/task/lexmount-vpn/docs/lexmount-vpn.md).
+- [Standalone PR 16](https://github.com/lexmount/abyss-backend/pull/16) and [persistence design](https://github.com/lexmount/abyss-backend/blob/task/lexmount-vpn/docs/lexmount-vpn.md).
+
+The standalone verifier is independent. Integrate the public runtime primitives
+before the product composition. The enterprise service is opt-in; production
+packaging additionally requires a published endpoint release and normal release
+pins. Review packages consume explicit immutable development artifacts only.
