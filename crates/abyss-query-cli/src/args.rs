@@ -71,7 +71,7 @@ pub enum Command {
 
 #[derive(Subcommand)]
 pub enum ProfileCommand {
-    Add(ProfileAdd),
+    Add(Box<ProfileAdd>),
     List,
     Show { name: Option<String> },
     Use { name: String },

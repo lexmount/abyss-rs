@@ -15,6 +15,10 @@ because the data endpoint cannot identify a separately hosted frontend or its
 router prefix. Validate it before creating the snapshot. Existing profiles
 continue to work without the optional field.
 
+The profile-add argument payload is boxed so its additional optional frontend
+URL does not inflate every profile command on platforms with a larger layout.
+Clap still exposes the same flat command grammar on all supported platforms.
+
 Creation is an explicit mutation. It never runs during reads or doctor checks,
 does not retry POSTs, does not open a browser, and does not persist the returned
 capability. The URL is disclosed only in the requested command output. HTTP
