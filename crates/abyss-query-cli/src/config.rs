@@ -20,6 +20,8 @@ use crate::{
 #[serde(deny_unknown_fields)]
 pub struct Profile {
     pub endpoint: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub web_url: Option<String>,
     #[serde(default)]
     pub allow_http: bool,
     pub auth: Authentication,
@@ -86,6 +88,12 @@ impl Profile {
             endpoint: ApiEndpoint::parse_with_http(&args.endpoint, args.allow_http)?
                 .as_str()
                 .into(),
+            web_url: args
+                .web_url
+                .as_deref()
+                .map(|value| crate::sharing::WebRoot::parse(value, args.allow_http))
+                .transpose()?
+                .map(|root| root.as_str().to_owned()),
             auth,
             allow_http: args.allow_http,
             ca_file: args.ca_file.as_deref().map(absolute).transpose()?,

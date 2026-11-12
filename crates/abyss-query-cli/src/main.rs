@@ -8,6 +8,7 @@ mod credentials;
 mod error;
 mod output;
 mod run;
+mod sharing;
 
 use args::Cli;
 use clap::Parser as _;

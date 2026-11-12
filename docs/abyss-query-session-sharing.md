@@ -1,0 +1,40 @@
+# Session sharing from abyss-query
+
+`abyss-query sessions share SESSION_PK` creates a read-only session snapshot using
+the existing authenticated `POST v1/agent-usage/sessions/{session_pk}/shares`
+contract. It returns a browser URL and the server's share summary in the usual
+versioned output envelope. The argument is a backend session UUID, consistent
+with the other session detail commands.
+
+The data client owns the typed response and authenticated HTTP call. The CLI owns
+the browser URL: `WEB_ROOT/shared/sessions/SHARE_ID#token=ENCODED_TOKEN`. The
+fragment matches the product frontend and is never sent as a URL query parameter.
+Users supply the actual frontend root with `--web-url`, either on this command
+or when adding a profile. A command override wins. An explicit root is required
+because the data endpoint cannot identify a separately hosted frontend or its
+router prefix. Validate it before creating the snapshot. Existing profiles
+continue to work without the optional field.
+
+Creation is an explicit mutation. It never runs during reads or doctor checks,
+does not retry POSTs, does not open a browser, and does not persist the returned
+capability. The URL is disclosed only in the requested command output. HTTP
+failures keep the existing sanitized diagnostics and exit codes. A timeout can
+mean the server created the snapshot; callers should inspect the web share list
+before retrying. The server remains responsible for ownership, snapshot
+membership, expiry, limits, recipient authentication, and revocation. Standalone
+backends without sharing return their normal unsupported-route error.
+
+No service, storage, or web contract changes are required. The companion AbyssApp
+PR updates the English and Chinese distributed query skills. No native app or
+installer inputs change. A future query CLI release must precede distributing
+skills to users of old CLIs; skill instructions check `sessions share --help`
+and do not assume that existing 1.5.0 binaries implement the new command.
+
+Validation covers URL normalization/encoding and unsafe inputs, real CLI HTTP
+requests, authentication, failure codes, non-retry semantics, JSON/JSONL/table
+output, schemas, and compatibility with old profiles. A live local product API
+scenario must establish that the generated URL reads the intended snapshot,
+enforces recipient authentication, and becomes unavailable after revocation.
+Both installed codex and dsh harnesses must load and execute the changed skill
+against the candidate CLI and synthetic session. Final evidence, revisions and
+companion links are recorded in the task's persistent HTML report.

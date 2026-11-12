@@ -1,7 +1,8 @@
 # abyss-query
 
 `abyss-query` is a Rust CLI for Agents and people to read data from an Abyss SaaS
-or self-hosted HTTP backend. It runs on Windows, Linux and macOS without a
+or self-hosted HTTP backend, and to explicitly create session share links when
+the server supports sharing. It runs on Windows, Linux and macOS without a
 broker, proxy, CA installation or local database. The Cargo package is
 `abyss-query-cli`; the installed executable is `abyss-query`.
 
@@ -158,8 +159,37 @@ printing results. `profile add --timeout SECONDS` sets the per-attempt deadline
 (default 30, maximum 600), and `--retries` allows up to three GET retries (default
 two). Only connection/timeouts and 429/502/503/504 responses are retried.
 `Retry-After` up to five seconds is honored; longer/invalid delays return the
-HTTP error immediately. Auth POSTs are never replayed. Query execution time is
+HTTP error immediately. Authentication and sharing POSTs are never replayed. Query execution time is
 bounded by the selected page budget, request deadlines and retry delays.
+
+## Create a session share
+
+On a server with session sharing, explicitly create a read-only snapshot:
+
+```sh
+abyss-query --profile product sessions share SESSION_UUID --web-url https://web.example.com/app/
+```
+
+Use the backend `session_pk` from `sessions list` or `sessions header`, not the
+Agent's native session ID. `--web-url` is the browser application's root,
+including any router prefix, and is independent of the API endpoint. It can
+also be saved with `profile add --web-url`; a command option overrides that
+default. An explicit web root is required and validated before creation.
+
+The usual JSON envelope has `command: "sessions.share"`, `data.url`, and
+`data.share` containing the server's ID, snapshot time, expiry, and status.
+`data.url` is directly usable in a browser; its `#token=...` fragment contains
+the sensitive share capability. JSONL and table formats also include the URL.
+The CLI does not store it or open the browser. Recipients still sign in when
+required by the service. Owners can manage and revoke links in the web app.
+
+Each invocation creates a new snapshot, using the selected profile's existing
+credentials. The server enforces ownership, share limits, lifetime, and snapshot
+membership. Creation POSTs are never retried. After a timeout or invalid response,
+creation may already have happened; inspect the web share list before retrying.
+An unsupported standalone backend returns its normal HTTP error (typically 404),
+not a fabricated link. Earlier CLI versions lack this command; check
+`sessions share --help` before using it from an Agent skill.
 
 ## Agent output contract
 

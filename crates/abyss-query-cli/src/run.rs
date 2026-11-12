@@ -48,6 +48,21 @@ pub fn execute(cli: &Cli) -> Result<Output, Error> {
         Command::Search { query, page } => SessionPages::new(&client).fetch(page, Some(query)),
         Command::Sessions { command } => match command {
             SessionCommand::List(page) => SessionPages::new(&client).fetch(page, None),
+            SessionCommand::Share { id, web_url } => {
+                let root = crate::sharing::WebRoot::parse(
+                    web_url
+                        .as_deref()
+                        .or(profile.web_url.as_deref())
+                        .ok_or(Error::Config(
+                            "sessions share requires --web-url or profile web_url",
+                        ))?,
+                    profile.allow_http,
+                )?;
+                // Validate the browser destination before issuing the non-idempotent POST.
+                let response = client.create_session_share(*id)?;
+                let result = crate::sharing::SessionShareLink::new(&root, response)?;
+                Ok(Output::new("sessions.share", serde_json::to_value(result)?))
+            }
             SessionCommand::Header { id } => Ok(Output::new(
                 "sessions.header",
                 serde_json::to_value(client.session_header(*id)?)?,

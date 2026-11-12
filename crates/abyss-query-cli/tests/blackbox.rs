@@ -4,6 +4,246 @@ mod support;
 use serde_json::{Value, json};
 use support::{Harness, ID, Response, Server, TOKEN, event, session, sessions};
 
+fn created_share() -> Value {
+    json!({"share":{"id":ID,"created_at":"2026-01-01T00:00:00Z",
+        "snapshot_at":"2026-01-01T00:00:00Z","expires_at":"2026-01-08T00:00:00Z",
+        "revoked_at":null,"status":"active","future_field":true},"token":"share+secret&value"})
+}
+
+#[test]
+fn sharing_uses_one_authenticated_post_and_preserves_frontend_prefix() {
+    let mut response = Response::json(&created_share());
+    response.status = 201;
+    let server = Server::start(vec![response]);
+    let cli = Harness::new();
+    cli.profile(&server.endpoint, "bearer");
+    let output = cli.success(&[
+        "sessions",
+        "share",
+        ID,
+        "--web-url",
+        "https://web.example/app",
+    ]);
+    assert_eq!(output["command"], "sessions.share", "command identity");
+    assert_eq!(
+        output["data"]["url"],
+        format!("https://web.example/app/shared/sessions/{ID}#token=share%2Bsecret%26value"),
+        "direct browser URL"
+    );
+    assert_eq!(
+        output["data"]["share"],
+        created_share()["share"],
+        "server lifecycle and extensions retained"
+    );
+    assert!(
+        output["data"].get("token").is_none(),
+        "capability only in URL"
+    );
+    let requests = server.finish();
+    assert_eq!(requests.len(), 1_usize, "one creation request");
+    assert_eq!(requests[0].method, "POST", "explicit mutation");
+    assert_eq!(
+        requests[0].target,
+        format!("/prefix/v1/agent-usage/sessions/{ID}/shares"),
+        "preserve API prefix"
+    );
+    assert_eq!(
+        requests[0].authorization.as_deref(),
+        Some(format!("Bearer {TOKEN}").as_str()),
+        "use selected credential"
+    );
+    let persisted =
+        std::fs::read_to_string(cli.directory.path().join("profiles.json")).expect("profile");
+    assert!(
+        !persisted.contains("share+secret") && !persisted.contains("share%2Bsecret"),
+        "do not persist capability"
+    );
+}
+
+#[test]
+fn sharing_profile_default_override_formats_and_schema() {
+    let server = Server::start(vec![
+        Response::json(&created_share()),
+        Response::json(&created_share()),
+    ]);
+    let cli = Harness::new();
+    cli.success(&[
+        "profile",
+        "add",
+        "test",
+        "--endpoint",
+        &server.endpoint,
+        "--auth",
+        "none",
+        "--web-url",
+        "https://profile.example/ui",
+    ]);
+    let shown = cli.success(&["profile", "show", "test"]);
+    assert!(
+        shown.to_string().contains("https://profile.example/ui/"),
+        "persist normalized frontend root"
+    );
+    let jsonl = cli.run(&["--format", "jsonl", "sessions", "share", ID]);
+    assert!(jsonl.status.success(), "JSONL succeeds");
+    assert!(jsonl.stderr.is_empty(), "no capability on stderr");
+    let lines: Vec<Value> = String::from_utf8(jsonl.stdout)
+        .expect("UTF8")
+        .lines()
+        .map(|line| serde_json::from_str(line).expect("JSONL"))
+        .collect();
+    assert_eq!(
+        lines[0]["record"]["url"],
+        format!("https://profile.example/ui/shared/sessions/{ID}#token=share%2Bsecret%26value"),
+        "profile default"
+    );
+    assert_eq!(lines.len(), 2_usize, "record and metadata");
+    let table = cli.run(&[
+        "--format",
+        "table",
+        "sessions",
+        "share",
+        ID,
+        "--web-url",
+        "https://override.example",
+    ]);
+    assert!(table.status.success(), "table succeeds");
+    assert!(
+        String::from_utf8(table.stdout)
+            .expect("UTF8")
+            .contains("https://override.example/shared/sessions/"),
+        "command overrides profile"
+    );
+    assert_eq!(server.finish().len(), 2_usize, "two requested shares");
+    let schema = Harness::new().success(&["schema"]);
+    assert!(
+        schema["data"]["session_share"]["properties"]
+            .get("url")
+            .is_some(),
+        "URL schema"
+    );
+    assert!(
+        schema["data"]["session_share"]["properties"]
+            .get("share")
+            .is_some(),
+        "share schema"
+    );
+}
+
+#[test]
+fn sharing_validates_web_root_and_session_before_any_request() {
+    let cli = Harness::new();
+    cli.profile("http://127.0.0.1:1/api", "none");
+    for args in [
+        vec!["sessions", "share", ID],
+        vec![
+            "sessions",
+            "share",
+            ID,
+            "--web-url",
+            "https://user:secret@example.test",
+        ],
+        vec![
+            "sessions",
+            "share",
+            "native-session",
+            "--web-url",
+            "https://web.example",
+        ],
+    ] {
+        let output = cli.run(&args);
+        assert_eq!(
+            output.status.code(),
+            Some(2_i32),
+            "configuration error, not connection failure"
+        );
+        assert!(output.stdout.is_empty(), "no success output");
+        assert!(
+            !String::from_utf8_lossy(&output.stderr).contains("user:secret"),
+            "redact unsafe destination"
+        );
+    }
+    let help = cli.run(&["sessions", "share", "--help"]);
+    assert!(help.status.success(), "offline help");
+    assert!(
+        String::from_utf8_lossy(&help.stdout).contains("Each invocation creates a new share"),
+        "describe side effect"
+    );
+}
+
+#[test]
+fn sharing_preserves_http_errors_without_retry_or_sensitive_diagnostics() {
+    for (status, code) in [
+        (401_u16, 3_i32),
+        (403, 4_i32),
+        (404, 5_i32),
+        (409, 8_i32),
+        (429, 6_i32),
+        (503, 8_i32),
+        (302, 8_i32),
+    ] {
+        let server = Server::start(vec![Response::status(status)]);
+        let cli = Harness::new();
+        cli.success(&[
+            "profile",
+            "add",
+            "test",
+            "--endpoint",
+            &server.endpoint,
+            "--auth",
+            "bearer",
+            "--token-env",
+            "QUERY_TEST_TOKEN",
+            "--retries",
+            "3",
+        ]);
+        let output = cli.run(&["sessions", "share", ID, "--web-url", "https://web.example"]);
+        assert_eq!(
+            output.status.code(),
+            Some(code),
+            "HTTP {status} must not be retried into a transport failure"
+        );
+        let error: Value = serde_json::from_slice(&output.stderr).expect("error JSON");
+        assert_eq!(error["error"]["http_status"], status, "preserve status");
+        assert!(output.stdout.is_empty(), "no fabricated link");
+        assert!(
+            !String::from_utf8_lossy(&output.stderr).contains(TOKEN),
+            "redact body and credential"
+        );
+        assert_eq!(
+            server.finish().len(),
+            1_usize,
+            "non-idempotent creation is never replayed"
+        );
+    }
+}
+
+#[test]
+fn sharing_rejects_invalid_creation_responses_without_leaking_capability() {
+    let mut empty = created_share();
+    empty["token"] = json!("");
+    let mut malformed = created_share();
+    malformed["share"]["id"] = json!(TOKEN);
+    let mut missing = created_share();
+    missing.as_object_mut().expect("object").remove("token");
+    let server = Server::start(vec![
+        Response::json(&empty),
+        Response::json(&malformed),
+        Response::json(&missing),
+    ]);
+    let cli = Harness::new();
+    cli.profile(&server.endpoint, "none");
+    for _ in 0..3_u32 {
+        let output = cli.run(&["sessions", "share", ID, "--web-url", "https://web.example"]);
+        assert_eq!(output.status.code(), Some(9_i32), "invalid response");
+        assert!(output.stdout.is_empty(), "no unusable link");
+        assert!(
+            !String::from_utf8_lossy(&output.stderr).contains(TOKEN),
+            "redacted decode error"
+        );
+    }
+    assert_eq!(server.finish().len(), 3_usize, "one POST per command");
+}
+
 #[test]
 fn profiles_are_persistent_and_do_not_contain_credentials() {
     let cli = Harness::new();
@@ -56,7 +296,7 @@ fn anonymous_mode_preserves_prefix_and_repeated_encoded_filters() {
         "--agent",
         "a&b",
         "--agent",
-        "另一个",
+        "\u{53e6}\u{4e00}\u{4e2a}",
         "--model",
         "model/one",
     ]);

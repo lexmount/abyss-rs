@@ -1,4 +1,4 @@
-//! Read-only public backend operations; no profile or credential persistence.
+//! Public backend operations; no profile or credential persistence.
 
 use std::time::Duration;
 
@@ -94,6 +94,22 @@ impl DataClient {
     /// Returns transport or protocol errors.
     pub fn session_header(&self, id: Uuid) -> Result<SessionHeader, DataClientError> {
         self.get(&["sessions", &id.to_string(), "header"], &[])
+    }
+
+    /// Creates a session snapshot using the server's existing sharing policy.
+    /// This non-idempotent POST is sent once, even with GET retries configured.
+    ///
+    /// # Errors
+    /// Returns authorization, unsupported-route, transport or protocol errors.
+    /// A transport failure may occur after creation; do not blindly retry.
+    pub fn create_session_share(
+        &self,
+        id: Uuid,
+    ) -> Result<crate::models::CreatedSessionShare, DataClientError> {
+        let url =
+            self.endpoint
+                .resource(&["v1", "agent-usage", "sessions", &id.to_string(), "shares"]);
+        self.transport.post(&url, self.bearer.as_deref(), &())
     }
 
     /// Reads a session's segments.
