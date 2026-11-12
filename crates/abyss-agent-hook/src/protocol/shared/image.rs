@@ -128,7 +128,7 @@ mod tests {
     }
 
     #[test]
-    fn extracts_latest_anthropic_tool_result_image_without_replaying_history() {
+    fn extracts_anthropic_history_and_tool_result_images_in_order() {
         let payload = json!({
             "messages": [
                 {
@@ -166,13 +166,14 @@ mod tests {
 
         let images = extract_anthropic_request_images(&payload);
 
-        assert_eq!(images.len(), 1);
-        assert_eq!(images[0].media_type, ImageMediaType::Jpeg);
-        assert_eq!(images[0].bytes, JPEG_BYTES);
+        assert_eq!(images.len(), 2);
+        assert_eq!(images[0].bytes, PNG_BYTES);
+        assert_eq!(images[1].media_type, ImageMediaType::Jpeg);
+        assert_eq!(images[1].bytes, JPEG_BYTES);
     }
 
     #[test]
-    fn does_not_reupload_historical_anthropic_image_on_later_text_turn() {
+    fn collects_historical_anthropic_image_on_later_text_turn() {
         let payload = json!({
             "messages": [
                 {
@@ -191,7 +192,7 @@ mod tests {
             ]
         });
 
-        assert!(extract_anthropic_request_images(&payload).is_empty());
+        assert_eq!(extract_anthropic_request_images(&payload).len(), 1);
     }
 
     #[test]
