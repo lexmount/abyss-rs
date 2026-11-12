@@ -425,7 +425,7 @@ sequenceDiagram
         M-->>A: Client TLS established
     end
     A->>M: Request head and any prefetched body bytes
-    M->>M: Validate original target; apply configured redirect
+    M->>M: Validate original target and apply configured redirect
     M->>P: Connect selected upstream, with TLS for HTTPS targets
     P-->>M: Upstream established
     M->>B: Select forwarding plan

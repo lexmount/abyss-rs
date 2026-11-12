@@ -69,13 +69,13 @@ sequenceDiagram
     M->>M: Validate original target and match redirect rule
     M-->>A: Client TLS using original.example certificate
     A->>M: HTTP request head
-    M->>M: Validate original Host; replace domain in URI and Host
+    M->>M: Validate original Host and replace domain in URI and Host
     alt Configured next hop
-        M->>P: Connect proxy; authenticate CONNECT target.example:8443
+        M->>P: Connect proxy and authenticate CONNECT target.example:8443
         P->>T: Open selected target tunnel
         P-->>M: Tunnel established
     else Direct
-        M->>T: Resolve target.example; connect port 8443
+        M->>T: Resolve target.example and connect port 8443
     end
     M->>T: Upstream TLS for target.example (original HTTPS protocol)
     T-->>M: Certificate verified with provider trust
