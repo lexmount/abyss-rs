@@ -14,4 +14,4 @@ authentication belong to consumers outside this crate.
 To install the standalone proxy, use `cargo install --locked abyss-broker`.
 This crate is a library and does not install a command.
 
-Licensed under GPL-3.0; see the included `LICENSE` file.
+Licensed under MIT; see the included `LICENSE` file.
