@@ -37,6 +37,7 @@ class _TlsDecryptionRuleRequired(TypedDict):
 
 
 class TlsDecryptionRule(_TlsDecryptionRuleRequired, total=False):
+    # Replacement domain; the original protocol and port are retained.
     target: str
     process_names: list[str]
     application_ids: list[str]

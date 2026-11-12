@@ -574,8 +574,11 @@ fn parse_target_authority(
 /// Normalizes the host portion without performing DNS resolution.
 ///
 /// Keeping this step purely syntactic ensures the broker records the name the
-/// client declared, then resolves that name later at the ingress boundary.
-fn normalize_target_host(host: &str) -> Result<TargetHost, &'static str> {
+/// client declared, then resolves that name later at the routing boundary.
+///
+/// # Errors
+/// Returns an error for invalid DNS names or unsupported address syntax.
+pub fn normalize_target_host(host: &str) -> Result<TargetHost, &'static str> {
     let host = host
         .strip_prefix('[')
         .and_then(|host| host.strip_suffix(']'))

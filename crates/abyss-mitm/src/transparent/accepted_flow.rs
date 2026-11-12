@@ -33,8 +33,37 @@ pub(super) enum UpstreamConnection {
 }
 
 impl UpstreamConnection {
-    pub(super) fn redirect(self, target: crate::TargetAuthority) -> Self {
-        match self {
+    pub(super) fn redirect(
+        self,
+        host: &str,
+        flow: &super::FlowContext,
+    ) -> Result<Self, TransparentFlowError> {
+        let port = match &self {
+            Self::Direct { target, .. } | Self::HttpConnect { target, .. } => Some(target.port()),
+            Self::Deferred | Self::Prepared(_) => flow
+                .ingress
+                .proxy_target()
+                .map(crate::TargetAuthority::port)
+                .or_else(|| {
+                    flow.original_destination
+                        .socket_addr()
+                        .map(|address| address.port())
+                }),
+        }
+        .ok_or_else(|| TransparentFlowError::Io {
+            operation: super::FlowOperation::ConnectProviderTcp,
+            source: std::io::Error::new(
+                std::io::ErrorKind::InvalidInput,
+                "redirect requires the original destination port",
+            ),
+        })?;
+        let target = crate::TargetAuthority::from_host_port(host, port).map_err(|source| {
+            TransparentFlowError::Io {
+                operation: super::FlowOperation::ConnectProviderTcp,
+                source: std::io::Error::new(std::io::ErrorKind::InvalidInput, source),
+            }
+        })?;
+        Ok(match self {
             Self::HttpConnect { proxy, .. } => Self::HttpConnect { proxy, target },
             Self::Direct {
                 excluded_listener, ..
@@ -46,7 +75,7 @@ impl UpstreamConnection {
                 target,
                 excluded_listener: None,
             },
-        }
+        })
     }
 
     /// TLS SNI supplies a logical hostname only when platform metadata had an IP.

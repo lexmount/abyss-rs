@@ -18,7 +18,7 @@ use super::{RedirectTarget, hook::SourceProcess};
 pub enum TlsDecryptionAction {
     /// Reject the network flow without decrypting or forwarding its payload.
     Block,
-    /// Decrypt and forward to the rule's configured HTTP(S) origin.
+    /// Decrypt and forward to the rule's configured domain.
     Redirect,
     /// Terminate client TLS and expose HTTP/WebSocket plaintext to hooks.
     Intercept,
@@ -70,7 +70,7 @@ pub struct TlsDecryptionRule {
     pub enabled: bool,
     /// Action selected when the rule matches.
     pub action: TlsDecryptionAction,
-    /// HTTP(S) origin required by redirect rules.
+    /// Replacement domain required by redirect rules.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub target: Option<RedirectTarget>,
     /// Exact source process names. Empty means any process name.
@@ -106,9 +106,9 @@ pub struct TlsDecryptionContext<'a> {
 #[derive(Debug, Clone, PartialEq)]
 #[non_exhaustive]
 pub enum TlsDecryptionDecision {
-    /// Decrypt the flow and use the selected origin without re-evaluating rules.
+    /// Decrypt the flow and use the selected domain without re-evaluating rules.
     Redirect {
-        /// Configured destination origin.
+        /// Configured destination domain.
         target: RedirectTarget,
         /// Identifier of the selected rule.
         matched_rule_id: Option<String>,
@@ -137,7 +137,7 @@ pub enum TlsDecryptionPolicyError {
     /// Redirect requires a rule with an explicit destination.
     #[error("redirect requires a rule with a target; it cannot be a default action")]
     RedirectDefault,
-    /// Only redirect rules have a destination origin.
+    /// Only redirect rules have a destination domain.
     #[error("rule `{rule_id}` must specify target exactly when action is redirect")]
     RedirectTarget {
         /// Rule with inconsistent action and target.
@@ -396,7 +396,7 @@ impl TlsDecryptionDecision {
         }
     }
 
-    /// Returns the configured origin for redirect decisions.
+    /// Returns the configured domain for redirect decisions.
     #[must_use]
     pub const fn redirect_target(&self) -> Option<&RedirectTarget> {
         match self {
@@ -538,7 +538,7 @@ mod tests {
     fn redirect_requires_a_rule_target_and_keeps_first_match_semantics() {
         let policy: TlsDecryptionPolicy = serde_json::from_value(serde_json::json!({
             "rules": [
-                {"id":"route", "action":"redirect", "target":"https://localhost:8443",
+                {"id":"route", "action":"redirect", "target":"localhost",
                  "destination_hosts":["original.invalid"]},
                 {"id":"block", "action":"block", "destination_hosts":["*.invalid"]}
             ]
@@ -548,10 +548,7 @@ mod tests {
         let decision = policy.decide(Some("original.invalid"));
         assert_eq!(decision.action(), TlsDecryptionAction::Redirect);
         assert_eq!(decision.matched_rule_id(), Some("route"));
-        assert_eq!(
-            decision.redirect_target().unwrap().authority().authority(),
-            "localhost:8443"
-        );
+        assert_eq!(decision.redirect_target().unwrap().host(), "localhost");
         assert_eq!(
             policy.decide(Some("other.invalid")).action(),
             TlsDecryptionAction::Block
@@ -561,7 +558,7 @@ mod tests {
             serde_json::json!({"default_action":"redirect"}),
             serde_json::json!({"missing_sni_action":"redirect"}),
             serde_json::json!({"rules":[{"id":"route", "action":"redirect", "destination_hosts":["*.invalid"]}]}),
-            serde_json::json!({"rules":[{"id":"route", "action":"intercept", "target":"https://localhost", "destination_hosts":["*.invalid"]}]}),
+            serde_json::json!({"rules":[{"id":"route", "action":"intercept", "target":"localhost", "destination_hosts":["*.invalid"]}]}),
         ] {
             assert!(
                 serde_json::from_value::<TlsDecryptionPolicy>(value)

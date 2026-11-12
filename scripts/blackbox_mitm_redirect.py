@@ -53,9 +53,12 @@ def send(
     tls=False,
     path="/custom/path%2Fpart?q=a%2Bb",
     chunked=False,
+    port=None,
 ):
+    port = port or broker.redirect_port
+    authority = f"original.invalid:{port}"
     raw = (
-        broker.connect("original.invalid:443")
+        broker.connect(authority)
         if tls
         else socket.create_connection(broker.address, timeout=5)
     )
@@ -67,14 +70,14 @@ def send(
         else raw
     )
     with stream:
-        uri = path if tls else f"http://original.invalid:80{path}"
+        uri = path if tls else f"http://{authority}{path}"
         framing = (
             b"Transfer-Encoding: chunked\r\n"
             if chunked
             else f"Content-Length: {len(body)}\r\n".encode()
         )
         stream.sendall(
-            f"POST {uri} HTTP/1.1\r\nHost: original.invalid\r\nOriginator: codex_cli_rs\r\nConnection: close\r\n".encode()
+            f"POST {uri} HTTP/1.1\r\nHost: {authority}\r\nOriginator: codex_cli_rs\r\nConnection: close\r\n".encode()
             + headers
             + framing
             + b"\r\n"
@@ -107,22 +110,38 @@ def rejected_update(broker, target):
 
 
 def check(broker, origin, proxy):
-    target = f"http://127.0.0.1:{origin.server_address[1]}"
+    target = "localhost"
+    broker.redirect_port = origin.server_address[1]
+    proxy.plain_hosts = ("localhost",)
     configure(broker, target)
     # The next hop knows only the selected target; original.invalid is never resolved.
-    for tls in [False, True]:
-        assert send(broker, b"opaque-body", tls=tls).startswith(b"HTTP/1.1 200")
-        assert origin.requests[-1].startswith(
-            b"POST /custom/path%2Fpart?q=a%2Bb HTTP/1.1\r\n"
-        )
-        assert (
-            f"host: 127.0.0.1:{origin.server_address[1]}\r\n".encode()
-            in origin.requests[-1].lower()
-        )
-        assert origin.bodies[-1] == b"opaque-body"
-        assert proxy.requests[-1].startswith(
-            f"CONNECT 127.0.0.1:{origin.server_address[1]} HTTP/1.1".encode()
-        )
+    assert send(broker, b"opaque-body").startswith(b"HTTP/1.1 200")
+    assert origin.requests[-1].startswith(
+        b"POST /custom/path%2Fpart?q=a%2Bb HTTP/1.1\r\n"
+    )
+    assert (
+        f"host: localhost:{broker.redirect_port}\r\n".encode()
+        in origin.requests[-1].lower()
+    )
+    assert origin.bodies[-1] == b"opaque-body"
+    assert proxy.requests[-1].startswith(
+        f"CONNECT localhost:{broker.redirect_port} HTTP/1.1".encode()
+    )
+    # Explicit nondefault ports remain the CONNECT target even with proxy-owned DNS.
+    assert send(broker, port=8080).startswith(b"HTTP/1.1 200")
+    assert proxy.requests[-1].startswith(b"CONNECT localhost:8080 HTTP/1.1")
+    assert b"host: localhost:8080\r\n" in origin.requests[-1].lower()
+
+    # HTTPS stays HTTPS. The local fixture's private certificate must fail the
+    # broker's provider trust check, never be bypassed by a plaintext connection.
+    configure(broker, "tls.invalid")
+    assert send(broker, tls=True, port=8443).startswith(b"HTTP/1.1 502")
+    assert proxy.requests[-1].startswith(b"CONNECT tls.invalid:8443 HTTP/1.1")
+    broker.observations(
+        lambda row: row.get("technical_error_code") == "provider_tls_error"
+    )
+    assert not proxy.tls_origin.requests
+    configure(broker, target)
 
     compressed = gzip.compress(b'{ "model": "before", "input": "hello" }')
     wire = (
@@ -140,7 +159,7 @@ def check(broker, origin, proxy):
     ]
 
     def modify(context):
-        assert context["authority"] == "127.0.0.1"
+        assert context["authority"] == "localhost"
         assert context["harness"]["id"] == "codex"
         return {
             "action": "modify",
@@ -156,7 +175,6 @@ def check(broker, origin, proxy):
             broker,
             b'{"model":"before","input":"hello"}',
             b"Authorization: Bearer placeholder\r\n",
-            tls=True,
             path="/v1/responses",
         ).startswith(b"HTTP/1.1 200")
         assert json.loads(origin.bodies[-1])["model"] == "after"
@@ -172,7 +190,7 @@ def check(broker, origin, proxy):
     origin.release_reverse.set()
     with socket.create_connection(broker.address, timeout=5) as stream:
         stream.sendall(
-            b"GET http://original.invalid:80/ws HTTP/1.1\r\nHost: original.invalid\r\nUpgrade: websocket\r\nConnection: Upgrade\r\nSec-WebSocket-Key: dGhlIHNhbXBsZSBub25jZQ==\r\nSec-WebSocket-Version: 13\r\n\r\n"
+            f"GET http://original.invalid:{broker.redirect_port}/ws HTTP/1.1\r\nHost: original.invalid:{broker.redirect_port}\r\nUpgrade: websocket\r\nConnection: Upgrade\r\nSec-WebSocket-Key: dGhlIHNhbXBsZSBub25jZQ==\r\nSec-WebSocket-Version: 13\r\n\r\n".encode()
         )
         assert read_head(stream).startswith(b"HTTP/1.1 101")
         assert websocket_read(stream) == (1, b"reverse")
@@ -181,7 +199,9 @@ def check(broker, origin, proxy):
     assert origin.messages[-1] == (1, b"hello")
 
     # Configuration persists and is validated before publication.
-    rejected_update(broker, "https://example.com/path")
+    rejected_update(broker, "https://example.com")
+    rejected_update(broker, "example.com:443")
+    rejected_update(broker, "example.com/path")
     rejected_update(broker, "https://user:password@example.com")
     broker.restart()
     assert send(broker).startswith(b"HTTP/1.1 200")
@@ -189,7 +209,7 @@ def check(broker, origin, proxy):
     # Direct mode also resolves only the new target.
     broker.request("PUT", "/v1/network/config", {"upstream": None})
     count = len(proxy.requests)
-    assert send(broker, tls=True).startswith(b"HTTP/1.1 200")
+    assert send(broker).startswith(b"HTTP/1.1 200")
     assert len(proxy.requests) == count
     before = origin.accepted
     broker.request(
@@ -199,8 +219,10 @@ def check(broker, origin, proxy):
     )
     assert send(broker).startswith(b"HTTP/1.1 403")
     assert origin.accepted == before
-    configure(broker, f"http://{broker.address[0]}:{broker.address[1]}")
-    assert send(broker).startswith(b"HTTP/1.1 403"), "redirect loop was not rejected"
+    configure(broker, "localhost")
+    assert send(broker, port=broker.address[1]).startswith(b"HTTP/1.1 403"), (
+        "redirect loop was not rejected"
+    )
     configure(broker, target)
 
     # A redirect retains the configured authenticated HTTPS next hop.
@@ -220,15 +242,14 @@ def check(broker, origin, proxy):
         credentials_file=str(credentials),
     )
     broker.request("PUT", "/v1/network/config", config)
-    assert send(broker, tls=True).startswith(b"HTTP/1.1 200")
+    assert send(broker).startswith(b"HTTP/1.1 200")
     assert proxy.requests[-1].startswith(
-        f"CONNECT 127.0.0.1:{origin.server_address[1]}".encode()
+        f"CONNECT localhost:{origin.server_address[1]}".encode()
     )
     assert b"proxy-authorization:" not in origin.requests[-1].lower()
     count = len(proxy.requests)
-    for host in ["127.0.0.1", "localhost"]:
-        configure(broker, f"http://{host}:{broker.address[1]}")
-        assert send(broker).startswith(b"HTTP/1.1 403")
+    configure(broker, "localhost")
+    assert send(broker, port=broker.address[1]).startswith(b"HTTP/1.1 403")
     assert len(proxy.requests) == count, "self target reached next hop"
     configure(broker, target)
     proxy.reject = True
@@ -266,7 +287,7 @@ def main():
                 if broker:
                     broker.close()
         print(
-            "PASS: redirect before DNS/connect, HTTP and TLS clients, preserved paths/body framing, auth/model plugins, WebSocket, persistence, validation, direct routing and authenticated HTTPS next hop"
+            "PASS: redirect before DNS/connect, preserved protocol/ports/paths/body framing, auth/model plugins, WebSocket, persistence, validation, direct routing and authenticated HTTPS next hop"
         )
     finally:
         proxy.close()

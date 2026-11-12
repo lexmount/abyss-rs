@@ -40,8 +40,8 @@ The original destination port is retained. DNS-only destinations remain
 unresolved locally. With no logical hostname, CONNECT uses the original IP,
 including bracketed IPv6. Direct mode continues using the OS destination, and
 TLS server identity remains the ClientHello SNI unless a configured MITM redirect
-selects another origin. A redirect replaces the target before DNS/TCP/CONNECT,
-preserving the next-hop snapshot and its authentication. See the
+selects another domain. A redirect replaces only the domain before DNS/TCP/CONNECT,
+retaining the original protocol, port, next-hop snapshot and its authentication. See the
 [redirect sequence](mitm-redirect-design.md). Upstream TLS trust is unchanged.
 
 The protocol is HTTP/1.1 CONNECT over TCP or verified TLS, selected by an HTTP or

@@ -2,7 +2,7 @@
 //!
 //! HTTPS flows require two TLS roles: accept client TLS with a generated leaf
 //! certificate for the client name, then connect the policy-selected upstream.
-//! Redirects use their target origin's TLS identity independently of client TLS.
+//! Redirects use their target domain's TLS identity independently of client TLS.
 
 use std::{net::SocketAddr, sync::Arc};
 
@@ -121,12 +121,6 @@ impl TlsHttpFlow {
             })??;
         ingress.validate_tls_server_name(Some(&client_tls.server_name))?;
 
-        let upstream = HttpUpstream::new(
-            upstream,
-            Some(client_tls.server_name.clone()),
-            redirect.as_ref(),
-        );
-
         let protocol = TransparentProtocol::TlsHttp {
             server_name: client_tls.server_name,
         };
@@ -147,6 +141,7 @@ impl TlsHttpFlow {
         let mut decoded =
             DecodedClientFlow::from_http1(client_tls.stream, context, engine.timeouts.clone())
                 .await?;
+        let upstream = HttpUpstream::new(upstream, &decoded.context, redirect.as_ref())?;
         decoded.redirect(redirect.as_ref())?;
         let upstream = decoded
             .connect_upstream(upstream, engine, traffic_observer)

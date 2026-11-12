@@ -356,9 +356,9 @@ components:
           $ref: "#/components/schemas/TlsDecryptionAction"
         target:
           type: string
-          format: uri
-          description: HTTP(S) origin for redirect, with optional port. No path prefix, query, fragment or credentials. Preserves the request path and query.
-          examples: ["https://api.deepseek.com"]
+          format: hostname
+          description: Replacement domain for redirect. No scheme, port or path. Preserves the original protocol, port, path and query.
+          examples: ["api.deepseek.com"]
         process_names:
           type: array
           items:

@@ -28,19 +28,25 @@ pub(super) struct HttpUpstream {
 impl HttpUpstream {
     pub(super) fn new(
         connection: UpstreamConnection,
-        server_name: Option<String>,
+        flow: &super::FlowContext,
         redirect: Option<&super::RedirectTarget>,
-    ) -> Self {
-        match redirect {
-            Some(target) => Self {
-                connection: connection.redirect(target.authority().clone()),
-                server_name: target.server_name(),
-            },
-            None => Self {
-                connection,
-                server_name,
-            },
-        }
+    ) -> Result<Self, TransparentFlowError> {
+        let server_name = match &flow.protocol {
+            super::TransparentProtocol::TlsHttp { server_name } => Some(
+                redirect
+                    .map_or(server_name.as_str(), super::RedirectTarget::host)
+                    .to_owned(),
+            ),
+            _ => None,
+        };
+        let connection = match redirect {
+            Some(target) => connection.redirect(target.host(), flow)?,
+            None => connection,
+        };
+        Ok(Self {
+            connection,
+            server_name,
+        })
     }
 
     pub(super) async fn connect(

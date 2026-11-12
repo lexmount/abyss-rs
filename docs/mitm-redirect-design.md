@@ -1,6 +1,6 @@
 # Configured MITM redirects
 
-A `redirect` rule selects an HTTP(S) upstream origin before Abyss resolves or
+A `redirect` rule replaces the upstream domain before Abyss resolves or
 connects the destination. It uses the existing MITM policy alongside `block`,
 `passthrough`, and `intercept`. Routing belongs to MITM configuration; Agent
 plugins continue to modify semantic request fields such as credentials and model.
@@ -12,7 +12,7 @@ plugins continue to modify semantic request fields such as credentials and model
 id = "openai-to-deepseek"
 action = "redirect"
 destination_hosts = ["api.openai.com"]
-target = "https://api.deepseek.com"
+target = "api.deepseek.com"
 ```
 
 The first enabled matching rule wins. Existing source-process and destination
@@ -21,26 +21,30 @@ do not evaluate the target against the rules again. Place this rule before any
 broader matching intercept or passthrough rule. Explicit clients do not supply
 source-process identity, so use destination selectors for that ingress.
 
-`target` is an HTTP(S) origin: scheme, host, optional port, and optionally a
-trailing `/`. Paths, query strings, fragments and embedded credentials are not
-accepted. Only redirect rules may specify it, and every redirect rule requires
-it. `default_action` and `missing_sni_action` cannot be `redirect`; use a matching
-rule with a target. Invalid updates leave the published policy unchanged.
+`target` is a domain name, such as `api.deepseek.com`. Schemes, ports, paths,
+queries, fragments, credentials and IP literals are not accepted. Only redirect
+rules may specify it, and every redirect rule requires it. `default_action` and
+`missing_sni_action` cannot be `redirect`; use a matching rule with a target.
+Invalid updates leave the published policy unchanged.
+
+The upstream keeps the original protocol and connection port. Explicit ingress
+uses the declared CONNECT/HTTP target port; transparent ingress uses the captured
+destination port. For example, HTTPS to `original.example:8443` becomes HTTPS to
+`target.example:8443`, while HTTP to `original.example:8080` remains HTTP on 8080.
 
 | Request property | Redirect behavior |
 | --- | --- |
-| Destination DNS/TCP or upstream CONNECT target | Use the configured target, without contacting the original destination |
-| Upstream TLS | Target scheme selects TLS; verify the target host with existing provider trust |
+| Destination DNS/TCP or upstream CONNECT target | Replace the domain, retain the original port; do not contact the original destination |
+| Upstream TLS | HTTPS stays HTTPS and verifies the new domain with existing provider trust; HTTP stays plaintext |
 | Client TLS | Intercept using the original client SNI and the Abyss CA |
-| Request URI origin and Host | Replace with the target origin and authority |
+| Request URI and Host | Replace only the domain; retain scheme, explicit port and URI form |
 | Method, path and query | Preserve, including escaping |
 | Other headers and body | Preserve unless an existing plugin modifies them |
 | WebSocket | Redirect the HTTP upgrade; keep that connection for subsequent frames |
 | Configured next-hop proxy | Retain its TLS, authentication and timeouts; replace only its CONNECT destination |
 
-The rule works for plain HTTP and intercepted HTTPS, including HTTP-to-HTTPS and
-HTTPS-to-HTTP targets. HTTPS retains the existing interception requirements,
-including usable client SNI and client trust in the Abyss CA. It does not translate
+The rule works for plain HTTP and intercepted HTTPS. HTTPS retains the existing
+interception requirements, including usable client SNI and client trust in the Abyss CA. It does not translate
 model protocols, rewrite paths, select keys or choose models. For example,
 `/v1/responses` remains `/v1/responses`; a target must support the client's API.
 No plugin protocol or plugin decision variant is added. Plugin context retains
@@ -58,22 +62,22 @@ sequenceDiagram
     participant P as Configured next hop (optional)
     participant T as Redirect target
     participant H as Agent Hook and plugins
-    A->>I: CONNECT original.example:443
+    A->>I: CONNECT original.example:8443
     I-->>A: 200 Connection Established
     I->>M: Client IO, original metadata, next-hop snapshot
     A->>M: TLS ClientHello (original.example)
     M->>M: Validate original target and match redirect rule
     M-->>A: Client TLS using original.example certificate
     A->>M: HTTP request head
-    M->>M: Validate original Host; replace URI origin and Host
+    M->>M: Validate original Host; replace domain in URI and Host
     alt Configured next hop
-        M->>P: Connect proxy; authenticate CONNECT target.example:443
+        M->>P: Connect proxy; authenticate CONNECT target.example:8443
         P->>T: Open selected target tunnel
         P-->>M: Tunnel established
     else Direct
-        M->>T: Resolve and connect selected target
+        M->>T: Resolve target.example; connect port 8443
     end
-    M->>T: Upstream TLS for target.example (HTTPS target)
+    M->>T: Upstream TLS for target.example (original HTTPS protocol)
     T-->>M: Certificate verified with provider trust
     M->>H: Parse request and inspect semantic context
     H-->>M: Allow / Block / Modify actions
@@ -100,7 +104,7 @@ network diagnostics retain the transport failure and connected proxy peer.
   lookup or TCP/CONNECT establishment.
 - `abyss-mitm::transparent::decrypt_policy` validates redirect configuration and
   selects the target with the existing ordered policy.
-- `transparent::redirect::RedirectTarget` parses origins and rewrites the request
+- `transparent::redirect::RedirectTarget` parses domain names and rewrites the request
   head. It contains no Agent or model-provider knowledge.
 - `transparent::upstream::HttpUpstream` combines the selected destination, next hop
   and upstream TLS identity. Direct logical targets resolve at this boundary;
@@ -135,5 +139,5 @@ Verification with real Codex CLI 0.167.0 succeeded with `/v1/responses` unchange
 TLS to `api.deepseek.com`, model `deepseek-flash`, and a token equality check against
 the local key. Codex returned the requested marker after HTTP 200. The equality
 check records booleans, never the credential. Automated tests separately exercise
-unreachable original destinations, TLS identity separation, raw body retention,
-plugins, WebSockets, policy persistence and authenticated HTTPS proxy routing.
+unreachable original destinations, protocol/port preservation, TLS identity
+separation, raw body retention, plugins, WebSockets, policy persistence and authenticated HTTPS proxy routing.

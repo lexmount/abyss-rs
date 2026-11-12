@@ -42,14 +42,18 @@ async fn run_redirect(transparent: bool, client_tls: bool, wrong_certificate: bo
             .await
             .unwrap(),
     );
-    let provider = tokio::spawn(serve_provider(listener, acceptor, wrong_certificate));
+    let provider = tokio::spawn(serve_provider(
+        listener,
+        client_tls.then_some(acceptor),
+        wrong_certificate,
+    ));
     let (client, server) = connected_pair().await;
     let mut flow = AcceptedTcpFlow::from_destination_parts(
         Box::new(server),
         None,
         None,
         if transparent {
-            DestinationAddress::Known("127.0.0.1:1".parse().unwrap())
+            DestinationAddress::Known(format!("127.0.0.2:{port}").parse().unwrap())
         } else {
             DestinationAddress::Unknown
         },
@@ -59,7 +63,7 @@ async fn run_redirect(transparent: bool, client_tls: bool, wrong_certificate: bo
     if !transparent {
         flow = flow.with_ingress(FlowIngress::ExplicitProxy {
             protocol: ExplicitProxyProtocol::HttpConnect,
-            target: TargetAuthority::parse("original.invalid:443").unwrap(),
+            target: TargetAuthority::parse(&format!("original.invalid:{port}")).unwrap(),
             upstream_proxy: None,
             proxy_endpoint: None,
         });
@@ -67,7 +71,7 @@ async fn run_redirect(transparent: bool, client_tls: bool, wrong_certificate: bo
     let engine = super::test_mitm_engine_trusting(&ca).with_tls_decryption_policy(
         serde_json::from_value(serde_json::json!({
             "default_action":"block",
-            "rules":[{"id":"redirect", "action":"redirect", "destination_hosts":["original.invalid"], "target":format!("https://localhost:{port}")}]
+            "rules":[{"id":"redirect", "action":"redirect", "destination_hosts":["original.invalid"], "target":"localhost"}]
         })).unwrap()
     ).unwrap();
     let worker = tokio::spawn(async move { engine.handle_flow(flow).await });
@@ -81,7 +85,7 @@ async fn run_redirect(transparent: bool, client_tls: bool, wrong_certificate: bo
     } else {
         Box::new(client)
     };
-    client.write_all(b"GET /custom/path%2Fpart?q=a%2Bb HTTP/1.1\r\nHost: original.invalid:443\r\nConnection: close\r\n\r\n").await.unwrap();
+    client.write_all(format!("GET /custom/path%2Fpart?q=a%2Bb HTTP/1.1\r\nHost: original.invalid:{port}\r\nConnection: close\r\n\r\n").as_bytes()).await.unwrap();
     let mut response = Vec::new();
     client.read_to_end(&mut response).await.unwrap();
     let result = worker.await.unwrap();
@@ -102,19 +106,28 @@ async fn run_redirect(transparent: bool, client_tls: bool, wrong_certificate: bo
     provider.await.unwrap();
 }
 
-async fn serve_provider(listener: TcpListener, acceptor: TlsAcceptor, wrong_certificate: bool) {
+async fn serve_provider(
+    listener: TcpListener,
+    acceptor: Option<TlsAcceptor>,
+    wrong_certificate: bool,
+) {
     let port = listener.local_addr().unwrap().port();
     let (tcp, _) = listener.accept().await.unwrap();
-    let handshake = acceptor.accept(tcp).await;
-    if wrong_certificate {
-        assert!(
-            handshake.is_err(),
-            "original identity must not authenticate the redirect target"
-        );
-        return;
-    }
-    let mut stream = handshake.unwrap();
-    assert_eq!(stream.get_ref().1.server_name(), Some("localhost"));
+    let mut stream: crate::BoxedDuplexStream = if let Some(acceptor) = acceptor {
+        let handshake = acceptor.accept(tcp).await;
+        if wrong_certificate {
+            assert!(
+                handshake.is_err(),
+                "original identity must not authenticate the redirect target"
+            );
+            return;
+        }
+        let stream = handshake.unwrap();
+        assert_eq!(stream.get_ref().1.server_name(), Some("localhost"));
+        Box::new(stream)
+    } else {
+        Box::new(tcp)
+    };
     let head = read_http_head(&mut stream).await;
     assert!(
         head.starts_with("GET /custom/path%2Fpart?q=a%2Bb HTTP/1.1\r\n"),

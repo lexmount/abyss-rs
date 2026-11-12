@@ -1,94 +1,83 @@
-//! Configured HTTP upstream origins, independent of Agent protocols and plugins.
+//! Configured domain replacements, independent of Agent protocols and plugins.
 
-use http::{HeaderValue, Request, Uri, header};
+use http::{HeaderValue, Request, Uri, header, uri::Authority};
 use serde::{Deserialize, Deserializer, Serialize, Serializer, de};
-
-use crate::TargetAuthority;
 
 /// Marks a rewritten head so the relay encodes it instead of replaying the original bytes.
 #[derive(Clone)]
 pub(super) struct Redirected;
 
-/// A redirect destination's HTTP(S) origin. Request paths and queries are retained.
+/// A replacement domain. The original protocol, port, path and query are retained.
 #[derive(Debug, Clone, PartialEq)]
 pub struct RedirectTarget {
-    origin: Uri,
-    authority: TargetAuthority,
+    host: String,
 }
 
 impl RedirectTarget {
-    /// Parses an HTTP(S) origin with an optional port and no path prefix.
+    /// Parses a domain name without a scheme, port or path.
     ///
     /// # Errors
-    /// Returns a value-free description when the destination is not an origin.
+    /// Returns an error for anything other than a DNS name.
     pub fn parse(value: &str) -> Result<Self, &'static str> {
-        const INVALID: &str =
-            "redirect target must be an HTTP(S) origin with a valid host and port";
-        let origin: Uri = value.parse().map_err(|_| INVALID)?;
-        let authority = origin.authority().ok_or(INVALID)?;
-        let default_port = match origin.scheme_str() {
-            Some("http") => 80,
-            Some("https") => 443,
-            _ => return Err(INVALID),
-        };
-        if authority.as_str().contains('@')
-            || !matches!(origin.path(), "" | "/")
-            || origin.query().is_some()
-            || value.contains('#')
-        {
-            return Err(INVALID);
+        match crate::explicit_http::normalize_target_host(value) {
+            Ok(crate::TargetHost::Dns(host)) => Ok(Self { host }),
+            _ => Err("redirect target must be a domain name without a scheme, port or path"),
         }
-        let authority = if authority.as_str() == authority.host() {
-            TargetAuthority::from_host_port(authority.host(), default_port)
-        } else {
-            TargetAuthority::parse(authority.as_str())
-        }
-        .map_err(|_| INVALID)?;
-        Ok(Self { origin, authority })
     }
 
-    pub(super) const fn authority(&self) -> &TargetAuthority {
-        &self.authority
-    }
-
-    pub(super) fn server_name(&self) -> Option<String> {
-        (self.origin.scheme_str() == Some("https")).then(|| match self.authority.host() {
-            crate::TargetHost::Dns(name) => name.clone(),
-            crate::TargetHost::Ip(address) => address.to_string(),
-        })
+    pub(super) fn host(&self) -> &str {
+        &self.host
     }
 
     pub(super) fn apply(
         &self,
         request: &mut Request<()>,
     ) -> Result<(), super::TransparentFlowError> {
-        let mut parts = request.uri().clone().into_parts();
-        parts.scheme = self.origin.scheme().cloned();
-        parts.authority = self.origin.authority().cloned();
-        let uri = Uri::from_parts(parts).map_err(|source| super::TransparentFlowError::Io {
-            operation: super::FlowOperation::LocalRelay,
-            source: std::io::Error::new(std::io::ErrorKind::InvalidInput, source),
-        })?;
-        let host = HeaderValue::from_str(
-            self.origin
-                .authority()
-                .expect("validated redirect origin")
-                .as_str(),
-        )
-        .map_err(|source| super::TransparentFlowError::Io {
-            operation: super::FlowOperation::LocalRelay,
-            source: std::io::Error::new(std::io::ErrorKind::InvalidInput, source),
-        })?;
-        *request.uri_mut() = uri;
-        request.headers_mut().insert(header::HOST, host);
+        // Absolute-form URIs retain their scheme and explicit port. Origin-form
+        // URIs need no changes: their hostname lives in the Host header.
+        if let Some(authority) = request.uri().authority() {
+            let authority = self.with_port(authority.port_u16());
+            let mut parts = request.uri().clone().into_parts();
+            parts.authority = Some(authority.parse().map_err(Self::invalid_head)?);
+            *request.uri_mut() = Uri::from_parts(parts).map_err(Self::invalid_head)?;
+        }
+        let authority = request
+            .headers()
+            .get(header::HOST)
+            .map(|value| {
+                value
+                    .to_str()
+                    .map_err(Self::invalid_head)?
+                    .parse::<Authority>()
+                    .map_err(Self::invalid_head)
+            })
+            .transpose()?;
+        let host = self.with_port(authority.as_ref().and_then(Authority::port_u16));
+        request.headers_mut().insert(
+            header::HOST,
+            HeaderValue::from_str(&host).map_err(Self::invalid_head)?,
+        );
         request.extensions_mut().insert(Redirected);
         Ok(())
+    }
+
+    fn with_port(&self, port: Option<u16>) -> String {
+        port.map_or_else(|| self.host.clone(), |port| format!("{}:{port}", self.host))
+    }
+
+    fn invalid_head(
+        source: impl Into<Box<dyn std::error::Error + Send + Sync>>,
+    ) -> super::TransparentFlowError {
+        super::TransparentFlowError::Io {
+            operation: super::FlowOperation::LocalRelay,
+            source: std::io::Error::new(std::io::ErrorKind::InvalidInput, source),
+        }
     }
 }
 
 impl Serialize for RedirectTarget {
     fn serialize<S: Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
-        serializer.collect_str(&self.origin)
+        serializer.serialize_str(&self.host)
     }
 }
 
@@ -103,51 +92,77 @@ mod tests {
     use super::*;
 
     #[test]
-    fn rewrites_origin_and_retains_path_query_and_other_headers() {
-        let target = RedirectTarget::parse("https://localhost:8443/").unwrap();
-        let mut request = Request::builder()
-            .uri("/custom/path%2Fpart?q=a%2Bb")
-            .header("host", "original.invalid")
-            .header("authorization", "Bearer unchanged")
-            .body(())
-            .unwrap();
-        target.apply(&mut request).unwrap();
-        assert_eq!(
-            request.uri(),
-            "https://localhost:8443/custom/path%2Fpart?q=a%2Bb"
-        );
-        assert_eq!(request.headers()["host"], "localhost:8443");
-        assert_eq!(request.headers()["authorization"], "Bearer unchanged");
-        assert_eq!(target.server_name().as_deref(), Some("localhost"));
-        assert!(request.extensions().get::<Redirected>().is_some());
+    fn replaces_only_the_domain_in_origin_and_absolute_forms() {
+        let target = RedirectTarget::parse("replacement.example").unwrap();
+        for (uri, host, expected_uri, expected_host) in [
+            (
+                "/custom/path%2Fpart?q=a%2Bb",
+                "original.invalid",
+                "/custom/path%2Fpart?q=a%2Bb",
+                "replacement.example",
+            ),
+            (
+                "/custom/path%2Fpart?q=a%2Bb",
+                "original.invalid:8443",
+                "/custom/path%2Fpart?q=a%2Bb",
+                "replacement.example:8443",
+            ),
+            (
+                "https://original.invalid:8443/path?q=1",
+                "original.invalid:8443",
+                "https://replacement.example:8443/path?q=1",
+                "replacement.example:8443",
+            ),
+            (
+                "http://original.invalid:8080/path?q=1",
+                "original.invalid:8080",
+                "http://replacement.example:8080/path?q=1",
+                "replacement.example:8080",
+            ),
+            (
+                "https://original.invalid:443/path",
+                "original.invalid:443",
+                "https://replacement.example:443/path",
+                "replacement.example:443",
+            ),
+        ] {
+            let mut request = Request::builder()
+                .uri(uri)
+                .header("host", host)
+                .header("authorization", "Bearer unchanged")
+                .body(())
+                .unwrap();
+            target.apply(&mut request).unwrap();
+            assert_eq!(request.uri(), expected_uri);
+            assert_eq!(request.headers()["host"], expected_host);
+            assert_eq!(request.headers()["authorization"], "Bearer unchanged");
+            assert!(request.extensions().get::<Redirected>().is_some());
+        }
     }
 
     #[test]
-    fn parses_only_http_origins() {
-        for (origin, authority, tls) in [
-            ("https://example.com", "example.com:443", true),
-            ("http://127.0.0.1:8080", "127.0.0.1:8080", false),
-            ("http://[::1]", "[::1]:80", false),
-            ("https://[::1]:8443", "[::1]:8443", true),
-        ] {
-            let target = RedirectTarget::parse(origin).unwrap();
-            assert_eq!(target.authority().authority(), authority);
-            assert_eq!(target.server_name().is_some(), tls);
+    fn accepts_only_domain_names() {
+        for name in ["api.deepseek.com", "localhost", "xn--bcher-kva.example"] {
+            let target = RedirectTarget::parse(name).unwrap();
+            assert_eq!(target.host(), name);
             let serialized = serde_json::to_string(&target).unwrap();
+            assert_eq!(serialized, format!("\"{name}\""));
             assert_eq!(
                 serde_json::from_str::<RedirectTarget>(&serialized).unwrap(),
                 target
             );
         }
         for invalid in [
-            "example.com",
-            "ftp://example.com",
-            "https://example.com/v1",
-            "https://example.com?x=1",
-            "https://example.com#fragment",
-            "https://user:pass@example.com",
-            "https://localhost:99999",
-            "https://localhost:bad",
+            "",
+            "https://example.com",
+            "example.com:443",
+            "example.com/path",
+            "example.com?x=1",
+            "example.com#fragment",
+            "user@example.com",
+            "*.example.com",
+            "127.0.0.1",
+            "[::1]",
         ] {
             assert!(RedirectTarget::parse(invalid).is_err(), "{invalid}");
         }

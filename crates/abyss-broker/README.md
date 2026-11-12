@@ -60,8 +60,8 @@ decryption, with `network_blocked` recorded in broker diagnostics. Explicit CONN
 acknowledges the local tunnel before upstream connection setup. A TLS block decided
 from ClientHello is visible to the client as a TLS/socket failure.
 
-A `redirect` rule requires `target = "https://target.example"`. It intercepts
-traffic and selects that origin before DNS/TCP/CONNECT, preserving path/query
+A `redirect` rule requires `target = "target.example"`. It intercepts
+traffic and selects that domain before DNS/TCP/CONNECT, preserving protocol, port, path/query
 and any configured next hop. See the [redirect design](../../docs/mitm-redirect-design.md).
 
 ## Inspect Agent requests through plugins

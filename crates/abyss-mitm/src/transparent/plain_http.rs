@@ -99,9 +99,9 @@ impl PlainHttpFlow {
         let upstream = HttpUpstream::new(
             self.upstream
                 .with_server_name(authority.as_ref().map(http::uri::Authority::host))?,
-            None,
+            &decoded.context,
             decision.redirect_target(),
-        );
+        )?;
         decoded.redirect(decision.redirect_target())?;
         let upstream = decoded
             .connect_upstream(upstream, engine, self.traffic_observer)

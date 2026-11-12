@@ -32,7 +32,7 @@ export interface TlsDecryptionRule {
   id: string;
   enabled: boolean;
   action: TlsDecryptionAction;
-  /** HTTP(S) origin required when action is redirect. */
+  /** Replacement domain required when action is redirect; original protocol and port are retained. */
   target?: string;
   process_names?: string[];
   application_ids?: string[];
