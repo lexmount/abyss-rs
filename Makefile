@@ -62,6 +62,7 @@ test-blackbox-request-blocking:
 	cargo build --locked --package abyss-broker
 	python3 scripts/blackbox_request_blocking.py
 	python3 scripts/blackbox_required_inspector.py
+	python3 scripts/blackbox_plugin_http.py
 	python3 scripts/blackbox_agent_parsing.py
 
 .PHONY: test-blackbox-broker-config-api

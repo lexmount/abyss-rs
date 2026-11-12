@@ -137,6 +137,10 @@ impl PluginServer {
                 }
                 command = self.commands.recv() => {
                     match command {
+                        Some(PluginCommand::Connect(stream)) => {
+                            sessions.spawn(PluginSession::new(stream, self.events.clone(), shutdown.clone())
+                                .with_inspections(self.inspections.clone()).run());
+                        }
                         Some(PluginCommand::PublishEvent(event)) => {
                             // A live event has no receipt or replay if nobody subscribes.
                             drop(self.events.send(event));

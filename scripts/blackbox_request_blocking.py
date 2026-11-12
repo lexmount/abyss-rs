@@ -44,10 +44,11 @@ def write_frame(stream, value):
 
 
 class Plugin:
-    def __init__(self, endpoint, handler=None, capabilities=None, plugin_id="blackbox"):
-        self.stream = socket.socket(socket.AF_UNIX)
+    def __init__(self, endpoint, handler=None, capabilities=None, plugin_id="blackbox", stream=None):
+        self.stream = stream if stream is not None else socket.socket(socket.AF_UNIX)
         self.stream.settimeout(15)
-        self.stream.connect(endpoint)
+        if stream is None:
+            self.stream.connect(endpoint)
         write_frame(
             self.stream,
             {

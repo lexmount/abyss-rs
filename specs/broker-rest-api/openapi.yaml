@@ -12,6 +12,21 @@ servers:
 security:
   - localBearer: []
 paths:
+  /v1/plugins/connect:
+    post:
+      operationId: connectPlugin
+      description: >-
+        Authenticated HTTP/1.1 upgrade to the existing v1 length-prefixed plugin
+        protocol. Send Connection Upgrade and Upgrade abyss-plugin-v1 headers.
+        The management bearer grants the same trusted-local authority as other
+        protected routes. Existing Unix socket and Named Pipe permissions do not change.
+      responses:
+        "101":
+          description: Protocol switched; send PluginHello to negotiate capabilities.
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
   /healthz:
     get:
       operationId: getHealth

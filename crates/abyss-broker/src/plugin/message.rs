@@ -54,6 +54,7 @@ pub enum InspectionError {
 }
 
 pub(super) enum PluginCommand {
+    Connect(Box<dyn PluginStream>),
     PublishEvent(Arc<AgentEvent>),
     InspectRequest {
         participant: InspectionParticipant,
@@ -62,3 +63,9 @@ pub(super) enum PluginCommand {
         reply: oneshot::Sender<Result<InspectionDecision, InspectionError>>,
     },
 }
+
+pub(super) trait PluginStream:
+    tokio::io::AsyncRead + tokio::io::AsyncWrite + Send + Unpin
+{
+}
+impl<T: tokio::io::AsyncRead + tokio::io::AsyncWrite + Send + Unpin> PluginStream for T {}

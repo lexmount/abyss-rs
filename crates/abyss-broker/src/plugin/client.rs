@@ -26,6 +26,17 @@ pub struct PluginClient {
 }
 
 impl PluginClient {
+    /// Attaches a stream only after the management API authenticates its owner.
+    pub async fn attach<S>(&self, stream: S) -> Result<(), InspectionError>
+    where
+        S: tokio::io::AsyncRead + tokio::io::AsyncWrite + Send + Unpin + 'static,
+    {
+        self.commands
+            .send(PluginCommand::Connect(Box::new(stream)))
+            .await
+            .map_err(|_| InspectionError::Unavailable)
+    }
+
     pub(super) fn new(
         commands: mpsc::Sender<PluginCommand>,
         participants: watch::Receiver<Arc<[SessionIdentity]>>,

@@ -99,7 +99,12 @@ pub enum StartupInfoError {
 /// One configured out-of-process consumer of broker Agent events.
 pub struct BrokerPlugin {
     plugin_id: String,
-    endpoint: Option<String>,
+    endpoint: Option<Endpoint>,
+}
+
+enum Endpoint {
+    Local(String),
+    Http { origin: String, token: String },
 }
 
 /// Stream of typed Agent events received after a successful handshake.
@@ -138,7 +143,16 @@ impl BrokerPlugin {
     where
         T: Into<String>,
     {
-        self.endpoint = Some(endpoint.into());
+        self.endpoint = Some(Endpoint::Local(endpoint.into()));
+        self
+    }
+
+    /// Connects through a loopback broker API with its existing management bearer.
+    /// Local Unix socket and Named Pipe permissions remain unchanged. The bearer
+    /// is sent only in the HTTP Authorization header, never plugin frames or URLs.
+    #[must_use]
+    pub fn with_api_endpoint(mut self, origin: String, token: String) -> Self {
+        self.endpoint = Some(Endpoint::Http { origin, token });
         self
     }
 
@@ -173,10 +187,19 @@ impl BrokerPlugin {
         &self,
         capabilities: Vec<PluginCapability>,
     ) -> Result<transport::ConnectedPluginStream, BrokerPluginError> {
-        let endpoint = self.resolve_endpoint().await?;
-        let mut stream = transport::connect(&endpoint)
-            .await
-            .map_err(|source| BrokerPluginError::Connect { endpoint, source })?;
+        let mut stream = if let Some(Endpoint::Http { origin, token }) = &self.endpoint {
+            transport::connect_http(origin, token)
+                .await
+                .map_err(|source| BrokerPluginError::Connect {
+                    endpoint: "authenticated loopback API".to_owned(),
+                    source,
+                })?
+        } else {
+            let endpoint = self.resolve_endpoint().await?;
+            transport::connect(&endpoint)
+                .await
+                .map_err(|source| BrokerPluginError::Connect { endpoint, source })?
+        };
         self.handshake(stream.as_mut().get_mut(), capabilities)
             .await?;
         Ok(stream)
@@ -250,7 +273,7 @@ impl BrokerPlugin {
     }
 
     async fn resolve_endpoint(&self) -> Result<String, BrokerPluginError> {
-        if let Some(endpoint) = &self.endpoint {
+        if let Some(Endpoint::Local(endpoint)) = &self.endpoint {
             return Ok(endpoint.clone());
         }
         if let Some(endpoint) = Self::non_empty_env(PLUGIN_ENDPOINT_ENV) {
@@ -382,6 +405,23 @@ where
     pub async fn run(self) -> Result<BrokerClose, BrokerPluginError> {
         self.run_session(
             None::<fn(AgentEvent) -> std::future::Ready<Result<(), std::convert::Infallible>>>,
+            || Ok::<(), std::convert::Infallible>(()),
+        )
+        .await
+    }
+
+    /// Runs inspection, publishing readiness only after the broker accepts the handshake.
+    ///
+    /// # Errors
+    /// Returns transport, protocol, readiness, or handler errors and closes the connection.
+    pub async fn run_with_ready<R, D>(self, ready: R) -> Result<BrokerClose, BrokerPluginError>
+    where
+        R: FnOnce() -> Result<(), D>,
+        D: std::fmt::Display,
+    {
+        self.run_session(
+            None::<fn(AgentEvent) -> std::future::Ready<Result<(), std::convert::Infallible>>>,
+            ready,
         )
         .await
     }
@@ -399,23 +439,28 @@ where
         G: Future<Output = Result<(), D>>,
         D: std::fmt::Display,
     {
-        self.run_session(Some(handler)).await
+        self.run_session(Some(handler), || Ok::<(), std::convert::Infallible>(()))
+            .await
     }
 
-    async fn run_session<A, G, D>(
+    async fn run_session<A, G, D, R, Q>(
         mut self,
         mut events: Option<A>,
+        ready: R,
     ) -> Result<BrokerClose, BrokerPluginError>
     where
         A: FnMut(AgentEvent) -> G,
         G: Future<Output = Result<(), D>>,
         D: std::fmt::Display,
+        R: FnOnce() -> Result<(), Q>,
+        Q: std::fmt::Display,
     {
         let mut capabilities = vec![PluginCapability::AgentRequest];
         if events.is_some() {
             capabilities.push(PluginCapability::AgentEvents);
         }
         let mut stream = self.plugin.connect_transport(capabilities).await?;
+        ready().map_err(|error| BrokerPluginError::Handler(error.to_string()))?;
         loop {
             match read_stream_message(stream.as_mut().get_mut()).await? {
                 BrokerMessage::InspectRequest { context } => {
@@ -522,6 +567,7 @@ mod tests {
             .unwrap();
         });
         let mut decisions = handler_decisions().into_iter();
+        let mut ready = false;
         let close = BrokerPlugin::new("sdk-inspector")
             .with_endpoint(endpoint.to_string_lossy())
             .on_agent_request(move |context| {
@@ -532,9 +578,13 @@ mod tests {
                 let decision = decisions.next().unwrap();
                 async move { Ok::<_, std::convert::Infallible>(decision) }
             })
-            .run()
+            .run_with_ready(|| {
+                ready = true;
+                Ok::<(), std::convert::Infallible>(())
+            })
             .await
             .unwrap();
+        assert!(ready);
         assert_eq!(close.code, 100);
         server.await.unwrap();
         tokio::fs::remove_file(endpoint).await.unwrap();

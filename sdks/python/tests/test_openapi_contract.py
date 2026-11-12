@@ -8,6 +8,7 @@ import yaml
 
 SPEC_PATH = Path(__file__).resolve().parents[3] / "specs" / "broker-rest-api" / "openapi.yaml"
 EXPECTED_OPERATIONS = {
+    "/v1/plugins/connect": {"post": "connectPlugin"},
     "/healthz": {"get": "getHealth"},
     "/v1/proxy/status": {"get": "getProxyStatus"},
     "/v1/network/config": {"get": "getNetworkConfig", "put": "updateNetworkConfig"},

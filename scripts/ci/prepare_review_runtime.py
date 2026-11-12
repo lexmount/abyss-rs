@@ -40,7 +40,7 @@ def main():
         files[name] = hashlib.sha256(destination.read_bytes()).hexdigest()
     manifest = {"schema_version":1, "kind":"development_runtime", "repository":"https://github.com/lexmount/abyss-rs",
         "revision":revision, "target":target, "profile":args.profile,
-        "capabilities":["source_network_rules", "required_inspectors", "request_mutation"], "files":files}
+        "capabilities":["source_network_rules", "required_inspectors", "request_mutation", "authenticated_plugin_api"], "files":files}
     (args.output / "runtime-review.json").write_text(json.dumps(manifest, indent=2) + "\n")
     print(args.output / "runtime-review.json")
 
