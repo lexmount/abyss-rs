@@ -346,6 +346,46 @@ fn rejects_non_dialogue_payload() {
     assert!(parse_anthropic_messages_exchange(&exchange).is_none());
 }
 
+#[test]
+fn truncated_request_keeps_a_partial_request_and_the_response() {
+    let request = Request::builder()
+        .method("POST")
+        .uri("/v1/messages")
+        .header("host", "gateway.example")
+        .header("x-claude-code-session-id", "session-1")
+        .body(CapturedBody::from_truncated_bytes(
+            b"{\"messages\":[".to_vec().into(),
+        ))
+        .unwrap();
+    let response = Response::builder()
+        .header("content-type", "application/json")
+        .body(CapturedBody::from_bytes(
+            serde_json::to_vec(&json!({
+                "id": "msg_1",
+                "content": [{"type": "text", "text": "hi"}],
+                "usage": {"input_tokens": 3_i32, "output_tokens": 4_i32}
+            }))
+            .unwrap()
+            .into(),
+        ))
+        .unwrap();
+
+    let parsed = parse_anthropic_messages_exchange(&HttpExchange::new(flow(), request, response))
+        .expect("a truncated request keeps its exchange");
+
+    assert_eq!(parsed.request_conversation.entries, []);
+    assert_eq!(
+        parsed.request_conversation.completeness,
+        abyss_plugin_protocol::event::ContentCompleteness::Partial
+    );
+    assert_eq!(
+        role_texts(&parsed.response_conversation),
+        [(EntryRole::Assistant, "hi")]
+    );
+    assert_eq!(parsed.session_id, "session-1");
+    assert_eq!(parsed.usage.output_tokens, 4);
+}
+
 fn json_exchange(path: &str, request: &Value, response: &Value) -> HttpExchange {
     exchange(
         path,
