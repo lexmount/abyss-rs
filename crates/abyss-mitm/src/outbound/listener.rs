@@ -20,6 +20,22 @@ impl ListenerEndpoint {
         Self { address }
     }
 
+    /// Checks IP literals and localhost without resolving a proxy-owned target.
+    ///
+    /// # Errors
+    /// Returns an error when local interface addresses cannot be enumerated.
+    pub fn contains_target(&self, target: &crate::TargetAuthority) -> io::Result<bool> {
+        match target.host() {
+            crate::TargetHost::Ip(ip) => self.contains(SocketAddr::new(*ip, target.port())),
+            crate::TargetHost::Dns(host) if host == "localhost" => Ok(self.contains(
+                SocketAddr::from((std::net::Ipv4Addr::LOCALHOST, target.port())),
+            )? || self.contains(
+                SocketAddr::from((std::net::Ipv6Addr::LOCALHOST, target.port())),
+            )?),
+            crate::TargetHost::Dns(_) => Ok(false),
+        }
+    }
+
     /// Checks whether a destination belongs to this listener.
     ///
     /// Local interfaces are queried only for wildcard listeners and matching

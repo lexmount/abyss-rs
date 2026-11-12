@@ -1,7 +1,7 @@
 //! HTTP/1 exchange capture and relay.
 //!
 //! This module converts a transparent byte stream into one complete HTTP/1
-//! exchange for hooks while still forwarding bytes to the original upstream and
+//! exchange for hooks while still forwarding bytes to the selected upstream and
 //! back to the client.
 //!
 //! Relay owns the first decoded request head plus any bytes already read after
@@ -139,6 +139,56 @@ impl<S> DecodedClientFlow<S>
 where
     S: AsyncRead + AsyncWrite + Unpin + Send,
 {
+    pub(super) fn redirect(
+        &mut self,
+        target: Option<&super::RedirectTarget>,
+    ) -> Result<(), TransparentFlowError> {
+        if let Some(target) = target {
+            target.apply(&mut self.first_request)?;
+        }
+        Ok(())
+    }
+
+    pub(super) async fn connect_upstream(
+        &mut self,
+        upstream: super::upstream::HttpUpstream,
+        engine: &super::MitmEngine,
+        observer: Option<std::sync::Arc<dyn super::TrafficObserver>>,
+    ) -> Result<super::BoxedDuplexStream, TransparentFlowError> {
+        match upstream
+            .connect(&self.context.original_destination, engine, observer)
+            .await
+        {
+            Ok(stream) => Ok(stream),
+            Err(error) => {
+                let status = match &error {
+                    TransparentFlowError::Timeout { .. } => StatusCode::GATEWAY_TIMEOUT,
+                    TransparentFlowError::UpstreamProxy {
+                        source: crate::outbound::UpstreamProxyError::Loop { .. },
+                        ..
+                    } => StatusCode::FORBIDDEN,
+                    TransparentFlowError::UpstreamProxy { source, .. } if source.is_timeout() => {
+                        StatusCode::GATEWAY_TIMEOUT
+                    }
+                    TransparentFlowError::Io { source, .. }
+                        if source.kind() == std::io::ErrorKind::PermissionDenied =>
+                    {
+                        StatusCode::FORBIDDEN
+                    }
+                    _ => StatusCode::BAD_GATEWAY,
+                };
+                let rejection = LocalRejection::new(
+                    status,
+                    "upstream_connection_failed",
+                    "Could not connect to the selected upstream",
+                    self.context.flow_id.to_string(),
+                );
+                let _response = rejection.response_error(&mut self.stream).await;
+                Err(error)
+            }
+        }
+    }
+
     #[tracing::instrument(level = "trace", skip_all)]
     pub(super) async fn relay_to<U, C: super::RequestForwardingControl>(
         self,
@@ -691,6 +741,10 @@ impl<'a> RequestRelay<'a> {
         } else {
             head_buffer.buffered_body()
         };
+        let edited_head = request
+            .extensions()
+            .get::<super::redirect::Redirected>()
+            .is_some();
         Ok(Self {
             request,
             head_buffer,
@@ -699,7 +753,7 @@ impl<'a> RequestRelay<'a> {
             framing,
             max_body_bytes,
             handle_expect_continue,
-            edited_head: false,
+            edited_head,
             retained: None,
         })
     }

@@ -413,7 +413,15 @@ class Broker:
             )
         )
         response = read_head(stream)
-        assert int(response.split()[1]) == expected, response
+        assert int(response.split()[1]) == 200, response
+        if expected != 200:
+            # CONNECT accepts the local tunnel. Target establishment follows policy
+            # selection and reports failures at the application HTTP boundary.
+            stream.sendall(
+                f"GET /probe HTTP/1.1\r\nHost: {target}\r\nConnection: close\r\n\r\n".encode()
+            )
+            response = read_head(stream)
+            assert int(response.split()[1]) == expected, response
         assert b"Secret" not in response and b"Proxy-Authenticate" not in response, (
             response
         )

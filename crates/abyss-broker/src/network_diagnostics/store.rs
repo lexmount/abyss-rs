@@ -596,16 +596,21 @@ mod tests {
         assert!(loaded[0].proxy_peer.is_none());
         assert!(loaded[0].proxy_status.is_none());
 
-        let failure = crate::ingress::IngressError::Explicit(
-            crate::ingress::explicit::ExplicitIngressError::UpstreamProxy {
-                target: abyss_mitm::TargetAuthority::parse("api.invalid:8443")
-                    .expect("target should parse"),
-                endpoint: "127.0.0.1:3128".to_owned(),
-                source: abyss_mitm::outbound::UpstreamProxyError::Rejected { status: 407 },
-            },
+        let failure = abyss_mitm::TransparentFlowError::UpstreamProxy {
+            target: abyss_mitm::TargetAuthority::parse("api.invalid:8443")
+                .expect("target should parse"),
+            endpoint: "127.0.0.1:3128".to_owned(),
+            source: abyss_mitm::outbound::UpstreamProxyError::Rejected { status: 407 },
+        };
+        let observation = NetworkObservation::from_error(
+            Some(uuid::Uuid::new_v4()),
+            &FlowIngress::transparent(TransparentFlowSource::Unattributed),
+            Some("api.invalid"),
+            None,
+            200,
+            240,
+            &failure,
         );
-        let observation = NetworkObservation::from_ingress_error(&failure, 200, 240)
-            .expect("proxy failure should produce an observation");
         store
             .insert(&observation)
             .expect("proxy row should persist");

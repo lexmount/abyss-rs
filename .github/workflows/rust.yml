@@ -163,6 +163,10 @@ jobs:
         if: runner.os != 'Windows'
         run: make test-blackbox-request-blocking
 
+      - name: MITM redirect black-box
+        if: runner.os != 'Windows'
+        run: make test-blackbox-mitm-redirect
+
       - name: Run macOS transparent upstream black-box
         if: runner.os == 'macOS'
         run: make test-blackbox-broker-transparent-upstream

@@ -364,6 +364,7 @@ fn tls_rule(
         id: id.to_owned(),
         enabled,
         action,
+        target: None,
         process_names: Vec::new(),
         application_ids: Vec::new(),
         executable_paths: Vec::new(),

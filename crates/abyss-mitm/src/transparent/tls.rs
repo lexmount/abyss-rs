@@ -37,8 +37,7 @@ impl TlsFlow {
             return TlsHttpFlow::from(self.flow).handle(engine, control).await;
         }
 
-        self.handle_with_decryption_policy(engine, control, policy)
-            .await
+        Box::pin(self.handle_with_decryption_policy(engine, control, policy)).await
     }
 
     #[tracing::instrument(level = "trace", skip_all)]
@@ -97,7 +96,7 @@ impl TlsFlow {
                 rejection.rule_id = decision.matched_rule_id().map(str::to_owned);
                 Err(rejection.into())
             }
-            TlsDecryptionAction::Intercept => {
+            TlsDecryptionAction::Intercept | TlsDecryptionAction::Redirect => {
                 TlsHttpFlow::from_inspected(
                     inspected,
                     TlsHttpMetadata {
@@ -110,6 +109,7 @@ impl TlsFlow {
                         ingress,
                         upstream,
                         traffic_observer,
+                        redirect: decision.redirect_target().cloned(),
                     },
                 )
                 .handle(engine, control)

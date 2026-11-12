@@ -48,7 +48,7 @@ action = "block"
 executable_paths = ["/opt/example/bin/client"]
 ```
 
-The first enabled matching rule wins across `block`, `intercept` and `passthrough`.
+The first enabled matching rule wins across `block`, `intercept`, `passthrough` and `redirect`.
 Different selector dimensions are ANDed; values in one dimension are ORed.
 `process_names`, `application_ids` and `process_entry_points` remain available.
 Executable paths and entry points use exact native absolute-path matching.
@@ -56,9 +56,13 @@ Explicit proxy ingress has no process identity, so process-based selectors do no
 match it. Destination rules and default actions still apply.
 
 Plain HTTP receives a local `403 network_blocked`. TLS blocks close before
-decryption, with `network_blocked` recorded in broker diagnostics. Existing CONNECT
-setup remains unchanged: a TLS block decided from ClientHello occurs after CONNECT
-acknowledgement and is visible to the client as a TLS/socket failure.
+decryption, with `network_blocked` recorded in broker diagnostics. Explicit CONNECT
+acknowledges the local tunnel before upstream connection setup. A TLS block decided
+from ClientHello is visible to the client as a TLS/socket failure.
+
+A `redirect` rule requires `target = "target.example"`. It intercepts
+traffic and selects that domain before DNS/TCP/CONNECT, preserving protocol, port, path/query
+and any configured next hop. See the [redirect design](../../docs/mitm-redirect-design.md).
 
 ## Inspect Agent requests through plugins
 
@@ -69,8 +73,8 @@ No inspector list or additional broker configuration is needed. Event-only plugi
 continue observing without enabling request inspection.
 
 The HTTP request, WebSocket upgrade, and each reassembled client WebSocket data
-message are checked before forwarding. Provider TCP/TLS setup retains its existing
-order. All selected plugins must allow; a block returns `403 agent_request_blocked`,
+message are checked before forwarding. Provider TCP/TLS setup follows route selection
+and HTTP head validation, before Agent inspection. All selected plugins must allow; a block returns `403 agent_request_blocked`,
 and a selected plugin's failure or five-second timeout returns `503 inspection_unavailable`.
 WebSocket decisions close with 1008 or 1011 respectively. Without connected inspectors,
 the existing streaming path is used. Network passthrough remains opaque and never

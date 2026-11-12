@@ -18,7 +18,12 @@ use super::{
 pub(super) enum UpstreamConnection {
     /// Connect to the normalized original destination inside the MITM pipeline.
     Deferred,
-    /// Reuse a stream established while accepting an explicit proxy request.
+    /// Resolve and connect the selected logical target after policy evaluation.
+    Direct {
+        target: crate::TargetAuthority,
+        excluded_listener: Option<SocketAddr>,
+    },
+    /// Reuse an established upstream stream supplied by an embedded caller.
     Prepared(BoxedDuplexStream),
     /// A configured next hop; target DNS and routing belong to that proxy.
     HttpConnect {
@@ -28,6 +33,51 @@ pub(super) enum UpstreamConnection {
 }
 
 impl UpstreamConnection {
+    pub(super) fn redirect(
+        self,
+        host: &str,
+        flow: &super::FlowContext,
+    ) -> Result<Self, TransparentFlowError> {
+        let port = match &self {
+            Self::Direct { target, .. } | Self::HttpConnect { target, .. } => Some(target.port()),
+            Self::Deferred | Self::Prepared(_) => flow
+                .ingress
+                .proxy_target()
+                .map(crate::TargetAuthority::port)
+                .or_else(|| {
+                    flow.original_destination
+                        .socket_addr()
+                        .map(|address| address.port())
+                }),
+        }
+        .ok_or_else(|| TransparentFlowError::Io {
+            operation: super::FlowOperation::ConnectProviderTcp,
+            source: std::io::Error::new(
+                std::io::ErrorKind::InvalidInput,
+                "redirect requires the original destination port",
+            ),
+        })?;
+        let target = crate::TargetAuthority::from_host_port(host, port).map_err(|source| {
+            TransparentFlowError::Io {
+                operation: super::FlowOperation::ConnectProviderTcp,
+                source: std::io::Error::new(std::io::ErrorKind::InvalidInput, source),
+            }
+        })?;
+        Ok(match self {
+            Self::HttpConnect { proxy, .. } => Self::HttpConnect { proxy, target },
+            Self::Direct {
+                excluded_listener, ..
+            } => Self::Direct {
+                target,
+                excluded_listener,
+            },
+            Self::Deferred | Self::Prepared(_) => Self::Direct {
+                target,
+                excluded_listener: None,
+            },
+        })
+    }
+
     /// TLS SNI supplies a logical hostname only when platform metadata had an IP.
     /// The original destination port remains authoritative.
     pub(super) fn with_server_name(
@@ -140,8 +190,8 @@ impl AcceptedTcpFlow {
 
     /// Creates a flow whose target address may be resolved by an upstream proxy.
     ///
-    /// An unknown destination requires a prepared upstream stream. The logical
-    /// authority is supplied separately by the explicit ingress metadata.
+    /// An unknown destination uses a logical target from explicit ingress, a
+    /// configured upstream route, or a redirect rule.
     #[must_use]
     pub fn from_destination_parts(
         stream: BoxedDuplexStream,
@@ -180,6 +230,14 @@ impl AcceptedTcpFlow {
     /// Attaches the normalized ingress description used by hooks and diagnostics.
     #[must_use]
     pub fn with_ingress(mut self, ingress: FlowIngress) -> Self {
+        if matches!(self.upstream, UpstreamConnection::Deferred)
+            && let FlowIngress::ExplicitProxy { target, .. } = &ingress
+        {
+            self.upstream = UpstreamConnection::Direct {
+                target: target.clone(),
+                excluded_listener: self.local_addr,
+            };
+        }
         self.ingress = ingress;
         self
     }

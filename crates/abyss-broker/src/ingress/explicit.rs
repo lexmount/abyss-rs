@@ -1,38 +1,29 @@
 //! Configurable IPv4 and IPv6 HTTP explicit-proxy ingress.
 //!
 //! This adapter accepts opt-in proxy clients, decodes their initial proxy
-//! request, connects directly or negotiates the configured next-hop tunnel, then
-//! hands normalized client IO and metadata to the shared MITM pipeline. Provider parsing,
+//! request, acknowledges CONNECT, then hands client IO and unresolved target metadata
+//! to MITM. Policy selects the final route before DNS or connection setup. Provider parsing,
 //! policy, auditing, and upload behavior remain outside this module.
 
-use std::{
-    io,
-    net::{Ipv4Addr, Ipv6Addr, SocketAddr},
-    time::Duration,
-};
+use std::{io, net::SocketAddr};
 
 use abyss_mitm::{
     ExplicitProxyErrorCategory, ExplicitProxyProtocol, ExplicitRequestDecoder,
-    ExplicitRequestError, FlowIngress, TargetAuthority,
+    ExplicitRequestError, FlowIngress,
 };
-use futures_util::{StreamExt as _, stream::FuturesUnordered};
 use thiserror::Error;
 use tokio::{
     io::AsyncWriteExt as _,
-    net::{TcpListener, TcpStream, lookup_host},
-    time,
+    net::{TcpListener, TcpStream},
 };
 
 use super::{
     Ingress, IngressConnection, IngressError, IngressFactory, IngressRuntimeStatus, PlatformFlow,
     PlatformFlowMetadata, StartedIngress,
 };
-use abyss_mitm::outbound::{HttpConnectProxy, ListenerEndpoint, UpstreamProxyError};
+use abyss_mitm::outbound::{HttpConnectProxy, ListenerEndpoint};
 
 use crate::network_config::NetworkRuntime;
-
-const TARGET_RESOLUTION_TIMEOUT: Duration = Duration::from_secs(10);
-const TARGET_CONNECT_TIMEOUT: Duration = Duration::from_secs(10);
 
 /// Explicit HTTP proxy endpoint requested by CLI or configuration.
 #[derive(Debug, Clone, PartialEq)]
@@ -153,29 +144,23 @@ impl IngressConnection for ExplicitConnection {
             }
         };
         let (target, protocol, client_prefix) = decoded.into_parts();
-        let PreparedExplicitUpstream {
-            stream: upstream,
-            destination,
-            proxy_peer,
-        } = match self.prepare_upstream(&target).await {
-            Ok(prepared) => prepared,
-            Err(error) => {
-                // Preserve the establishment error even if the client has already closed.
-                let _response = self.reject(error.response()).await;
-                return Err(error.into());
-            }
-        };
-
         if protocol == ExplicitProxyProtocol::HttpConnect {
             self.write_response(ProxyResponse::ConnectionEstablished)
                 .await?;
         }
 
+        let destination = target
+            .host()
+            .as_ip_addr()
+            .map_or(abyss_mitm::DestinationAddress::Unknown, |ip| {
+                abyss_mitm::DestinationAddress::Known(SocketAddr::new(ip, target.port()))
+            });
         let destination_host = Some(target.host().to_string());
+        let route_target = target.clone();
         let ingress = FlowIngress::ExplicitProxy {
             protocol,
             target,
-            upstream_proxy: proxy_peer,
+            upstream_proxy: None,
             proxy_endpoint: self
                 .upstream
                 .as_ref()
@@ -188,155 +173,16 @@ impl IngressConnection for ExplicitConnection {
             destination_host,
             None,
         );
-        Ok(PlatformFlow::new(self.client, metadata)
-            .with_ingress(ingress)
-            .with_prepared_stream(upstream)
-            .with_read_prefix(client_prefix))
+        let mut flow = PlatformFlow::new(self.client, metadata).with_ingress(ingress);
+        if let Some(proxy) = self.upstream {
+            flow =
+                flow.with_upstream_proxy(proxy.excluding_endpoint(self.listen_addr), route_target);
+        }
+        Ok(flow.with_read_prefix(client_prefix))
     }
-}
-
-struct PreparedExplicitUpstream {
-    stream: abyss_mitm::BoxedDuplexStream,
-    destination: abyss_mitm::DestinationAddress,
-    proxy_peer: Option<SocketAddr>,
 }
 
 impl ExplicitConnection {
-    async fn prepare_upstream(
-        &self,
-        target: &TargetAuthority,
-    ) -> Result<PreparedExplicitUpstream, ExplicitIngressError> {
-        if let Some(proxy) = &self.upstream {
-            let targets_listener = match target.host().as_ip_addr() {
-                Some(ip) => same_endpoint(SocketAddr::new(ip, target.port()), self.listen_addr)?,
-                None => false,
-            };
-            if targets_listener
-                || (target.host().as_dns_name() == Some("localhost")
-                    && (same_endpoint(
-                        SocketAddr::from((Ipv4Addr::LOCALHOST, target.port())),
-                        self.listen_addr,
-                    )? || same_endpoint(
-                        SocketAddr::from((Ipv6Addr::LOCALHOST, target.port())),
-                        self.listen_addr,
-                    )?))
-            {
-                return Err(ExplicitIngressError::SelfTarget {
-                    target: target.authority(),
-                    listen_addr: self.listen_addr,
-                });
-            }
-            let tunnel = proxy
-                .connect(target, self.listen_addr)
-                .await
-                .map_err(|source| ExplicitIngressError::UpstreamProxy {
-                    target: target.clone(),
-                    endpoint: proxy.endpoint().authority(),
-                    source,
-                })?;
-            let destination = target
-                .host()
-                .as_ip_addr()
-                .map_or(abyss_mitm::DestinationAddress::Unknown, |ip| {
-                    abyss_mitm::DestinationAddress::Known(SocketAddr::new(ip, target.port()))
-                });
-            return Ok(PreparedExplicitUpstream {
-                stream: tunnel.stream,
-                destination,
-                proxy_peer: Some(tunnel.proxy_peer),
-            });
-        }
-        let resolved = self.resolve_target(target).await?;
-        for address in &resolved {
-            if same_endpoint(*address, self.listen_addr)? {
-                return Err(ExplicitIngressError::SelfTarget {
-                    target: target.authority(),
-                    listen_addr: self.listen_addr,
-                });
-            }
-        }
-        let upstream = self.connect_target(target, &resolved).await?;
-        let upstream_addr =
-            upstream
-                .peer_addr()
-                .map_err(|source| ExplicitIngressError::UpstreamAddress {
-                    target: target.authority(),
-                    source,
-                })?;
-        Ok(PreparedExplicitUpstream {
-            stream: Box::new(upstream),
-            destination: abyss_mitm::DestinationAddress::Known(upstream_addr),
-            proxy_peer: None,
-        })
-    }
-
-    async fn resolve_target(
-        &self,
-        target: &TargetAuthority,
-    ) -> Result<Vec<SocketAddr>, ExplicitIngressError> {
-        if let Some(ip) = target.host().as_ip_addr() {
-            return Ok(vec![SocketAddr::new(ip, target.port())]);
-        }
-        if let Some(host) = target.host().as_dns_name() {
-            let addresses = time::timeout(
-                TARGET_RESOLUTION_TIMEOUT,
-                lookup_host((host, target.port())),
-            )
-            .await
-            .map_err(|_elapsed| ExplicitIngressError::ResolveTimeout {
-                target: target.authority(),
-                timeout: TARGET_RESOLUTION_TIMEOUT,
-            })?
-            .map_err(|source| ExplicitIngressError::Resolve {
-                target: target.authority(),
-                source,
-            })?
-            .collect::<Vec<_>>();
-            if addresses.is_empty() {
-                return Err(ExplicitIngressError::NoResolvedAddresses {
-                    target: target.authority(),
-                });
-            }
-            return Ok(addresses);
-        }
-        Err(ExplicitIngressError::UnsupportedTargetHost {
-            target: target.authority(),
-        })
-    }
-
-    async fn connect_target(
-        &self,
-        target: &TargetAuthority,
-        addresses: &[SocketAddr],
-    ) -> Result<TcpStream, ExplicitIngressError> {
-        let mut attempts = FuturesUnordered::new();
-        for address in addresses {
-            attempts.push(TcpStream::connect(*address));
-        }
-        let connect = async {
-            let mut last_error = None;
-            while let Some(result) = attempts.next().await {
-                match result {
-                    Ok(stream) => return Ok(stream),
-                    Err(error) => last_error = Some(error),
-                }
-            }
-            Err(last_error.unwrap_or_else(|| {
-                io::Error::new(io::ErrorKind::NotFound, "target resolved to no addresses")
-            }))
-        };
-        time::timeout(TARGET_CONNECT_TIMEOUT, connect)
-            .await
-            .map_err(|_elapsed| ExplicitIngressError::ConnectTimeout {
-                target: target.authority(),
-                timeout: TARGET_CONNECT_TIMEOUT,
-            })?
-            .map_err(|source| ExplicitIngressError::Connect {
-                target: target.authority(),
-                source,
-            })
-    }
-
     async fn reject_decoder_error(
         &mut self,
         error: &ExplicitRequestError,
@@ -387,10 +233,7 @@ impl ExplicitConnection {
 enum ProxyResponse {
     ConnectionEstablished,
     BadRequest,
-    Forbidden,
     RequestTimeout,
-    BadGateway,
-    GatewayTimeout,
     RequestHeaderFieldsTooLarge,
     HttpVersionNotSupported,
 }
@@ -400,10 +243,7 @@ impl ProxyResponse {
         match self {
             Self::ConnectionEstablished => 200,
             Self::BadRequest => 400,
-            Self::Forbidden => 403,
             Self::RequestTimeout => 408,
-            Self::BadGateway => 502,
-            Self::GatewayTimeout => 504,
             Self::RequestHeaderFieldsTooLarge => 431,
             Self::HttpVersionNotSupported => 505,
         }
@@ -413,10 +253,7 @@ impl ProxyResponse {
         match self {
             Self::ConnectionEstablished => b"HTTP/1.1 200 Connection Established\r\n\r\n",
             Self::BadRequest => response_bytes::BAD_REQUEST,
-            Self::Forbidden => response_bytes::FORBIDDEN,
             Self::RequestTimeout => response_bytes::REQUEST_TIMEOUT,
-            Self::BadGateway => response_bytes::BAD_GATEWAY,
-            Self::GatewayTimeout => response_bytes::GATEWAY_TIMEOUT,
             Self::RequestHeaderFieldsTooLarge => response_bytes::REQUEST_HEADER_FIELDS_TOO_LARGE,
             Self::HttpVersionNotSupported => response_bytes::HTTP_VERSION_NOT_SUPPORTED,
         }
@@ -426,14 +263,8 @@ impl ProxyResponse {
 mod response_bytes {
     pub(super) const BAD_REQUEST: &[u8] =
         b"HTTP/1.1 400 Bad Request\r\nConnection: close\r\nContent-Length: 0\r\n\r\n";
-    pub(super) const FORBIDDEN: &[u8] =
-        b"HTTP/1.1 403 Forbidden\r\nConnection: close\r\nContent-Length: 0\r\n\r\n";
     pub(super) const REQUEST_TIMEOUT: &[u8] =
         b"HTTP/1.1 408 Request Timeout\r\nConnection: close\r\nContent-Length: 0\r\n\r\n";
-    pub(super) const BAD_GATEWAY: &[u8] =
-        b"HTTP/1.1 502 Bad Gateway\r\nConnection: close\r\nContent-Length: 0\r\n\r\n";
-    pub(super) const GATEWAY_TIMEOUT: &[u8] =
-        b"HTTP/1.1 504 Gateway Timeout\r\nConnection: close\r\nContent-Length: 0\r\n\r\n";
     pub(super) const REQUEST_HEADER_FIELDS_TOO_LARGE: &[u8] = b"HTTP/1.1 431 Request Header Fields Too Large\r\nConnection: close\r\nContent-Length: 0\r\n\r\n";
     pub(super) const HTTP_VERSION_NOT_SUPPORTED: &[u8] = b"HTTP/1.1 505 HTTP Version Not Supported\r\nConnection: close\r\nContent-Length: 0\r\n\r\n";
 }
@@ -442,14 +273,6 @@ mod response_bytes {
 #[derive(Debug, Error)]
 #[non_exhaustive]
 pub enum ExplicitIngressError {
-    /// Failed next-hop establishment, retaining the logical target independently.
-    #[error("upstream proxy {endpoint} for target {target}: {source}")]
-    UpstreamProxy {
-        target: TargetAuthority,
-        endpoint: String,
-        #[source]
-        source: UpstreamProxyError,
-    },
     /// Binding the explicit listener failed.
     #[error("bind explicit proxy listener at {listen_addr}: {source}")]
     Bind {
@@ -481,44 +304,11 @@ pub enum ExplicitIngressError {
         #[source]
         source: ExplicitRequestError,
     },
-    /// DNS resolution exceeded its deadline.
-    #[error("resolve explicit proxy target `{target}` timed out after {timeout:?}")]
-    ResolveTimeout { target: String, timeout: Duration },
-    /// DNS resolution failed.
-    #[error("resolve explicit proxy target `{target}`: {source}")]
-    Resolve {
-        target: String,
-        #[source]
-        source: io::Error,
-    },
-    /// DNS resolution completed without any usable address.
-    #[error("explicit proxy target `{target}` resolved to no addresses")]
-    NoResolvedAddresses { target: String },
-    /// The parser returned a target kind this broker version does not support.
-    #[error("explicit proxy target `{target}` uses an unsupported host kind")]
-    UnsupportedTargetHost { target: String },
     /// A request attempted to route back into this explicit listener.
     #[error("explicit proxy target `{target}` resolves to listener `{listen_addr}`")]
     SelfTarget {
         target: String,
         listen_addr: SocketAddr,
-    },
-    /// Opening the upstream TCP connection exceeded its deadline.
-    #[error("connect explicit proxy target `{target}` timed out after {timeout:?}")]
-    ConnectTimeout { target: String, timeout: Duration },
-    /// Opening the upstream TCP connection failed.
-    #[error("connect explicit proxy target `{target}`: {source}")]
-    Connect {
-        target: String,
-        #[source]
-        source: io::Error,
-    },
-    /// Reading the selected upstream socket address failed.
-    #[error("read connected explicit proxy target `{target}` address: {source}")]
-    UpstreamAddress {
-        target: String,
-        #[source]
-        source: io::Error,
     },
     /// Writing a proxy protocol response to the client failed.
     #[error("write explicit proxy HTTP {status} response: {source}")]
@@ -527,21 +317,6 @@ pub enum ExplicitIngressError {
         #[source]
         source: io::Error,
     },
-}
-
-impl ExplicitIngressError {
-    const fn response(&self) -> ProxyResponse {
-        match self {
-            Self::ResolveTimeout { .. } | Self::ConnectTimeout { .. } => {
-                ProxyResponse::GatewayTimeout
-            }
-            Self::SelfTarget { .. } => ProxyResponse::Forbidden,
-            Self::UpstreamProxy { source, .. } if source.is_timeout() => {
-                ProxyResponse::GatewayTimeout
-            }
-            _ => ProxyResponse::BadGateway,
-        }
-    }
 }
 
 fn same_endpoint(
@@ -611,60 +386,15 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn request_targeting_listener_receives_forbidden() {
-        for (listener, client_ip) in [
-            ("127.0.0.1:0", "127.0.0.1"),
-            ("0.0.0.0:0", "127.0.0.1"),
-            ("[::]:0", "::1"),
-        ] {
-            assert_self_target_forbidden(listener, client_ip).await;
-        }
-    }
-
-    async fn assert_self_target_forbidden(listener: &str, client_ip: &str) {
-        let endpoint = ExplicitIngressEndpoint::new(listener.parse().expect("listener"));
-        let started = endpoint
-            .into_factory(test_network())
-            .start()
-            .await
-            .expect("explicit listener should start");
-        let (mut ingress, status) = started.into_parts();
-        let listen_addr = status
-            .listen_addr()
-            .expect("explicit listener should report address");
-        let connect_addr =
-            SocketAddr::new(client_ip.parse().expect("client IP"), listen_addr.port());
-        let mut client = TcpStream::connect(connect_addr)
-            .await
-            .expect("test client should connect");
-        let accepted = ingress
-            .accept()
-            .await
-            .expect("listener should accept client");
-        client
-            .write_all(
-                format!("CONNECT {connect_addr} HTTP/1.1\r\nHost: {connect_addr}\r\n\r\n")
-                    .as_bytes(),
-            )
-            .await
-            .expect("CONNECT should write");
-
-        let worker = tokio::spawn(async move { accepted.into_flow().await });
-        let mut response = Vec::new();
-        tokio::time::timeout(
-            std::time::Duration::from_secs(2),
-            client.read_to_end(&mut response),
-        )
-        .await
-        .expect("self target should be rejected promptly")
-        .expect("forbidden response should read");
-        let error = match worker.await.expect("worker should join") {
-            Ok(_flow) => panic!("self target should fail"),
-            Err(error) => error,
-        };
-
-        assert!(response.starts_with(ProxyResponse::Forbidden.bytes()));
-        assert!(error.to_string().contains("resolves to listener"));
+    async fn unresolved_target_is_accepted_without_upstream_connection() {
+        let (mut client, accepted) = accepted_connection().await;
+        client.write_all(b"CONNECT unavailable.invalid:443 HTTP/1.1\r\nHost: unavailable.invalid:443\r\n\r\n").await.unwrap();
+        let flow = accepted.into_flow().await.expect("routing belongs to MITM");
+        assert!(flow.original_destination().socket_addr().is_none());
+        assert_eq!(flow.destination_host(), Some("unavailable.invalid"));
+        let mut response = [0; 39];
+        client.read_exact(&mut response).await.unwrap();
+        assert_eq!(&response, b"HTTP/1.1 200 Connection Established\r\n\r\n");
     }
 
     async fn accepted_connection() -> (TcpStream, super::ExplicitConnection) {

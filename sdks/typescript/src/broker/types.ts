@@ -25,12 +25,15 @@ export interface ProxyStatus {
   socket_path?: string;
 }
 
-export type TlsDecryptionAction = "intercept" | "passthrough" | "block";
+export type TlsDecryptionAction =
+  "intercept" | "passthrough" | "block" | "redirect";
 
 export interface TlsDecryptionRule {
   id: string;
   enabled: boolean;
   action: TlsDecryptionAction;
+  /** Replacement domain required when action is redirect; original protocol and port are retained. */
+  target?: string;
   process_names?: string[];
   application_ids?: string[];
   executable_paths?: string[];

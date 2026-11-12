@@ -362,3 +362,27 @@ platform reader. The macOS reader uses `KERN_PROCARGS2`; Windows uses
 `QueryFullProcessImageNameW`, a dynamically resolved `NtQueryInformationProcess`
 command-line query, and `CommandLineToArgvW`. Linux selects an unavailable reader,
 without discovering connection owners.
+
+## Redirect an upstream domain
+
+Use `action = "redirect"` in an ordered MITM rule to intercept traffic and forward
+it to a configured domain using the original protocol and port. Selection happens
+before target DNS and TCP; the original provider does not need to be reachable.
+
+```toml
+[[mitm.tls_decryption.rules]]
+id = "openai-to-deepseek"
+action = "redirect"
+destination_hosts = ["api.openai.com"]
+target = "api.deepseek.com"
+```
+
+Place the rule before other matching rules. `target` is required only for
+`redirect`; defaults cannot redirect. Supply a domain without a scheme, port or path.
+The original protocol, port, path and query are retained, while
+Host and upstream TLS identity follow the target. Any configured upstream proxy
+is retained. Auth tokens and model changes remain plugin actions.
+
+Apply through `PUT /v1/mitm/config` or edit the startup policy. See the
+[redirect design and sequence](mitm-redirect-design.md), including a Codex/DeepSeek
+plugin example and the deferred explicit CONNECT behavior.

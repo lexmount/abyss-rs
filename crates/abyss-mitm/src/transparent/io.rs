@@ -30,12 +30,15 @@ pub enum TrafficDirection {
 
 /// Lightweight observer for byte counts emitted by the shared MITM pipeline.
 ///
-/// The observer is deliberately limited to direction and byte count. It does
+/// The observer receives byte counts and transport peer metadata. It does
 /// not receive payload data, so broker telemetry cannot accidentally retain
 /// prompt, response, cookie, or authorization content.
 pub trait TrafficObserver: Send + Sync {
     /// Records bytes read from one side of a proxied flow.
     fn record_bytes(&self, direction: TrafficDirection, bytes: usize);
+
+    /// Records the actual next-hop peer after an outbound proxy tunnel opens.
+    fn record_proxy_peer(&self, _peer: std::net::SocketAddr) {}
 }
 
 /// Duplex stream wrapper that observes bytes as they are read from one side of

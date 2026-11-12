@@ -90,7 +90,7 @@ Previously allowed requests cannot be recalled.
 | Existing component | Current behavior | Required change |
 | --- | --- | --- |
 | [TLS policy:18](../crates/abyss-mitm/src/transparent/decrypt_policy.rs#L18) | `Intercept` or `Passthrough`; source and destination selectors already exist. | Add `Block` to this policy, preserving ordered rule evaluation and metadata-only decisions. |
-| [Explicit ingress:146](../crates/abyss-broker/src/ingress/explicit.rs#L146) | Prepares upstream before acknowledging CONNECT; source process is absent. | Preserve the existing metadata; enforce the MITM policy, including `Block`, before releasing client application traffic. |
+| [Explicit ingress:146](../crates/abyss-broker/src/ingress/explicit.rs#L146) | Acknowledges the local CONNECT tunnel; MITM selects the target before upstream setup. Source process is absent. | Preserve the existing metadata; enforce the MITM policy, including `Block`, before releasing client application traffic. |
 | [HTTP request forwarding:639](../crates/abyss-mitm/src/transparent/relay.rs#L639) | Writes the request head, then streams and captures the body. | Add a buffered inspection branch before the first upstream request write. |
 | [TLS HTTP handling:123](../crates/abyss-mitm/src/transparent/tls_http.rs#L123) | Establishes provider TLS before decoding the client HTTP request. | Preserve the handshake order; gate HTTP request writes in the relay after decoding and inspection. |
 | [WebSocket relay:212](../crates/abyss-mitm/src/transparent/websocket.rs#L212) | Submits an observation and forwards each client message immediately. | Await inspection before forwarding client data messages. |
@@ -287,7 +287,7 @@ and `/v1/hooks/config` for observation. Neither stores inspection plugin members
 Network decisions retain their existing per-flow snapshot. Plugin membership is
 selected per request/message, so a newly connected plugin can inspect subsequent
 messages on an already intercepted WebSocket. Opaque flows still require a new
-connection and a network `Intercept` decision before inspection is possible.
+connection and a network `Intercept` or `Redirect` decision before inspection is possible.
 
 Event-only plugins use the same updated handshake and message format and declare
 only `agent_events`; they do not enable inspection. Update shipped configuration
@@ -302,7 +302,7 @@ flowchart TD
         A[Flow metadata and TLS policy] --> B{MITM action}
         B -->|Block| X[Network rejection]
         B -->|Passthrough| P[Opaque relay]
-        B -->|Intercept| C[Decrypt and decode HTTP]
+        B -->|Intercept or Redirect| C[Decrypt and decode HTTP]
     end
     subgraph R[Shared decoded request pipeline]
         C --> Q[Shared request preparation]
@@ -388,19 +388,12 @@ view; request metadata and common forwarding logic are shared.
 7. On block, send a local error and close the request connection. Do not create a
    fabricated provider response or token-usage event.
 
-Preserve the existing TCP connection, CONNECT tunnel, and TLS handshake order.
-For intercepted HTTPS, the broker still completes client TLS and provider TLS
-before decoding the HTTP request. Buffer and inspect the request before the
-relay's first upstream request write; an established provider TLS stream does
-not imply that any HTTP headers or body have been forwarded. Do not move
-provider TLS setup behind the plugin decision or add deferred connection
-machinery for Agent inspection. This keeps connection setup out of the work
-that must run after the hook allows the request.
-
-An early CONNECT block before `prepare_upstream()` is an optional network-policy
-optimization, subject to the rule-order constraint above. The implementation
-keeps existing CONNECT setup and enforces TLS blocks at the ClientHello policy
-boundary, independently of the Agent gate.
+[Configured redirects](mitm-redirect-design.md) select the destination before DNS,
+TCP or upstream CONNECT. Explicit ingress acknowledges the local CONNECT tunnel;
+MITM then evaluates policy, accepts client TLS and validates the original HTTP
+head. It opens the selected upstream TCP/TLS connection before Agent inspection.
+An established provider connection carries no HTTP request bytes until plugins
+allow the request. Plugin decisions do not select the route.
 
 The current `CapturedBody` may hold only an observation prefix. That is not an
 acceptable inspection result. A request exceeding the inspection limit, an
@@ -410,7 +403,7 @@ where available and add a finite request-body read deadline for this branch.
 There is no spill-to-disk inspection queue in the initial implementation.
 
 For an HTTP request with inspection-capable plugins connected, the sequence is
-below. The HTTPS setup illustrates the existing handshake order, which remains unchanged.
+below. HTTPS setup follows the selected MITM route.
 The plugin interaction represents all selected sessions in registration order;
 a block or failure stops that sequence.
 
@@ -430,10 +423,11 @@ sequenceDiagram
     opt HTTPS setup before request inspection
         A->>M: Client TLS handshake
         M-->>A: Client TLS established
-        M->>P: Provider TLS handshake
-        P-->>M: Provider TLS established
     end
     A->>M: Request head and any prefetched body bytes
+    M->>M: Validate original target and apply configured redirect
+    M->>P: Connect selected upstream, with TLS for HTTPS targets
+    P-->>M: Upstream established
     M->>B: Select forwarding plan
     B->>B: Select connected inspection sessions
     B-->>M: Buffer with byte limit and opaque broker state

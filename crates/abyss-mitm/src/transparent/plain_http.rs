@@ -9,7 +9,7 @@ use super::{
     AcceptedTcpFlow, BoxedDuplexStream, DestinationAddress, FlowContext, FlowId, FlowIngress,
     InterceptedHttpOutcome, MitmEngine, SourceProcess, TransparentFlowError,
     TransparentFlowOutcome, TransparentProtocol, accepted_flow::UpstreamConnection,
-    relay::DecodedClientFlow, upstream::connect_upstream_with_observer, utils::request_host,
+    relay::DecodedClientFlow, upstream::HttpUpstream, utils::request_host,
 };
 
 pub(super) struct PlainHttpFlow {
@@ -95,19 +95,17 @@ impl PlainHttpFlow {
             return Err(rejection.into());
         }
 
-        // Plain HTTP connects directly to the original destination and then
-        // enters the shared relay path. That relay path is responsible for
-        // capturing the first complete exchange and invoking hooks.
-        let authority = request_host(&decoded.first_request)
-            .and_then(|host| host.parse::<http::uri::Authority>().ok());
-        let upstream = connect_upstream_with_observer(
+        // Apply the selected route before resolving or connecting any target.
+        let upstream = HttpUpstream::new(
             self.upstream
                 .with_server_name(authority.as_ref().map(http::uri::Authority::host))?,
-            &self.original_destination,
-            engine.timeouts.upstream_connect,
-            self.traffic_observer,
-        )
-        .await?;
+            &decoded.context,
+            decision.redirect_target(),
+        )?;
+        decoded.redirect(decision.redirect_target())?;
+        let upstream = decoded
+            .connect_upstream(upstream, engine, self.traffic_observer)
+            .await?;
         let relay = Box::pin(decoded.relay_to(
             upstream,
             &engine.hooks,

@@ -93,3 +93,8 @@ test-blackbox-local:
 test-blackbox-request-modification:
 	cargo build --locked --package abyss-broker
 	python3 scripts/blackbox_request_modification.py
+
+.PHONY: test-blackbox-mitm-redirect
+test-blackbox-mitm-redirect:
+	cargo build --locked --package abyss-broker
+	python3 scripts/blackbox_mitm_redirect.py

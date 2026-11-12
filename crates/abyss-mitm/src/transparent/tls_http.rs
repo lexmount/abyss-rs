@@ -1,8 +1,8 @@
 //! HTTPS transparent flow handling.
 //!
 //! HTTPS flows require two TLS roles: accept client TLS with a generated leaf
-//! certificate, then open upstream TLS to the original destination using the
-//! client's SNI as the server name.
+//! certificate for the client name, then connect the policy-selected upstream.
+//! Redirects use their target domain's TLS identity independently of client TLS.
 
 use std::{net::SocketAddr, sync::Arc};
 
@@ -13,7 +13,7 @@ use super::{
     InterceptedHttpOutcome, MitmEngine, SourceProcess, TransparentFlowError,
     TransparentFlowOutcome, TransparentProtocol, accepted_flow::UpstreamConnection,
     client_hello::InspectedClientHello, relay::DecodedClientFlow, tls_flow::ClientTlsFlow,
-    upstream::connect_upstream_tls_with_observer, utils::request_host,
+    upstream::HttpUpstream, utils::request_host,
 };
 
 pub(super) struct TlsHttpFlow {
@@ -31,6 +31,7 @@ pub(super) struct TlsHttpMetadata {
     pub(super) ingress: FlowIngress,
     pub(super) upstream: UpstreamConnection,
     pub(super) traffic_observer: Option<Arc<dyn super::TrafficObserver>>,
+    pub(super) redirect: Option<super::RedirectTarget>,
 }
 
 enum TlsHttpClient {
@@ -52,6 +53,7 @@ impl From<AcceptedTcpFlow> for TlsHttpFlow {
                 ingress: flow.ingress,
                 upstream: flow.upstream,
                 traffic_observer: flow.traffic_observer,
+                redirect: None,
             },
         }
     }
@@ -85,6 +87,7 @@ impl TlsHttpFlow {
             ingress,
             upstream,
             traffic_observer,
+            redirect,
         } = metadata;
         // For HTTPS, the raw accepted TCP stream only contains TLS records.
         // Client TLS must be accepted first so the HTTP decoder sees plaintext.
@@ -118,20 +121,6 @@ impl TlsHttpFlow {
             })??;
         ingress.validate_tls_server_name(Some(&client_tls.server_name))?;
 
-        // Preserve transparent routing semantics: connect to the OS original
-        // destination IP:port, but use the ClientHello SNI as upstream TLS
-        // server name for SNI and certificate verification.
-        let upstream_tls = connect_upstream_tls_with_observer(
-            upstream,
-            &original_destination,
-            &client_tls.server_name,
-            engine.upstream_tls_config.clone(),
-            engine.timeouts.upstream_connect,
-            engine.timeouts.upstream_tls_handshake,
-            traffic_observer.clone(),
-        )
-        .await?;
-
         let protocol = TransparentProtocol::TlsHttp {
             server_name: client_tls.server_name,
         };
@@ -149,9 +138,14 @@ impl TlsHttpFlow {
         // After client TLS is terminated, the next layer is identical to plain
         // HTTP: decode the first HTTP/1 request, relay bytes to the upstream TLS
         // stream, and invoke hooks once the first response is captured.
-        let decoded =
+        let mut decoded =
             DecodedClientFlow::from_http1(client_tls.stream, context, engine.timeouts.clone())
                 .await?;
+        let upstream = HttpUpstream::new(upstream, &decoded.context, redirect.as_ref())?;
+        decoded.redirect(redirect.as_ref())?;
+        let upstream = decoded
+            .connect_upstream(upstream, engine, traffic_observer)
+            .await?;
         tracing::info!(
             peer_addr = ?peer_addr,
             original_destination = %original_destination,
@@ -161,7 +155,7 @@ impl TlsHttpFlow {
             "MITM decoded TLS HTTP/1 request head"
         );
         let relay = Box::pin(decoded.relay_to(
-            upstream_tls,
+            upstream,
             &engine.hooks,
             engine.timeouts.clone(),
             engine.max_http1_body_bytes,
