@@ -579,11 +579,10 @@ where
             diagnostics,
             traffic,
         } = self;
-        let started_at = crate::diagnostics::current_unix_ms();
         let flow = match connection.into_flow().await {
             Ok(flow) => flow,
             Err(error) => {
-                diagnostics.record_ingress_error(&error, started_at);
+                diagnostics.record_accept_error(error.to_string());
                 tracing::warn!(%error, "broker ingress connection preparation failed");
                 return;
             }
@@ -604,22 +603,13 @@ where
         let original_destination = flow.original_destination().clone();
         let destination_host = flow.destination_host().map(str::to_owned);
         let source_process = flow.source_process().cloned();
-        let ingress = flow.ingress().clone();
+        let mut ingress = flow.ingress().clone();
         let traffic_flow = traffic.start_flow(
             crate::traffic::TrafficFlowMetadata::from_platform_flow(&flow),
         );
         let flow_id = traffic_flow.id();
         let flow_started_at_unix_ms = traffic_flow.started_at_unix_ms();
         let traffic_finish_guard = TrafficFlowFinishGuard(traffic_flow.clone());
-        let diagnostic_context = FlowDiagnosticContext::new(
-            &ingress,
-            peer_addr,
-            local_addr,
-            &original_destination,
-            destination_host.as_deref(),
-            source_process.as_ref(),
-        )
-        .with_flow(flow_id, flow_started_at_unix_ms);
         let mitm_flow = flow
             .into_mitm_flow()
             .with_traffic_observer(traffic_flow.observer());
@@ -630,6 +620,18 @@ where
         };
         traffic_flow.finish();
         drop(traffic_finish_guard);
+        if let abyss_mitm::FlowIngress::ExplicitProxy { upstream_proxy, .. } = &mut ingress {
+            *upstream_proxy = traffic_flow.proxy_peer();
+        }
+        let diagnostic_context = FlowDiagnosticContext::new(
+            &ingress,
+            peer_addr,
+            local_addr,
+            &original_destination,
+            destination_host.as_deref(),
+            source_process.as_ref(),
+        )
+        .with_flow(flow_id, flow_started_at_unix_ms);
         let _recorded_result = result.record(&diagnostics, diagnostic_context);
     }
 }

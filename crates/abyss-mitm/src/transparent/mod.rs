@@ -21,6 +21,7 @@ mod io;
 mod passthrough;
 mod plain_http;
 mod protocol;
+mod redirect;
 mod relay;
 mod request_edit;
 mod tls;
@@ -53,6 +54,7 @@ pub use self::hook::{
 };
 pub use self::io::PrefixedDuplexStream;
 pub use self::io::{BoxedDuplexStream, DuplexStream, TrafficDirection, TrafficObserver};
+pub use self::redirect::RedirectTarget;
 pub use self::request_edit::{RequestEditor, RequestForwardingResult};
 pub use self::types::{
     FlowIngress, FlowOperation, InterceptedHttpOutcome, OriginalDestination, TlsErrorSide,
@@ -64,6 +66,7 @@ pub use self::types::{
 mod tests {
     mod blocking;
     mod proxy_chain;
+    mod redirect;
     use std::{
         future,
         net::{Ipv4Addr, SocketAddr},
@@ -165,6 +168,7 @@ mod tests {
                     id: "passthrough-example".to_owned(),
                     enabled: true,
                     action: TlsDecryptionAction::Passthrough,
+                    target: None,
                     process_names: Vec::new(),
                     application_ids: Vec::new(),
                     executable_paths: Vec::new(),
@@ -1246,6 +1250,7 @@ mod tests {
                     id: "pass-platform-host".to_owned(),
                     enabled: true,
                     action: TlsDecryptionAction::Passthrough,
+                    target: None,
                     process_names: vec!["codex".to_owned()],
                     application_ids: vec!["com.openai.codex".to_owned()],
                     executable_paths: Vec::new(),
@@ -1256,6 +1261,7 @@ mod tests {
                     id: "decrypt-openai".to_owned(),
                     enabled: true,
                     action: TlsDecryptionAction::Intercept,
+                    target: None,
                     process_names: vec!["codex".to_owned()],
                     application_ids: vec!["com.openai.codex".to_owned()],
                     executable_paths: Vec::new(),

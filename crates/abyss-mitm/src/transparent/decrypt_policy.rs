@@ -9,7 +9,7 @@ use std::path::Path;
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
 
-use super::hook::SourceProcess;
+use super::{RedirectTarget, hook::SourceProcess};
 
 /// Action selected by TLS decryption policy.
 #[derive(Debug, Clone, Copy, Default, Deserialize, PartialEq, Serialize)]
@@ -18,6 +18,8 @@ use super::hook::SourceProcess;
 pub enum TlsDecryptionAction {
     /// Reject the network flow without decrypting or forwarding its payload.
     Block,
+    /// Decrypt and forward to the rule's configured HTTP(S) origin.
+    Redirect,
     /// Terminate client TLS and expose HTTP/WebSocket plaintext to hooks.
     Intercept,
     /// Keep the TLS session opaque and relay raw bytes to the original server.
@@ -68,6 +70,9 @@ pub struct TlsDecryptionRule {
     pub enabled: bool,
     /// Action selected when the rule matches.
     pub action: TlsDecryptionAction,
+    /// HTTP(S) origin required by redirect rules.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub target: Option<RedirectTarget>,
     /// Exact source process names. Empty means any process name.
     ///
     /// A populated selector does not match when process attribution is absent.
@@ -101,6 +106,13 @@ pub struct TlsDecryptionContext<'a> {
 #[derive(Debug, Clone, PartialEq)]
 #[non_exhaustive]
 pub enum TlsDecryptionDecision {
+    /// Decrypt the flow and use the selected origin without re-evaluating rules.
+    Redirect {
+        /// Configured destination origin.
+        target: RedirectTarget,
+        /// Identifier of the selected rule.
+        matched_rule_id: Option<String>,
+    },
     /// Reject the network flow before forwarding application bytes.
     Block {
         /// Identifier of the matched rule, when a rule selected the action.
@@ -122,6 +134,15 @@ pub enum TlsDecryptionDecision {
 #[derive(Debug, Error)]
 #[non_exhaustive]
 pub enum TlsDecryptionPolicyError {
+    /// Redirect requires a rule with an explicit destination.
+    #[error("redirect requires a rule with a target; it cannot be a default action")]
+    RedirectDefault,
+    /// Only redirect rules have a destination origin.
+    #[error("rule `{rule_id}` must specify target exactly when action is redirect")]
+    RedirectTarget {
+        /// Rule with inconsistent action and target.
+        rule_id: String,
+    },
     /// A rule id was empty after trimming.
     #[error("TLS decryption rule id must not be empty")]
     EmptyRuleId,
@@ -219,9 +240,19 @@ impl TlsDecryptionPolicy {
     /// # Errors
     ///
     /// Returns an error when a rule has an empty id, no selectors, empty source
-    /// selectors, or malformed host patterns.
+    /// selectors, malformed host patterns, or an invalid redirect action/target pair.
     pub fn validate(&self) -> Result<(), TlsDecryptionPolicyError> {
+        if self.default_action == TlsDecryptionAction::Redirect
+            || self.missing_sni_action == Some(TlsDecryptionAction::Redirect)
+        {
+            return Err(TlsDecryptionPolicyError::RedirectDefault);
+        }
         for rule in &self.rules {
+            if (rule.action == TlsDecryptionAction::Redirect) != rule.target.is_some() {
+                return Err(TlsDecryptionPolicyError::RedirectTarget {
+                    rule_id: rule.id.clone(),
+                });
+            }
             let rule_id = rule.id.trim();
             if rule_id.is_empty() {
                 return Err(TlsDecryptionPolicyError::EmptyRuleId);
@@ -282,7 +313,11 @@ impl TlsDecryptionPolicy {
     /// Evaluates this policy against destination and source-process metadata.
     ///
     /// Passing an optional destination domain directly remains supported for
-    /// callers that do not have source-process metadata.
+    /// callers that do not have source-process metadata. Validate the policy
+    /// before evaluating it.
+    ///
+    /// # Panics
+    /// Panics if an unvalidated redirect action has no target.
     #[must_use]
     pub fn decide<'a, C>(&self, context: C) -> TlsDecryptionDecision
     where
@@ -293,7 +328,11 @@ impl TlsDecryptionPolicy {
 
         for rule in &self.rules {
             if rule.enabled && rule.matches(destination_domain.as_deref(), context.source_process) {
-                return decision_for_action(rule.action, Some(rule.id.clone()));
+                return decision_for_action(
+                    rule.action,
+                    Some(rule.id.clone()),
+                    rule.target.as_ref(),
+                );
             }
         }
 
@@ -302,7 +341,7 @@ impl TlsDecryptionPolicy {
         } else {
             self.default_action
         };
-        decision_for_action(action, None)
+        decision_for_action(action, None, None)
     }
 }
 
@@ -350,9 +389,19 @@ impl TlsDecryptionDecision {
     #[must_use]
     pub const fn action(&self) -> TlsDecryptionAction {
         match self {
+            Self::Redirect { .. } => TlsDecryptionAction::Redirect,
             Self::Block { .. } => TlsDecryptionAction::Block,
             Self::Intercept { .. } => TlsDecryptionAction::Intercept,
             Self::Passthrough { .. } => TlsDecryptionAction::Passthrough,
+        }
+    }
+
+    /// Returns the configured origin for redirect decisions.
+    #[must_use]
+    pub const fn redirect_target(&self) -> Option<&RedirectTarget> {
+        match self {
+            Self::Redirect { target, .. } => Some(target),
+            _ => None,
         }
     }
 
@@ -360,22 +409,28 @@ impl TlsDecryptionDecision {
     #[must_use]
     pub fn matched_rule_id(&self) -> Option<&str> {
         match self {
-            Self::Block { matched_rule_id }
+            Self::Redirect {
+                matched_rule_id, ..
+            }
+            | Self::Block { matched_rule_id }
             | Self::Intercept { matched_rule_id }
             | Self::Passthrough { matched_rule_id } => matched_rule_id.as_deref(),
         }
     }
 }
 
-#[expect(
-    clippy::missing_const_for_fn,
-    reason = "The function moves optional String rule metadata into the decision."
-)]
 fn decision_for_action(
     action: TlsDecryptionAction,
     matched_rule_id: Option<String>,
+    target: Option<&RedirectTarget>,
 ) -> TlsDecryptionDecision {
     match action {
+        TlsDecryptionAction::Redirect => TlsDecryptionDecision::Redirect {
+            target: target
+                .expect("validated redirect rule has a target")
+                .clone(),
+            matched_rule_id,
+        },
         TlsDecryptionAction::Block => TlsDecryptionDecision::Block { matched_rule_id },
         TlsDecryptionAction::Intercept => TlsDecryptionDecision::Intercept { matched_rule_id },
         TlsDecryptionAction::Passthrough => TlsDecryptionDecision::Passthrough { matched_rule_id },
@@ -480,6 +535,44 @@ mod tests {
     use crate::SourceProcess;
 
     #[test]
+    fn redirect_requires_a_rule_target_and_keeps_first_match_semantics() {
+        let policy: TlsDecryptionPolicy = serde_json::from_value(serde_json::json!({
+            "rules": [
+                {"id":"route", "action":"redirect", "target":"https://localhost:8443",
+                 "destination_hosts":["original.invalid"]},
+                {"id":"block", "action":"block", "destination_hosts":["*.invalid"]}
+            ]
+        }))
+        .unwrap();
+        policy.validate().unwrap();
+        let decision = policy.decide(Some("original.invalid"));
+        assert_eq!(decision.action(), TlsDecryptionAction::Redirect);
+        assert_eq!(decision.matched_rule_id(), Some("route"));
+        assert_eq!(
+            decision.redirect_target().unwrap().authority().authority(),
+            "localhost:8443"
+        );
+        assert_eq!(
+            policy.decide(Some("other.invalid")).action(),
+            TlsDecryptionAction::Block
+        );
+
+        for value in [
+            serde_json::json!({"default_action":"redirect"}),
+            serde_json::json!({"missing_sni_action":"redirect"}),
+            serde_json::json!({"rules":[{"id":"route", "action":"redirect", "destination_hosts":["*.invalid"]}]}),
+            serde_json::json!({"rules":[{"id":"route", "action":"intercept", "target":"https://localhost", "destination_hosts":["*.invalid"]}]}),
+        ] {
+            assert!(
+                serde_json::from_value::<TlsDecryptionPolicy>(value)
+                    .unwrap()
+                    .validate()
+                    .is_err()
+            );
+        }
+    }
+
+    #[test]
     fn default_policy_passes_unknown_hosts_and_missing_sni() {
         let policy = TlsDecryptionPolicy::default();
 
@@ -506,6 +599,7 @@ mod tests {
                     id: "decrypt-openai".to_owned(),
                     enabled: true,
                     action: TlsDecryptionAction::Intercept,
+                    target: None,
                     process_names: Vec::new(),
                     application_ids: Vec::new(),
                     executable_paths: Vec::new(),
@@ -516,6 +610,7 @@ mod tests {
                     id: "pass-api".to_owned(),
                     enabled: true,
                     action: TlsDecryptionAction::Passthrough,
+                    target: None,
                     process_names: Vec::new(),
                     application_ids: Vec::new(),
                     executable_paths: Vec::new(),
@@ -542,6 +637,7 @@ mod tests {
                 id: "decrypt-subdomains".to_owned(),
                 enabled: true,
                 action: TlsDecryptionAction::Intercept,
+                target: None,
                 process_names: Vec::new(),
                 application_ids: Vec::new(),
                 executable_paths: Vec::new(),
@@ -587,6 +683,7 @@ mod tests {
                 id: "decrypt-codex-openai".to_owned(),
                 enabled: true,
                 action: TlsDecryptionAction::Intercept,
+                target: None,
                 process_names: vec!["codex".to_owned(), "codex-cli".to_owned()],
                 application_ids: vec![
                     "com.example.other".to_owned(),
@@ -630,6 +727,7 @@ mod tests {
                 id: "decrypt-codex".to_owned(),
                 enabled: true,
                 action: TlsDecryptionAction::Intercept,
+                target: None,
                 process_names: vec!["codex".to_owned()],
                 application_ids: vec!["com.openai.codex".to_owned()],
                 executable_paths: Vec::new(),
@@ -666,6 +764,7 @@ mod tests {
                 id: "decrypt-codex".to_owned(),
                 enabled: true,
                 action: TlsDecryptionAction::Intercept,
+                target: None,
                 process_names: vec!["codex.exe".to_owned()],
                 application_ids: vec![r"c:\program files\openai\codex.exe".to_owned()],
                 executable_paths: Vec::new(),
@@ -695,6 +794,7 @@ mod tests {
                 id: "decrypt-codex".to_owned(),
                 enabled: true,
                 action: TlsDecryptionAction::Intercept,
+                target: None,
                 process_names: vec!["codex".to_owned()],
                 application_ids: Vec::new(),
                 executable_paths: Vec::new(),
@@ -721,6 +821,7 @@ mod tests {
                 id: "unconstrained".to_owned(),
                 enabled: true,
                 action: TlsDecryptionAction::Intercept,
+                target: None,
                 process_names: Vec::new(),
                 application_ids: Vec::new(),
                 executable_paths: Vec::new(),
@@ -788,6 +889,7 @@ mod tests {
             id: "process-rule".to_owned(),
             enabled: true,
             action: TlsDecryptionAction::Intercept,
+            target: None,
             process_names: vec![process_name.to_owned()],
             application_ids: Vec::new(),
             executable_paths: Vec::new(),

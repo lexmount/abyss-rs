@@ -394,7 +394,6 @@ pub struct PlatformFlow {
     metadata: PlatformFlowMetadata,
     io: abyss_mitm::BoxedDuplexStream,
     ingress: abyss_mitm::FlowIngress,
-    prepared_upstream: Option<abyss_mitm::BoxedDuplexStream>,
     configured_upstream: Option<(
         abyss_mitm::outbound::HttpConnectProxy,
         abyss_mitm::TargetAuthority,
@@ -421,7 +420,6 @@ impl PlatformFlow {
             ingress: abyss_mitm::FlowIngress::transparent(
                 abyss_mitm::TransparentFlowSource::Unattributed,
             ),
-            prepared_upstream: None,
             configured_upstream: None,
             read_prefix: Box::default(),
         }
@@ -435,23 +433,13 @@ impl PlatformFlow {
     }
 
     /// Selects a configured next hop for a normalized transparent flow.
-    #[cfg(any(target_os = "macos", target_os = "windows"))]
     #[must_use]
     pub fn with_upstream_proxy(
         mut self,
         proxy: abyss_mitm::outbound::HttpConnectProxy,
         target: abyss_mitm::TargetAuthority,
     ) -> Self {
-        self.prepared_upstream = None;
         self.configured_upstream = Some((proxy, target));
-        self
-    }
-
-    /// Attaches an established tunnel without changing target TLS handling.
-    #[must_use]
-    pub fn with_prepared_stream(mut self, upstream: abyss_mitm::BoxedDuplexStream) -> Self {
-        self.configured_upstream = None;
-        self.prepared_upstream = Some(upstream);
         self
     }
 
@@ -513,9 +501,6 @@ impl PlatformFlow {
         .with_ingress(self.ingress);
         if let Some((proxy, target)) = self.configured_upstream {
             flow = flow.with_upstream_proxy(proxy, target);
-        }
-        if let Some(upstream) = self.prepared_upstream {
-            flow = flow.with_prepared_stream(upstream);
         }
         flow.with_read_prefix(self.read_prefix)
     }

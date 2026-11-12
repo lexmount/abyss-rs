@@ -103,6 +103,8 @@ pub struct TlsDecryptionPolicy {
 #[non_exhaustive]
 #[serde(rename_all = "snake_case")]
 pub enum TlsDecryptionAction {
+    /// Decrypt and forward to the rule's configured origin.
+    Redirect,
     /// Reject matching network traffic.
     Block,
     /// Decrypt and inspect matching TLS traffic.
@@ -121,6 +123,9 @@ pub struct TlsDecryptionRule {
     pub enabled: bool,
     /// Action applied after a match.
     pub action: TlsDecryptionAction,
+    /// HTTP(S) origin required by redirect rules.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub target: Option<String>,
     /// Exact process-name selectors.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub process_names: Vec<String>,

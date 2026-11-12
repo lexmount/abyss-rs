@@ -1,8 +1,8 @@
 //! Upstream connection helpers for transparent flows.
 //!
 //! Direct routing preserves the OS destination. Configured routes delegate the
-//! logical target to the next-hop proxy; explicit ingress can supply an already
-//! prepared tunnel. All routes use the same upstream TLS identity and trust
+//! logical target to the next-hop proxy. Explicit ingress defers connection until
+//! policy selects the target. All routes use the same upstream TLS identity and trust
 //! checks, independently of socket selection.
 
 use std::{sync::Arc, time::Duration};
@@ -12,10 +12,68 @@ use tokio_rustls::{TlsConnector, rustls};
 
 use crate::tls;
 
+mod direct;
+
 use super::{
     BoxedDuplexStream, DestinationAddress, FlowOperation, TlsErrorSide, TrafficDirection,
     TrafficObserver, TransparentFlowError, accepted_flow::UpstreamConnection, io::ObservedStream,
 };
+
+/// One selected HTTP route, including the independent upstream TLS identity.
+pub(super) struct HttpUpstream {
+    connection: UpstreamConnection,
+    server_name: Option<String>,
+}
+
+impl HttpUpstream {
+    pub(super) fn new(
+        connection: UpstreamConnection,
+        server_name: Option<String>,
+        redirect: Option<&super::RedirectTarget>,
+    ) -> Self {
+        match redirect {
+            Some(target) => Self {
+                connection: connection.redirect(target.authority().clone()),
+                server_name: target.server_name(),
+            },
+            None => Self {
+                connection,
+                server_name,
+            },
+        }
+    }
+
+    pub(super) async fn connect(
+        self,
+        original: &DestinationAddress,
+        engine: &super::MitmEngine,
+        observer: Option<Arc<dyn TrafficObserver>>,
+    ) -> Result<BoxedDuplexStream, TransparentFlowError> {
+        match self.server_name {
+            Some(name) => Ok(Box::new(
+                connect_upstream_tls_with_observer(
+                    self.connection,
+                    original,
+                    &name,
+                    engine.upstream_tls_config.clone(),
+                    engine.timeouts.upstream_connect,
+                    engine.timeouts.upstream_tls_handshake,
+                    observer,
+                )
+                .await?,
+            )),
+            None => {
+                connect_upstream_with_observer(
+                    self.connection,
+                    original,
+                    engine.timeouts.upstream_connect,
+                    observer,
+                )
+                .await
+            }
+        }
+    }
+}
 
 /// Opens or reuses an upstream stream and observes bytes read from it.
 pub(super) async fn connect_upstream_with_observer(
@@ -25,6 +83,19 @@ pub(super) async fn connect_upstream_with_observer(
     observer: Option<Arc<dyn TrafficObserver>>,
 ) -> Result<BoxedDuplexStream, TransparentFlowError> {
     match upstream {
+        UpstreamConnection::Direct {
+            target,
+            excluded_listener,
+        } => {
+            tracing::info!(%target, "MITM connecting selected upstream target");
+            let stream = direct::DirectTarget {
+                target,
+                excluded_listener,
+            }
+            .connect(connect_timeout)
+            .await?;
+            return Ok(observe_upstream(Box::new(stream), observer));
+        }
         UpstreamConnection::Prepared(stream) => {
             tracing::info!(
                 original_destination = %original_destination,
@@ -40,6 +111,9 @@ pub(super) async fn connect_upstream_with_observer(
                     source,
                 }
             })?;
+            if let Some(observer) = &observer {
+                observer.record_proxy_peer(tunnel.proxy_peer);
+            }
             tracing::info!(%target, proxy_peer = %tunnel.proxy_peer, "MITM connected configured upstream tunnel");
             return Ok(observe_upstream(tunnel.stream, observer));
         }
@@ -116,7 +190,7 @@ pub(super) async fn connect_upstream_tls_with_observer(
         connect_upstream_with_observer(upstream, original_destination, connect_timeout, observer)
             .await?;
 
-    // TLS identity follows the ClientHello SNI. rustls uses this value both as
+    // TLS identity follows the selected route (original SNI or redirect host). rustls uses this value both as
     // outbound SNI and as the name for certificate verification.
     let upstream_name =
         tls::validate_server_name(server_name).map_err(|source| TransparentFlowError::Tls {

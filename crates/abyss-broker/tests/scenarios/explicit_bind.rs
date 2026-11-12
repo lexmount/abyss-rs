@@ -75,6 +75,12 @@ fn explicit_wildcard_listeners_forward_http_and_connect_and_reject_self_targets(
                 "CONNECT {target} HTTP/1.1\r\nHost: {target}\r\n\r\n"
             )
             .expect("self target");
+            assert!(read_head(&mut client).starts_with(b"HTTP/1.1 200"));
+            write!(
+                client,
+                "GET /self HTTP/1.1\r\nHost: {target}\r\nConnection: close\r\n\r\n"
+            )
+            .expect("self target request");
             assert!(
                 read_head(&mut client).starts_with(b"HTTP/1.1 403"),
                 "must reject self target {target}"

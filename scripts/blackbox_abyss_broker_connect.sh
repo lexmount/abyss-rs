@@ -256,6 +256,10 @@ else:
 with socket.create_connection((host, port), timeout=5) as client:
     client.sendall(request.encode("ascii"))
     response = client.recv(4096)
+    if request_kind == "self":
+        assert response.startswith(b"HTTP/1.1 200"), response
+        client.sendall(f"GET /self HTTP/1.1\r\nHost: {proxy_authority}\r\nConnection: close\r\n\r\n".encode("ascii"))
+        response = client.recv(4096)
 
 status_line = response.split(b"\r\n", 1)[0].decode("ascii", errors="replace")
 parts = status_line.split(" ", 2)
@@ -323,7 +327,7 @@ fi
 
 SELF_TARGET_STATUS="$(raw_proxy_status self)"
 [[ "${SELF_TARGET_STATUS}" == "403" ]] \
-  || fail "self-targeting CONNECT should return 403; response status: ${SELF_TARGET_STATUS}"
+  || fail "self-targeting HTTP inside CONNECT should return 403; response status: ${SELF_TARGET_STATUS}"
 
 ORIGIN_FORM_STATUS="$(raw_proxy_status origin-form)"
 [[ "${ORIGIN_FORM_STATUS}" == "400" ]] \

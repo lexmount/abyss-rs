@@ -172,14 +172,14 @@ def run_checks(broker, proxy, replacement):
 
     replacement.reject = True
     before = proxy.origin.accepted
-    assert (
-        request(broker, "127.0.0.1", proxy.origin.server_address[1], "127.0.0.1") == b""
-    )
+    assert request(
+        broker, "127.0.0.1", proxy.origin.server_address[1], "127.0.0.1"
+    ).startswith(b"HTTP/1.1 502")
     assert proxy.origin.accepted == before, (
         "rejected proxy must never fall back to direct"
     )
     replacement.reject = False
-    assert request(broker, "auth.invalid") == b""
+    assert request(broker, "auth.invalid").startswith(b"HTTP/1.1 502")
     broker.observations(
         lambda row: (
             row.get("proxy_status") == 407

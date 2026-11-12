@@ -112,6 +112,19 @@ impl HttpConnectProxy {
         target: &TargetAuthority,
         excluded_endpoints: &[SocketAddr],
     ) -> Result<ConnectedTunnel, UpstreamProxyError> {
+        // Keep the explicit ingress loop check at the selected-route boundary.
+        // Target DNS still belongs to the proxy; only literal local endpoints are checked.
+        for listener in excluded_endpoints.iter().chain(&self.excluded_endpoints) {
+            if ListenerEndpoint::new(*listener)
+                .contains_target(target)
+                .map_err(|source| UpstreamProxyError::Io {
+                    stage: ProxyConnectStage::ConnectProxy,
+                    source,
+                })?
+            {
+                return Err(UpstreamProxyError::Loop { address: *listener });
+            }
+        }
         let deadline = Instant::now().checked_add(self.connect_timeout).ok_or(
             UpstreamProxyError::Protocol {
                 reason: "connection deadline exceeds the monotonic clock range",

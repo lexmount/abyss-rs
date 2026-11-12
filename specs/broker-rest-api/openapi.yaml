@@ -328,8 +328,10 @@ components:
       required: [default_action, missing_sni_action, rules]
       properties:
         default_action:
+          description: Redirect is only valid on rules with a target.
           $ref: "#/components/schemas/TlsDecryptionAction"
         missing_sni_action:
+          description: Redirect is only valid on rules with a target.
           oneOf:
             - $ref: "#/components/schemas/TlsDecryptionAction"
             - type: "null"
@@ -338,8 +340,9 @@ components:
           items:
             $ref: "#/components/schemas/TlsDecryptionRule"
     TlsDecryptionAction:
-      enum: [intercept, passthrough, block]
+      enum: [intercept, passthrough, block, redirect]
     TlsDecryptionRule:
+      description: First matching enabled rule wins; target is required exactly when action is redirect.
       type: object
       additionalProperties: false
       required: [id, enabled, action, destination_hosts]
@@ -351,6 +354,11 @@ components:
           type: boolean
         action:
           $ref: "#/components/schemas/TlsDecryptionAction"
+        target:
+          type: string
+          format: uri
+          description: HTTP(S) origin for redirect, with optional port. No path prefix, query, fragment or credentials. Preserves the request path and query.
+          examples: ["https://api.deepseek.com"]
         process_names:
           type: array
           items:

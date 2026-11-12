@@ -73,7 +73,7 @@ pub enum UpstreamProxyError {
     #[error("upstream proxy rejected CONNECT with HTTP {status}")]
     Rejected { status: u16 },
     /// The next hop would send traffic back into this broker listener.
-    #[error("upstream proxy resolves to broker listener {address}")]
+    #[error("upstream route returns to broker listener {address}")]
     Loop { address: SocketAddr },
 }
 

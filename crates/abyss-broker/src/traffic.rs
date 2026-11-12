@@ -67,6 +67,7 @@ pub struct TrafficFlowHandle {
     started_at_unix_ms: u64,
     monitor: TrafficMonitor,
     finished: Arc<AtomicBool>,
+    proxy_peer: Arc<Mutex<Option<std::net::SocketAddr>>>,
 }
 
 /// JSON snapshot returned to the Host App.
@@ -135,6 +136,7 @@ impl TrafficMonitor {
             started_at_unix_ms,
             monitor: self.clone(),
             finished: Arc::new(AtomicBool::new(false)),
+            proxy_peer: Arc::default(),
         }
     }
 
@@ -256,6 +258,11 @@ impl TrafficFlowHandle {
         Arc::new(self.clone())
     }
 
+    /// Returns the connected next-hop address, if a proxy tunnel was opened.
+    pub fn proxy_peer(&self) -> Option<std::net::SocketAddr> {
+        *self.proxy_peer.lock()
+    }
+
     /// Removes the flow from the active set.
     pub fn finish(&self) {
         if !self.finished.swap(true, Ordering::AcqRel) {
@@ -265,6 +272,10 @@ impl TrafficFlowHandle {
 }
 
 impl TrafficObserver for TrafficFlowHandle {
+    fn record_proxy_peer(&self, peer: std::net::SocketAddr) {
+        *self.proxy_peer.lock() = Some(peer);
+    }
+
     fn record_bytes(&self, direction: TrafficDirection, bytes: usize) {
         if !self.finished.load(Ordering::Acquire) {
             self.monitor.record_bytes(self.id, direction, bytes);

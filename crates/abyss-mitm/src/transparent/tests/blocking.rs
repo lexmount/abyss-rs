@@ -334,11 +334,11 @@ async fn provider_tls_completes_before_request_inspection_but_receives_no_reject
         )
         .await
         .unwrap();
+    client.write_all(b"POST /v1/responses HTTP/1.1\r\nHost: example.test\r\nContent-Length: 18\r\n\r\n{\"input\":\"secret\"}").await.unwrap();
     tokio::time::timeout(std::time::Duration::from_secs(2), handshake)
         .await
-        .expect("provider TLS must finish before the client sends HTTP")
+        .expect("provider TLS must finish before request inspection")
         .unwrap();
-    client.write_all(b"POST /v1/responses HTTP/1.1\r\nHost: example.test\r\nContent-Length: 18\r\n\r\n{\"input\":\"secret\"}").await.unwrap();
     let mut response = Vec::new();
     client.read_to_end(&mut response).await.unwrap();
     assert!(

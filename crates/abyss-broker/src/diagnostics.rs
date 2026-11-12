@@ -525,23 +525,6 @@ impl FlowDiagnostics {
         });
     }
 
-    /// Records preparation failures before the normal accepted-flow pipeline.
-    pub fn record_ingress_error(&self, error: &crate::ingress::IngressError, started_at: u64) {
-        self.record_accept_error(error.to_string());
-        if let Some(observation) =
-            NetworkObservation::from_ingress_error(error, started_at, current_unix_ms())
-        {
-            self.with_state(|state| {
-                push_bounded(
-                    &mut state.recent_observations,
-                    observation.clone(),
-                    MAX_RECENT_FLOWS,
-                );
-            });
-            self.persist_observation(observation);
-        }
-    }
-
     /// Records the final decision for one handled proxy flow.
     pub fn record_outcome(
         &self,
