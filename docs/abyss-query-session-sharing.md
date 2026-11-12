@@ -38,3 +38,15 @@ enforces recipient authentication, and becomes unavailable after revocation.
 Both installed codex and dsh harnesses must load and execute the changed skill
 against the candidate CLI and synthetic session. Final evidence, revisions and
 companion links are recorded in the task's persistent HTML report.
+
+Implementation: [abyss-rs PR #84](https://github.com/lexmount/abyss-rs/pull/84).
+Companion: [AbyssApp PR #85](https://github.com/lexmount/AbyssApp/pull/85) and
+[its skill design](https://github.com/lexmount/AbyssApp/blob/task/abyss-query-session-sharing/docs/abyss-query-session-sharing.md).
+Local validation passed 799 workspace tests (three existing ignored), all 17 CLI
+process tests, and workspace clippy. Real Identity/Agent Data services verified
+creation, owner scoping, recipient authentication, frozen snapshots and
+revocation. Installed codex 0.167.0 and dsh 0.2.0-rc.2 each loaded the exact
+candidate skill bundle and created one usable share, verified by a separate
+recipient read. The persistent report is
+`artifacts/abyss-query-session-sharing/test-report.html` under the coordinator
+workspace; it includes final revisions, commands, CI and review artifacts.
