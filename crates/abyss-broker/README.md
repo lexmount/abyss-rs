@@ -337,3 +337,37 @@ store. See the [plugin protocol](https://github.com/lexmount/abyss-rs/tree/main/
 to implement a consumer.
 
 Licensed under MIT; see the included `LICENSE` file.
+
+### Native process routes
+
+Network policy may include ordered `rules` alongside the default `upstream`:
+
+```json
+{
+  "upstream": null,
+  "rules": [{
+    "id": "coding-tools",
+    "process_names": ["codex", "codex.exe"],
+    "upstream": {"protocol": "http_connect", "endpoint": "https://exit.example:443"}
+  }]
+}
+```
+
+The first matching native-source rule wins. Selectors are `process_names`,
+`application_ids`, `executable_paths`, and `process_entry_points`; populated
+selector dimensions must all match, with any value accepted within a dimension.
+Missing source metadata uses the default route. A null rule upstream selects
+direct access. Explicit proxy ingress has no native source attribution. Updates
+validate and persist every route before publication, affect new connections, and
+never introduce direct fallback after a proxy failure.
+
+### Require a request policy plugin
+
+Add `required_inspectors = ["request-policy"]` at the top level of
+`broker-config.toml` to require exactly one connected inspector with that plugin
+ID. Missing, duplicate or disconnected required inspectors return 503 before
+forwarding inspected requests. Event-only subscriptions cannot satisfy this
+requirement. The default empty list preserves optional plugin behavior. This
+setting applies to plaintext inspection; configure TLS interception or redirect
+rules for the traffic the product intends to manage. See
+[the design](../../docs/lexmount-vpn.md) for lifecycle and compatibility details.

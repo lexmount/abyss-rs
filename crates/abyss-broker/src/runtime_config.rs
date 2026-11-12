@@ -178,12 +178,8 @@ impl RuntimePolicies {
             network: file.network,
         };
         policies.mitm.tls_decryption.validate()?;
-        if let Some(upstream) = policies
-            .network
-            .as_ref()
-            .and_then(|network| network.upstream.as_ref())
-        {
-            upstream
+        if let Some(network) = &policies.network {
+            network
                 .validate()
                 .map_err(|error| RuntimePolicyError::Network(error.to_string()))?;
         }

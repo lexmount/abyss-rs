@@ -84,6 +84,13 @@ impl PluginServer {
         })
     }
 
+    /// Requires exactly one connected inspector for each configured local plugin name.
+    /// An absent inspector keeps request retention active and fails requests closed.
+    pub fn require_inspectors(mut self, required: Vec<String>) -> Self {
+        self.client.required = required.into();
+        self
+    }
+
     /// Returns the concrete local endpoint advertised to product launchers.
     #[must_use]
     pub fn endpoint_label(&self) -> String {

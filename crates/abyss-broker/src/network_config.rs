@@ -15,24 +15,57 @@ use serde::{Deserialize, Serialize};
 
 use crate::error::BrokerError;
 
+mod rules;
+pub use rules::NetworkRule;
+
 /// Editable outbound route. No upstream means direct routing.
 #[derive(Debug, Clone, Default, Deserialize, PartialEq, Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct NetworkConfig {
     /// Optional next hop using the shared upstream protocol configuration.
     pub upstream: Option<UpstreamProxyConfig>,
+    /// First matching native-source rule overrides the default next hop.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub rules: Vec<NetworkRule>,
+}
+
+impl NetworkConfig {
+    /// Checks structural policy without loading broker-local credential files.
+    pub fn validate(&self) -> Result<(), BrokerError> {
+        rules::validate(&self.rules)?;
+        if let Some(upstream) = &self.upstream {
+            upstream
+                .validate()
+                .map_err(|error| BrokerError::invalid_config(error.to_string()))?;
+        }
+        Ok(())
+    }
 }
 
 /// Validated policy retained for the complete lifetime of one connection.
 pub struct NetworkSnapshot {
     config: NetworkConfig,
     proxy: Option<HttpConnectProxy>,
+    rules: Vec<Option<HttpConnectProxy>>,
 }
 
 impl NetworkSnapshot {
     /// Borrows the validated next hop without changing this connection's route.
     pub const fn proxy(&self) -> Option<&HttpConnectProxy> {
         self.proxy.as_ref()
+    }
+
+    /// Selects using native process metadata, before any target DNS or connection.
+    pub fn for_source(
+        &self,
+        source: Option<&abyss_mitm::SourceProcess>,
+    ) -> Option<&HttpConnectProxy> {
+        self.config
+            .rules
+            .iter()
+            .zip(&self.rules)
+            .find(|(rule, _)| rule.matches(source))
+            .map_or(self.proxy.as_ref(), |(_, proxy)| proxy.as_ref())
     }
 }
 
@@ -51,6 +84,7 @@ impl NetworkRuntime {
     ) -> Result<Self, BrokerError> {
         let config = persisted.clone().unwrap_or(NetworkConfig {
             upstream: startup_upstream,
+            rules: Vec::new(),
         });
         let snapshot = Self::validate(config)?;
         Ok(Self {
@@ -73,13 +107,29 @@ impl NetworkRuntime {
     }
 
     pub fn validate(config: NetworkConfig) -> Result<Arc<NetworkSnapshot>, BrokerError> {
+        config.validate()?;
         let proxy = config
             .upstream
             .as_ref()
             .map(HttpConnectProxy::new)
             .transpose()
             .map_err(|error| BrokerError::invalid_config(error.to_string()))?;
-        Ok(Arc::new(NetworkSnapshot { config, proxy }))
+        let rules = config
+            .rules
+            .iter()
+            .map(|rule| {
+                rule.upstream
+                    .as_ref()
+                    .map(HttpConnectProxy::new)
+                    .transpose()
+                    .map_err(|error| BrokerError::invalid_config(error.to_string()))
+            })
+            .collect::<Result<Vec<_>, _>>()?;
+        Ok(Arc::new(NetworkSnapshot {
+            config,
+            proxy,
+            rules,
+        }))
     }
 
     /// Infallible publication after the durable configuration commit.

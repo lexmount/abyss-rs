@@ -22,7 +22,7 @@ use tokio::{
 };
 use uuid::Uuid;
 
-use super::message::{InspectionDecision, InspectionError, InspectionParticipant};
+use super::message::{InspectionDecision, InspectionError, InspectionParticipant, SessionIdentity};
 
 /// A decision includes queueing and reply time. There are no retries.
 pub(super) const DECISION_TIMEOUT: Duration = Duration::from_secs(5);
@@ -44,7 +44,7 @@ impl InspectionRequest {
 
 pub(super) struct InspectionRegistry {
     sessions: Mutex<Vec<Arc<InspectionSession>>>,
-    participants: watch::Sender<Arc<[Uuid]>>,
+    participants: watch::Sender<Arc<[SessionIdentity]>>,
 }
 
 impl Default for InspectionRegistry {
@@ -58,6 +58,7 @@ impl Default for InspectionRegistry {
 
 pub(super) struct InspectionSession {
     id: Uuid,
+    plugin_id: String,
     sender: mpsc::Sender<Arc<InspectionRequest>>,
     pending: Mutex<HashMap<String, oneshot::Sender<InspectResponse>>>,
     closed: AtomicBool,
@@ -69,13 +70,20 @@ pub(super) struct SessionRegistration {
 }
 
 impl InspectionRegistry {
-    pub(super) fn subscribe(&self) -> watch::Receiver<Arc<[Uuid]>> {
+    pub(super) fn subscribe(&self) -> watch::Receiver<Arc<[SessionIdentity]>> {
         self.participants.subscribe()
     }
 
     fn publish_participants(&self, sessions: &[Arc<InspectionSession>]) {
-        self.participants
-            .send_replace(sessions.iter().map(|session| session.id).collect());
+        self.participants.send_replace(
+            sessions
+                .iter()
+                .map(|session| SessionIdentity {
+                    id: session.id,
+                    plugin_id: session.plugin_id.clone(),
+                })
+                .collect(),
+        );
     }
 
     fn select(
@@ -92,10 +100,12 @@ impl InspectionRegistry {
 
     pub(super) fn register(
         self: &Arc<Self>,
+        plugin_id: String,
     ) -> (SessionRegistration, mpsc::Receiver<Arc<InspectionRequest>>) {
         let (sender, receiver) = mpsc::channel(SESSION_CAPACITY);
         let session = Arc::new(InspectionSession {
             id: Uuid::new_v4(),
+            plugin_id,
             sender,
             pending: Mutex::new(HashMap::new()),
             closed: AtomicBool::new(false),

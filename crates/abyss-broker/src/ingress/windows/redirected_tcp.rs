@@ -114,7 +114,7 @@ pub struct RedirectedTcpConnection {
     stream: TcpStream,
     peer_addr: SocketAddr,
     process_context_resolver: SharedProcessContextResolver,
-    proxy: Option<abyss_mitm::outbound::HttpConnectProxy>,
+    network: Arc<crate::network_config::NetworkSnapshot>,
 }
 
 impl RedirectedTcpConnection {
@@ -181,7 +181,7 @@ impl Ingress for RedirectedTcpIngress {
             stream,
             peer_addr,
             process_context_resolver: self.process_context_resolver.clone(),
-            proxy: self.network.snapshot().proxy().cloned(),
+            network: self.network.snapshot(),
         })
     }
 }
@@ -192,7 +192,7 @@ impl IngressConnection for RedirectedTcpConnection {
             stream,
             peer_addr,
             process_context_resolver,
-            proxy,
+            network,
         } = self;
         let local_addr = Self::accepted_local_addr(&stream, peer_addr)?;
         let (stream, redirect_metadata) = tokio::task::spawn_blocking(move || {
@@ -203,7 +203,9 @@ impl IngressConnection for RedirectedTcpConnection {
                 process_context_resolver.as_ref(),
             )
             .and_then(|metadata| {
-                let proxy = proxy
+                let proxy = network
+                    .for_source(metadata.1.as_ref())
+                    .cloned()
                     .map(|proxy| {
                         WfpSocketInitializer::query(&stream)
                             .map(|initializer| {
@@ -303,11 +305,16 @@ mod tests {
         let second_client = TcpStream::connect(ingress.listen_addr()).await.unwrap();
         let second = ingress.accept().await.unwrap();
         assert_eq!(
-            first.proxy.as_ref().unwrap().endpoint().authority(),
+            first
+                .network
+                .for_source(None)
+                .unwrap()
+                .endpoint()
+                .authority(),
             "127.0.0.1:3128"
         );
         assert!(
-            second.proxy.is_none(),
+            second.network.for_source(None).is_none(),
             "new connections use the updated direct route"
         );
         drop((first, second, first_client, second_client));

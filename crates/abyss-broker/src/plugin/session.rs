@@ -95,7 +95,7 @@ where
         let mut events = self.events.subscribe();
         let (registration, mut requests) =
             if hello.capabilities.contains(&PluginCapability::AgentRequest) {
-                let (registration, requests) = self.inspections.register();
+                let (registration, requests) = self.inspections.register(hello.plugin_id.clone());
                 (Some(registration), requests)
             } else {
                 (None, tokio::sync::mpsc::channel(1).1)

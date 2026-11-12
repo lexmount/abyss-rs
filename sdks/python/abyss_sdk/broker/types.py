@@ -145,5 +145,21 @@ class UpstreamProxyConfig(_UpstreamProxyRequired, total=False):
     handshake_timeout_ms: int
 
 
-class NetworkConfig(TypedDict):
+class _NetworkRuleRequired(TypedDict):
+    id: str
     upstream: Optional[UpstreamProxyConfig]
+
+
+class NetworkRule(_NetworkRuleRequired, total=False):
+    process_names: list[str]
+    application_ids: list[str]
+    executable_paths: list[str]
+    process_entry_points: list[str]
+
+
+class _NetworkConfigRequired(TypedDict):
+    upstream: Optional[UpstreamProxyConfig]
+
+
+class NetworkConfig(_NetworkConfigRequired, total=False):
+    rules: list[NetworkRule]

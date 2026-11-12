@@ -39,6 +39,9 @@ pub struct BrokerConfig {
     /// Proxy mode and endpoint settings.
     #[serde(default)]
     pub proxy: ProxyConfig,
+    /// Inspectors that must participate in every inspected request.
+    #[serde(default)]
+    pub required_inspectors: Vec<String>,
 }
 
 /// Developer diagnostics configuration.
@@ -154,6 +157,8 @@ struct BrokerConfigFile {
     ca: CaConfig,
     #[serde(default)]
     proxy: ProxyConfig,
+    #[serde(default)]
+    required_inspectors: Vec<String>,
 }
 
 impl Default for DevtoolsConfig {
@@ -265,6 +270,7 @@ impl BrokerConfig {
             devtools: config.devtools,
             ca: config.ca,
             proxy: config.proxy,
+            required_inspectors: config.required_inspectors,
         };
         config.validate()?;
         config.resolve_relative_paths(path.parent().unwrap_or_else(|| Path::new(".")));
@@ -281,6 +287,19 @@ impl BrokerConfig {
     }
 
     fn validate(&self) -> Result<(), BrokerConfigError> {
+        let mut ids = std::collections::HashSet::new();
+        if self.required_inspectors.iter().any(|id| {
+            !(1..=128).contains(&id.len())
+                || !id
+                    .bytes()
+                    .all(|c| c.is_ascii_alphanumeric() || b"._-".contains(&c))
+                || !ids.insert(id)
+        }) {
+            return Err(BrokerConfigError::Invalid {
+                message: "required_inspectors must contain unique valid plugin identifiers"
+                    .to_owned(),
+            });
+        }
         if self
             .ca
             .path

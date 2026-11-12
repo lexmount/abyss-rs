@@ -34,7 +34,7 @@ def exact(stream, length):
     return bytes(result)
 
 
-def framed_connection(broker, host, port, destination_ip=None):
+def framed_connection(broker, host, port, destination_ip=None, source_process="codex"):
     """Adapt a socket pair to the published framed-flow wire contract."""
     transport = socket.socket(socket.AF_UNIX)
     transport.settimeout(5)
@@ -58,7 +58,7 @@ def framed_connection(broker, host, port, destination_ip=None):
                 "flow_id": str(flow_id),
                 "platform": "macos",
                 "protocol": "tcp",
-                "source_process": "codex",
+                "source_process": source_process,
                 "destination_host": host,
                 "destination_ip": destination_ip,
                 "destination_port": port,
@@ -111,8 +111,8 @@ def framed_connection(broker, host, port, destination_ip=None):
     return client
 
 
-def request(broker, host="plain.invalid", port=80, destination_ip=None):
-    with framed_connection(broker, host, port, destination_ip) as stream:
+def request(broker, host="plain.invalid", port=80, destination_ip=None, source_process="codex"):
+    with framed_connection(broker, host, port, destination_ip, source_process) as stream:
         stream.sendall(
             f"GET /probe HTTP/1.1\r\nHost: {host}\r\nConnection: close\r\n\r\n".encode()
         )
@@ -217,6 +217,35 @@ def run_checks(broker, proxy, replacement):
     )
 
 
+def source_route_checks(broker, proxy, replacement):
+    policy = {
+        "upstream": None,
+        "rules": [
+            {"id": "codex", "process_names": ["codex"], "upstream": network(proxy)["upstream"]},
+            {"id": "claude", "process_names": ["claude"], "upstream": network(replacement)["upstream"]},
+        ],
+    }
+    assert broker.request("PUT", "/v1/network/config", policy) == policy
+    for name, selected, other in [("codex", proxy, replacement), ("claude", replacement, proxy)]:
+        before, other_before = len(selected.requests), len(other.requests)
+        assert request(broker, source_process=name).endswith(b"secure")
+        assert len(selected.requests) == before + 1
+        assert len(other.requests) == other_before
+    before = (len(proxy.requests), len(replacement.requests))
+    for name in ("curl", None):
+        assert request(broker, "127.0.0.1", proxy.origin.server_address[1], "127.0.0.1", name).endswith(b"secure")
+    assert before == (len(proxy.requests), len(replacement.requests))
+    proxy.reject = True
+    reached = proxy.origin.accepted
+    assert request(broker, "127.0.0.1", proxy.origin.server_address[1], "127.0.0.1").startswith(b"HTTP/1.1 502")
+    assert proxy.origin.accepted == reached, "selected route must not fall back to direct"
+    proxy.reject = False
+    broker.restart()
+    assert broker.request("GET", "/v1/network/config") == policy
+    assert request(broker).endswith(b"secure"), "source routes must survive restart"
+    print("PASS: source-scoped routes, unmatched direct, no fallback, persisted source policy")
+
+
 def main():
     if sys.platform != "darwin":
         raise SystemExit("macOS Network Extension ingress is required")
@@ -231,6 +260,7 @@ def main():
             try:
                 broker = Broker(directory, proxy, transparent=True)
                 run_checks(broker, proxy, replacement)
+                source_route_checks(broker, proxy, replacement)
                 broker.close()
             except BaseException:
                 if broker:
