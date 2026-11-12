@@ -1,6 +1,9 @@
 //! One independent HTTP/2 exchange, including inspection and local rejections.
 
-use std::sync::{Arc, atomic::AtomicU64};
+use std::{
+    sync::{Arc, atomic::AtomicU64},
+    time::SystemTime,
+};
 
 use bytes::Bytes;
 use h2::{RecvStream, client::SendRequest, server::SendResponse};
@@ -136,13 +139,15 @@ impl<C: RequestForwardingControl> Http2Relay<'_, C> {
         wire_head.headers_mut().remove(http::header::HOST);
         let (response, request_stream) = upstream.send_request(wire_head, false).map_err(error)?;
         let upload = async {
-            match body {
+            let capture = match body {
                 RequestBody::Retained(retained) => retained.send(request_stream).await,
                 RequestBody::Streaming(body) => BodyCapture::new(self.engine.max_http1_body_bytes)
                     .relay(body, request_stream, head.headers())
                     .await
                     .map_err(error),
-            }
+            }?;
+            let request_sent_at = SystemTime::now();
+            Ok((capture, request_sent_at))
         };
         let download = async {
             let response =
@@ -156,15 +161,19 @@ impl<C: RequestForwardingControl> Http2Relay<'_, C> {
             let capture = BodyCapture::new(self.engine.max_http1_body_bytes)
                 .relay_response(body, downstream, response_head.headers())
                 .await;
-            Ok::<_, TransparentFlowError>(response_head.map(|()| capture))
+            let response_ended_at = SystemTime::now();
+            Ok::<_, TransparentFlowError>((response_head.map(|()| capture), response_ended_at))
         };
         // Upload and download progress independently: early responses and streaming
         // APIs must not wait for the entire request body to finish uploading.
-        let (capture, response) = tokio::try_join!(upload, download)?;
+        let ((capture, request_sent_at), (response, response_ended_at)) =
+            tokio::try_join!(upload, download)?;
         let exchange = HttpExchange {
             flow: self.context.clone(),
             request: head.map(|()| capture),
             response,
+            request_sent_at,
+            response_ended_at,
         };
         tracing::debug!(
             request_bytes = exchange.request.body().raw_bytes().len(),

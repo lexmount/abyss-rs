@@ -207,6 +207,13 @@ async fn multiplexes_streams_and_preserves_large_bodies_and_trailers() {
         .find(|exchange| exchange.request.uri().path() == "/slow")
         .unwrap();
     assert_eq!(slow.request.version(), Version::HTTP_2);
+    assert!(
+        slow.response_ended_at
+            .duration_since(slow.request_sent_at)
+            .unwrap()
+            >= Duration::from_millis(50),
+        "the origin's delay must be included between the two wire timestamps"
+    );
     assert_eq!(slow.request.body().raw_bytes().len(), 1024);
     assert!(
         slow.request.body().raw_truncated(),

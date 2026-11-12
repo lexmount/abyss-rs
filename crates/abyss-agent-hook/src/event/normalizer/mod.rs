@@ -9,7 +9,7 @@ use abyss_plugin_protocol::event::{
     LlmContext, LlmProvider, TokenUsage as PluginTokenUsage,
 };
 use base64::{Engine as _, engine::general_purpose::STANDARD};
-use jiff::{SignedDuration, Timestamp};
+use jiff::Timestamp;
 use serde::Serialize;
 use serde_json::{Value, json};
 use thiserror::Error;
@@ -368,33 +368,6 @@ struct EventSide<'a> {
     declared: Declared<'a>,
 }
 
-/// Generates strictly increasing collector timestamps for one normalized
-/// provider exchange. Provider request and response events are created only
-/// after the terminal response arrives, so wall-clock reads can otherwise
-/// collapse to the same timestamp. Timestamps are emitted at microsecond
-/// precision, so each step is at least one microsecond.
-struct EventTimestampSequence {
-    previous: Option<Timestamp>,
-}
-
-impl EventTimestampSequence {
-    const fn new() -> Self {
-        Self { previous: None }
-    }
-
-    fn next(&mut self) -> Timestamp {
-        let now = Timestamp::now();
-        let observed_at = self.previous.map_or(now, |previous| {
-            let monotonic = previous
-                .checked_add(SignedDuration::from_micros(1))
-                .unwrap_or(previous);
-            now.max(monotonic)
-        });
-        self.previous = Some(observed_at);
-        observed_at
-    }
-}
-
 fn events_for_parsed_exchange(
     config: &HarnessUsageHookConfig,
     parts: &ParsedEventParts<'_>,
@@ -419,7 +392,6 @@ fn events_for_parsed_exchange(
     }
 
     let mut events = Vec::new();
-    let mut timestamps = EventTimestampSequence::new();
     let request_usage = parts.usage.request_side();
     if request_has_content || !request_usage.is_empty() {
         events.push(usage_event(
@@ -435,7 +407,7 @@ fn events_for_parsed_exchange(
                 content,
                 declared,
             },
-            timestamps.next(),
+            passthrough.request_at,
         ));
     }
 
@@ -454,7 +426,7 @@ fn events_for_parsed_exchange(
                 content,
                 declared,
             },
-            timestamps.next(),
+            passthrough.response_at,
         ));
     }
 
@@ -1022,6 +994,8 @@ mod tests {
             &http::Uri::from_static("/v1/messages?beta=true"),
             &http::HeaderMap::new(),
             &response,
+            std::time::SystemTime::UNIX_EPOCH,
+            std::time::SystemTime::UNIX_EPOCH + std::time::Duration::from_micros(123_456),
         );
         let parsed = anthropic_messages_exchange();
         let normalize = |declaration: &AgentDeclaration| {
@@ -1044,6 +1018,8 @@ mod tests {
         let undeclared = normalize(&AgentDeclaration::default());
 
         assert_eq!(events.len(), 2);
+        assert_eq!(events[0].observed_at, "1970-01-01T00:00:00.000000Z");
+        assert_eq!(events[1].observed_at, "1970-01-01T00:00:00.123456Z");
         for (event, plain) in events.iter().zip(&undeclared) {
             assert_eq!(event.subagent_id.as_deref(), Some("a-2"));
             assert_eq!(event.parent_subagent_id.as_deref(), Some("a-1"));
