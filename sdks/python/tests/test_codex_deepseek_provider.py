@@ -27,21 +27,21 @@ class CodexDeepSeekProviderTests(unittest.TestCase):
         self.assertEqual(
             decision.actions,
             (
-                ModifyAction.set_base_url("https://api.deepseek.com"),
+                ModifyAction.set_provider("https://api.deepseek.com"),
                 ModifyAction.set_auth_token("provider-secret"),
                 ModifyAction.set_model("deepseek-flash"),
             ),
         )
         self.assertNotIn("provider-secret", "\n".join(logs.output))
-        self.assertEqual(self.context.base_url, "https://api.openai.com/v1")
+        self.assertEqual(self.context.provider, "https://api.openai.com/v1")
 
     def test_keeps_other_providers_harnesses_and_established_connections(self) -> None:
         for context in (
-            replace(self.context, base_url="https://api.openai.com.evil.test/v1"),
-            replace(self.context, base_url="https://api.deepseek.com"),
+            replace(self.context, provider="https://api.openai.com.evil.test/v1"),
+            replace(self.context, provider="https://api.deepseek.com"),
             replace(self.context, harness=None),
             replace(self.context, model_writable=False),
-            replace(self.context, base_url_writable=False),
+            replace(self.context, provider_writable=False),
             replace(self.context, auth_token_writable=False),
         ):
             self.assertEqual(self.plugin.inspect(context).action, "allow")

@@ -19,8 +19,8 @@ class CodexDeepSeekProvider:
         if (
             context.harness is None
             or context.harness.id != "codex"
-            or urlsplit(context.base_url or "").hostname not in ("api.openai.com", "chatgpt.com")
-            or not context.base_url_writable
+            or urlsplit(context.provider or "").hostname not in ("api.openai.com", "chatgpt.com")
+            or not context.provider_writable
             or not context.auth_token_writable
             or not context.model_writable
         ):
@@ -29,7 +29,7 @@ class CodexDeepSeekProvider:
         logging.info("Routing Codex to DeepSeek: request_id=%s", context.request_id)
         return RequestDecision.modify(
             [
-                ModifyAction.set_base_url("https://api.deepseek.com"),
+                ModifyAction.set_provider("https://api.deepseek.com"),
                 ModifyAction.set_auth_token(self._api_key),
                 ModifyAction.set_model(self._model),
             ]

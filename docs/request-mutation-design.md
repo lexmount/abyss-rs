@@ -23,7 +23,7 @@ context; edits are expressed only through returned actions.
 | Read-only value | Allowed actions | Write-back behavior |
 | --- | --- | --- |
 | `context.auth_token` | `SetAuthToken`, `RemoveAuthToken` | Update or remove the credential selected by the target's authentication adapter; the token excludes header names and scheme prefixes |
-| `context.base_url` | `SetBaseUrl` | Select the model API origin and path prefix, retaining the operation and query |
+| `context.provider` | `SetProvider` | Select the model provider by its service URL, retaining the operation and query |
 | `context.agent.model`, when an Agent projection exists | `SetModel`, `RemoveModel` | Update or remove the model field selected by the recognized request protocol |
 
 Plugins also receive already parsed conversation, tools, attachments, protocol,
@@ -42,7 +42,7 @@ The implementation must preserve these properties:
 3. The final semantic context, forwarded request, and observed request describe
    the same content. Credential values remain excluded from observation output.
 4. Source identity, request/flow IDs, physical destination, method, and query remain
-   read-only. `SetBaseUrl` changes the logical target, path prefix, HTTP Host and
+   read-only. `SetProvider` changes the logical target, path prefix, HTTP Host and
    upstream TLS identity together. Editing only a model does not reroute a request.
 5. No selected request plugins means the existing streaming path, without extra
    mutation buffering or RPC. Network Block/Passthrough/Intercept behavior stays
@@ -99,7 +99,7 @@ crates; the broker connects those layers using transport-neutral request values.
 ## Semantic context and plugin API
 
 Keep the `agent_request` capability and the read-only callback context. Retain the
-existing request metadata and Agent projection, adding the current token, base URL and
+existing request metadata and Agent projection, adding the current token, provider and
 facts describing which action targets are writable. This is an API sketch;
 existing context fields and asynchronous callback details are abbreviated:
 
@@ -108,8 +108,8 @@ struct AgentRequestContext {
     pub auth_token: Option<String>,
     pub auth_token_writable: bool,
     pub model_writable: bool,
-    pub base_url: Option<String>,
-    pub base_url_writable: bool,
+    pub provider: Option<String>,
+    pub provider_writable: bool,
     pub agent: Option<AgentRequestProjection>,
     // Existing request metadata and diagnostic views are omitted.
 }
@@ -125,7 +125,7 @@ enum ModifyAction {
     RemoveAuthToken,
     SetModel(String),
     RemoveModel,
-    SetBaseUrl(String),
+    SetProvider(String),
 }
 
 fn agent_request(context: &AgentRequestContext) -> RequestDecision {
@@ -146,7 +146,7 @@ status, token, model, conversation, tools, attachments, and diagnostic content.
 a model body. There is no mutable request object and no second editable model
 value. Broker updates become visible in the next plugin's context.
 
-`auth_token_writable`, `model_writable`, and `base_url_writable` indicate whether the corresponding
+`auth_token_writable`, `model_writable`, and `provider_writable` indicate whether the corresponding
 Set/Remove actions are supported for this invocation. They describe write-back
 availability, not plugin permissions. On an established authenticated connection,
 the token is readable but auth actions are unavailable. If no authentication
@@ -248,7 +248,7 @@ Each `ModifyAction` has one wire form:
 | `RemoveAuthToken` | `{"op":"remove_auth_token"}` |
 | `SetModel(model)` | `{"op":"set_model","value":"model-b"}` |
 | `RemoveModel` | `{"op":"remove_model"}` |
-| `SetBaseUrl(base_url)` | `{"op":"set_base_url","value":"https://provider.example/v1"}` |
+| `SetProvider(provider)` | `{"op":"set_provider","value":"https://provider.example/v1"}` |
 
 Set requires a string value; Remove has no value. There is no null sentinel,
 complete request snapshot, or raw JSON patch. A token-only modification sends
@@ -426,7 +426,7 @@ the original wire body unless semantic editing changes its content:
 
 | Accepted change | Internal forwarding behavior |
 | --- | --- |
-| Token and/or base URL only | Encode the updated head; retain original body bytes, compression, chunk framing, and trailers |
+| Token and/or provider only | Encode the updated head; retain original body bytes, compression, chunk framing, and trailers |
 | Model in the body | Serialize the updated original JSON document; remove old Content-Encoding, Transfer-Encoding, and Trailer; set one Content-Length from the replacement bytes |
 | Allow or empty action list | Reuse the current forwarding representation |
 
@@ -545,28 +545,30 @@ measure original bytes, while upstream counters measure what was actually sent.
 
 ## Selecting a model service
 
-`SetBaseUrl` replaces the model API origin and path prefix. The semantic writer
+`SetProvider` selects the model provider. Its string value is the provider service
+URL (API origin and path prefix). `context.provider` exposes that selected URL;
+`context.agent.provider` remains the provider label inferred by parsing. The semantic writer
 recognizes Responses, Chat Completions, and Messages operation paths, including
 suboperations such as `/responses/compact`. It retains the operation suffix and
 original query; it does not append to an earlier plugin's prefix.
 
-| Original request | Selected base URL | Forwarded URL |
+| Original request | Selected provider URL | Forwarded URL |
 | --- | --- | --- |
 | `https://chatgpt.com/backend-api/codex/responses` | `https://api.deepseek.com` | `https://api.deepseek.com/responses` |
 | `https://api.openai.com/v1/responses/compact?q=1` | `https://gateway.example/models` | `https://gateway.example/models/responses/compact?q=1` |
 | `https://api.openai.com/v1/chat/completions` | `http://localhost:8080/v1` | `http://localhost:8080/v1/chat/completions` |
 
-Base URLs accept HTTP or HTTPS, a host, optional port and path prefix. Userinfo,
-query and fragment are invalid in a base URL. Credential and model changes remain
+Provider URLs accept HTTP or HTTPS, a host, optional port and path prefix. Userinfo,
+query and fragment are invalid in a provider URL. Credential and model changes remain
 separate actions, so a plugin can select all three in one decision. The existing
 credential carrier is retained. Providers must accept the same API dialect and
 credential header: this feature does not translate Responses into Chat Completions
 or convert between Bearer and provider-specific authentication schemes.
 
-Each later plugin sees the current `base_url`, authority, path, parsed provider,
+Each later plugin sees the current `provider`, authority, path, parsed provider,
 model and token. Original destination, client TLS server name, ingress and process
 metadata still describe the incoming physical flow. Observation parses the final
-request. Unknown operation paths have no writable base URL.
+request. Unknown operation paths have no writable provider.
 
 MITM opens the final upstream only after the chain succeeds. Host, connection
 host/port, TLS SNI and certificate verification use that target. A configured
@@ -577,10 +579,10 @@ Explicit proxy ingress can have already prepared an original TCP connection or
 CONNECT tunnel; a route change closes it unused and opens the selected route.
 The original destination therefore still needs to accept that initial connection.
 
-A WebSocket upgrade can select a base URL without a model body. After upgrade,
-`base_url` remains readable and `base_url_writable` is false. A later base URL action
+A WebSocket upgrade can select a provider without a model body. After upgrade,
+`provider` remains readable and `provider_writable` is false. A later provider action
 rejects the message, just like changing connection credentials; Abyss does not
-reopen an established WebSocket. No base URL action means the original route is
+reopen an established WebSocket. No provider action means the original route is
 retained, including its original destination IP.
 
 ```mermaid
@@ -591,8 +593,8 @@ sequenceDiagram
     participant N as Configured next hop or direct connector
     participant D as Selected model service
     A->>M: TLS for original provider, then model request
-    M->>P: Context with original base URL, token and model
-    P-->>M: Modify(SetBaseUrl, SetAuthToken, SetModel)
+    M->>P: Context with original provider, token and model
+    P-->>M: Modify(SetProvider, SetAuthToken, SetModel)
     Note over M,P: Later plugins see accepted edits; any rejection stops forwarding
     M->>M: Apply final Host/path and check target network Block policy
     M->>N: Connect selected host and port

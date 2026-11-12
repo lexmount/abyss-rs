@@ -19,7 +19,7 @@ class InspectionTests(unittest.TestCase):
                 ModifyAction.remove_auth_token(),
                 ModifyAction.set_model("example-model"),
                 ModifyAction.remove_model(),
-                ModifyAction.set_base_url("https://provider.example/v1"),
+                ModifyAction.set_provider("https://provider.example/v1"),
             ]
         )
         self.assertEqual(decision.to_dict(), expected)

@@ -22,11 +22,11 @@ pub enum RequestActionError {
     #[error("Invalid authentication token encoding")]
     InvalidToken,
     /// The request has no editable model endpoint, or its connection is established.
-    #[error("Base URL actions are unavailable for this request")]
-    BaseUrlUnavailable,
-    /// Model API base URLs need an HTTP(S) authority and optional path prefix.
-    #[error("Invalid model API base URL")]
-    InvalidBaseUrl,
+    #[error("Provider actions are unavailable for this request")]
+    ProviderUnavailable,
+    /// Provider URLs need an HTTP(S) authority and optional path prefix.
+    #[error("Invalid model provider URL")]
+    InvalidProvider,
     /// The edited document could not be encoded.
     #[error("Edited model request could not be encoded")]
     Encoding,
@@ -113,11 +113,11 @@ impl RequestActions {
             .map(str::to_owned);
         context.auth_token_writable = self.auth_writable;
         context.model_writable = self.model.is_some();
-        context.base_url = self
+        context.provider = self
             .endpoint
             .as_ref()
             .and_then(|endpoint| endpoint.base_url(request));
-        context.base_url_writable =
+        context.provider_writable =
             self.endpoint.is_some() && matches!(request.transport, RequestTransport::Http);
     }
 
@@ -151,16 +151,16 @@ impl RequestActions {
                 ModifyAction::RemoveModel => {
                     self.model_object(request, &mut document)?.remove("model");
                 }
-                ModifyAction::SetBaseUrl(base_url) => {
+                ModifyAction::SetProvider(provider) => {
                     let view = request.view();
                     if !matches!(view.transport, RequestTransport::Http) {
-                        return Err(RequestActionError::BaseUrlUnavailable);
+                        return Err(RequestActionError::ProviderUnavailable);
                     }
                     let endpoint = self
                         .endpoint
                         .as_ref()
-                        .ok_or(RequestActionError::BaseUrlUnavailable)?;
-                    let (uri, authority) = endpoint.target(&base_url, view.head.uri().query())?;
+                        .ok_or(RequestActionError::ProviderUnavailable)?;
+                    let (uri, authority) = endpoint.target(&provider, view.head.uri().query())?;
                     request.set_upstream(uri, authority);
                 }
                 _ => return Err(RequestActionError::UnsupportedAction),

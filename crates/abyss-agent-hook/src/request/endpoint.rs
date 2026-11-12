@@ -58,8 +58,10 @@ impl ModelEndpoint {
     ) -> Result<(Uri, HeaderValue), RequestActionError> {
         let base: Uri = base_url
             .parse()
-            .map_err(|_| RequestActionError::InvalidBaseUrl)?;
-        let authority = base.authority().ok_or(RequestActionError::InvalidBaseUrl)?;
+            .map_err(|_| RequestActionError::InvalidProvider)?;
+        let authority = base
+            .authority()
+            .ok_or(RequestActionError::InvalidProvider)?;
         if !matches!(base.scheme_str(), Some("http" | "https"))
             || authority.as_str().contains('@')
             || (authority.as_str() != authority.host()
@@ -67,7 +69,7 @@ impl ModelEndpoint {
             || base.query().is_some()
             || base_url.contains('#')
         {
-            return Err(RequestActionError::InvalidBaseUrl);
+            return Err(RequestActionError::InvalidProvider);
         }
         let mut path = format!("{}{}", base.path().trim_end_matches('/'), self.operation);
         if let Some(query) = query {
@@ -78,14 +80,14 @@ impl ModelEndpoint {
             .scheme(
                 base.scheme()
                     .cloned()
-                    .ok_or(RequestActionError::InvalidBaseUrl)?,
+                    .ok_or(RequestActionError::InvalidProvider)?,
             )
             .authority(authority.clone())
             .path_and_query(path)
             .build()
-            .map_err(|_| RequestActionError::InvalidBaseUrl)?;
+            .map_err(|_| RequestActionError::InvalidProvider)?;
         let header = HeaderValue::from_str(authority.as_str())
-            .map_err(|_| RequestActionError::InvalidBaseUrl)?;
+            .map_err(|_| RequestActionError::InvalidProvider)?;
         Ok((uri, header))
     }
 }

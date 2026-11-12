@@ -39,7 +39,7 @@ fn provider_actions_replace_prefix_preserve_operation_and_refresh_context() {
             actions
                 .apply(
                     &mut request,
-                    Box::new([ModifyAction::SetBaseUrl(base.into())]),
+                    Box::new([ModifyAction::SetProvider(base.into())]),
                 )
                 .unwrap();
             assert_eq!(
@@ -63,10 +63,10 @@ fn provider_actions_replace_prefix_preserve_operation_and_refresh_context() {
             "routed".into(),
         );
         assert_eq!(
-            context.base_url.as_deref(),
+            context.provider.as_deref(),
             Some("http://127.0.0.1:8123/gateway")
         );
-        assert!(context.base_url_writable);
+        assert!(context.provider_writable);
         assert_eq!(context.auth_token.as_deref(), Some("new-provider-token"));
         assert_eq!(
             context.agent.unwrap().model.as_deref(),
@@ -79,7 +79,7 @@ fn provider_actions_replace_prefix_preserve_operation_and_refresh_context() {
 }
 
 #[test]
-fn base_url_requires_an_http_origin_and_rejects_established_websocket_changes() {
+fn provider_requires_an_http_origin_and_rejects_established_websocket_changes() {
     let source = EditableRequest::new("/v1/responses", &json!({"input":"hi"}));
     for base in [
         "relative/path",
@@ -94,10 +94,10 @@ fn base_url_requires_an_http_origin_and_rejects_established_websocket_changes() 
         let mut request = RequestEditor::new(source.view(RequestTransport::Http));
         let error = RequestActions::new(&request.view()).apply(
             &mut request,
-            Box::new([ModifyAction::SetBaseUrl(base.into())]),
+            Box::new([ModifyAction::SetProvider(base.into())]),
         );
         assert!(
-            matches!(error, Err(RequestActionError::InvalidBaseUrl)),
+            matches!(error, Err(RequestActionError::InvalidProvider)),
             "{base}"
         );
     }
@@ -106,9 +106,9 @@ fn base_url_requires_an_http_origin_and_rejects_established_websocket_changes() 
     assert!(matches!(
         RequestActions::new(&request.view()).apply(
             &mut request,
-            Box::new([ModifyAction::SetBaseUrl("https://provider.test".into())])
+            Box::new([ModifyAction::SetProvider("https://provider.test".into())])
         ),
-        Err(RequestActionError::BaseUrlUnavailable)
+        Err(RequestActionError::ProviderUnavailable)
     ));
 }
 
@@ -121,7 +121,7 @@ fn websocket_upgrade_can_select_a_provider_without_a_body() {
     actions
         .apply(
             &mut request,
-            Box::new([ModifyAction::SetBaseUrl("https://provider.test/v1".into())]),
+            Box::new([ModifyAction::SetProvider("https://provider.test/v1".into())]),
         )
         .unwrap();
     assert_eq!(

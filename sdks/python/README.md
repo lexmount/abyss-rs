@@ -29,8 +29,8 @@ Return a safe block reason that does not contain the rejected content.
 
 Plugins run in registration order, and each sees earlier accepted modifications.
 Return Allow, Block with a safe reason, or Modify with explicit Set/Remove actions
-for the selected auth token or model, or `SetBaseUrl` for its provider endpoint.
-`auth_token_writable`, `model_writable` and `base_url_writable` indicate supported edits. See the [model override example](examples/request_modification.py). The SDK sends only the decision; it never diffs context.
+for the selected auth token or model, or `SetProvider` for its provider endpoint.
+`auth_token_writable`, `model_writable` and `provider_writable` indicate supported edits. See the [model override example](examples/request_modification.py). The SDK sends only the decision; it never diffs context.
 Request handlers can read `auth_token`; event subscribers cannot.
 See the [v1 wire contract](https://github.com/lexmount/abyss-rs/tree/main/specs/broker-plugin-protocol/v1).
 Broker and SDKs share the updated v1 contract. A selected
@@ -105,7 +105,7 @@ isolated test. For WebSocket providers, credentials can only change at the hands
 ## Route Codex to DeepSeek in the plugin
 
 The [provider switching example](examples/codex_deepseek_provider.py) reads the
-same local key file and returns three actions together: `SetBaseUrl`,
+same local key file and returns three actions together: `SetProvider`,
 `SetAuthToken`, and `SetModel`. Codex still targets OpenAI; Abyss selects DeepSeek.
 This example handles HTTP model requests and requires compatible Responses APIs.
 

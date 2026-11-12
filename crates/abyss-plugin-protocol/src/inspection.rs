@@ -160,10 +160,10 @@ pub struct AgentRequestContext {
     pub auth_token_writable: bool,
     /// Whether model actions have a supported protocol write-back location.
     pub model_writable: bool,
-    /// Current model API base URL, excluding the protocol operation and query.
-    pub base_url: Option<String>,
-    /// Whether this request can select a different model service endpoint.
-    pub base_url_writable: bool,
+    /// Selected model provider, represented by its API origin and path prefix.
+    pub provider: Option<String>,
+    /// Whether this request can select a different model provider.
+    pub provider_writable: bool,
     /// Known Agent request projection.
     pub agent: Option<AgentRequestProjection>,
 }
@@ -206,8 +206,8 @@ pub enum ModifyAction {
     SetModel(String),
     /// Remove the model member, including an explicit null.
     RemoveModel,
-    /// Select a model API base URL while retaining the request's wire dialect.
-    SetBaseUrl(String),
+    /// Select a model provider by its service URL, retaining the request's wire dialect.
+    SetProvider(String),
 }
 
 impl<'de> Deserialize<'de> for ModifyAction {
@@ -223,14 +223,14 @@ impl<'de> Deserialize<'de> for ModifyAction {
             RemoveAuthToken {},
             SetModel { value: String },
             RemoveModel {},
-            SetBaseUrl { value: String },
+            SetProvider { value: String },
         }
         Ok(match WireAction::deserialize(deserializer)? {
             WireAction::SetAuthToken { value } => Self::SetAuthToken(value),
             WireAction::RemoveAuthToken {} => Self::RemoveAuthToken,
             WireAction::SetModel { value } => Self::SetModel(value),
             WireAction::RemoveModel {} => Self::RemoveModel,
-            WireAction::SetBaseUrl { value } => Self::SetBaseUrl(value),
+            WireAction::SetProvider { value } => Self::SetProvider(value),
         })
     }
 }
@@ -242,7 +242,7 @@ impl std::fmt::Debug for ModifyAction {
             Self::RemoveAuthToken => "RemoveAuthToken",
             Self::SetModel(_) => "SetModel(<redacted>)",
             Self::RemoveModel => "RemoveModel",
-            Self::SetBaseUrl(_) => "SetBaseUrl(<redacted>)",
+            Self::SetProvider(_) => "SetProvider(<redacted>)",
         })
     }
 }
@@ -321,7 +321,7 @@ mod tests {
             json!({"action":"allow"}),
             json!({"action":"block","reason":"policy"}),
             json!({"action":"modify","actions":[]}),
-            json!({"action":"modify","actions":[{"op":"set_base_url","value":"https://api.deepseek.com"}]}),
+            json!({"action":"modify","actions":[{"op":"set_provider","value":"https://api.deepseek.com"}]}),
             json!({"action":"modify","actions":[{"op":"set_auth_token","value":"private-token"},{"op":"remove_auth_token"},{"op":"set_model","value":"new"},{"op":"remove_model"}]}),
         ] {
             let decision: RequestDecision = serde_json::from_value(value.clone()).unwrap();

@@ -280,7 +280,7 @@
                         ],
                         "properties": {
                           "op": {
-                            "const": "set_base_url"
+                            "const": "set_provider"
                           },
                           "value": {
                             "type": "string"

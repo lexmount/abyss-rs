@@ -19,7 +19,7 @@
         "op": "remove_model"
       },
       {
-        "op": "set_base_url",
+        "op": "set_provider",
         "value": "https://provider.example/v1"
       }
     ]

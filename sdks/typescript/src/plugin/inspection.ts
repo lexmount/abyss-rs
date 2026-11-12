@@ -6,7 +6,7 @@ export type ModifyAction =
   | { readonly op: "remove_auth_token" }
   | { readonly op: "set_model"; readonly value: string }
   | { readonly op: "remove_model" }
-  | { readonly op: "set_base_url"; readonly value: string };
+  | { readonly op: "set_provider"; readonly value: string };
 
 export type RequestDecision =
   | { readonly action: "allow" }
@@ -72,7 +72,8 @@ export interface AgentRequestContext {
   readonly auth_token: string | null;
   readonly auth_token_writable: boolean;
   readonly model_writable: boolean;
-  readonly base_url: string | null;
-  readonly base_url_writable: boolean;
+  /** Selected model provider, represented by its service URL. */
+  readonly provider: string | null;
+  readonly provider_writable: boolean;
   readonly agent: AgentRequestProjection | null;
 }

@@ -61,14 +61,14 @@ The v1 reply contains exactly one tagged `decision`:
 - `{"action":"block","reason":"safe explanation"}` rejects the request.
 - `{"action":"modify","actions":[...]}` applies explicit semantic actions.
 
-Actions are `set_auth_token` / `set_model` / `set_base_url` with a string `value`, or
+Actions are `set_auth_token` / `set_model` / `set_provider` with a string `value`, or
 `remove_auth_token` / `remove_model` without a value. Lists execute in order; the
 last action for a field wins. An empty list is equivalent to Allow. Invalid edits
 reject the pending request before any upstream bytes are written.
 
 The callback context is read-only input. SDKs send the returned decision directly;
 they do not compare context snapshots. `auth_token` exposes the selected token only
-to request handlers. `auth_token_writable`, `model_writable` and `base_url_writable` describe supported
+to request handlers. `auth_token_writable`, `model_writable` and `provider_writable` describe supported
 writes, not plugin permissions. Auth binding uses an existing Bearer, `x-api-key`,
 or `anthropic-api-key` header. With no such header, `api.openai.com` and
 `chatgpt.com` bind Bearer, and `api.anthropic.com` binds `x-api-key`. Unknown or
@@ -76,12 +76,13 @@ ambiguous bindings are not writable. Model writers cover OpenAI Responses,
 Chat Completions, Anthropic Messages and Responses WebSocket `response.create`,
 including its nested `response` form.
 
-`base_url` is the current model API origin and path prefix, or null for an unknown
-operation. `set_base_url` accepts an HTTP(S) URL with optional port/path and no
+`provider` is the selected model provider, represented by its service URL (API
+origin and path prefix), or null for an unknown operation. `agent.provider` remains
+the provider label inferred by parsing. `set_provider` accepts an HTTP(S) URL with optional port/path and no
 userinfo, query or fragment. It replaces the prefix while retaining `/responses`,
 `/chat/completions`, or `/messages` and any suboperation and original query.
-For example, `/backend-api/codex/responses` becomes `/v1/responses` when the base
-is `https://provider.example/v1`. Later plugins see the updated base URL,
+For example, `/backend-api/codex/responses` becomes `/v1/responses` when the provider URL
+is `https://provider.example/v1`. Later plugins see the updated provider URL,
 authority, path and provider; physical ingress, destination and client server name
 remain original. Host and upstream TLS identity follow the selected URL. Existing
 network Block rules apply to the target, and configured next-hop routing is
@@ -127,7 +128,7 @@ uninspectable requests send no HTTP request head/body bytes to the provider.
 Upstream TLS starts after the plugin chain selects its final target. Explicit
 ingress may have already prepared the original TCP connection or CONNECT tunnel;
 a route change discards that stream before opening the final route. Allowed bodies use their original
-wire framing and content encoding when only credentials or base URL change. Model edits retain
+wire framing and content encoding when only credentials or provider change. Model edits retain
 unrelated JSON values and use identity encoding with a new Content-Length, removing
 Transfer-Encoding, Content-Encoding and Trailer. Invalid edits receive 502
 `invalid_agent_request_edit`. Oversized bodies receive 413, unsupported encoding
@@ -136,7 +137,7 @@ inspection failure 503 `inspection_unavailable`. Local errors identify `abyss-br
 The HTTP upgrade is inspected before its head is forwarded. After upgrade,
 WebSocket inspection runs on complete client data messages; reverse
 traffic can continue while a decision is pending. The final upgrade credential
-and base URL are readable but fixed on subsequent message contexts. Model edits preserve text
+and provider are readable but fixed on subsequent message contexts. Model edits preserve text
 or binary message type. Invalid edits close with 1011. Rejection closes with 1008 and
 inspection failure with 1011. Control frames are not inspected. Reassembly keeps
 the relay's existing 64 MiB message and 16 MiB frame limits; exceeding them with

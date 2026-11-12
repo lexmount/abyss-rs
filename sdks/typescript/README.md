@@ -109,17 +109,17 @@ requests. Network policy Block and opaque TLS Passthrough never invoke this call
 
 ### Select a model service
 
-Return a `set_base_url` action together with model/auth actions to select a
+Return a `set_provider` action together with model/auth actions to select a
 compatible provider. The broker keeps the API operation and query, updates Host
 and upstream TLS identity, and retains configured next-hop routing. It does not
-translate API dialects. `context.base_url` describes the current endpoint;
-`base_url_writable` is false after a WebSocket upgrade.
+translate API dialects. `context.provider` identifies the selected provider by its service URL;
+`provider_writable` is false after a WebSocket upgrade.
 
 ```typescript
 return {
   action: "modify",
   actions: [
-    { op: "set_base_url", value: "https://provider.example/v1" },
+    { op: "set_provider", value: "https://provider.example/v1" },
     { op: "set_auth_token", value: allocatedToken },
     { op: "set_model", value: "provider-model" },
   ],

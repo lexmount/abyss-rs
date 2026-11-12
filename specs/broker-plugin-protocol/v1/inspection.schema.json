@@ -27,8 +27,8 @@
     "auth_token",
     "auth_token_writable",
     "model_writable",
-    "base_url",
-    "base_url_writable"
+    "provider",
+    "provider_writable"
   ],
   "properties": {
     "flow_id": {
@@ -167,13 +167,13 @@
     "model_writable": {
       "type": "boolean"
     },
-    "base_url": {
+    "provider": {
       "type": [
         "string",
         "null"
       ]
     },
-    "base_url_writable": {
+    "provider_writable": {
       "type": "boolean"
     }
   },

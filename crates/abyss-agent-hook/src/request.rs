@@ -153,8 +153,8 @@ impl AgentRequestParser {
             auth_token: None,
             auth_token_writable: false,
             model_writable: false,
-            base_url: None,
-            base_url_writable: false,
+            provider: None,
+            provider_writable: false,
             agent,
         };
         RequestActions::new(request).annotate(request, &mut context);
