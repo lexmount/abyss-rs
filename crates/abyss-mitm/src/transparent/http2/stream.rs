@@ -84,8 +84,12 @@ impl<C: RequestForwardingControl> Http2Relay<'_, C> {
         head.headers_mut().remove(http::header::EXPECT);
         let mut upstream =
             ready_upstream(upstream, respond, self.engine.timeouts.http1_response_head).await?;
-        let (response, request_stream) =
-            upstream.send_request(head.clone(), false).map_err(error)?;
+        // Host is synthesized for inspection and existing Agent parsers. Send
+        // authority only once on HTTP/2: strict gateways reject Host alongside
+        // :authority even when the values match.
+        let mut wire_head = head.clone();
+        wire_head.headers_mut().remove(http::header::HOST);
+        let (response, request_stream) = upstream.send_request(wire_head, false).map_err(error)?;
         let upload = async {
             match body {
                 RequestBody::Retained(retained) => retained.send(request_stream).await,

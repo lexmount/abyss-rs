@@ -209,6 +209,46 @@ async fn multiplexes_streams_and_preserves_large_bodies_and_trailers() {
     fixture.close().await;
 }
 
+#[tokio::test]
+async fn forwards_authority_once_while_retaining_host_for_observers() {
+    let fixture = Fixture::start(crate::transparent::UncontrolledForwarding, 1024).await;
+    for include_host in [false, true] {
+        let mut sender = fixture.sender.clone().ready().await.unwrap();
+        let mut request = Request::builder()
+            .version(Version::HTTP_2)
+            .uri(format!("https://{}/authority", fixture.authority));
+        if include_host {
+            request = request.header("host", &fixture.authority);
+        }
+        let (response, _) = sender
+            .send_request(request.body(()).unwrap(), true)
+            .unwrap();
+        let response = response.await.unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+        let mut body = response.into_body();
+        while let Some(chunk) = body.data().await {
+            let chunk = chunk.unwrap();
+            body.flow_control().release_capacity(chunk.len()).unwrap();
+        }
+        body.trailers().await.unwrap();
+    }
+    let captured = fixture.captured(2).await;
+    for exchange in captured {
+        assert_eq!(exchange.request.headers()["host"], fixture.authority);
+    }
+    for (request, _, _) in fixture.requests.lock().clone() {
+        assert_eq!(
+            request.uri().authority().unwrap().as_str(),
+            fixture.authority
+        );
+        assert!(
+            !request.headers().contains_key("host"),
+            "origins must not receive both :authority and the observer-only Host header"
+        );
+    }
+    fixture.close().await;
+}
+
 struct Inspect;
 impl RequestForwardingControl for Inspect {
     type Plan = ();
@@ -254,7 +294,10 @@ async fn inspects_each_stream_before_forwarding_and_preserves_other_streams() {
             .unwrap(),
         "inspected"
     );
-    assert_eq!(fixture.requests.lock().len(), 1);
+    let requests = fixture.requests.lock().clone();
+    assert_eq!(requests.len(), 1);
+    assert!(!requests[0].0.headers().contains_key("host"));
+    assert_eq!(captured[0].request.headers()["host"], fixture.authority);
     fixture.close().await;
 }
 
@@ -652,11 +695,12 @@ async fn redirects_http2_authority_and_tls_identity_without_changing_path_or_bod
         request.uri().path_and_query().unwrap().as_str(),
         "/path%2Fpart?q=a%2Bb"
     );
+    assert!(!request.headers().contains_key("host"));
+    let captured = fixture.captured(1).await;
     assert_eq!(
-        request.headers()["host"].to_str().unwrap(),
+        captured[0].request.headers()["host"].to_str().unwrap(),
         request.uri().authority().unwrap().as_str()
     );
-    fixture.captured(1).await;
     fixture.close().await;
 }
 

@@ -27,6 +27,12 @@ not unrelated requests. Observation retains bounded body prefixes; forwarding
 does not truncate at the capture limit. Inspection retains and decodes a complete
 bounded request before sending request headers or bytes to the origin.
 
+Captured and inspected heads include a synthesized `Host` for existing Agent
+parsers. The upstream HTTP/2 head uses only `:authority`; forwarding both fields
+causes strict gateways such as Qwen's to reject valid requests with an empty 400.
+This normalization applies after inspection and redirects, while preserving the
+observer-facing authority and original destination validation.
+
 Response cancellation preserves bytes already observed and marks the capture as
 truncated unless the origin's end-of-stream was consumed. This includes clients
 that stop after an application-level terminal event, before HTTP/2 END_STREAM.
@@ -42,11 +48,12 @@ will not gain this behavior until their endpoint dependency is upgraded.
 
 ## Validation
 
-Unit coverage exercises bounded capture. Fourteen HTTP/2 tests include real
+Unit coverage exercises bounded capture. Fifteen HTTP/2 tests include real
 TCP/TLS exchanges for multiplexed requests, large streaming bodies, trailers,
 cancellation before and after response headers, retained partial captures on
 stream reset and connection disconnect, redirect/control behavior,
-authority rejection, HTTP/1 fallback, and `100 Continue`/`103 Early Hints`.
+authority rejection, single-authority forwarding with observer Host retention,
+HTTP/1 fallback, and `100 Continue`/`103 Early Hints`.
 `make test-blackbox-http2` runs the engine socket cases. The standalone Node
 probe in `scripts/blackbox_http2.mjs` sends three concurrent 96 KiB JSON requests
 through a running broker to a publicly trusted HTTP/2 echo service; set
