@@ -55,3 +55,11 @@ backend migration, or packaged release pin changes are needed in this PR.
 
 Protocol references: [RFC 9113](https://www.rfc-editor.org/rfc/rfc9113.html),
 [`h2` flow control](https://docs.rs/h2/latest/h2/struct.SendStream.html).
+
+CI also exercises real Codex inspection and delivery. Its failure artifact now
+includes bounded HTTP/2 lifecycle and content-decoder metadata, without request
+headers or bodies. The HTTP data-client fixture explicitly closes each HTTP/1
+connection, preventing retry/pool reuse races. The DSH Anthropic matrix case
+uses non-thinking mode because its native Messages adapter cannot emit the
+required Anthropic thinking budget; tool, capture, and exact usage assertions
+remain enabled.

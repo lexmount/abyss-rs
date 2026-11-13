@@ -118,6 +118,12 @@ impl<C: RequestForwardingControl> Http2Relay<'_, C> {
             request: head.map(|()| capture),
             response,
         };
+        tracing::debug!(
+            request_bytes = exchange.request.body().raw_bytes().len(),
+            response_bytes = exchange.response.body().raw_bytes().len(),
+            status = %exchange.response.status(),
+            "HTTP/2 exchange captured"
+        );
         self.engine.hooks.submit(exchange.clone());
         Ok(exchange)
     }

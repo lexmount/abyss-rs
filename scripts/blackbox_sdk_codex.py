@@ -131,7 +131,7 @@ class Broker:
         (ca / "abyss-root-ca-key.pem").chmod(0o600)
         config = directory / "broker-config.toml"
         config.write_text(
-            'schema_version=1\n[devtools]\nlog_level="info"\n'
+            'schema_version=1\n[devtools]\nlog_level="debug"\n'
             f"log_location={json.dumps(str(directory / 'logs'))}\n"
             '[ca]\npath="ca"\n[proxy]\nmode="explicit"\nlisten_addr="127.0.0.1:0"\n'
         )
@@ -312,7 +312,9 @@ def run_codex(broker, directory, marker, model, api_key):
             with contextlib.suppress(ProcessLookupError):
                 os.killpg(process.pid, signal.SIGKILL)
             process.wait()
-        result = subprocess.CompletedProcess(command, process.returncode, stdout, stderr)
+        result = subprocess.CompletedProcess(
+            command, process.returncode, stdout, stderr
+        )
     events = [json.loads(line) for line in result.stdout.splitlines() if line.strip()]
     return result, events
 
@@ -377,6 +379,19 @@ def allowed_exchange(rows):
         for request in requests
         for response in rows
     )
+
+
+def capture_diagnostics(directory):
+    """Export only transport/decode metadata, never headers or captured content."""
+    path = directory / "logs/abyss-broker.log"
+    if not path.exists():
+        return []
+    return [
+        line
+        for line in path.read_text(errors="replace").splitlines()
+        if "abyss_mitm::transparent::http2" in line
+        or "abyss_mitm::transparent::content_encoding:" in line
+    ][-100:]
 
 
 def run_language(language, root, model, api_key, block_only):
@@ -485,6 +500,9 @@ def main():
                             "error": str(error),
                             "evidence": records(
                                 Path(temporary) / language / "evidence.jsonl"
+                            ),
+                            "capture_diagnostics": capture_diagnostics(
+                                Path(temporary) / language
                             ),
                         }
                     )
