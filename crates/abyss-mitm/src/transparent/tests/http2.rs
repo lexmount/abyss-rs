@@ -236,7 +236,8 @@ async fn forwards_authority_once_while_retaining_host_for_observers() {
     for exchange in captured {
         assert_eq!(exchange.request.headers()["host"], fixture.authority);
     }
-    for (request, _, _) in fixture.requests.lock().clone() {
+    let requests = fixture.requests.lock().clone();
+    for (request, _, _) in requests {
         assert_eq!(
             request.uri().authority().unwrap().as_str(),
             fixture.authority
