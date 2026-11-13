@@ -82,10 +82,9 @@ class Scenario:
     def run(self):
         for name, token_file in [("owner", self.args.owner_token_file), ("recipient", self.args.recipient_token_file)]:
             self.cli(["profile", "add", name, "--endpoint", self.args.endpoint,
-                      "--auth", "bearer", "--token-file", str(token_file),
-                      "--web-url", self.args.web_url], profile=name)
+                      "--auth", "bearer", "--token-file", str(token_file)], profile=name)
         self.cli(["profile", "add", "anonymous", "--endpoint", self.args.endpoint,
-                  "--auth", "none", "--web-url", self.args.web_url])
+                  "--auth", "none"])
         marker = "Session share CLI synthetic evidence " + self.native_id
         self.ingest(marker)
         events = self.http("v1/agent-usage/events?" + urllib.parse.urlencode({"session_id": self.native_id}))
@@ -99,7 +98,9 @@ class Scenario:
         share = result["data"]["share"]
         capability = urllib.parse.parse_qs(link.fragment)["token"][0]
         assert not link.query, "capability belongs in fragment only"
-        assert link.path.endswith("/shared/sessions/" + share["id"])
+        endpoint = urllib.parse.urlsplit(self.args.endpoint)
+        assert (link.scheme, link.netloc) == (endpoint.scheme, endpoint.netloc), "same API origin"
+        assert link.path == "/shared/sessions/" + share["id"], "site-root browser route"
         assert share["status"] == "active" and share["expires_at"] > share["snapshot_at"]
         route = "v1/shared-sessions/" + share["id"]
         try:
@@ -126,7 +127,6 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--query", type=Path, required=True)
     parser.add_argument("--endpoint", required=True)
-    parser.add_argument("--web-url", required=True)
     parser.add_argument("--owner-token-file", type=Path, required=True)
     parser.add_argument("--recipient-token-file", type=Path, required=True)
     args = parser.parse_args()

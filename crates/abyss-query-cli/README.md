@@ -167,14 +167,16 @@ bounded by the selected page budget, request deadlines and retry delays.
 On a server with session sharing, explicitly create a read-only snapshot:
 
 ```sh
-abyss-query --profile product sessions share SESSION_UUID --web-url https://web.example.com/app/
+abyss-query --profile product sessions share SESSION_UUID
 ```
 
 Use the backend `session_pk` from `sessions list` or `sessions header`, not the
-Agent's native session ID. `--web-url` is the browser application's root,
-including any router prefix, and is independent of the API endpoint. It can
-also be saved with `profile add --web-url`; a command option overrides that
-default. An explicit web root is required and validated before creation.
+Agent's native session ID. The browser URL uses the selected API endpoint's
+scheme, host, and port with `/shared/sessions/SHARE_ID` at the site root. For
+example, `https://example.com/api/` produces
+`https://example.com/shared/sessions/SHARE_ID#token=...`. No additional profile
+field or frontend URL option is needed. API requests retain their configured
+path prefix; only the browser URL uses the site-root route.
 
 The usual JSON envelope has `command: "sessions.share"`, `data.url`, and
 `data.share` containing the server's ID, snapshot time, expiry, and status.

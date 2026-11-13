@@ -1,4 +1,4 @@
-//! Browser share links; server authorization and snapshot policy remain remote.
+//! Browser share links on the API origin; snapshot policy remains server-owned.
 
 use abyss_data_client::{
     ApiEndpoint,
@@ -10,44 +10,6 @@ use serde::Serialize;
 
 use crate::error::QueryError as Error;
 
-/// Explicit frontend root, independent of the profile's data API location.
-pub struct WebRoot(Url);
-
-impl WebRoot {
-    pub fn parse(value: &str, allow_http: bool) -> Result<Self, Error> {
-        // Reuse the endpoint's scheme, credential, query and fragment policy.
-        let endpoint = ApiEndpoint::parse_with_http(value, allow_http).map_err(|_| {
-            Error::Config("web URL must be an absolute HTTPS root (HTTP on loopback or with --allow-http), without credentials, query or fragment")
-        })?;
-        Ok(Self(
-            Url::parse(endpoint.as_str()).map_err(|_| Error::Config("invalid web URL"))?,
-        ))
-    }
-
-    pub fn as_str(&self) -> &str {
-        self.0.as_str()
-    }
-
-    fn share_url(&self, response: &CreatedSessionShare) -> Result<String, Error> {
-        if response.token.is_empty() {
-            return Err(Error::Protocol(
-                "share response contains an empty capability",
-            ));
-        }
-        let mut url = self.0.clone();
-        url.path_segments_mut()
-            .map_err(|()| Error::Config("web URL cannot contain path segments"))?
-            .pop_if_empty()
-            .extend(["shared", "sessions", &response.share.id.to_string()]);
-        // Match URLSearchParams in the web client, encoding token delimiters.
-        url.query_pairs_mut().append_pair("token", &response.token);
-        let fragment = url.query().map(str::to_owned);
-        url.set_query(None);
-        url.set_fragment(fragment.as_deref());
-        Ok(url.into())
-    }
-}
-
 /// Explicit command output. The capability appears only inside the browser URL.
 #[derive(Serialize, JsonSchema)]
 pub struct SessionShareLink {
@@ -56,9 +18,24 @@ pub struct SessionShareLink {
 }
 
 impl SessionShareLink {
-    pub fn new(root: &WebRoot, response: CreatedSessionShare) -> Result<Self, Error> {
+    pub fn new(endpoint: &ApiEndpoint, response: CreatedSessionShare) -> Result<Self, Error> {
+        if response.token.is_empty() {
+            return Err(Error::Protocol(
+                "share response contains an empty capability",
+            ));
+        }
+        let mut url =
+            Url::parse(endpoint.as_str()).map_err(|_| Error::Config("invalid API endpoint"))?;
+        // API and browser routes share an origin. The share route is rooted at
+        // the site root, so an API prefix such as /api/ must not carry over.
+        url.set_path(&format!("/shared/sessions/{}", response.share.id));
+        // Match URLSearchParams in the web client, encoding token delimiters.
+        url.query_pairs_mut().append_pair("token", &response.token);
+        let fragment = url.query().map(str::to_owned);
+        url.set_query(None);
+        url.set_fragment(fragment.as_deref());
         Ok(Self {
-            url: root.share_url(&response)?,
+            url: url.into(),
             share: response.share,
         })
     }
@@ -66,8 +43,8 @@ impl SessionShareLink {
 
 #[cfg(test)]
 mod tests {
-    use super::{SessionShareLink, WebRoot};
-    use abyss_data_client::models::CreatedSessionShare;
+    use super::SessionShareLink;
+    use abyss_data_client::{ApiEndpoint, models::CreatedSessionShare};
     use reqwest::Url;
     use serde_json::json;
 
@@ -82,25 +59,33 @@ mod tests {
     }
 
     #[test]
-    fn preserves_frontend_prefix_and_encodes_capability_only_in_fragment() {
-        for root in ["https://web.example/a%20b", "https://web.example/a%20b/"] {
+    fn uses_api_origin_and_encodes_capability_only_in_fragment() {
+        for (api, origin) in [
+            ("https://example.test/api", "https://example.test"),
+            ("https://example.test/api/", "https://example.test"),
+            ("https://example.test/", "https://example.test"),
+            ("https://example.test/a%20b/api/", "https://example.test"),
+            (
+                "https://example.test:8443/api/",
+                "https://example.test:8443",
+            ),
+            ("http://127.0.0.1:8080/api/", "http://127.0.0.1:8080"),
+            ("http://[::1]:8080/api/", "http://[::1]:8080"),
+        ] {
             let link = SessionShareLink::new(
-                &WebRoot::parse(root, false).expect("root"),
+                &ApiEndpoint::parse(api).expect("API endpoint"),
                 response("a+ b&c=#/?"),
             )
             .expect("link");
+            assert_eq!(
+                link.url,
+                format!(
+                    "{origin}/shared/sessions/11111111-1111-4111-8111-111111111111#token=a%2B+b%26c%3D%23%2F%3F"
+                ),
+                "preserve origin and replace API path"
+            );
             let url = Url::parse(&link.url).expect("URL");
-            assert_eq!(
-                url.path(),
-                "/a%20b/shared/sessions/11111111-1111-4111-8111-111111111111",
-                "preserve router prefix"
-            );
             assert!(url.query().is_none(), "no capability in HTTP query");
-            assert_eq!(
-                url.fragment(),
-                Some("token=a%2B+b%26c%3D%23%2F%3F"),
-                "encode exactly as URLSearchParams"
-            );
             let output = serde_json::to_value(link).expect("output");
             assert!(output.get("token").is_none(), "do not duplicate capability");
             assert_eq!(output["share"]["status"], "active", "retain server summary");
@@ -108,27 +93,10 @@ mod tests {
     }
 
     #[test]
-    fn rejects_unsafe_roots_and_empty_capabilities() {
-        for root in [
-            "/app",
-            "javascript:alert(1)",
-            "https://user:password@example.test",
-            "https://example.test/?token=x",
-            "https://example.test/#token=x",
-            "http://example.test",
-        ] {
-            assert!(
-                WebRoot::parse(root, false).is_err(),
-                "reject unsafe web root"
-            );
-        }
+    fn rejects_empty_capabilities() {
+        let endpoint = ApiEndpoint::parse("http://127.0.0.1:8080/api/").expect("endpoint");
         assert!(
-            WebRoot::parse("http://example.test/app", true).is_ok(),
-            "explicit HTTP opt-in"
-        );
-        let root = WebRoot::parse("http://127.0.0.1:8080", false).expect("loopback");
-        assert!(
-            SessionShareLink::new(&root, response("")).is_err(),
+            SessionShareLink::new(&endpoint, response("")).is_err(),
             "reject unusable capability"
         );
     }

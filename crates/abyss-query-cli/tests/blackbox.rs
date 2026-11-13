@@ -11,23 +11,21 @@ fn created_share() -> Value {
 }
 
 #[test]
-fn sharing_uses_one_authenticated_post_and_preserves_frontend_prefix() {
+fn sharing_uses_one_authenticated_post_and_derives_browser_origin() {
     let mut response = Response::json(&created_share());
     response.status = 201;
     let server = Server::start(vec![response]);
     let cli = Harness::new();
     cli.profile(&server.endpoint, "bearer");
-    let output = cli.success(&[
-        "sessions",
-        "share",
-        ID,
-        "--web-url",
-        "https://web.example/app",
-    ]);
+    let output = cli.success(&["sessions", "share", ID]);
+    let origin = server
+        .endpoint
+        .strip_suffix("/prefix/")
+        .expect("fixture origin");
     assert_eq!(output["command"], "sessions.share", "command identity");
     assert_eq!(
         output["data"]["url"],
-        format!("https://web.example/app/shared/sessions/{ID}#token=share%2Bsecret%26value"),
+        format!("{origin}/shared/sessions/{ID}#token=share%2Bsecret%26value"),
         "direct browser URL"
     );
     assert_eq!(
@@ -61,28 +59,17 @@ fn sharing_uses_one_authenticated_post_and_preserves_frontend_prefix() {
 }
 
 #[test]
-fn sharing_profile_default_override_formats_and_schema() {
+fn sharing_existing_profile_formats_and_schema() {
     let server = Server::start(vec![
         Response::json(&created_share()),
         Response::json(&created_share()),
     ]);
     let cli = Harness::new();
-    cli.success(&[
-        "profile",
-        "add",
-        "test",
-        "--endpoint",
-        &server.endpoint,
-        "--auth",
-        "none",
-        "--web-url",
-        "https://profile.example/ui",
-    ]);
-    let shown = cli.success(&["profile", "show", "test"]);
-    assert!(
-        shown.to_string().contains("https://profile.example/ui/"),
-        "persist normalized frontend root"
-    );
+    cli.profile(&server.endpoint, "none");
+    let origin = server
+        .endpoint
+        .strip_suffix("/prefix/")
+        .expect("fixture origin");
     let jsonl = cli.run(&["--format", "jsonl", "sessions", "share", ID]);
     assert!(jsonl.status.success(), "JSONL succeeds");
     assert!(jsonl.stderr.is_empty(), "no capability on stderr");
@@ -93,25 +80,17 @@ fn sharing_profile_default_override_formats_and_schema() {
         .collect();
     assert_eq!(
         lines[0]["record"]["url"],
-        format!("https://profile.example/ui/shared/sessions/{ID}#token=share%2Bsecret%26value"),
-        "profile default"
+        format!("{origin}/shared/sessions/{ID}#token=share%2Bsecret%26value"),
+        "existing API endpoint supplies the browser origin"
     );
     assert_eq!(lines.len(), 2_usize, "record and metadata");
-    let table = cli.run(&[
-        "--format",
-        "table",
-        "sessions",
-        "share",
-        ID,
-        "--web-url",
-        "https://override.example",
-    ]);
+    let table = cli.run(&["--format", "table", "sessions", "share", ID]);
     assert!(table.status.success(), "table succeeds");
     assert!(
         String::from_utf8(table.stdout)
             .expect("UTF8")
-            .contains("https://override.example/shared/sessions/"),
-        "command overrides profile"
+            .contains(&format!("{origin}/shared/sessions/{ID}")),
+        "table includes the same-origin URL"
     );
     assert_eq!(server.finish().len(), 2_usize, "two requested shares");
     let schema = Harness::new().success(&["schema"]);
@@ -130,38 +109,16 @@ fn sharing_profile_default_override_formats_and_schema() {
 }
 
 #[test]
-fn sharing_validates_web_root_and_session_before_any_request() {
+fn sharing_validates_session_before_any_request() {
     let cli = Harness::new();
     cli.profile("http://127.0.0.1:1/api", "none");
-    for args in [
-        vec!["sessions", "share", ID],
-        vec![
-            "sessions",
-            "share",
-            ID,
-            "--web-url",
-            "https://user:secret@example.test",
-        ],
-        vec![
-            "sessions",
-            "share",
-            "native-session",
-            "--web-url",
-            "https://web.example",
-        ],
-    ] {
-        let output = cli.run(&args);
-        assert_eq!(
-            output.status.code(),
-            Some(2_i32),
-            "configuration error, not connection failure"
-        );
-        assert!(output.stdout.is_empty(), "no success output");
-        assert!(
-            !String::from_utf8_lossy(&output.stderr).contains("user:secret"),
-            "redact unsafe destination"
-        );
-    }
+    let output = cli.run(&["sessions", "share", "native-session"]);
+    assert_eq!(
+        output.status.code(),
+        Some(2_i32),
+        "invalid session, not connection failure"
+    );
+    assert!(output.stdout.is_empty(), "no success output");
     let help = cli.run(&["sessions", "share", "--help"]);
     assert!(help.status.success(), "offline help");
     assert!(
@@ -196,7 +153,7 @@ fn sharing_preserves_http_errors_without_retry_or_sensitive_diagnostics() {
             "--retries",
             "3",
         ]);
-        let output = cli.run(&["sessions", "share", ID, "--web-url", "https://web.example"]);
+        let output = cli.run(&["sessions", "share", ID]);
         assert_eq!(
             output.status.code(),
             Some(code),
@@ -233,7 +190,7 @@ fn sharing_rejects_invalid_creation_responses_without_leaking_capability() {
     let cli = Harness::new();
     cli.profile(&server.endpoint, "none");
     for _ in 0..3_u32 {
-        let output = cli.run(&["sessions", "share", ID, "--web-url", "https://web.example"]);
+        let output = cli.run(&["sessions", "share", ID]);
         assert_eq!(output.status.code(), Some(9_i32), "invalid response");
         assert!(output.stdout.is_empty(), "no unusable link");
         assert!(

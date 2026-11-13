@@ -200,7 +200,6 @@ mod tests {
     fn profile() -> Profile {
         Profile {
             endpoint: "https://data.example.test/api/".into(),
-            web_url: None,
             allow_http: false,
             auth: Authentication::Terminal {
                 endpoint: "https://auth.example.test/".into(),

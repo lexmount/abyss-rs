@@ -6,18 +6,16 @@ contract. It returns a browser URL and the server's share summary in the usual
 versioned output envelope. The argument is a backend session UUID, consistent
 with the other session detail commands.
 
-The data client owns the typed response and authenticated HTTP call. The CLI owns
-the browser URL: `WEB_ROOT/shared/sessions/SHARE_ID#token=ENCODED_TOKEN`. The
-fragment matches the product frontend and is never sent as a URL query parameter.
-Users supply the actual frontend root with `--web-url`, either on this command
-or when adding a profile. A command override wins. An explicit root is required
-because the data endpoint cannot identify a separately hosted frontend or its
-router prefix. Validate it before creating the snapshot. Existing profiles
-continue to work without the optional field.
-
-The profile-add argument payload is boxed so its additional optional frontend
-URL does not inflate every profile command on platforms with a larger layout.
-Clap still exposes the same flat command grammar on all supported platforms.
+The data client owns the typed response and authenticated HTTP call. The CLI
+owns the browser URL: `API_ORIGIN/shared/sessions/SHARE_ID#token=ENCODED_TOKEN`.
+The fragment matches the product frontend and is never sent as a URL query
+parameter. The product API and browser application share an origin: retain the
+configured endpoint's scheme, host and port, and replace its API path with the
+site-root share route. For example, an endpoint of `https://example.com/api/`
+produces `https://example.com/shared/sessions/SHARE_ID#token=...`. The deployment
+contract does not require a separate frontend address, so profiles and commands
+have no additional URL configuration. API request routing retains its existing
+prefix. Existing published profiles work without changes.
 
 Creation is an explicit mutation. It never runs during reads or doctor checks,
 does not retry POSTs, does not open a browser, and does not persist the returned
@@ -34,7 +32,8 @@ installer inputs change. A future query CLI release must precede distributing
 skills to users of old CLIs; skill instructions check `sessions share --help`
 and do not assume that existing 1.5.0 binaries implement the new command.
 
-Validation covers URL normalization/encoding and unsafe inputs, real CLI HTTP
+Validation covers same-origin URLs, API path removal, ports, IPv6, capability
+encoding and invalid responses, real CLI HTTP
 requests, authentication, failure codes, non-retry semantics, JSON/JSONL/table
 output, schemas, and compatibility with old profiles. A live local product API
 scenario must establish that the generated URL reads the intended snapshot,
