@@ -59,6 +59,8 @@ pub struct ResponseDocuments {
     pub values: Vec<Value>,
     /// Whether the body was truncated or some decoded stream events failed.
     pub incomplete: bool,
+    /// Whether an SSE document failed to decode, independently of transport EOF.
+    pub malformed: bool,
 }
 
 impl ResponseDocuments {
@@ -69,6 +71,7 @@ impl ResponseDocuments {
             return Self {
                 values: vec![value.clone()],
                 incomplete: body.truncated(),
+                malformed: false,
             };
         }
         let decoded = SseDocuments::decode(body.bytes());
@@ -76,6 +79,7 @@ impl ResponseDocuments {
         Self {
             values: decoded.values,
             incomplete,
+            malformed: decoded.incomplete,
         }
     }
 }

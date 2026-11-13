@@ -270,6 +270,10 @@ class ClientTests(unittest.TestCase):
             if case.protocol == "messages":
                 self.assertEqual(settings["id"], "llm-deepseek")
                 self.assertEqual(settings["config"]["baseURL"], case.base_url)
+                self.assertEqual(
+                    settings["config"].get("thinking"),
+                    "disabled" if case.provider == "anthropic" else None,
+                )
             else:
                 provider = settings["config"]["providers"]["matrix"]
                 self.assertEqual(

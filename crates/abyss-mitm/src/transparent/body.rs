@@ -12,7 +12,7 @@ pub enum BodyDecodingStatus {
     Pending,
     /// The full representation was decoded, or required no content decoding.
     Complete,
-    /// Only a prefix is available because an input or output capture limit was hit.
+    /// Only a prefix is available after a capture limit or interrupted transport.
     Truncated,
     /// The content coding is unsupported.
     UnsupportedEncoding,
@@ -70,8 +70,7 @@ impl CapturedBody {
         }
     }
 
-    /// Builds a captured body prefix for a message whose full body exceeded the
-    /// hook capture budget.
+    /// Builds a captured prefix after a capture limit or interrupted transport.
     #[must_use]
     pub fn from_truncated_bytes(bytes: Bytes) -> Self {
         Self {
@@ -131,7 +130,7 @@ impl CapturedBody {
         &self.raw_bytes
     }
 
-    /// Whether the encoded capture itself was cut short by the relay's input limit.
+    /// Whether the encoded capture was cut short by a limit or interrupted transport.
     #[must_use]
     pub const fn raw_truncated(&self) -> bool {
         self.raw_truncated

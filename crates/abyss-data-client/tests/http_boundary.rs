@@ -60,6 +60,10 @@ impl Fixture {
                 }
                 thread::sleep(delay);
                 // Timeout/size tests deliberately close their side of the socket.
+                // This fixture serves one response per TCP connection. Advertise
+                // that lifetime so a retry cannot race pooled socket reuse against
+                // the server's close on a fast Linux runner.
+                let response = response.replacen("\r\n", "\r\nConnection: close\r\n", 1);
                 let _result = socket.write_all(response.as_bytes());
             }
         });
