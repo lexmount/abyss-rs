@@ -77,3 +77,6 @@ connection, preventing retry/pool reuse races. The DSH Anthropic matrix case
 uses non-thinking mode because its native Messages adapter cannot emit the
 required Anthropic thinking budget; tool, capture, and exact usage assertions
 remain enabled.
+The macOS process-routing fixture waits for its enclosing `FlowClose` after TLS
+`close_notify`, avoiding a test-client disconnect that races with broker shutdown
+and incorrectly reports an otherwise successful passthrough as `BrokenPipe`.
