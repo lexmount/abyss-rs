@@ -17,6 +17,12 @@ contract does not require a separate frontend address, so profiles and commands
 have no additional URL configuration. API request routing retains its existing
 prefix. Existing published profiles work without changes.
 
+The Rust build/test CI matrix uses the tested Rust 1.98.0 toolchain explicitly.
+Floating `stable` introduced new macro-generated lint failures, and a shared
+self-hosted `stable` installation disappeared during a concurrent job. A named
+toolchain keeps the compiler and lint behavior reproducible across the matrix
+without weakening warnings or changing unrelated runtime code.
+
 Creation is an explicit mutation. It never runs during reads or doctor checks,
 does not retry POSTs, does not open a browser, and does not persist the returned
 capability. The URL is disclosed only in the requested command output. HTTP
