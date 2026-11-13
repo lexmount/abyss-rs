@@ -39,6 +39,15 @@ that stop after an application-level terminal event, before HTTP/2 END_STREAM.
 The origin stream is canceled immediately; no background draining is introduced.
 Connection teardown polls ready captures once before dropping unfinished work.
 
+Transport truncation remains visible on `CapturedBody`. The Responses parser can
+still establish complete conversation content when the retained SSE documents
+are all valid and end with a terminal `response.completed`/`response.done` event
+containing the full output snapshot. A malformed stream, missing snapshot,
+nonterminal last event, or explicitly non-completed status remains partial.
+Other dialects retain their existing completeness rules. This distinguishes
+application completion from a client canceling before HTTP/2 END_STREAM without
+draining the origin, clearing raw truncation, or relaxing matrix assertions.
+
 HTTP versions on captured request/response heads distinguish HTTP/2 without
 changing the normalized event schema or the public TLS transport enum. Existing
 body decoding and hook dispatch remain shared. HTTP/2 CONNECT, extended CONNECT
@@ -54,6 +63,9 @@ cancellation before and after response headers, retained partial captures on
 stream reset and connection disconnect, redirect/control behavior,
 authority rejection, single-authority forwarding with observer Host retention,
 HTTP/1 fallback, and `100 Continue`/`103 Early Hints`.
+Additional parser tests cover terminal snapshots and malformed/nonterminal
+streams. A public capture-to-event integration test checks complete and partial
+HTTP/2 responses, normalized text/session/usage, and unchanged raw truncation.
 `make test-blackbox-http2` runs the engine socket cases. The standalone Node
 probe in `scripts/blackbox_http2.mjs` sends three concurrent 96 KiB JSON requests
 through a running broker to a publicly trusted HTTP/2 echo service; set

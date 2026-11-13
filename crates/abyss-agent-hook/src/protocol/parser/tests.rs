@@ -30,6 +30,10 @@ impl<P: ProtocolParser> ProtocolParser for Recording<P> {
         STAGES.with_borrow_mut(|stages| stages.push("parse_response"));
         P::parse_response(values, incomplete)
     }
+    fn parse_http_response(documents: &ResponseDocuments) -> ResponseContent {
+        STAGES.with_borrow_mut(|stages| stages.push("parse_response"));
+        P::parse_http_response(documents)
+    }
 }
 
 #[test]
