@@ -4,12 +4,8 @@ use serde_json::Value;
 
 use crate::protocol::{model::image::ParsedImageAttachment, shared::image::ImageCollector};
 
-/// Extracts base64 images submitted by the latest Anthropic user message.
-///
-/// Anthropic requests replay the complete conversation on every provider call.
-/// Restricting extraction to the latest user message prevents historical image
-/// attachments from being uploaded again on each tool loop. Image blocks may
-/// be direct user input or nested inside a Claude Code `tool_result`.
+/// Extracts base64 images from every Anthropic user message, including those
+/// nested inside a `tool_result`.
 pub fn extract_anthropic_request_images(payload: &Value) -> Vec<ParsedImageAttachment> {
     let mut collector = RequestImages::default();
     if let Some(messages) = payload.get("messages") {
@@ -31,9 +27,6 @@ impl RequestImages {
         match value {
             Value::Array(items) => items
                 .iter()
-                .rev()
-                .find(|item| item.get("role").and_then(Value::as_str) == Some("user"))
-                .into_iter()
                 .for_each(|item| self.collect_anthropic_message(item)),
             Value::Object(_) => self.collect_anthropic_message(value),
             _ => {}

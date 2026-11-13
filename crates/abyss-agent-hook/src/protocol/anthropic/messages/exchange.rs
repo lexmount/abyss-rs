@@ -2,6 +2,7 @@
 
 use abyss_mitm::HttpExchange;
 use http::Method;
+use serde_json::Value;
 
 use super::{
     model::ParsedAnthropicMessagesExchange, parser::MessagesParser, session::anthropic_session_id,
@@ -36,10 +37,14 @@ fn assemble_exchange(
     };
 
     let path = exchange.request.uri().path();
-    let Some(request_json) = exchange.request.body().json() else {
+    // A request body cut at the capture limit is kept as a partial request
+    // side, as OpenAI keeps it.
+    let truncated = exchange.request.body().truncated();
+    let request_json = exchange.request.body().json();
+    if request_json.is_none() && !truncated {
         log_parse_skip(exchange, Some(&host), path, "request_body_not_json");
         return None;
-    };
+    }
     let headers = exchange.request.headers();
 
     let request_conversation = request.conversation;
@@ -47,7 +52,7 @@ fn assemble_exchange(
     // Bootstrap, registry, and telemetry calls are useful transport evidence but
     // not dialogue turns. Upload only exchanges whose request carries content:
     // a conversation entry or an image.
-    if request_conversation.entries.is_empty() && request_images.is_empty() {
+    if !truncated && request_conversation.entries.is_empty() && request_images.is_empty() {
         log_parse_skip(exchange, Some(&host), path, "no_dialogue_request_text");
         return None;
     }
@@ -65,7 +70,7 @@ fn assemble_exchange(
     let previous_response_id = request.metadata.previous_response_id;
 
     Some(ParsedAnthropicMessagesExchange {
-        session_id: anthropic_session_id(headers, request_json, &host),
+        session_id: anthropic_session_id(headers, request_json.unwrap_or(&Value::Null), &host),
         request_hash,
         request_conversation,
         response_conversation: response.conversation,
