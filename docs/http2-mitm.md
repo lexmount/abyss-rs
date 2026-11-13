@@ -27,6 +27,12 @@ not unrelated requests. Observation retains bounded body prefixes; forwarding
 does not truncate at the capture limit. Inspection retains and decodes a complete
 bounded request before sending request headers or bytes to the origin.
 
+Response cancellation preserves bytes already observed and marks the capture as
+truncated unless the origin's end-of-stream was consumed. This includes clients
+that stop after an application-level terminal event, before HTTP/2 END_STREAM.
+The origin stream is canceled immediately; no background draining is introduced.
+Connection teardown polls ready captures once before dropping unfinished work.
+
 HTTP versions on captured request/response heads distinguish HTTP/2 without
 changing the normalized event schema or the public TLS transport enum. Existing
 body decoding and hook dispatch remain shared. HTTP/2 CONNECT, extended CONNECT
@@ -36,9 +42,10 @@ will not gain this behavior until their endpoint dependency is upgraded.
 
 ## Validation
 
-Unit coverage exercises bounded capture. Twelve HTTP/2 tests include real
+Unit coverage exercises bounded capture. Fourteen HTTP/2 tests include real
 TCP/TLS exchanges for multiplexed requests, large streaming bodies, trailers,
-cancellation before and after response headers, redirect/control behavior,
+cancellation before and after response headers, retained partial captures on
+stream reset and connection disconnect, redirect/control behavior,
 authority rejection, HTTP/1 fallback, and `100 Continue`/`103 Early Hints`.
 `make test-blackbox-http2` runs the engine socket cases. The standalone Node
 probe in `scripts/blackbox_http2.mjs` sends three concurrent 96 KiB JSON requests

@@ -47,6 +47,34 @@ impl BodyCapture {
         mut destination: SendStream<Bytes>,
         headers: &HeaderMap,
     ) -> Result<CapturedBody, h2::Error> {
+        self.forward(&mut source, &mut destination).await?;
+        Ok(self.finish(headers))
+    }
+
+    /// A streaming client may cancel after receiving an application-level final
+    /// event. Retain what was observed, with an explicit incomplete-body marker,
+    /// instead of discarding the request and every response byte on cancellation.
+    pub(super) async fn relay_response(
+        mut self,
+        mut source: RecvStream,
+        mut destination: SendStream<Bytes>,
+        headers: &HeaderMap,
+    ) -> CapturedBody {
+        if let Err(error) = self.forward(&mut source, &mut destination).await {
+            self.truncated |= !source.is_end_stream();
+            tracing::debug!(%error, captured_bytes = self.bytes.len(), incomplete = self.truncated, "HTTP/2 response forwarding ended early");
+            destination.send_reset(error.reason().unwrap_or(h2::Reason::CANCEL));
+        }
+        // Dropping the origin receive stream propagates cancellation immediately;
+        // observation never drains a canceled or stalled provider response.
+        self.finish(headers)
+    }
+
+    async fn forward(
+        &mut self,
+        source: &mut RecvStream,
+        destination: &mut SendStream<Bytes>,
+    ) -> Result<(), h2::Error> {
         while let Some(chunk) = poll_fn(|cx| {
             if let Poll::Ready(reset) = destination.poll_reset(cx) {
                 return Poll::Ready(Some(Err(reset
@@ -60,7 +88,7 @@ impl BodyCapture {
             let chunk = chunk?;
             let length = chunk.len();
             self.append(&chunk);
-            send_data(&mut destination, chunk).await?;
+            send_data(destination, chunk).await?;
             // Release receive capacity only after downstream has accepted the bytes.
             // Otherwise a slow receiver could accumulate an unbounded relay queue.
             source.flow_control().release_capacity(length)?;
@@ -70,7 +98,7 @@ impl BodyCapture {
         } else {
             destination.send_data(Bytes::new(), true)?;
         }
-        Ok(self.finish(headers))
+        Ok(())
     }
 }
 

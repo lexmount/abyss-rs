@@ -105,9 +105,8 @@ impl<C: RequestForwardingControl> Http2Relay<'_, C> {
                 .send_response(response_head.clone(), false)
                 .map_err(error)?;
             let capture = BodyCapture::new(self.engine.max_http1_body_bytes)
-                .relay(body, downstream, response_head.headers())
-                .await
-                .map_err(error)?;
+                .relay_response(body, downstream, response_head.headers())
+                .await;
             Ok::<_, TransparentFlowError>(response_head.map(|()| capture))
         };
         // Upload and download progress independently: early responses and streaming

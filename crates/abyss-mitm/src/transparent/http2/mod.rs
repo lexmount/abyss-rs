@@ -1,7 +1,7 @@
 //! Multiplexed HTTP/2 relay. Connection drivers own framing; each stream owns its exchange.
 
 use bytes::Bytes;
-use futures_util::{StreamExt as _, stream::FuturesUnordered};
+use futures_util::{FutureExt as _, StreamExt as _, stream::FuturesUnordered};
 use std::sync::{
     Arc,
     atomic::{AtomicU64, Ordering},
@@ -77,6 +77,7 @@ impl<'a, C: RequestForwardingControl> Http2Relay<'a, C> {
         tokio::pin!(pending);
         let mut first: Option<HttpExchange> = None;
         let mut origin_closed = false;
+        let mut connection_error = None;
         let mut received_request = false;
         let first_request_timeout = tokio::time::sleep(self.engine.timeouts.http1_request_head);
         tokio::pin!(first_request_timeout);
@@ -97,7 +98,13 @@ impl<'a, C: RequestForwardingControl> Http2Relay<'a, C> {
                 }
                 incoming = client.accept() => {
                     let Some(incoming) = incoming else { break; };
-                    let (request, mut respond) = incoming.map_err(error)?;
+                    let (request, mut respond) = match incoming {
+                        Ok(incoming) => incoming,
+                        Err(failure) => {
+                            connection_error = Some(error(failure));
+                            break;
+                        }
+                    };
                     received_request = true;
                     if origin_closed || pending.len() >= usize::try_from(MAX_CONCURRENT_STREAMS).unwrap_or(32) {
                         respond.send_reset(h2::Reason::REFUSED_STREAM);
@@ -110,9 +117,19 @@ impl<'a, C: RequestForwardingControl> Http2Relay<'a, C> {
                 }
             }
         }
+        // accept() marks outstanding stream handles closed before returning. Give
+        // ready captures one final poll to observe that closure and publish their
+        // bounded prefixes; never wait for unfinished uploads or inspection work.
+        while let Some(Some(result)) = pending.next().now_or_never() {
+            if first.is_none() {
+                first = result;
+            }
+        }
         // All stream handles belong to this connection and are dropped together
         // on disconnect. They cannot outlive policy/control references or leak tasks.
-        let first = first.ok_or(TransparentFlowError::ClientClosedBeforeProtocol)?;
+        let first = first.ok_or_else(|| {
+            connection_error.unwrap_or(TransparentFlowError::ClientClosedBeforeProtocol)
+        })?;
         Ok(RelayOutcome {
             protocol: self.context.protocol.clone(),
             first_request: first.request,

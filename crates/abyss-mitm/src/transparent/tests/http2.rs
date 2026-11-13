@@ -478,6 +478,74 @@ async fn cancellation_of_an_idle_response_releases_the_origin_stream() {
     fixture.close().await;
 }
 
+#[tokio::test]
+async fn cancellation_retains_observed_response_bytes_as_incomplete() {
+    let fixture = Fixture::start(crate::transparent::UncontrolledForwarding, 1024).await;
+    let mut sender = fixture.sender.clone().ready().await.unwrap();
+    let request = Request::builder()
+        .method("POST")
+        .uri(format!("https://{}/cancel-after-data", fixture.authority))
+        .body(())
+        .unwrap();
+    let (response, mut upload) = sender.send_request(request, false).unwrap();
+    upload
+        .send_data(Bytes::from_static(b"observed"), true)
+        .unwrap();
+    let mut body = response.await.unwrap().into_body();
+    let bytes = body.data().await.unwrap().unwrap();
+    assert_eq!(bytes, b"observed"[..]);
+    body.flow_control().release_capacity(bytes.len()).unwrap();
+    // Streaming API clients can stop after an application-level terminal event
+    // without waiting for the origin's HTTP/2 END_STREAM frame.
+    upload.send_reset(h2::Reason::CANCEL);
+    drop(body);
+    let captured = fixture.captured(1).await;
+    assert_eq!(captured[0].request.body().raw_bytes(), b"observed");
+    assert!(!captured[0].request.body().raw_truncated());
+    assert_eq!(captured[0].response.body().raw_bytes(), b"observed");
+    assert!(captured[0].response.body().raw_truncated());
+    assert_eq!(
+        fixture.call("/after", Bytes::from_static(b"after")).await.1,
+        b"after"
+    );
+    fixture.captured(2).await;
+    drop(sender);
+    fixture.close().await;
+}
+
+#[tokio::test]
+async fn disconnect_retains_observed_response_bytes_as_incomplete() {
+    let fixture = Fixture::start(crate::transparent::UncontrolledForwarding, 1024).await;
+    let mut sender = fixture.sender.clone().ready().await.unwrap();
+    let request = Request::builder()
+        .method("POST")
+        .uri(format!(
+            "https://{}/disconnect-after-data",
+            fixture.authority
+        ))
+        .body(())
+        .unwrap();
+    let (response, mut upload) = sender.send_request(request, false).unwrap();
+    upload
+        .send_data(Bytes::from_static(b"observed"), true)
+        .unwrap();
+    let mut body = response.await.unwrap().into_body();
+    let bytes = body.data().await.unwrap().unwrap();
+    assert_eq!(bytes, b"observed"[..]);
+    body.flow_control().release_capacity(bytes.len()).unwrap();
+    // Streaming API clients can stop after an application-level terminal event
+    // without waiting for the origin's HTTP/2 END_STREAM frame.
+    fixture.client.abort();
+    drop(body);
+    let captured = fixture.captured(1).await;
+    assert_eq!(captured[0].request.body().raw_bytes(), b"observed");
+    assert!(!captured[0].request.body().raw_truncated());
+    assert_eq!(captured[0].response.body().raw_bytes(), b"observed");
+    assert!(captured[0].response.body().raw_truncated());
+    drop(sender);
+    fixture.close().await;
+}
+
 fn spawn_origin(
     listener: TcpListener,
     config: tokio_rustls::rustls::ServerConfig,
@@ -547,6 +615,16 @@ fn spawn_origin(
                 crate::transparent::http2::body::send_data(&mut stream, Bytes::from(bytes))
                     .await
                     .unwrap();
+                if matches!(
+                    path.as_str(),
+                    "/cancel-after-data" | "/disconnect-after-data"
+                ) {
+                    let reason = std::future::poll_fn(|cx| stream.poll_reset(cx)).await;
+                    if path == "/cancel-after-data" {
+                        assert_eq!(reason.unwrap(), h2::Reason::CANCEL);
+                    }
+                    return;
+                }
                 let mut trailers = HeaderMap::new();
                 trailers.insert("x-response-trailer", "complete".parse().unwrap());
                 stream.send_trailers(trailers).unwrap();
