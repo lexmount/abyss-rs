@@ -99,6 +99,7 @@ impl Output {
                 "session_header":schemars::schema_for!(SessionHeader),"session_streams":schemars::schema_for!(SessionStreams),
                 "session_turns":schemars::schema_for!(SessionTurns),"segment":schemars::schema_for!(Segment),
                 "session_search":schemars::schema_for!(SessionSearch),
+                "session_share":schemars::schema_for!(crate::sharing::SessionShareLink),
                 "event_page":schemars::schema_for!(EventPage),"event":schemars::schema_for!(UsageEvent),
                 "conversation_preview":schemars::schema_for!(ConversationPreview),"event_location":schemars::schema_for!(EventLocation),
                 "summary":schemars::schema_for!(UsageSummary)

@@ -1,4 +1,4 @@
-//! Read-only, deployment-independent clients for the public Abyss data API.
+//! Deployment-independent clients for the public Abyss data API.
 //!
 //! Callers supply the API root and credentials. This crate never discovers a
 //! broker, opens a database, reads CLI profiles, or performs interactive login.

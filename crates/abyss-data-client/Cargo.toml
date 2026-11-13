@@ -5,7 +5,7 @@ edition.workspace = true
 authors.workspace = true
 license-file.workspace = true
 repository.workspace = true
-description = "Read-only HTTP client for Abyss event data backends"
+description = "HTTP client for Abyss event data queries and explicit session sharing"
 publish = ["crates-io"]
 readme = "README.md"
 

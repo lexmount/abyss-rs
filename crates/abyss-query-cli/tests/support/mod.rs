@@ -35,6 +35,7 @@ impl Response {
     }
 }
 pub struct Request {
+    pub method: String,
     pub target: String,
     pub authorization: Option<String>,
     pub body: Value,
@@ -95,6 +96,7 @@ impl Server {
         let mut reader = BufReader::new(stream);
         let mut line = String::new();
         reader.read_line(&mut line).expect("request line");
+        let method = line.split_whitespace().next().expect("method").to_owned();
         let target = line.split_whitespace().nth(1).expect("target").to_owned();
         let mut authorization = None;
         let mut length = 0_usize;
@@ -118,6 +120,7 @@ impl Server {
         let mut body = vec![0; length];
         reader.read_exact(&mut body).expect("request body");
         Request {
+            method,
             target,
             authorization,
             body: if body.is_empty() {

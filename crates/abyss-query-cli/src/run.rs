@@ -29,8 +29,9 @@ pub fn execute(cli: &Cli) -> Result<Output, Error> {
             crate::auth::execute(command, &config_file, name, profile)?,
         ));
     }
+    let endpoint = ApiEndpoint::parse_with_http(&profile.endpoint, profile.allow_http)?;
     let client = DataClient::new(
-        ApiEndpoint::parse_with_http(&profile.endpoint, profile.allow_http)?,
+        endpoint.clone(),
         CredentialResolver::resolve(&config_file, name, profile)?,
         &profile.options()?,
     )?;
@@ -48,6 +49,11 @@ pub fn execute(cli: &Cli) -> Result<Output, Error> {
         Command::Search { query, page } => SessionPages::new(&client).fetch(page, Some(query)),
         Command::Sessions { command } => match command {
             SessionCommand::List(page) => SessionPages::new(&client).fetch(page, None),
+            SessionCommand::Share { id } => {
+                let response = client.create_session_share(*id)?;
+                let result = crate::sharing::SessionShareLink::new(&endpoint, response)?;
+                Ok(Output::new("sessions.share", serde_json::to_value(result)?))
+            }
             SessionCommand::Header { id } => Ok(Output::new(
                 "sessions.header",
                 serde_json::to_value(client.session_header(*id)?)?,

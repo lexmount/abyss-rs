@@ -44,6 +44,13 @@ maps retain backend metadata, full/partial content, structured search fragments
 and fields introduced by newer servers. The persisted backend event DTO is
 intentionally distinct from the broker's AgentEvent ingestion protocol.
 
+`create_session_share(session_pk)` explicitly creates a snapshot through the
+server's sharing API. It returns a typed share summary and a one-time capability;
+callers must not log or persist that capability. Ownership, snapshot limits,
+expiry, recipient access, and revocation remain server-owned. Deployments without
+sharing support return an HTTP error. The CLI constructs browser links from a
+separately configured frontend root; the data client does not guess that root.
+
 Defaults are a 30-second per-attempt deadline, 8 MiB response budget, and two
-transient GET retries. Authentication POSTs are never retried. Error Display
+transient GET retries. Authentication and share-creation POSTs are never retried. Error Display
 messages do not include server bodies, tokens or response decode excerpts.

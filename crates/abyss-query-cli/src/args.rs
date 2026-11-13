@@ -13,7 +13,7 @@ use uuid::Uuid;
 #[command(
     name = "abyss-query",
     version,
-    about = "Read Abyss backend data from an Agent or terminal"
+    about = "Query Abyss backend data and explicitly share sessions from an Agent or terminal"
 )]
 pub struct Cli {
     #[arg(long, global = true, env = "ABYSS_QUERY_CONFIG")]
@@ -205,6 +205,13 @@ impl PageArgs {
 #[derive(Subcommand)]
 pub enum SessionCommand {
     List(PageArgs),
+    /// Create a read-only snapshot and return its browser URL (requires sharing support).
+    #[command(
+        long_about = "Create a read-only snapshot of the specified backend session UUID using the current profile's credentials. Requires a sharing-capable server. The browser URL uses the selected API endpoint's scheme, host and port with /shared/sessions at the site root. The server controls ownership, expiry, recipient sign-in and revocation. Each invocation creates a new share; creation is not retried automatically. The returned URL contains a sensitive capability in its fragment."
+    )]
+    Share {
+        id: Uuid,
+    },
     /// Session page header.
     Header {
         id: Uuid,

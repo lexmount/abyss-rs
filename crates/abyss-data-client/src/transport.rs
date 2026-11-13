@@ -73,7 +73,7 @@ impl HttpTransport {
         self.send(&Method::GET, url, bearer, Option::<&()>::None)
     }
 
-    /// Sends a JSON POST exactly once. Intended for explicit authentication flows.
+    /// Sends a JSON POST exactly once for explicit authentication or mutations.
     ///
     /// # Errors
     /// Returns sanitized transport, HTTP, size or decoding errors.
