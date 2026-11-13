@@ -33,10 +33,6 @@ impl TlsFlow {
         control: &C,
     ) -> Result<TransparentFlowOutcome, TransparentFlowError> {
         let policy = engine.tls_decryption_policy();
-        if !policy.requires_sni_peek() && !self.flow.ingress.requires_tls_server_name_validation() {
-            return TlsHttpFlow::from(self.flow).handle(engine, control).await;
-        }
-
         Box::pin(self.handle_with_decryption_policy(engine, control, policy)).await
     }
 
@@ -97,22 +93,24 @@ impl TlsFlow {
                 Err(rejection.into())
             }
             TlsDecryptionAction::Intercept | TlsDecryptionAction::Redirect => {
-                TlsHttpFlow::from_inspected(
-                    inspected,
-                    TlsHttpMetadata {
-                        flow_id,
-                        peer_addr,
-                        local_addr,
-                        original_destination,
-                        destination_host,
-                        source_process,
-                        ingress,
-                        upstream,
-                        traffic_observer,
-                        redirect: decision.redirect_target().cloned(),
-                    },
+                Box::pin(
+                    TlsHttpFlow::from_inspected(
+                        inspected,
+                        TlsHttpMetadata {
+                            flow_id,
+                            peer_addr,
+                            local_addr,
+                            original_destination,
+                            destination_host,
+                            source_process,
+                            ingress,
+                            upstream,
+                            traffic_observer,
+                            redirect: decision.redirect_target().cloned(),
+                        },
+                    )
+                    .handle(engine, control),
                 )
-                .handle(engine, control)
                 .await
             }
             TlsDecryptionAction::Passthrough => {
