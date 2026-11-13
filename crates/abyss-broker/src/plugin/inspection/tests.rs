@@ -19,7 +19,7 @@ fn context() -> Arc<InspectionRequest> {
 #[tokio::test(start_paused = true)]
 async fn timeout_and_cancellation_remove_waiters_and_late_replies_are_ignored() {
     let registry = Arc::new(InspectionRegistry::default());
-    let (registration, mut requests) = registry.register();
+    let (registration, mut requests) = registry.register("test".to_owned());
     let session = registration.session.clone();
     let pending = tokio::spawn(async move {
         session
@@ -66,10 +66,11 @@ async fn selected_disconnect_fails_current_request_and_future_requests_use_curre
         participants.borrow().is_empty(),
         "no plugins means ordinary streaming"
     );
-    let (first, mut requests) = registry.register();
-    let (second, _requests) = registry.register();
+    let (first, mut requests) = registry.register("test".to_owned());
+    let (second, _requests) = registry.register("test".to_owned());
     let plan = InspectionPlan {
         sessions: participants.borrow().clone(),
+        available: true,
     };
     let snapshot: Vec<_> = plan
         .participants()
@@ -119,9 +120,10 @@ async fn selected_disconnect_fails_current_request_and_future_requests_use_curre
 #[tokio::test]
 async fn caller_cancellation_cancels_server_task_and_session_waiter() {
     let registry = Arc::new(InspectionRegistry::default());
-    let (registration, mut requests) = registry.register();
+    let (registration, mut requests) = registry.register("test".to_owned());
     let plan = InspectionPlan {
         sessions: registry.subscribe().borrow().clone(),
+        available: true,
     };
     let message: BrokerMessage = serde_json::from_str(include_str!(concat!(
         env!("CARGO_MANIFEST_DIR"),

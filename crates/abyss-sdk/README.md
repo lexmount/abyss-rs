@@ -58,3 +58,14 @@ Broker and SDKs share the updated v1 contract. A selected
 plugin that fails or does not respond within five seconds fails that request.
 Disconnecting the last inspection plugin restores normal streaming for future
 requests. Network policy Block and opaque TLS Passthrough never invoke this callback.
+
+### System broker access
+
+A desktop process authorized to use the broker management API can connect with
+`BrokerPlugin::new("example").with_api_endpoint(origin, management_bearer)`.
+The origin must be loopback HTTP. The SDK never follows redirects or environment
+proxies, and the token is sent only as an Authorization header. The HTTP upgrade
+uses the same plugin handshake and capabilities as the owner-only local IPC.
+An inspecting plugin can call `run_with_ready` to publish readiness after its
+handshake is accepted. Keep the management bearer private; it also authorizes
+broker configuration. Existing socket/Named Pipe discovery remains the default.

@@ -44,21 +44,23 @@ def write_frame(stream, value):
 
 
 class Plugin:
-    def __init__(self, endpoint, handler=None, capabilities=None):
-        self.stream = socket.socket(socket.AF_UNIX)
+    def __init__(self, endpoint, handler=None, capabilities=None, plugin_id="blackbox", stream=None):
+        self.stream = stream if stream is not None else socket.socket(socket.AF_UNIX)
         self.stream.settimeout(15)
-        self.stream.connect(endpoint)
+        if stream is None:
+            self.stream.connect(endpoint)
         write_frame(
             self.stream,
             {
                 "type": "plugin_hello",
                 "protocol_version": 1,
-                "plugin_id": "blackbox",
+                "plugin_id": plugin_id,
                 "capabilities": capabilities or ["agent_request"],
             },
         )
         assert read_frame(self.stream)["type"] == "broker_hello"
         self.contexts = []
+        self.events = []
         self.thread = None
         self.errors = []
         if handler:
@@ -74,6 +76,7 @@ class Plugin:
                 if frame["type"] == "broker_close":
                     return
                 if frame["type"] == "agent_event":
+                    self.events.append(frame["event"])
                     continue
                 assert frame["type"] == "inspect_request", frame
                 context = frame["context"]

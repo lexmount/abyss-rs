@@ -269,7 +269,7 @@ impl FramedUnixIngress {
 
     async fn metadata_from_open(
         payload: FlowOpenPayload,
-        process_context_resolver: SharedProcessContextResolver,
+        source_process: Option<abyss_mitm::SourceProcess>,
         resolution: DnsResolution,
     ) -> Result<PlatformFlowMetadata, IngressError> {
         tracing::debug!(
@@ -290,11 +290,6 @@ impl FramedUnixIngress {
             .clone()
             .filter(|host| !host.is_empty());
         let flow_id = abyss_mitm::FlowId::from(payload.flow_id);
-        let source_process = tokio::task::spawn_blocking(move || {
-            SourceProcessBuilder::from_open(&payload).build(process_context_resolver.as_ref())
-        })
-        .await
-        .map_err(|source| IngressError::task("resolve source process context", source))?;
         Ok(PlatformFlowMetadata::from_destination_parts(
             None,
             None,
@@ -345,7 +340,7 @@ impl Ingress for FramedUnixIngress {
     async fn accept(&mut self) -> Result<Self::Accepted, IngressError> {
         let stream = self.accept_stream().await?;
         Ok(FramedUnixConnection {
-            proxy: self.network.snapshot().proxy().cloned(),
+            network: self.network.snapshot(),
             stream,
             socket_path: self.socket_path.clone(),
             process_context_resolver: self.process_context_resolver.clone(),
@@ -359,7 +354,7 @@ impl Ingress for FramedUnixIngress {
 
 /// Accepted framed Unix connection awaiting its initial `FlowOpen`.
 pub struct FramedUnixConnection {
-    proxy: Option<abyss_mitm::outbound::HttpConnectProxy>,
+    network: std::sync::Arc<crate::network_config::NetworkSnapshot>,
     stream: UnixStream,
     socket_path: PathBuf,
     process_context_resolver: SharedProcessContextResolver,
@@ -368,19 +363,27 @@ pub struct FramedUnixConnection {
 impl IngressConnection for FramedUnixConnection {
     async fn into_flow(self) -> Result<PlatformFlow, IngressError> {
         let Self {
-            proxy,
+            network,
             mut stream,
             socket_path,
             process_context_resolver,
         } = self;
         let (flow_id, payload) = FramedUnixIngress::read_open_frame(&mut stream).await?;
+        let (payload, source_process) = tokio::task::spawn_blocking(move || {
+            let source =
+                SourceProcessBuilder::from_open(&payload).build(process_context_resolver.as_ref());
+            (payload, source)
+        })
+        .await
+        .map_err(|source| IngressError::task("resolve source process context", source))?;
+        let proxy = network.for_source(source_process.as_ref()).cloned();
         let target = proxy
             .as_ref()
             .map(|_| configured_target(&payload))
             .transpose()?;
         let metadata = FramedUnixIngress::metadata_from_open(
             payload,
-            process_context_resolver,
+            source_process,
             if proxy.is_some() {
                 DnsResolution::UpstreamProxy
             } else {

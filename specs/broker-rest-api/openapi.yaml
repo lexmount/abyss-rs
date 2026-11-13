@@ -12,6 +12,21 @@ servers:
 security:
   - localBearer: []
 paths:
+  /v1/plugins/connect:
+    post:
+      operationId: connectPlugin
+      description: >-
+        Authenticated HTTP/1.1 upgrade to the existing v1 length-prefixed plugin
+        protocol. Send Connection Upgrade and Upgrade abyss-plugin-v1 headers.
+        The management bearer grants the same trusted-local authority as other
+        protected routes. Existing Unix socket and Named Pipe permissions do not change.
+      responses:
+        "101":
+          description: Protocol switched; send PluginHello to negotiate capabilities.
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
   /healthz:
     get:
       operationId: getHealth
@@ -282,6 +297,36 @@ components:
       additionalProperties: false
       required: [upstream]
       properties:
+        rules:
+          type: array
+          description: First matching native-source rule overrides upstream. Explicit ingress has no native identity. Rules never change an accepted connection or fall back after proxy failure.
+          items:
+            $ref: "#/components/schemas/NetworkRule"
+        upstream:
+          oneOf:
+            - $ref: "#/components/schemas/UpstreamProxyConfig"
+            - type: "null"
+    NetworkRule:
+      type: object
+      additionalProperties: false
+      required: [id, upstream]
+      description: At least one source selector is required. Dimensions use AND, values within a dimension use OR. IDs must be unique. Null upstream selects direct access.
+      properties:
+        id:
+          type: string
+          minLength: 1
+        process_names:
+          type: array
+          items: { type: string, minLength: 1 }
+        application_ids:
+          type: array
+          items: { type: string, minLength: 1 }
+        executable_paths:
+          type: array
+          items: { type: string, minLength: 1 }
+        process_entry_points:
+          type: array
+          items: { type: string, minLength: 1 }
         upstream:
           oneOf:
             - $ref: "#/components/schemas/UpstreamProxyConfig"

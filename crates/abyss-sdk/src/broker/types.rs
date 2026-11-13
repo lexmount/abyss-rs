@@ -297,6 +297,26 @@ pub struct ActiveFlow {
 pub struct NetworkConfig {
     /// Optional HTTP CONNECT next hop.
     pub upstream: Option<UpstreamProxyConfig>,
+    /// Ordered native-source overrides; an empty list retains the default route.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub rules: Vec<NetworkRule>,
+}
+
+/// Native source match with AND between populated dimensions and OR within them.
+#[derive(Debug, Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct NetworkRule {
+    pub id: String,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub process_names: Vec<String>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub application_ids: Vec<String>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub executable_paths: Vec<String>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub process_entry_points: Vec<String>,
+    /// Null means an explicit direct route, independent of the default.
+    pub upstream: Option<UpstreamProxyConfig>,
 }
 
 /// Protocol-oriented next-hop settings, independent of proxy software.

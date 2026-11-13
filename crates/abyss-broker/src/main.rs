@@ -101,7 +101,9 @@ async fn run(
     );
     let proxy_plan = broker_config.proxy.plan()?;
     let abyss_home = platform.abyss_home();
-    let plugin_server = PluginServer::bind(&abyss_home).await?;
+    let plugin_server = PluginServer::bind(&abyss_home)
+        .await?
+        .require_inspectors(broker_config.required_inspectors.clone());
     let plugin_event_sink = plugin_server.client();
     let runtime_policy_path = RuntimePolicies::default_path(&abyss_home);
     let runtime_policies = RuntimePolicies::load(&runtime_policy_path).await?;

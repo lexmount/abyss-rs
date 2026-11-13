@@ -84,6 +84,13 @@ impl PluginServer {
         })
     }
 
+    /// Requires exactly one connected inspector for each configured local plugin name.
+    /// An absent inspector keeps request retention active and fails requests closed.
+    pub fn require_inspectors(mut self, required: Vec<String>) -> Self {
+        self.client.required = required.into();
+        self
+    }
+
     /// Returns the concrete local endpoint advertised to product launchers.
     #[must_use]
     pub fn endpoint_label(&self) -> String {
@@ -130,6 +137,10 @@ impl PluginServer {
                 }
                 command = self.commands.recv() => {
                     match command {
+                        Some(PluginCommand::Connect(stream)) => {
+                            sessions.spawn(PluginSession::new(stream, self.events.clone(), shutdown.clone())
+                                .with_inspections(self.inspections.clone()).run());
+                        }
                         Some(PluginCommand::PublishEvent(event)) => {
                             // A live event has no receipt or replay if nobody subscribes.
                             drop(self.events.send(event));

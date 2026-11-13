@@ -1,5 +1,7 @@
 //! REST API for controlling the broker proxy service.
 
+mod plugin_connection;
+
 use std::{future::Future, io, net::SocketAddr, path::PathBuf, sync::Arc};
 
 use abyss_agent_hook::{HooksConfig, HooksRuntimeConfig};
@@ -32,6 +34,7 @@ use crate::{
 
 #[derive(Clone)]
 struct AppState {
+    plugins: crate::plugin::PluginClient,
     proxy: ProxyService,
     runtime_config: RuntimeConfigService,
     diagnostics: BrokerDiagnosticsService,
@@ -128,6 +131,7 @@ pub async fn serve(
         sender: Arc::new(Mutex::new(Some(shutdown_tx))),
     };
     let state = AppState {
+        plugins: plugin_server.client(),
         proxy: proxy.clone(),
         runtime_config: RuntimeConfigService::new(mitm, hooks, network, runtime_policy_path),
         diagnostics,
@@ -218,6 +222,7 @@ where
 fn router(state: AppState) -> Router {
     let auth = state.auth.clone();
     let protected_routes = Router::new()
+        .route("/v1/plugins/connect", post(plugin_connection::connect))
         .route(
             "/v1/network/config",
             get(network_config).put(update_network_config),

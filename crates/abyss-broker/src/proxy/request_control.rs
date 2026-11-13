@@ -36,6 +36,14 @@ impl RequestForwardingControl for RequestControl {
         request: RequestView<'_>,
     ) -> Result<RequestForwardingResult, LocalRejection> {
         let request_id = uuid::Uuid::new_v4().to_string();
+        if !plan.available() {
+            return Err(LocalRejection::new(
+                StatusCode::SERVICE_UNAVAILABLE,
+                "inspection_unavailable",
+                "Required request inspector unavailable",
+                request_id,
+            ));
+        }
         let mut request = RequestEditor::new(request);
         let actions = RequestActions::new(&request.view());
         let config = self.hooks.snapshot();

@@ -151,4 +151,15 @@ export interface UpstreamProxyConfig {
 /** Null selects direct routing; updates affect new connections only. */
 export interface NetworkConfig {
   upstream: UpstreamProxyConfig | null;
+  rules?: NetworkRule[];
+}
+
+/** Ordered native-source overrides; first match wins, missing metadata does not match. */
+export interface NetworkRule {
+  id: string;
+  process_names?: string[];
+  application_ids?: string[];
+  executable_paths?: string[];
+  process_entry_points?: string[];
+  upstream: UpstreamProxyConfig | null;
 }

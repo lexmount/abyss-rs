@@ -10,7 +10,15 @@ use uuid::Uuid;
 /// Immutable connection identities selected before request retention.
 /// Callers cannot address sessions or replace the participants of a plan.
 pub struct InspectionPlan {
-    pub(super) sessions: Arc<[Uuid]>,
+    pub(super) sessions: Arc<[SessionIdentity]>,
+    pub(super) available: bool,
+}
+
+/// Server-published connection identity and declared local plugin name.
+#[derive(Clone, Debug)]
+pub(super) struct SessionIdentity {
+    pub(super) id: Uuid,
+    pub(super) plugin_id: String,
 }
 
 /// Opaque participant selected for one request; session ownership stays in the server.
@@ -19,11 +27,16 @@ pub struct InspectionParticipant {
 }
 
 impl InspectionPlan {
+    /// Whether all required inspectors were uniquely present when this plan was selected.
+    pub const fn available(&self) -> bool {
+        self.available
+    }
+
     /// Iterates the request's fixed registration order without selecting new sessions.
     pub fn participants(&self) -> impl Iterator<Item = InspectionParticipant> + '_ {
         self.sessions
             .iter()
-            .map(|id| InspectionParticipant { id: *id })
+            .map(|session| InspectionParticipant { id: session.id })
     }
 }
 
@@ -41,6 +54,7 @@ pub enum InspectionError {
 }
 
 pub(super) enum PluginCommand {
+    Connect(Box<dyn PluginStream>),
     PublishEvent(Arc<AgentEvent>),
     InspectRequest {
         participant: InspectionParticipant,
@@ -49,3 +63,9 @@ pub(super) enum PluginCommand {
         reply: oneshot::Sender<Result<InspectionDecision, InspectionError>>,
     },
 }
+
+pub(super) trait PluginStream:
+    tokio::io::AsyncRead + tokio::io::AsyncWrite + Send + Unpin
+{
+}
+impl<T: tokio::io::AsyncRead + tokio::io::AsyncWrite + Send + Unpin> PluginStream for T {}
