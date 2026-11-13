@@ -1,13 +1,16 @@
-//! What one exchange's events carry of its request line and headers, as
-//! captured.
+//! What one exchange's events carry of its request line, headers and wire
+//! moments, as captured.
 //!
 //! The request path and the header values pass through verbatim. The only
 //! change is credential redaction of header values, applied once here with
 //! the list owned by `abyss-mitm`. Nothing is read from them.
 
+use std::time::SystemTime;
+
 use abyss_mitm::{REDACTED_HEADER_VALUE, is_sensitive_header};
 use abyss_plugin_protocol::event::{HttpHeader, HttpHeaderValue};
 use base64::{Engine as _, engine::general_purpose::STANDARD};
+use chrono::{DateTime, Utc};
 use http::{HeaderMap, Uri};
 
 /// What one exchange's events carry verbatim: the request path on both
@@ -21,6 +24,10 @@ pub struct ExchangePassthrough {
     pub request: Vec<HttpHeader>,
     /// Every response header in capture order, credential values redacted.
     pub response: Vec<HttpHeader>,
+    /// When the request was sent upstream: the request event's `observed_at`.
+    pub request_at: DateTime<Utc>,
+    /// When the response ended: the response event's `observed_at`.
+    pub response_at: DateTime<Utc>,
 }
 
 impl ExchangePassthrough {
@@ -28,7 +35,13 @@ impl ExchangePassthrough {
     /// the HTTP request and response, or the upgrade request and `101`
     /// response of a WebSocket connection.
     #[must_use]
-    pub fn new(target: &Uri, request: &HeaderMap, response: &HeaderMap) -> Self {
+    pub fn new(
+        target: &Uri,
+        request: &HeaderMap,
+        response: &HeaderMap,
+        request_at: SystemTime,
+        response_at: SystemTime,
+    ) -> Self {
         Self {
             path: target
                 .path_and_query()
@@ -36,6 +49,8 @@ impl ExchangePassthrough {
                 .to_owned(),
             request: Self::passthrough(request),
             response: Self::passthrough(response),
+            request_at: request_at.into(),
+            response_at: response_at.into(),
         }
     }
 
@@ -104,6 +119,8 @@ mod tests {
                 ("request-id", b"req_1"),
                 ("set-cookie", b"b=secret"),
             ]),
+            std::time::SystemTime::UNIX_EPOCH,
+            std::time::SystemTime::UNIX_EPOCH,
         );
         // `HeaderMap` yields every value of a name together, in first-seen
         // name order.
@@ -143,6 +160,8 @@ mod tests {
                 &Uri::from_static(target),
                 &HeaderMap::new(),
                 &HeaderMap::new(),
+                std::time::SystemTime::UNIX_EPOCH,
+                std::time::SystemTime::UNIX_EPOCH,
             )
             .path
         };

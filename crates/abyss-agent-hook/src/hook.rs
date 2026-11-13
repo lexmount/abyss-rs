@@ -77,6 +77,8 @@ where
                 exchange.request.uri(),
                 exchange.request.headers(),
                 exchange.response.headers(),
+                exchange.request_sent_at,
+                exchange.response_ended_at,
             )
         };
 
@@ -167,9 +169,15 @@ where
             .config
             .content_for_harness(detection.harness_id.as_str());
         let frame = parse_openai_websocket_message(message);
-        let Some(parsed) = self.openai_websocket.push(&message.flow.flow_id, frame) else {
+        let Some(turn) = self.openai_websocket.push_at(
+            &message.flow.flow_id,
+            frame,
+            message.direction,
+            message.at,
+        ) else {
             return Vec::new();
         };
+        let parsed = turn.exchange;
         let provider = ProviderResolver::resolve(&websocket_host(message), protocol);
         // Frames after the upgrade carry no headers of their own; every turn
         // of the connection carries those of its upgrade request and `101`
@@ -187,6 +195,8 @@ where
             message.upgrade_request.uri(),
             message.upgrade_request.headers(),
             message.upgrade_response.headers(),
+            turn.request_at,
+            turn.response_at,
         );
         self.normalize(
             &parsed,

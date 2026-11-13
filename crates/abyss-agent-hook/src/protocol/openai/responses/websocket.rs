@@ -2,7 +2,7 @@
 
 use std::{
     collections::HashMap,
-    time::{Duration, Instant},
+    time::{Duration, Instant, SystemTime},
 };
 
 use abyss_mitm::{FlowId, WebSocketDirection};
@@ -47,6 +47,15 @@ pub struct OpenAiWebSocketResponse {
     pub byte_len: usize,
 }
 
+/// A turn assembled at its terminal frame, with when its frames passed the relay.
+pub struct CompletedTurn {
+    pub exchange: ParsedOpenAiExchange,
+    /// When the turn's first client frame, of any kind, was sent upstream.
+    pub request_at: SystemTime,
+    /// When the terminal frame was read.
+    pub response_at: SystemTime,
+}
+
 /// Collects request and streaming response messages until a terminal response arrives.
 #[derive(Debug, Default)]
 pub struct OpenAiWebSocketAccumulator {
@@ -70,18 +79,24 @@ struct PendingTurn {
     request_decode_failed: bool,
     /// Whether a server frame failed to decode.
     response_decode_failed: bool,
+    /// When the first client frame passed the relay, whether or not it is relevant.
+    request_at: Option<SystemTime>,
     /// Last time a frame touched this turn.
     updated_at: Instant,
 }
 
 impl OpenAiWebSocketAccumulator {
-    /// Adds one decoded frame and returns a complete interaction when available.
-    pub fn push(
+    /// Adds one decoded frame and returns the turn its terminal frame completes.
+    pub fn push_at(
         &self,
         flow_id: &FlowId,
         frame: OpenAiWebSocketFrame,
-    ) -> Option<ParsedOpenAiExchange> {
-        if matches!(frame, OpenAiWebSocketFrame::Irrelevant) {
+        direction: WebSocketDirection,
+        at: SystemTime,
+    ) -> Option<CompletedTurn> {
+        // An irrelevant client frame adds nothing to the turn but was still sent.
+        let client = direction == WebSocketDirection::ClientToServer;
+        if matches!(frame, OpenAiWebSocketFrame::Irrelevant) && !client {
             return None;
         }
         let mut pending = self.pending.lock();
@@ -90,9 +105,18 @@ impl OpenAiWebSocketAccumulator {
         let mut turn = pending
             .remove(flow_id)
             .unwrap_or_else(|| PendingTurn::new(now));
+        if client {
+            turn.request_at.get_or_insert(at);
+        }
         turn.record(frame);
         if turn.exchange.as_ref().is_some_and(is_terminal_response) {
-            return turn.assemble_exchange();
+            // The protocol answers only a client frame, so one always came first.
+            let request_at = turn.request_at.unwrap_or(at);
+            return turn.assemble_exchange().map(|exchange| CompletedTurn {
+                exchange,
+                request_at,
+                response_at: at,
+            });
         }
         turn.updated_at = now;
         if pending.len() >= MAX_PENDING_TURNS
@@ -108,6 +132,26 @@ impl OpenAiWebSocketAccumulator {
     }
 }
 
+#[cfg(test)]
+impl OpenAiWebSocketAccumulator {
+    /// `push_at` with the frame's own direction and the current time.
+    pub fn push(
+        &self,
+        flow_id: &FlowId,
+        frame: OpenAiWebSocketFrame,
+    ) -> Option<ParsedOpenAiExchange> {
+        let direction = match frame {
+            OpenAiWebSocketFrame::Response(_)
+            | OpenAiWebSocketFrame::Undecodable(WebSocketDirection::ServerToClient) => {
+                WebSocketDirection::ServerToClient
+            }
+            _ => WebSocketDirection::ClientToServer,
+        };
+        self.push_at(flow_id, frame, direction, SystemTime::now())
+            .map(|turn| turn.exchange)
+    }
+}
+
 impl PendingTurn {
     const fn new(now: Instant) -> Self {
         Self {
@@ -118,6 +162,7 @@ impl PendingTurn {
             response_overflowed: false,
             request_decode_failed: false,
             response_decode_failed: false,
+            request_at: None,
             updated_at: now,
         }
     }

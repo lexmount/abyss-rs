@@ -175,5 +175,7 @@ fn exchange() -> HttpExchange {
         ),
         request: http::Request::new(CapturedBody::from_bytes(Bytes::from_static(PAYLOAD))),
         response: http::Response::new(CapturedBody::from_bytes(Bytes::from_static(PAYLOAD))),
+        request_sent_at: std::time::SystemTime::UNIX_EPOCH,
+        response_ended_at: std::time::SystemTime::UNIX_EPOCH,
     }
 }
