@@ -21,7 +21,7 @@ use super::{
     Ingress, IngressConnection, IngressError, IngressFactory, IngressRuntimeStatus, PlatformFlow,
     PlatformFlowMetadata, StartedIngress,
 };
-use abyss_mitm::outbound::{HttpConnectProxy, ListenerEndpoint};
+use abyss_mitm::outbound::{ListenerEndpoint, UpstreamProxy};
 
 use crate::network_config::NetworkRuntime;
 
@@ -124,7 +124,7 @@ pub struct ExplicitConnection {
     client: TcpStream,
     peer_addr: SocketAddr,
     listen_addr: SocketAddr,
-    upstream: Option<HttpConnectProxy>,
+    upstream: Option<UpstreamProxy>,
 }
 
 impl IngressConnection for ExplicitConnection {

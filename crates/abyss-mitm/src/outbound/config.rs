@@ -15,6 +15,8 @@ use crate::TargetAuthority;
 pub enum UpstreamProxyProtocol {
     /// HTTP/1.1 CONNECT over TCP or verified TLS, selected by the endpoint scheme.
     HttpConnect,
+    /// SOCKS5 TCP CONNECT, with target DNS resolved by the proxy.
+    Socks5,
 }
 
 /// Static next-hop settings shared by the broker and its configuration editors.
@@ -23,19 +25,19 @@ pub enum UpstreamProxyProtocol {
 pub struct UpstreamProxyConfig {
     /// The handshake spoken to the next hop, independent of its implementation.
     pub protocol: UpstreamProxyProtocol,
-    /// HTTP or HTTPS endpoint with an explicit port and no credentials or URL parameters.
+    /// HTTP, HTTPS or SOCKS5 endpoint with an explicit port and no credentials or URL parameters.
     pub endpoint: String,
     /// Absolute path to additional PEM roots for the HTTPS proxy only.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub ca_file: Option<PathBuf>,
-    /// Absolute path to a JSON object containing Basic proxy username and password.
+    /// Absolute path to a JSON object containing proxy username and password.
     /// Contents are loaded when the configuration is applied, never serialized here.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub credentials_file: Option<PathBuf>,
     /// Shared budget for proxy DNS and TCP connection establishment.
     #[serde(default = "default_timeout_ms")]
     pub connect_timeout_ms: u64,
-    /// Shared budget for proxy TLS, writing CONNECT and receiving its response headers.
+    /// Shared budget for proxy TLS and protocol negotiation.
     #[serde(default = "default_timeout_ms")]
     pub handshake_timeout_ms: u64,
 }
@@ -45,7 +47,7 @@ pub struct UpstreamProxyConfig {
 #[error("invalid upstream proxy configuration: {0}")]
 pub struct UpstreamProxyConfigError(pub(super) &'static str);
 
-/// Parsed Basic credentials, deliberately without Debug/Serialize to avoid exposing secrets.
+/// Parsed proxy credentials, deliberately without Debug/Serialize to avoid exposing secrets.
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
 pub(super) struct ProxyCredentials {
@@ -54,7 +56,17 @@ pub(super) struct ProxyCredentials {
 }
 
 impl ProxyCredentials {
-    fn validate(&self) -> Result<(), UpstreamProxyConfigError> {
+    fn validate(&self, protocol: UpstreamProxyProtocol) -> Result<(), UpstreamProxyConfigError> {
+        if protocol == UpstreamProxyProtocol::Socks5 {
+            if !(1..=255).contains(&self.username.len())
+                || !(1..=255).contains(&self.password.len())
+            {
+                return Err(UpstreamProxyConfigError(
+                    "SOCKS5 username and password must each contain 1..=255 UTF-8 bytes",
+                ));
+            }
+            return Ok(());
+        }
         if self.username.contains(':')
             || self
                 .username
@@ -116,7 +128,7 @@ impl UpstreamProxyConfig {
                             "proxy credentials must be a JSON username/password object",
                         )
                     })?;
-                credentials.validate()?;
+                credentials.validate(self.protocol)?;
                 Ok(credentials)
             })
             .transpose()
@@ -143,13 +155,16 @@ impl UpstreamProxyConfig {
     }
 
     pub(super) fn target(&self) -> Result<TargetAuthority, UpstreamProxyConfigError> {
-        let authority = self
-            .endpoint
-            .strip_prefix("http://")
-            .or_else(|| self.endpoint.strip_prefix("https://"))
-            .ok_or(UpstreamProxyConfigError(
-                "endpoint must use http:// or https://",
-            ))?;
+        let authority = match self.protocol {
+            UpstreamProxyProtocol::HttpConnect => self
+                .endpoint
+                .strip_prefix("http://")
+                .or_else(|| self.endpoint.strip_prefix("https://")),
+            UpstreamProxyProtocol::Socks5 => self.endpoint.strip_prefix("socks5://"),
+        }
+        .ok_or(UpstreamProxyConfigError(
+            "endpoint scheme must match the proxy protocol",
+        ))?;
         let authority = authority.strip_suffix('/').unwrap_or(authority);
         if authority.contains(['/', '?', '#', '@']) {
             return Err(UpstreamProxyConfigError(

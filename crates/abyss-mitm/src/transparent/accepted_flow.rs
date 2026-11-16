@@ -26,8 +26,8 @@ pub(super) enum UpstreamConnection {
     /// Reuse an established upstream stream supplied by an embedded caller.
     Prepared(BoxedDuplexStream),
     /// A configured next hop; target DNS and routing belong to that proxy.
-    HttpConnect {
-        proxy: crate::outbound::HttpConnectProxy,
+    Proxied {
+        proxy: crate::outbound::UpstreamProxy,
         target: crate::TargetAuthority,
     },
 }
@@ -39,7 +39,7 @@ impl UpstreamConnection {
         flow: &super::FlowContext,
     ) -> Result<Self, TransparentFlowError> {
         let port = match &self {
-            Self::Direct { target, .. } | Self::HttpConnect { target, .. } => Some(target.port()),
+            Self::Direct { target, .. } | Self::Proxied { target, .. } => Some(target.port()),
             Self::Deferred | Self::Prepared(_) => flow
                 .ingress
                 .proxy_target()
@@ -64,7 +64,7 @@ impl UpstreamConnection {
             }
         })?;
         Ok(match self {
-            Self::HttpConnect { proxy, .. } => Self::HttpConnect { proxy, target },
+            Self::Proxied { proxy, .. } => Self::Proxied { proxy, target },
             Self::Direct {
                 excluded_listener, ..
             } => Self::Direct {
@@ -84,7 +84,7 @@ impl UpstreamConnection {
         self,
         server_name: Option<&str>,
     ) -> Result<Self, TransparentFlowError> {
-        if let Self::HttpConnect { proxy, target } = self {
+        if let Self::Proxied { proxy, target } = self {
             let target = match server_name {
                 Some(name) if target.host().as_ip_addr().is_some() => {
                     crate::TargetAuthority::from_host_port(name, target.port()).map_err(|_| {
@@ -99,7 +99,7 @@ impl UpstreamConnection {
                 }
                 _ => target,
             };
-            Ok(Self::HttpConnect { proxy, target })
+            Ok(Self::Proxied { proxy, target })
         } else {
             Ok(self)
         }
@@ -121,15 +121,15 @@ pub struct AcceptedTcpFlow {
 }
 
 impl AcceptedTcpFlow {
-    /// Routes this flow through a validated HTTP CONNECT next hop.
+    /// Routes this flow through a validated protocol-specific next hop.
     /// Target TLS validation and capture policy remain independent of routing.
     #[must_use]
     pub fn with_upstream_proxy(
         mut self,
-        proxy: crate::outbound::HttpConnectProxy,
+        proxy: crate::outbound::UpstreamProxy,
         target: crate::TargetAuthority,
     ) -> Self {
-        self.upstream = UpstreamConnection::HttpConnect { proxy, target };
+        self.upstream = UpstreamConnection::Proxied { proxy, target };
         self
     }
 

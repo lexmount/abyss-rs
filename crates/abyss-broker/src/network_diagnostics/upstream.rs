@@ -31,9 +31,10 @@ impl From<&UpstreamProxyError> for NetworkFailureClass {
             } => Self::DnsError,
             UpstreamProxyError::Io { source, .. } => Self::from(source),
             UpstreamProxyError::Rejected { .. } => Self::HttpError,
-            UpstreamProxyError::Protocol { .. } | UpstreamProxyError::Loop { .. } => {
-                Self::InvalidProtocol
-            }
+            UpstreamProxyError::Protocol { .. }
+            | UpstreamProxyError::Loop { .. }
+            | UpstreamProxyError::Authentication
+            | UpstreamProxyError::Socks5Rejected { .. } => Self::InvalidProtocol,
             _ => Self::Unknown,
         }
     }

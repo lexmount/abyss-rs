@@ -902,7 +902,7 @@ mod tests {
             });
             (
                 flow.with_upstream_proxy(
-                    crate::outbound::HttpConnectProxy::new(&config).unwrap(),
+                    crate::outbound::UpstreamProxy::new(&config).unwrap(),
                     crate::TargetAuthority::parse(&upstream_addr.to_string()).unwrap(),
                 ),
                 Some(proxy_worker),

@@ -28,6 +28,17 @@ def main() -> None:
     assert client.get_proxy_status()["lifecycle"] == "running"
     network = client.get_network_config()
     assert client.update_network_config(network) == network
+    socks = {
+        "upstream": {
+            "protocol": "socks5",
+            "endpoint": "socks5://127.0.0.1:1080",
+            "connect_timeout_ms": 1000,
+            "handshake_timeout_ms": 1000,
+        }
+    }
+    assert client.update_network_config(socks) == socks
+    assert client.get_network_config() == socks
+    client.update_network_config(network)
     mitm = client.get_mitm_config()
     assert client.update_mitm_config(mitm) == mitm
     hooks = client.get_hooks_config()

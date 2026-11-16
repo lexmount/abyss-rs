@@ -30,6 +30,17 @@ assert.equal((await client.getProxyStatus()).lifecycle, "running");
 
 const network = await client.getNetworkConfig();
 assert.deepEqual(await client.updateNetworkConfig(network), network);
+const socks = {
+  upstream: {
+    protocol: "socks5",
+    endpoint: "socks5://127.0.0.1:1080",
+    connect_timeout_ms: 1000,
+    handshake_timeout_ms: 1000,
+  },
+};
+assert.deepEqual(await client.updateNetworkConfig(socks), socks);
+assert.deepEqual(await client.getNetworkConfig(), socks);
+await client.updateNetworkConfig(network);
 const mitm = await client.getMitmConfig();
 assert.deepEqual(await client.updateMitmConfig(mitm), mitm);
 const hooks = await client.getHooksConfig();

@@ -11,7 +11,7 @@ flowchart LR
     NE --> F[Normalized PlatformFlow]
     F --> R[Snapshot of outbound route]
     R -->|Direct| D[OS destination socket]
-    R -->|HTTP CONNECT| P[Configured next hop]
+    R -->|HTTP CONNECT or SOCKS5| P[Configured next hop]
     P --> T[Target tunnel]
     D --> M[Shared TLS / HTTP pipeline]
     T --> M
@@ -44,7 +44,7 @@ selects another domain. A redirect replaces only the domain before DNS/TCP/CONNE
 retaining the original protocol, port, next-hop snapshot and its authentication. See the
 [redirect sequence](mitm-redirect-design.md). Upstream TLS trust is unchanged.
 
-The protocol is HTTP/1.1 CONNECT over TCP or verified TLS, selected by an HTTP or
+HTTP next hops use HTTP/1.1 CONNECT over TCP or verified TLS, selected by an HTTP or
 HTTPS endpoint URL, with bounded connection/handshake timeouts. HTTPS validates
 the proxy hostname or IP using public WebPKI roots plus an optional `ca_file` PEM
 bundle. Optional `credentials_file` supplies a JSON username/password object for
@@ -58,7 +58,10 @@ and CA material is validated and loaded before a route is published; only file
 paths are serialized into configuration. To rotate material, reapply the route.
 Existing connections keep their snapshots. A single next hop is configured;
 additional hops belong to that proxy. There are no assumptions about proxy
-software, vendor configuration files, or process names. SOCKS, proxy mTLS,
+software, vendor configuration files, or process names. SOCKS5 TCP CONNECT uses
+the same route snapshot and transport protections, with its own framing and
+optional username/password authentication; see [SOCKS5 routing](socks5.md).
+SOCKS4, SOCKS5 UDP/BIND, proxy mTLS,
 Digest/NTLM and HTTP/2 CONNECT remain outside the supported contract.
 
 ```mermaid

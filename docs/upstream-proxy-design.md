@@ -2,7 +2,8 @@
 
 Status: HTTP/1.1 CONNECT over HTTP or verified HTTPS, with optional Basic proxy
 authentication, is implemented for explicit ingress, macOS Network Extension,
-and Windows WFP ingress. SOCKS5 remains deferred.
+and Windows WFP ingress. The subsequent [SOCKS5 design](socks5.md) extends
+this historical HTTP-first design with SOCKS5 TCP CONNECT.
 See [transparent routing](transparent-upstream-routing.md) and the
 [broker configuration guide](../crates/abyss-broker/README.md#forward-through-another-explicit-proxy)
 for the current transport, credential-file, CA-file and durable hot-update contract.

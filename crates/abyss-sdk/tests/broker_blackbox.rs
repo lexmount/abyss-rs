@@ -121,6 +121,25 @@ async fn check_network_config(client: &BrokerClient, unauthenticated: &BrokerCli
         .update_network_config(&network)
         .await
         .expect("network config should round-trip");
+    let socks: abyss_sdk::broker::NetworkConfig = serde_json::from_value(serde_json::json!({
+        "upstream": {"protocol": "socks5", "endpoint": "socks5://127.0.0.1:1080"}
+    }))
+    .expect("SOCKS5 SDK contract");
+    let updated = client
+        .update_network_config(&socks)
+        .await
+        .expect("SOCKS5 route update");
+    assert!(
+        matches!(
+            updated.upstream.unwrap().protocol,
+            abyss_sdk::broker::UpstreamProxyProtocol::Socks5
+        ),
+        "SOCKS5 must round-trip through the broker REST contract"
+    );
+    client
+        .update_network_config(&network)
+        .await
+        .expect("restore route");
     assert!(
         matches!(unauthenticated.network_config().await,
         Err(BrokerClientError::Api { status, .. }) if status.as_u16() == 401),

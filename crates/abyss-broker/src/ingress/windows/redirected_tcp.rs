@@ -114,7 +114,7 @@ pub struct RedirectedTcpConnection {
     stream: TcpStream,
     peer_addr: SocketAddr,
     process_context_resolver: SharedProcessContextResolver,
-    proxy: Option<abyss_mitm::outbound::HttpConnectProxy>,
+    proxy: Option<abyss_mitm::outbound::UpstreamProxy>,
 }
 
 impl RedirectedTcpConnection {

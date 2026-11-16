@@ -88,7 +88,7 @@ See the [plugin contract](../../specs/broker-plugin-protocol/v1/README.md) and
 ## Forward through another explicit proxy
 
 Add an upstream table to `broker-config.toml` when the broker should use a
-next-hop HTTP or HTTPS proxy:
+next-hop HTTP, HTTPS or SOCKS5 proxy:
 
 ```toml
 [proxy]
@@ -144,14 +144,32 @@ carry file paths, never credential contents.
 HTTPS always checks the proxy certificate chain and endpoint DNS name or IP
 against public WebPKI roots plus the optional PEM bundle. Proxy trust is separate
 from the target's trust and the Agent-facing MITM CA. There is no verification
-bypass. SOCKS5, client-certificate authentication, Digest/NTLM and HTTP/2 CONNECT
+bypass. Client-certificate authentication, Digest/NTLM and HTTP/2 CONNECT
 are not supported.
+
+SOCKS5 TCP CONNECT uses a matching protocol and endpoint:
+
+```toml
+[proxy.upstream]
+protocol = "socks5"
+endpoint = "socks5://127.0.0.1:1080"
+# Optional RFC 1929 username/password authentication:
+# credentials_file = "/absolute/path/proxy-credentials.json"
+```
+
+SOCKS5 sends DNS targets to the proxy without resolving them locally; IPv4 and
+IPv6 targets use their respective wire address types. Without a credential file,
+only no-authentication is offered. With one, only username/password is offered;
+there is no authentication downgrade. Each credential must contain 1–255 UTF-8
+bytes, and colons are allowed. SOCKS5 authentication is unencrypted on the
+proxy connection. `ca_file` is not accepted for SOCKS5. UDP ASSOCIATE, BIND,
+SOCKS4, and GSSAPI are not implemented.
 
 Both file paths must be absolute and local to the broker. Files are loaded into
 each route snapshot at startup or `PUT /v1/network/config`; editing them alone does not update
 a running route. Reapply the network configuration to rotate credentials or CAs.
 Invalid material rejects the update and retains the active route. The
-`handshake_timeout_ms` budget covers proxy TLS and CONNECT together.
+`handshake_timeout_ms` budget covers all protocol negotiation, including proxy TLS and authentication.
 
 The next hop must permit CONNECT to each required target port, including port
 80 for plaintext HTTP. Avoid routing the next hop back into Abyss.
@@ -160,8 +178,8 @@ Proxy preparation failures appear in authenticated network diagnostics under
 `abyss_to_upstream_proxy`. `proxy_status` records a rejected CONNECT status
 separately from provider `http_status`; unresolved target addresses stay null.
 Proxy TLS failures use `upstream_proxy_tls_error` with stage `tls_handshake`;
-missing or rejected credentials produce proxy status 407 and
-`upstream_proxy_auth_required`.
+missing or rejected credentials produce `upstream_proxy_auth_required`. HTTP
+proxies also record status 407; SOCKS reply codes never populate `proxy_status`.
 
 See [the design and API compatibility notes](../../docs/upstream-proxy-design.md)
 for the flow model and validation plan.
