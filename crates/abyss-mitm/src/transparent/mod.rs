@@ -17,6 +17,7 @@ mod engine;
 mod flow_id;
 mod forwarding;
 mod hook;
+mod http2;
 mod io;
 mod passthrough;
 mod plain_http;
@@ -65,6 +66,7 @@ pub use self::types::{
 #[cfg(test)]
 mod tests {
     mod blocking;
+    mod http2;
     mod proxy_chain;
     mod redirect;
     use std::{

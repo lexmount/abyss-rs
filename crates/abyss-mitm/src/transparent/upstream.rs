@@ -26,6 +26,32 @@ pub(super) struct HttpUpstream {
 }
 
 impl HttpUpstream {
+    /// Negotiates a common HTTP protocol before completing client-side TLS.
+    /// Only the HTTP/2-capable path uses this; the HTTP/1 relay never receives h2 bytes.
+    pub(super) async fn connect_with_alpn(
+        self,
+        original: &DestinationAddress,
+        engine: &super::MitmEngine,
+        observer: Option<Arc<dyn TrafficObserver>>,
+        alpn: Vec<Vec<u8>>,
+    ) -> Result<(BoxedDuplexStream, Option<Vec<u8>>), TransparentFlowError> {
+        let name = self.server_name.ok_or(TransparentFlowError::MissingSni)?;
+        let mut config = (*engine.upstream_tls_config).clone();
+        config.alpn_protocols = alpn;
+        let stream = connect_upstream_tls_with_observer(
+            self.connection,
+            original,
+            &name,
+            Arc::new(config),
+            engine.timeouts.upstream_connect,
+            engine.timeouts.upstream_tls_handshake,
+            observer,
+        )
+        .await?;
+        let protocol = stream.get_ref().1.alpn_protocol().map(<[u8]>::to_vec);
+        Ok((Box::new(stream), protocol))
+    }
+
     pub(super) fn new(
         connection: UpstreamConnection,
         flow: &super::FlowContext,

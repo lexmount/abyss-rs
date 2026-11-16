@@ -133,8 +133,10 @@ fn assert_flow_entry(
             );
             if bypass {
                 assert_eq!(
-                    flow["decision"], "passthrough",
-                    "the selected entry must bypass MITM"
+                    flow["decision"],
+                    "passthrough",
+                    "the selected entry must bypass MITM: {}",
+                    broker.read_log()
                 );
             } else {
                 assert_ne!(
@@ -287,6 +289,10 @@ fn tls_request(socket: &Path, process: &ScriptProcess, application: &str, flow_i
         tls.write_all(b"GET /opaque HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\n\r\n")?;
         let mut response = Vec::new();
         tls.read_to_end(&mut response)?;
+        // TLS close_notify precedes the enclosing FlowClose frame. Keep the
+        // adapter socket alive until that frame arrives so a successful route
+        // cannot race with a BrokenPipe while the broker finishes shutdown.
+        io::copy(&mut tls.sock, &mut io::sink())?;
         Ok(response.ends_with(b"ok"))
     })()
     .unwrap_or(false);

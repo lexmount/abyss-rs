@@ -228,6 +228,14 @@ class HeadlessClient:
                         "baseURL": case.base_url,
                         "maxTokens": 4096,
                         "models": [model],
+                        # DSH's native Messages adapter emits enabled thinking
+                        # without Anthropic's required budget_tokens. This
+                        # tool-roundtrip workload does not request reasoning.
+                        **(
+                            {"thinking": "disabled"}
+                            if case.provider == "anthropic"
+                            else {}
+                        ),
                         "retryPolicy": {"mode": "normal", "maxRetries": 2},
                     },
                 }

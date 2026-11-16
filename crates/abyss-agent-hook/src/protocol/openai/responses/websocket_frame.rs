@@ -10,7 +10,7 @@ use super::{
     websocket::{OpenAiWebSocketFrame, OpenAiWebSocketResponse, is_terminal_event},
 };
 use crate::protocol::{
-    model::conversation::ConversationProjection,
+    model::{conversation::ConversationProjection, response::ResponseInput},
     openai::shared::{exchange::ParsedOpenAiExchange, metadata::response_id},
     parser::{ProtocolParser, prepared_request},
     shared::{
@@ -54,8 +54,9 @@ pub fn parse_openai_websocket_message(message: &WebSocketMessage) -> OpenAiWebSo
                 Cow::Borrowed,
             )
     });
-    let response = (!is_client_message)
-        .then(|| ResponsesParser::parse_response(std::slice::from_ref(payload.as_ref()), false));
+    let response = (!is_client_message).then(|| {
+        ResponsesParser::parse_response(ResponseInput::new(std::slice::from_ref(payload.as_ref())))
+    });
     let relevant = request.as_ref().is_some_and(|request| !request.is_empty())
         || response.as_ref().is_some_and(|response| {
             response.has_content

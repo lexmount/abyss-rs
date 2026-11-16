@@ -8,6 +8,14 @@ WebSocket relay hooks, TLS decryption policy, and root CA lifecycle APIs.
 `MitmEngine` owns shared traffic processing; `CaStore` owns CA material loading
 and generation. Platform redirection and product lifecycle remain with callers.
 
+HTTPS interception supports HTTP/2 when both the client and origin negotiate
+`h2`. Abyss selects a common ALPN protocol on both TLS legs, retaining HTTP/1
+fallback and the existing HTTP/1 WebSocket path. HTTP/2 streams are independently
+inspected, forwarded with bounded flow control, and captured, including trailers.
+Authorities remain bound to the connection's original destination; a client must
+open another connection for another host. HTTP/2 CONNECT and extended CONNECT,
+cleartext h2c, and HTTP/3 are not implemented. See [the design](../../docs/http2-mitm.md).
+
 HTTP forwarding preserves `Accept-Encoding`, original content headers, and body
 bytes for every host and route. After transfer framing is removed, the background
 hook worker decodes `Content-Encoding` for both requests and responses: gzip,

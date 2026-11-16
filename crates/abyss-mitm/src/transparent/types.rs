@@ -284,16 +284,6 @@ impl FlowIngress {
         }
     }
 
-    pub(super) const fn requires_tls_server_name_validation(&self) -> bool {
-        matches!(
-            self,
-            Self::ExplicitProxy {
-                target,
-                ..
-            } if matches!(target.host(), TargetHost::Dns(_))
-        )
-    }
-
     pub(super) fn validate_tls_server_name(
         &self,
         server_name: Option<&str>,
@@ -347,13 +337,13 @@ pub struct InterceptedHttpOutcome {
     pub original_destination: DestinationAddress,
     /// Decoded application protocol.
     pub protocol: TransparentProtocol,
-    /// First HTTP/1 request observed on the decoded client stream.
+    /// Request from the first completed HTTP exchange on the connection.
     pub first_request: Request<CapturedBody>,
-    /// First HTTP/1 response observed on the decoded upstream stream.
+    /// Response from that completed HTTP exchange.
     pub first_response: Response<CapturedBody>,
-    /// Bytes forwarded from client to upstream, including any buffered preface.
+    /// Bytes written upstream, including HTTP/2 connection and stream frames.
     pub client_to_upstream_bytes: u64,
-    /// Bytes forwarded from upstream back to the client.
+    /// Bytes written to the client, including HTTP/2 connection and stream frames.
     pub upstream_to_client_bytes: u64,
 }
 
@@ -371,7 +361,7 @@ pub struct TransparentPassthroughOutcome {
     pub protocol: TransparentPassthroughProtocol,
     /// Bytes forwarded from client to upstream.
     pub client_to_upstream_bytes: u64,
-    /// Bytes forwarded from upstream back to the client.
+    /// Bytes written to the client, including HTTP/2 connection and stream frames.
     pub upstream_to_client_bytes: u64,
 }
 

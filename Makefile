@@ -98,3 +98,7 @@ test-blackbox-request-modification:
 test-blackbox-mitm-redirect:
 	cargo build --locked --package abyss-broker
 	python3 scripts/blackbox_mitm_redirect.py
+
+.PHONY: test-blackbox-http2
+test-blackbox-http2:
+	cargo test --locked --package abyss-mitm transparent::tests::http2

@@ -18,6 +18,7 @@ brotli = "8"
 bytes = "1"
 flate2 = "1"
 futures-util = "0.3"
+h2 = "0.4.20"
 http = "1"
 httparse = "1"
 if-addrs = { version = "0.15", features = ["link-local"] }

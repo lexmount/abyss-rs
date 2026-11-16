@@ -26,9 +26,9 @@ impl<P: ProtocolParser> ProtocolParser for Recording<P> {
         STAGES.with_borrow_mut(|stages| stages.push("parse_request"));
         P::parse_request(payload, truncated)
     }
-    fn parse_response(values: &[Value], incomplete: bool) -> ResponseContent {
+    fn parse_response(input: ResponseInput<'_>) -> ResponseContent {
         STAGES.with_borrow_mut(|stages| stages.push("parse_response"));
-        P::parse_response(values, incomplete)
+        P::parse_response(input)
     }
 }
 
@@ -89,4 +89,46 @@ fn both_http_modes_call_one_response_parser_and_one_shared_assembler() {
             );
         });
     }
+}
+
+#[test]
+fn other_dialects_preserve_all_observation_gaps() {
+    use abyss_plugin_protocol::event::ContentCompleteness;
+
+    use crate::protocol::{
+        anthropic::{claude_web::ClaudeWebParser, messages::MessagesParser},
+        openai::chat_completions::ChatCompletionsParser,
+    };
+
+    fn check<P: ProtocolParser>(value: Value) {
+        let values = [value];
+        for capture_truncated in [false, true] {
+            for decode_failed in [false, true] {
+                for assembly_overflowed in [false, true] {
+                    let response = P::parse_response(ResponseInput {
+                        values: &values,
+                        capture_truncated,
+                        decode_failed,
+                        assembly_overflowed,
+                    });
+                    assert_eq!(response.conversation.entries[0].text, "answer");
+                    assert_eq!(
+                        response.conversation.completeness,
+                        if capture_truncated || decode_failed || assembly_overflowed {
+                            ContentCompleteness::Partial
+                        } else {
+                            ContentCompleteness::Complete
+                        }
+                    );
+                }
+            }
+        }
+    }
+
+    check::<ChatCompletionsParser>(
+        json!({"choices":[{"message":{"role":"assistant","content":"answer"}}]}),
+    );
+    let anthropic = json!({"type":"message","role":"assistant","content":[{"type":"text","text":"answer"}],"stop_reason":"end_turn"});
+    check::<MessagesParser>(anthropic.clone());
+    check::<ClaudeWebParser>(anthropic);
 }

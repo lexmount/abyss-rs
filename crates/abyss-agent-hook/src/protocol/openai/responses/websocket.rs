@@ -11,7 +11,7 @@ use parking_lot::Mutex;
 use serde_json::Value;
 
 use crate::protocol::{
-    model::conversation::ConversationProjection,
+    model::{conversation::ConversationProjection, response::ResponseInput},
     openai::{ParsedOpenAiExchange, responses::ResponsesParser},
     parser::ProtocolParser,
 };
@@ -243,10 +243,12 @@ impl PendingTurn {
     /// Assembles the turn's conversations from the merged and buffered frames.
     fn assemble_exchange(self) -> Option<ParsedOpenAiExchange> {
         let mut exchange = self.exchange?;
-        let response = ResponsesParser::parse_response(
-            &self.response_documents,
-            self.response_overflowed || self.response_decode_failed,
-        );
+        let response = ResponsesParser::parse_response(ResponseInput {
+            values: &self.response_documents,
+            capture_truncated: false,
+            decode_failed: self.response_decode_failed,
+            assembly_overflowed: self.response_overflowed,
+        });
         exchange.response_conversation = response.conversation;
         exchange.request_conversation = self.request_conversation.unwrap_or_else(|| {
             let mut unobserved = ConversationProjection::empty();

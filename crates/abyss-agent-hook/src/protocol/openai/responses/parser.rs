@@ -5,7 +5,7 @@ use crate::protocol::{
     LlmProtocol, OpenAiProtocol,
     model::{
         request::{RequestContent, RequestMetadata},
-        response::ResponseContent,
+        response::{ResponseContent, ResponseInput},
     },
     openai::shared::{
         images::extract_openai_request_images,
@@ -36,7 +36,24 @@ impl ProtocolParser for ResponsesParser {
         }
     }
 
-    fn parse_response(values: &[Value], incomplete: bool) -> ResponseContent {
+    fn parse_response(input: ResponseInput<'_>) -> ResponseContent {
+        let values = input.values;
+        // A terminal snapshot can establish complete content before capture EOF.
+        // Decode failures and discarded documents remain observation gaps.
+        let complete_snapshot = values.last().is_some_and(|value| {
+            matches!(
+                value["type"].as_str(),
+                Some("response.completed" | "response.done")
+            ) && value
+                .pointer("/response/output")
+                .is_some_and(Value::is_array)
+                && value
+                    .pointer("/response/status")
+                    .is_none_or(|status| status == "completed")
+        });
+        let incomplete = input.decode_failed
+            || input.assembly_overflowed
+            || (input.capture_truncated && !complete_snapshot);
         let parsed = ResponsesResponse::assemble(values, incomplete);
         ResponseContent {
             has_content: !parsed.is_empty(),
@@ -45,6 +62,106 @@ impl ProtocolParser for ResponsesParser {
             model: first_model(values),
             response_id: response_id(values),
             event_types: values.iter().flat_map(event_types).collect(),
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use abyss_mitm::CapturedBody;
+    use abyss_plugin_protocol::event::ContentCompleteness;
+    use serde_json::json;
+
+    use super::*;
+    use crate::protocol::shared::sse::ResponseDocuments;
+
+    fn completeness(bytes: String) -> ContentCompleteness {
+        let body = CapturedBody::from_truncated_bytes(bytes.into_bytes().into());
+        let documents = ResponseDocuments::decode(&body);
+        ResponsesParser::parse_response(documents.as_input())
+            .conversation
+            .completeness
+    }
+
+    #[test]
+    fn terminal_output_snapshots_complete_http_content_after_transport_cancellation() {
+        for kind in ["response.completed", "response.done"] {
+            for status in [Some("completed"), None] {
+                let mut event = json!({"type":kind,"response":{"output":[]}});
+                if let Some(status) = status {
+                    event["response"]["status"] = status.into();
+                }
+                assert_eq!(
+                    completeness(format!("data: {event}\n\n")),
+                    ContentCompleteness::Complete
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn missing_snapshots_and_malformed_events_remain_partial() {
+        let terminal = json!({"type":"response.completed","response":{"output":[]}});
+        let delta = json!({"type":"response.output_text.delta","delta":"prefix"});
+        for bytes in [
+            format!("data: {delta}\n\n"),
+            "data: {\"type\":\"response.completed\",\"response\":{}}\n\n".to_owned(),
+            "data: {\"type\":\"response.completed\",\"response\":{\"output\":[],\"status\":\"incomplete\"}}\n\n".to_owned(),
+            format!("data: {terminal}\n\ndata: {delta}\n\n"),
+            format!("data: {{broken\n\ndata: {terminal}\n\n"),
+            format!("data: {terminal}\n\ndata: {{broken\n\n"),
+            "{\"output\":[]}".to_owned(),
+        ] {
+            assert_eq!(completeness(bytes.clone()), ContentCompleteness::Partial, "{bytes}");
+        }
+    }
+
+    #[test]
+    fn wholly_malformed_sse_retains_decode_failure() {
+        let body = CapturedBody::from_bytes(b"data: {broken\n\n".to_vec().into());
+        let documents = ResponseDocuments::decode(&body);
+        assert!(documents.values.is_empty());
+        assert!(documents.decode_failed);
+        assert_eq!(
+            ResponsesParser::parse_response(documents.as_input())
+                .conversation
+                .completeness,
+            ContentCompleteness::Partial
+        );
+    }
+
+    #[test]
+    fn snapshots_only_recover_capture_truncation() {
+        for terminal in [false, true] {
+            let values = [if terminal {
+                json!({"type":"response.completed","response":{"output":[]}})
+            } else {
+                json!({"type":"response.output_text.delta","delta":"prefix"})
+            }];
+            for capture_truncated in [false, true] {
+                for decode_failed in [false, true] {
+                    for assembly_overflowed in [false, true] {
+                        let response = ResponsesParser::parse_response(ResponseInput {
+                            values: &values,
+                            capture_truncated,
+                            decode_failed,
+                            assembly_overflowed,
+                        });
+                        let expected = if decode_failed
+                            || assembly_overflowed
+                            || (capture_truncated && !terminal)
+                        {
+                            ContentCompleteness::Partial
+                        } else {
+                            ContentCompleteness::Complete
+                        };
+                        assert_eq!(
+                            response.conversation.completeness, expected,
+                            "terminal={terminal}, capture={capture_truncated}, decode={decode_failed}, assembly={assembly_overflowed}"
+                        );
+                    }
+                }
+            }
         }
     }
 }
