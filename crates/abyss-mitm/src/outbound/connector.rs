@@ -172,9 +172,9 @@ impl UpstreamProxy {
         })
     }
 
-    async fn resolve(&self, deadline: Instant) -> Result<Vec<SocketAddr>, UpstreamProxyError> {
+    async fn resolve(&self, deadline: Instant) -> Result<Box<[SocketAddr]>, UpstreamProxyError> {
         if let Some(ip) = self.endpoint.host().as_ip_addr() {
-            return Ok(vec![SocketAddr::new(ip, self.endpoint.port())]);
+            return Ok(Box::new([SocketAddr::new(ip, self.endpoint.port())]));
         }
         let host = self
             .endpoint
@@ -193,7 +193,7 @@ impl UpstreamProxy {
                 stage: ProxyConnectStage::ResolveProxy,
                 source,
             })?
-            .collect::<Vec<_>>();
+            .collect::<Box<[SocketAddr]>>();
         if addresses.is_empty() {
             return Err(UpstreamProxyError::Io {
                 stage: ProxyConnectStage::ResolveProxy,
