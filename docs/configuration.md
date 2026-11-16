@@ -386,3 +386,12 @@ is retained. Auth tokens and model changes remain plugin actions.
 Apply through `PUT /v1/mitm/config` or edit the startup policy. See the
 [redirect design and sequence](mitm-redirect-design.md), including a Codex/DeepSeek
 plugin example and the deferred explicit CONNECT behavior.
+
+## SOCKS5 next hop
+
+`proxy.upstream.protocol = "socks5"` selects TCP CONNECT through a
+`socks5://host:port` endpoint. The broker resolves the proxy host only; target
+domains are resolved by SOCKS5. The existing timeout and absolute credentials
+file settings apply, while `ca_file` is HTTPS-only. See the
+[broker configuration examples](../crates/abyss-broker/README.md#forward-through-another-explicit-proxy)
+and [SOCKS5 design](socks5.md) for authentication and rollout details.

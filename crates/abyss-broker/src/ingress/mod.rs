@@ -395,7 +395,7 @@ pub struct PlatformFlow {
     io: abyss_mitm::BoxedDuplexStream,
     ingress: abyss_mitm::FlowIngress,
     configured_upstream: Option<(
-        abyss_mitm::outbound::HttpConnectProxy,
+        abyss_mitm::outbound::UpstreamProxy,
         abyss_mitm::TargetAuthority,
     )>,
     read_prefix: Box<[u8]>,
@@ -436,7 +436,7 @@ impl PlatformFlow {
     #[must_use]
     pub fn with_upstream_proxy(
         mut self,
-        proxy: abyss_mitm::outbound::HttpConnectProxy,
+        proxy: abyss_mitm::outbound::UpstreamProxy,
         target: abyss_mitm::TargetAuthority,
     ) -> Self {
         self.configured_upstream = Some((proxy, target));

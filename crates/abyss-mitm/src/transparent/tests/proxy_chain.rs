@@ -15,7 +15,7 @@ use crate::{
     AcceptedTcpFlow, DestinationAddress, ExplicitProxyProtocol, FlowIngress, HookFuture,
     HttpExchange, MitmEngine, MitmHook, TargetAuthority, TlsDecryptionAction, TlsDecryptionPolicy,
     TransparentFlowOutcome,
-    outbound::{HttpConnectProxy, UpstreamProxyConfig, UpstreamProxyProtocol},
+    outbound::{UpstreamProxy, UpstreamProxyConfig, UpstreamProxyProtocol},
     tls::MitmTlsAuthority,
 };
 
@@ -64,7 +64,7 @@ async fn run_tls_chain(action: TlsDecryptionAction, transparent: bool) {
     let target = TargetAuthority::parse(&format!("{host}:443")).expect("target authority");
     let servers = TlsChainServers::start(&target_ca, host).await;
     let proxy_address = servers.proxy_address;
-    let connector = HttpConnectProxy::new(&UpstreamProxyConfig {
+    let connector = UpstreamProxy::new(&UpstreamProxyConfig {
         protocol: UpstreamProxyProtocol::HttpConnect,
         ca_file: None,
         credentials_file: None,
@@ -147,7 +147,7 @@ async fn run_tls_chain(action: TlsDecryptionAction, transparent: bool) {
 
 async fn chain_flow(
     server: TcpStream,
-    connector: HttpConnectProxy,
+    connector: UpstreamProxy,
     target: TargetAuthority,
     transparent: bool,
 ) -> AcceptedTcpFlow {

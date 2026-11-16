@@ -213,7 +213,7 @@ fn rejects_unsupported_and_ambiguous_configuration() {
 #[test]
 fn configuration_rejects_unknown_protocols_and_fields() {
     for json in [
-        r#"{"protocol":"socks5","endpoint":"http://localhost:3128"}"#,
+        r#"{"protocol":"socks4","endpoint":"socks4://localhost:3128"}"#,
         r#"{"protocol":"http_connect","endpoint":"http://localhost:3128","insecure":true}"#,
         r#"{"protocol":"http_connect","endpoint":"http://localhost:3128","password":"secret"}"#,
     ] {

@@ -135,7 +135,7 @@ pub(super) async fn connect_upstream_with_observer(
             );
             return Ok(observe_upstream(stream, observer));
         }
-        UpstreamConnection::HttpConnect { proxy, target } => {
+        UpstreamConnection::Proxied { proxy, target } => {
             let tunnel = proxy.connect_tunnel(&target, &[]).await.map_err(|source| {
                 TransparentFlowError::UpstreamProxy {
                     target: target.clone(),

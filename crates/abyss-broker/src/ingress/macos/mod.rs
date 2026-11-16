@@ -359,7 +359,7 @@ impl Ingress for FramedUnixIngress {
 
 /// Accepted framed Unix connection awaiting its initial `FlowOpen`.
 pub struct FramedUnixConnection {
-    proxy: Option<abyss_mitm::outbound::HttpConnectProxy>,
+    proxy: Option<abyss_mitm::outbound::UpstreamProxy>,
     stream: UnixStream,
     socket_path: PathBuf,
     process_context_resolver: SharedProcessContextResolver,

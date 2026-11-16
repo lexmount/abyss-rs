@@ -790,17 +790,24 @@ impl NetworkObservation {
                 _ => None,
             }
             .or_else(|| {
-                (proxy_status == Some(407))
-                    .then_some(NetworkErrorCode::UpstreamProxyAuthRequired)
-                    .or_else(|| {
-                        NetworkErrorCode::from_observation(
-                            location.hop,
-                            location.stage,
-                            outcome,
-                            Some(failure_class),
-                            None,
-                        )
-                    })
+                (proxy_status == Some(407)
+                    || matches!(
+                        error,
+                        TransparentFlowError::UpstreamProxy {
+                            source: abyss_mitm::outbound::UpstreamProxyError::Authentication,
+                            ..
+                        }
+                    ))
+                .then_some(NetworkErrorCode::UpstreamProxyAuthRequired)
+                .or_else(|| {
+                    NetworkErrorCode::from_observation(
+                        location.hop,
+                        location.stage,
+                        outcome,
+                        Some(failure_class),
+                        None,
+                    )
+                })
             }),
             timing: NetworkTiming::from_unix_ms(started_at_unix_ms, ended_at_unix_ms),
             http_status: None,

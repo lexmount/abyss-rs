@@ -9,7 +9,7 @@
 
 use std::sync::Arc;
 
-use abyss_mitm::outbound::{HttpConnectProxy, UpstreamProxyConfig};
+use abyss_mitm::outbound::{UpstreamProxy, UpstreamProxyConfig};
 use parking_lot::RwLock;
 use serde::{Deserialize, Serialize};
 
@@ -26,12 +26,12 @@ pub struct NetworkConfig {
 /// Validated policy retained for the complete lifetime of one connection.
 pub struct NetworkSnapshot {
     config: NetworkConfig,
-    proxy: Option<HttpConnectProxy>,
+    proxy: Option<UpstreamProxy>,
 }
 
 impl NetworkSnapshot {
     /// Borrows the validated next hop without changing this connection's route.
-    pub const fn proxy(&self) -> Option<&HttpConnectProxy> {
+    pub const fn proxy(&self) -> Option<&UpstreamProxy> {
         self.proxy.as_ref()
     }
 }
@@ -76,7 +76,7 @@ impl NetworkRuntime {
         let proxy = config
             .upstream
             .as_ref()
-            .map(HttpConnectProxy::new)
+            .map(UpstreamProxy::new)
             .transpose()
             .map_err(|error| BrokerError::invalid_config(error.to_string()))?;
         Ok(Arc::new(NetworkSnapshot { config, proxy }))

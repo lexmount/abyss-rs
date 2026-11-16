@@ -134,7 +134,7 @@ class NetworkObservationsResponse(TypedDict):
 
 
 class _UpstreamProxyRequired(TypedDict):
-    protocol: Literal["http_connect"]
+    protocol: Literal["http_connect", "socks5"]
     endpoint: str
 
 

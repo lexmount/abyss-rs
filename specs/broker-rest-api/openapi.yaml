@@ -293,17 +293,17 @@ components:
       properties:
         protocol:
           type: string
-          enum: [http_connect]
+          enum: [http_connect, socks5]
         endpoint:
           type: string
-          description: HTTP or HTTPS URL with an explicit nonzero port. No credentials, path, query, or fragment. HTTPS verifies the proxy certificate and endpoint hostname or IP.
+          description: HTTP/HTTPS URL for http_connect or socks5:// URL for socks5, with an explicit nonzero port. No credentials, path, query, or fragment. HTTPS verifies the proxy certificate and endpoint hostname or IP.
           examples: ["http://127.0.0.1:3128"]
         ca_file:
           type: string
           description: Absolute broker-local path to additional PEM CA certificates for the HTTPS proxy only. Requires an HTTPS endpoint; public WebPKI roots remain trusted.
         credentials_file:
           type: string
-          description: Absolute broker-local path to a JSON object with username and password strings for Basic proxy authentication. Loaded at configuration application; credentials are never returned or persisted in this API.
+          description: Absolute broker-local path to a JSON object with username and password strings for HTTP Basic or SOCKS5 username/password authentication (1–255 UTF-8 bytes per SOCKS5 field). Loaded at configuration application; credentials are never returned or persisted in this API.
         connect_timeout_ms:
           type: integer
           minimum: 1
@@ -311,7 +311,7 @@ components:
           default: 10000
         handshake_timeout_ms:
           type: integer
-          description: Shared deadline for proxy TLS and HTTP CONNECT negotiation.
+          description: Shared deadline for proxy TLS and HTTP CONNECT or SOCKS5 negotiation.
           minimum: 1
           maximum: 120000
           default: 10000
