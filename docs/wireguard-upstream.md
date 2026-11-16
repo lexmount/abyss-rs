@@ -49,7 +49,8 @@ existing upstream handshake diagnostics, with no synthetic HTTP proxy status.
 The first peer endpoint address remains selected until its transport is rebuilt.
 
 The Rust, Python and TypeScript configuration contracts and OpenAPI schema change
-together. No event schema or backend API changes are required. AbyssApp consumes
+together. TypeScript and Python SDK metadata is aligned with the broker 1.6
+minor version; no SDK package is published by this task. No event schema or backend API changes are required. AbyssApp consumes
 released endpoint binaries; exposing this option in its native settings and
 updating its release pin are separate consumer work.
 
