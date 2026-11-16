@@ -475,6 +475,7 @@ mod tests {
             protocol: abyss_mitm::outbound::UpstreamProxyProtocol::HttpConnect,
             ca_file: Some(directory.join("proxy-ca.pem")),
             credentials_file: Some(directory.join("proxy-credentials.json")),
+            wireguard_file: None,
             endpoint: "https://proxy.example:3128".to_owned(),
             connect_timeout_ms: 1234,
             handshake_timeout_ms: 5678,

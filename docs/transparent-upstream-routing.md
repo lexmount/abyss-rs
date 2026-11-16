@@ -44,6 +44,13 @@ selects another domain. A redirect replaces only the domain before DNS/TCP/CONNE
 retaining the original protocol, port, next-hop snapshot and its authentication. See the
 [redirect sequence](mitm-redirect-design.md). Upstream TLS trust is unchanged.
 
+WireGuard also uses this shared route boundary: an in-process TCP/IP stack
+creates target streams over an encrypted UDP peer. Target DNS stays inside the
+tunnel, and configuration carries only a broker-local material-file path.
+See the [WireGuard design](wireguard-upstream.md) for identity ownership,
+AllowedIPs, lifecycle, and validation. Windows TCP redirect records do not apply
+to the outer UDP transport.
+
 HTTP next hops use HTTP/1.1 CONNECT over TCP or verified TLS, selected by an HTTP or
 HTTPS endpoint URL, with bounded connection/handshake timeouts. HTTPS validates
 the proxy hostname or IP using public WebPKI roots plus an optional `ca_file` PEM

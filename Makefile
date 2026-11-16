@@ -53,6 +53,11 @@ test-blackbox-broker-upstream:
 	python3 scripts/blackbox_abyss_broker_https_upstream.py
 	python3 scripts/blackbox_abyss_broker_socks5_upstream.py
 
+.PHONY: test-blackbox-broker-wireguard
+test-blackbox-broker-wireguard:
+	cargo build --locked --package abyss-broker
+	python3 scripts/blackbox_abyss_broker_wireguard.py
+
 .PHONY: test-blackbox-broker-transparent-upstream
 test-blackbox-broker-transparent-upstream:
 	cargo build --locked --package abyss-broker

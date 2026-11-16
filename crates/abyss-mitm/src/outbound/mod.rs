@@ -10,6 +10,7 @@ mod http_connect;
 mod listener;
 mod socks5;
 mod transport;
+mod wireguard;
 
 #[cfg(test)]
 mod secure_tests;

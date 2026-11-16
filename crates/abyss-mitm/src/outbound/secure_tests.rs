@@ -63,6 +63,7 @@ impl TlsProxy {
             ),
             ca_file: Some(ca_file),
             credentials_file: None,
+            wireguard_file: None,
             connect_timeout_ms: 1000,
             handshake_timeout_ms: 1000,
         };

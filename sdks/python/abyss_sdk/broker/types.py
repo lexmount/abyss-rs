@@ -134,13 +134,14 @@ class NetworkObservationsResponse(TypedDict):
 
 
 class _UpstreamProxyRequired(TypedDict):
-    protocol: Literal["http_connect", "socks5"]
+    protocol: Literal["http_connect", "socks5", "wireguard"]
     endpoint: str
 
 
 class UpstreamProxyConfig(_UpstreamProxyRequired, total=False):
     ca_file: str
     credentials_file: str
+    wireguard_file: str
     connect_timeout_ms: int
     handshake_timeout_ms: int
 

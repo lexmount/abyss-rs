@@ -14,6 +14,7 @@ use super::{
     ListenerEndpoint, ProxyConnectStage, ProxySocketInitializer, UpstreamProxyConfig,
     UpstreamProxyConfigError, UpstreamProxyError, UpstreamProxyProtocol,
     http_connect::HttpConnectHandshake, socks5::Socks5Handshake, transport::ProxyTransport,
+    wireguard::WireguardRoute,
 };
 
 /// A validated protocol-specific next hop. Target TLS is applied after negotiation.
@@ -53,6 +54,9 @@ impl UpstreamProxy {
             }
             UpstreamProxyProtocol::Socks5 => {
                 ProxyHandshake::Socks5(Socks5Handshake::new(credentials.as_ref())?)
+            }
+            UpstreamProxyProtocol::Wireguard => {
+                ProxyHandshake::Wireguard(WireguardRoute::load(config)?)
             }
         };
         Ok(Self {
@@ -143,6 +147,13 @@ impl UpstreamProxy {
                     return Err(UpstreamProxyError::Loop { address: *address });
                 }
             }
+        }
+        if let ProxyHandshake::Wireguard(route) = &self.handshake {
+            // The outer transport is UDP, not a WFP-redirected TCP connection.
+            // TCP socket initializers belong only to the other proxy protocols.
+            return route
+                .connect(target, &addresses, self.handshake_timeout)
+                .await;
         }
         let stream = self.connect_tcp(&addresses, deadline).await?;
         let proxy_peer = stream
@@ -253,6 +264,7 @@ impl UpstreamProxy {
 enum ProxyHandshake {
     Http(HttpConnectHandshake),
     Socks5(Socks5Handshake),
+    Wireguard(Arc<WireguardRoute>),
 }
 
 impl ProxyHandshake {
@@ -267,6 +279,9 @@ impl ProxyHandshake {
                 handshake.negotiate(stream, target).await?;
                 Ok(Vec::new())
             }
+            Self::Wireguard(_) => Err(UpstreamProxyError::Protocol {
+                reason: "WireGuard does not negotiate on a TCP proxy socket",
+            }),
         }
     }
 }

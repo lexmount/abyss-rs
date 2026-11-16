@@ -883,6 +883,7 @@ mod tests {
                 protocol: crate::outbound::UpstreamProxyProtocol::HttpConnect,
                 ca_file: None,
                 credentials_file: None,
+                wireguard_file: None,
                 endpoint: format!("http://{address}"),
                 connect_timeout_ms: 1000,
                 handshake_timeout_ms: 1000,
