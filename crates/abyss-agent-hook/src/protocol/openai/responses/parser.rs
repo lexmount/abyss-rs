@@ -5,7 +5,7 @@ use crate::protocol::{
     LlmProtocol, OpenAiProtocol,
     model::{
         request::{RequestContent, RequestMetadata},
-        response::ResponseContent,
+        response::{ResponseContent, ResponseInput},
     },
     openai::shared::{
         images::extract_openai_request_images,
@@ -13,7 +13,7 @@ use crate::protocol::{
         usage::best_usage,
     },
     parser::ProtocolParser,
-    shared::{json::event_types, sse::ResponseDocuments},
+    shared::json::event_types,
 };
 use serde_json::Value;
 
@@ -36,23 +36,11 @@ impl ProtocolParser for ResponsesParser {
         }
     }
 
-    fn parse_response(values: &[Value], incomplete: bool) -> ResponseContent {
-        let parsed = ResponsesResponse::assemble(values, incomplete);
-        ResponseContent {
-            has_content: !parsed.is_empty(),
-            conversation: parsed.conversation(),
-            usage: best_usage(values),
-            model: first_model(values),
-            response_id: response_id(values),
-            event_types: values.iter().flat_map(event_types).collect(),
-        }
-    }
-
-    fn parse_http_response(documents: &ResponseDocuments) -> ResponseContent {
-        // Codex can cancel HTTP/2 after the terminal SSE snapshot, before the
-        // origin sends END_STREAM. Keep raw capture truncation, but distinguish
-        // it from missing conversation content. Malformed events remain partial.
-        let complete_snapshot = documents.values.last().is_some_and(|value| {
+    fn parse_response(input: ResponseInput<'_>) -> ResponseContent {
+        let values = input.values;
+        // A terminal snapshot can establish complete content before capture EOF.
+        // Decode failures and discarded documents remain observation gaps.
+        let complete_snapshot = values.last().is_some_and(|value| {
             matches!(
                 value["type"].as_str(),
                 Some("response.completed" | "response.done")
@@ -63,8 +51,18 @@ impl ProtocolParser for ResponsesParser {
                     .pointer("/response/status")
                     .is_none_or(|status| status == "completed")
         });
-        let incomplete = documents.incomplete && (documents.malformed || !complete_snapshot);
-        Self::parse_response(&documents.values, incomplete)
+        let incomplete = input.decode_failed
+            || input.assembly_overflowed
+            || (input.capture_truncated && !complete_snapshot);
+        let parsed = ResponsesResponse::assemble(values, incomplete);
+        ResponseContent {
+            has_content: !parsed.is_empty(),
+            conversation: parsed.conversation(),
+            usage: best_usage(values),
+            model: first_model(values),
+            response_id: response_id(values),
+            event_types: values.iter().flat_map(event_types).collect(),
+        }
     }
 }
 
@@ -75,11 +73,12 @@ mod tests {
     use serde_json::json;
 
     use super::*;
+    use crate::protocol::shared::sse::ResponseDocuments;
 
     fn completeness(bytes: String) -> ContentCompleteness {
         let body = CapturedBody::from_truncated_bytes(bytes.into_bytes().into());
         let documents = ResponseDocuments::decode(&body);
-        ResponsesParser::parse_http_response(&documents)
+        ResponsesParser::parse_response(documents.as_input())
             .conversation
             .completeness
     }
@@ -114,6 +113,55 @@ mod tests {
             "{\"output\":[]}".to_owned(),
         ] {
             assert_eq!(completeness(bytes.clone()), ContentCompleteness::Partial, "{bytes}");
+        }
+    }
+
+    #[test]
+    fn wholly_malformed_sse_retains_decode_failure() {
+        let body = CapturedBody::from_bytes(b"data: {broken\n\n".to_vec().into());
+        let documents = ResponseDocuments::decode(&body);
+        assert!(documents.values.is_empty());
+        assert!(documents.decode_failed);
+        assert_eq!(
+            ResponsesParser::parse_response(documents.as_input())
+                .conversation
+                .completeness,
+            ContentCompleteness::Partial
+        );
+    }
+
+    #[test]
+    fn snapshots_only_recover_capture_truncation() {
+        for terminal in [false, true] {
+            let values = [if terminal {
+                json!({"type":"response.completed","response":{"output":[]}})
+            } else {
+                json!({"type":"response.output_text.delta","delta":"prefix"})
+            }];
+            for capture_truncated in [false, true] {
+                for decode_failed in [false, true] {
+                    for assembly_overflowed in [false, true] {
+                        let response = ResponsesParser::parse_response(ResponseInput {
+                            values: &values,
+                            capture_truncated,
+                            decode_failed,
+                            assembly_overflowed,
+                        });
+                        let expected = if decode_failed
+                            || assembly_overflowed
+                            || (capture_truncated && !terminal)
+                        {
+                            ContentCompleteness::Partial
+                        } else {
+                            ContentCompleteness::Complete
+                        };
+                        assert_eq!(
+                            response.conversation.completeness, expected,
+                            "terminal={terminal}, capture={capture_truncated}, decode={decode_failed}, assembly={assembly_overflowed}"
+                        );
+                    }
+                }
+            }
         }
     }
 }

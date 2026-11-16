@@ -39,14 +39,26 @@ that stop after an application-level terminal event, before HTTP/2 END_STREAM.
 The origin stream is canceled immediately; no background draining is introduced.
 Connection teardown polls ready captures once before dropping unfinished work.
 
-Transport truncation remains visible on `CapturedBody`. The Responses parser can
-still establish complete conversation content when the retained SSE documents
-are all valid and end with a terminal `response.completed`/`response.done` event
-containing the full output snapshot. A malformed stream, missing snapshot,
-nonterminal last event, or explicitly non-completed status remains partial.
-Other dialects retain their existing completeness rules. This distinguishes
-application completion from a client canceling before HTTP/2 END_STREAM without
-draining the origin, clearing raw truncation, or relaxing matrix assertions.
+Transport truncation remains visible on `CapturedBody`. All protocol parsers
+accept one transport-neutral `ResponseInput`: decoded documents plus independent
+`capture_truncated`, `decode_failed`, and `assembly_overflowed` observations.
+HTTP decoding and WebSocket accumulation supply these facts without collapsing
+their causes into a single boolean. HTTP exchanges, individual WebSocket frames,
+and assembled WebSocket turns all call the same `parse_response` entry point;
+there is no separate HTTP response parser method.
+
+Each dialect determines content completeness from that input. Responses can
+establish complete conversation content after capture truncation when the final
+document is a valid `response.completed`/`response.done` event containing the
+full output snapshot. Decode failures and assembly overflow always retain an
+incomplete result, even alongside a terminal snapshot. A missing snapshot,
+nonterminal last document, or explicitly non-completed status cannot recover a
+truncated capture. Other dialects conservatively treat any observation gap as
+incomplete. A wholly malformed SSE stream also retains its decode-failure fact,
+even when no document survived; its conversation is partial rather than
+unsupported. Completion semantics stay in the protocol parser. The change
+neither drains the origin nor clears raw truncation or relaxes model-matrix
+assertions.
 
 HTTP versions on captured request/response heads distinguish HTTP/2 without
 changing the normalized event schema or the public TLS transport enum. Existing
@@ -63,9 +75,11 @@ cancellation before and after response headers, retained partial captures on
 stream reset and connection disconnect, redirect/control behavior,
 authority rejection, single-authority forwarding with observer Host retention,
 HTTP/1 fallback, and `100 Continue`/`103 Early Hints`.
-Additional parser tests cover terminal snapshots and malformed/nonterminal
-streams. A public capture-to-event integration test checks complete and partial
-HTTP/2 responses, normalized text/session/usage, and unchanged raw truncation.
+Additional parser tests cover terminal snapshots, malformed/nonterminal streams,
+and independent or combined capture/decode/assembly gaps. Public capture-to-event
+integration tests exercise HTTP/2 and WebSocket inputs, including malformed
+frames and exhausted turn assembly budgets. They check complete and partial
+conversations, normalized text/session/usage, and unchanged raw truncation.
 `make test-blackbox-http2` runs the engine socket cases. The standalone Node
 probe in `scripts/blackbox_http2.mjs` sends three concurrent 96 KiB JSON requests
 through a running broker to a publicly trusted HTTP/2 echo service; set

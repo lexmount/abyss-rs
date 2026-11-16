@@ -5,7 +5,7 @@ use crate::protocol::{
     LlmProtocol, OpenAiProtocol,
     model::{
         request::{RequestContent, RequestMetadata},
-        response::ResponseContent,
+        response::{ResponseContent, ResponseInput},
     },
     openai::shared::{
         images::extract_openai_request_images,
@@ -36,8 +36,9 @@ impl ProtocolParser for ChatCompletionsParser {
         }
     }
 
-    fn parse_response(values: &[Value], incomplete: bool) -> ResponseContent {
-        let parsed = ChatResponse::assemble(values, incomplete);
+    fn parse_response(input: ResponseInput<'_>) -> ResponseContent {
+        let values = input.values;
+        let parsed = ChatResponse::assemble(values, input.is_incomplete());
         ResponseContent {
             has_content: !parsed.is_empty(),
             conversation: parsed.conversation(),

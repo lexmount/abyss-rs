@@ -9,7 +9,7 @@ use super::{
 use crate::protocol::{
     model::{
         request::{RequestContent, RequestMetadata},
-        response::ResponseContent,
+        response::{ResponseContent, ResponseInput},
     },
     shared::json::event_types,
 };
@@ -36,10 +36,10 @@ impl AnthropicContentParser {
     }
 
     pub(in crate::protocol::anthropic) fn parse_response(
-        values: &[Value],
-        incomplete: bool,
+        input: &ResponseInput<'_>,
     ) -> ResponseContent {
-        let response = AnthropicResponse::assemble(values, incomplete);
+        let values = input.values;
+        let response = AnthropicResponse::assemble(values, input.is_incomplete());
         let conversation = response.conversation();
         ResponseContent {
             has_content: !conversation.entries.is_empty(),

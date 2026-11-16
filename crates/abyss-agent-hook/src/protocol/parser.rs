@@ -10,7 +10,7 @@ use super::{
     LlmProtocol,
     model::{
         request::{ParsedAgentRequest, RequestContent},
-        response::ResponseContent,
+        response::{ResponseContent, ResponseInput},
     },
     shared::sse::ResponseDocuments,
 };
@@ -23,13 +23,7 @@ pub trait ProtocolParser {
 
     fn parse_request(payload: Option<&Value>, truncated: bool) -> RequestContent;
 
-    fn parse_response(values: &[Value], incomplete: bool) -> ResponseContent;
-
-    /// HTTP capture may end before transport EOF after application completion.
-    /// Dialects with authoritative terminal snapshots can recognize that boundary.
-    fn parse_http_response(documents: &ResponseDocuments) -> ResponseContent {
-        Self::parse_response(&documents.values, documents.incomplete)
-    }
+    fn parse_response(input: ResponseInput<'_>) -> ResponseContent;
 }
 
 /// Finds the request projection carried by forwarding control for this dialect.
@@ -60,6 +54,6 @@ where
 {
     let request = request_content::<P>(exchange.request.body());
     let documents = ResponseDocuments::decode(exchange.response.body());
-    let response = P::parse_http_response(&documents);
+    let response = P::parse_response(documents.as_input());
     assemble_exchange(exchange, request.into_owned(), response)
 }

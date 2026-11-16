@@ -3,7 +3,10 @@
 use crate::protocol::{
     AnthropicProtocol, LlmProtocol,
     anthropic::shared::parser::AnthropicContentParser,
-    model::{request::RequestContent, response::ResponseContent},
+    model::{
+        request::RequestContent,
+        response::{ResponseContent, ResponseInput},
+    },
     parser::ProtocolParser,
     shared::json::string_field,
 };
@@ -23,7 +26,7 @@ impl ProtocolParser for MessagesParser {
         request
     }
 
-    fn parse_response(values: &[Value], incomplete: bool) -> ResponseContent {
-        AnthropicContentParser::parse_response(values, incomplete)
+    fn parse_response(input: ResponseInput<'_>) -> ResponseContent {
+        AnthropicContentParser::parse_response(&input)
     }
 }

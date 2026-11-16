@@ -4,7 +4,10 @@ use super::metadata::{assistant_message_uuid, claude_web_file_uuids};
 use crate::protocol::{
     AnthropicProtocol, ClaudeWebProtocol, LlmProtocol,
     anthropic::shared::parser::AnthropicContentParser,
-    model::{request::RequestContent, response::ResponseContent},
+    model::{
+        request::RequestContent,
+        response::{ResponseContent, ResponseInput},
+    },
     parser::ProtocolParser,
 };
 use serde_json::Value;
@@ -24,7 +27,7 @@ impl ProtocolParser for ClaudeWebParser {
         request
     }
 
-    fn parse_response(values: &[Value], incomplete: bool) -> ResponseContent {
-        AnthropicContentParser::parse_response(values, incomplete)
+    fn parse_response(input: ResponseInput<'_>) -> ResponseContent {
+        AnthropicContentParser::parse_response(&input)
     }
 }

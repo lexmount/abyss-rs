@@ -3,17 +3,19 @@
 use abyss_mitm::CapturedBody;
 use serde_json::Value;
 
+use crate::protocol::model::response::ResponseInput;
+
 /// JSON payloads decoded from a Server-Sent Events byte stream.
 ///
 /// Each event may contain multiple `data:` lines. Stream sentinels such as
 /// `[DONE]` are omitted. Events are decoded independently, so an event that is
 /// not valid UTF-8 or JSON, such as one cut at the capture limit inside a
-/// multibyte character, only sets `incomplete`.
+/// multibyte character, only sets `decode_failed`.
 pub struct SseDocuments {
     /// Successfully decoded event payloads in stream order.
     pub values: Vec<Value>,
     /// Whether at least one event payload failed to decode.
-    pub incomplete: bool,
+    pub decode_failed: bool,
 }
 
 impl SseDocuments {
@@ -22,7 +24,7 @@ impl SseDocuments {
     pub fn decode(bytes: &[u8]) -> Self {
         let mut result = Self {
             values: Vec::new(),
-            incomplete: false,
+            decode_failed: false,
         };
         let mut data = Vec::new();
         // The trailing empty line terminates a final event without a blank line.
@@ -48,7 +50,7 @@ impl SseDocuments {
         }
         match serde_json::from_slice(&payload) {
             Ok(value) => self.values.push(value),
-            Err(_) => self.incomplete = true,
+            Err(_) => self.decode_failed = true,
         }
     }
 }
@@ -57,10 +59,10 @@ impl SseDocuments {
 pub struct ResponseDocuments {
     /// JSON documents in body order: one JSON body or the decoded SSE events.
     pub values: Vec<Value>,
-    /// Whether the body was truncated or some decoded stream events failed.
-    pub incomplete: bool,
-    /// Whether an SSE document failed to decode, independently of transport EOF.
-    pub malformed: bool,
+    /// Whether the captured body ended before its normal transport boundary.
+    pub capture_truncated: bool,
+    /// Whether a document failed to decode, independently of transport EOF.
+    pub decode_failed: bool,
 }
 
 impl ResponseDocuments {
@@ -70,16 +72,26 @@ impl ResponseDocuments {
         if let Some(value) = body.json() {
             return Self {
                 values: vec![value.clone()],
-                incomplete: body.truncated(),
-                malformed: false,
+                capture_truncated: body.truncated(),
+                decode_failed: false,
             };
         }
         let decoded = SseDocuments::decode(body.bytes());
-        let incomplete = body.truncated() || (!decoded.values.is_empty() && decoded.incomplete);
         Self {
             values: decoded.values,
-            incomplete,
-            malformed: decoded.incomplete,
+            capture_truncated: body.truncated(),
+            decode_failed: decoded.decode_failed,
+        }
+    }
+
+    /// Borrows the decoded HTTP documents without applying protocol semantics.
+    #[must_use]
+    pub fn as_input(&self) -> ResponseInput<'_> {
+        ResponseInput {
+            values: &self.values,
+            capture_truncated: self.capture_truncated,
+            decode_failed: self.decode_failed,
+            assembly_overflowed: false,
         }
     }
 }
@@ -98,7 +110,7 @@ mod tests {
 
         assert_eq!(decoded.values.len(), 1);
         assert_eq!(decoded.values[0]["type"], "content_block_delta");
-        assert!(!decoded.incomplete);
+        assert!(!decoded.decode_failed);
     }
 
     #[test]
@@ -113,7 +125,7 @@ mod tests {
         assert_eq!(decoded.values.len(), 1);
         assert_eq!(decoded.values[0]["text"], "héllo");
         assert_eq!(decoded.values[0]["usage"]["output_tokens"], 2_i32);
-        assert!(decoded.incomplete);
+        assert!(decoded.decode_failed);
     }
 
     #[test]
@@ -124,7 +136,30 @@ mod tests {
                 .into(),
         );
         let decoded = ResponseDocuments::decode(&body);
-        assert!(decoded.incomplete);
+        assert!(decoded.decode_failed);
         assert_eq!(decoded.values.len(), 1);
+    }
+
+    #[test]
+    fn capture_and_decode_observations_are_independent() {
+        for capture_truncated in [false, true] {
+            for decode_failed in [false, true] {
+                let mut bytes = b"data: {\"type\":\"known\"}\n\n".to_vec();
+                if decode_failed {
+                    bytes.extend_from_slice(b"data: {broken\n\n");
+                }
+                let body = if capture_truncated {
+                    CapturedBody::from_truncated_bytes(bytes.into())
+                } else {
+                    CapturedBody::from_bytes(bytes.into())
+                };
+                let documents = ResponseDocuments::decode(&body);
+                let input = documents.as_input();
+                assert_eq!(input.values.len(), 1);
+                assert_eq!(input.capture_truncated, capture_truncated);
+                assert_eq!(input.decode_failed, decode_failed);
+                assert!(!input.assembly_overflowed);
+            }
+        }
     }
 }
