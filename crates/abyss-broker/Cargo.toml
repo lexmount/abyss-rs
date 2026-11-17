@@ -50,6 +50,10 @@ windows = { version = "0.62", features = [
 [target.'cfg(target_os = "macos")'.dependencies]
 libc = "0.2"
 
+[target.'cfg(target_os = "linux")'.dependencies]
+smoltcp = { version = "0.14", default-features = false, features = ["std", "medium-ip", "proto-ipv4", "proto-ipv6", "socket-tcp"] }
+tun-rs = { version = "2.8.18", default-features = false, features = ["async_tokio"] }
+
 [build-dependencies]
 bindgen = "0.72"
 

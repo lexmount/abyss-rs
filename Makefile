@@ -108,3 +108,7 @@ test-blackbox-mitm-redirect:
 .PHONY: test-blackbox-http2
 test-blackbox-http2:
 	cargo test --locked --package abyss-mitm transparent::tests::http2
+
+.PHONY: test-blackbox-broker-tun
+test-blackbox-broker-tun:
+	bash scripts/blackbox_abyss_broker_tun.sh

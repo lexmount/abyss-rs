@@ -66,7 +66,7 @@ pub enum TransparentFlowSource {
     MacosNetworkExtension,
     /// Windows WFP connect-redirection adapter.
     WindowsWfp,
-    /// Future Linux transparent interception adapter.
+    /// Linux TUN transparent TCP adapter.
     LinuxTransparent,
     /// Embedded or test caller without a platform attribution.
     Unattributed,

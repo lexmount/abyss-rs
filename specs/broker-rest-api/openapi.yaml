@@ -270,13 +270,16 @@ components:
       required: [source, listen_addr]
       properties:
         source:
-          enum: [explicit_http, macos_network_extension, windows_wfp]
+          enum: [explicit_http, macos_network_extension, windows_wfp, linux_tun]
         listen_addr:
           oneOf:
             - type: string
             - type: "null"
         socket_path:
           type: string
+        device_name:
+          type: string
+          description: Administrator-provisioned Linux TUN interface.
     NetworkConfig:
       type: object
       additionalProperties: false

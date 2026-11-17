@@ -113,6 +113,10 @@ jobs:
           cargo test --locked --all-features "${packages[@]}" -- \
             --skip broker_loads_current_toml_config_with_relative_paths_and_devtools_controls
 
+      - name: Test Linux TUN ingress in an isolated network namespace
+        if: runner.os == 'Linux'
+        run: make test-blackbox-broker-tun
+
       - name: Test and lint CLI without local deployment
         if: runner.os != 'Windows'
         run: |

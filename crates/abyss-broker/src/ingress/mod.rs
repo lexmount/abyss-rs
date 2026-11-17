@@ -6,6 +6,8 @@
 //! Extension, or future IPC transport details.
 
 pub mod explicit;
+#[cfg(target_os = "linux")]
+pub mod linux;
 #[cfg(target_os = "macos")]
 mod macos;
 #[cfg(target_os = "windows")]
@@ -42,13 +44,19 @@ pub enum ProxyMode {
     /// Accept opt-in clients through an HTTP explicit proxy listener.
     Explicit,
     /// Accept connections from the operating-system transparent adapter.
-    #[cfg(any(target_os = "macos", target_os = "windows"))]
+    #[cfg(any(target_os = "linux", target_os = "macos", target_os = "windows"))]
     Transparent,
 }
 
 /// Validated ingress endpoints for one broker proxy runtime.
 #[derive(Debug, Clone, PartialEq)]
 pub enum ProxyPlan {
+    /// One administrator-provisioned Linux TUN interface.
+    #[cfg(target_os = "linux")]
+    LinuxTun {
+        /// TUN endpoint; routing remains administrator-owned.
+        tun: linux::IngressEndpoint,
+    },
     /// One explicit HTTP proxy listener.
     Explicit {
         /// Explicit proxy endpoint.
@@ -82,6 +90,8 @@ impl ProxyPlan {
     #[must_use]
     pub const fn mode(&self) -> ProxyMode {
         match self {
+            #[cfg(target_os = "linux")]
+            Self::LinuxTun { .. } => ProxyMode::Transparent,
             Self::Explicit { .. } => ProxyMode::Explicit,
             #[cfg(any(target_os = "macos", target_os = "windows"))]
             Self::Transparent { .. } => ProxyMode::Transparent,
@@ -92,6 +102,8 @@ impl ProxyPlan {
     #[must_use]
     pub fn endpoint_label(&self) -> String {
         match self {
+            #[cfg(target_os = "linux")]
+            Self::LinuxTun { tun } => tun.endpoint_label(),
             Self::Explicit { explicit } => explicit.endpoint_label(),
             #[cfg(any(target_os = "macos", target_os = "windows"))]
             Self::Transparent { transparent } => transparent.endpoint_label(),
@@ -103,6 +115,9 @@ impl ProxyPlan {
 #[derive(Debug, Clone, Copy, Deserialize, PartialEq, Serialize)]
 #[serde(rename_all = "snake_case")]
 pub enum IngressSource {
+    /// Linux userspace TCP stack attached to a TUN interface.
+    #[cfg(target_os = "linux")]
+    LinuxTun,
     /// Local HTTP explicit proxy listener.
     ExplicitHttp,
     /// macOS Network Extension framed-flow ingress.
@@ -120,6 +135,12 @@ pub enum IngressSource {
 /// a TCP ingress without a bound address.
 #[derive(Debug, Clone)]
 pub enum IngressRuntimeStatus {
+    /// Linux TUN packet ingress, with no bound TCP listener.
+    #[cfg(target_os = "linux")]
+    LinuxTun {
+        /// Administrator-provisioned interface name.
+        device_name: String,
+    },
     /// Local explicit HTTP proxy listener.
     ExplicitHttp {
         /// Bound TCP address, including wildcard listeners.
@@ -164,6 +185,8 @@ impl IngressRuntimeStatus {
     #[must_use]
     pub const fn source(&self) -> IngressSource {
         match self {
+            #[cfg(target_os = "linux")]
+            Self::LinuxTun { .. } => IngressSource::LinuxTun,
             Self::ExplicitHttp { .. } => IngressSource::ExplicitHttp,
             #[cfg(target_os = "macos")]
             Self::MacosNetworkExtension { .. } => IngressSource::MacosNetworkExtension,
@@ -177,7 +200,7 @@ impl IngressRuntimeStatus {
     // The optional return type keeps this cross-platform status API uniform;
     // macOS also has a Unix-socket variant with no TCP address.
     #[cfg_attr(
-        not(target_os = "macos"),
+        not(any(target_os = "macos", target_os = "linux")),
         expect(
             clippy::unnecessary_wraps,
             reason = "the status API has the same optional shape on every platform"
@@ -185,6 +208,8 @@ impl IngressRuntimeStatus {
     )]
     pub const fn listen_addr(&self) -> Option<SocketAddr> {
         match self {
+            #[cfg(target_os = "linux")]
+            Self::LinuxTun { .. } => None,
             Self::ExplicitHttp { listen_addr } => Some(*listen_addr),
             #[cfg(target_os = "macos")]
             Self::MacosNetworkExtension { .. } => None,
@@ -204,6 +229,8 @@ impl IngressRuntimeStatus {
     )]
     pub fn socket_path(&self) -> Option<&Path> {
         match self {
+            #[cfg(target_os = "linux")]
+            Self::LinuxTun { .. } => None,
             Self::ExplicitHttp { .. } => None,
             #[cfg(target_os = "macos")]
             Self::MacosNetworkExtension { socket_path } => Some(socket_path),
@@ -215,6 +242,10 @@ impl IngressRuntimeStatus {
     /// Returns a compact bound-endpoint label.
     #[must_use]
     pub fn endpoint_label(&self) -> String {
+        #[cfg(target_os = "linux")]
+        if let Self::LinuxTun { device_name } = self {
+            return device_name.clone();
+        }
         self.listen_addr().map_or_else(
             || {
                 self.socket_path()
@@ -236,12 +267,19 @@ impl Serialize for IngressRuntimeStatus {
             listen_addr: Option<SocketAddr>,
             #[serde(skip_serializing_if = "Option::is_none")]
             socket_path: Option<&'a Path>,
+            #[serde(skip_serializing_if = "Option::is_none")]
+            device_name: Option<&'a str>,
         }
 
         IngressRuntimeStatusResponse {
             source: self.source(),
             listen_addr: self.listen_addr(),
             socket_path: self.socket_path(),
+            device_name: match self {
+                #[cfg(target_os = "linux")]
+                Self::LinuxTun { device_name } => Some(device_name),
+                _ => None,
+            },
         }
         .serialize(serializer)
     }
@@ -516,6 +554,10 @@ impl IngressConnection for PlatformFlow {
 #[derive(Debug, Error)]
 #[non_exhaustive]
 pub enum IngressError {
+    /// Linux TUN packet or TCP stack operation failed.
+    #[cfg(target_os = "linux")]
+    #[error(transparent)]
+    LinuxTun(#[from] linux::TunIngressError),
     /// An ingress-specific blocking system operation could not be joined.
     #[cfg(any(target_os = "macos", target_os = "windows"))]
     #[error("ingress task failed during {operation}: {source}")]

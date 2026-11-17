@@ -220,6 +220,7 @@ impl ProxyService {
     #[tracing::instrument(level = "trace", skip_all)]
     pub async fn start(&self, plan: ProxyPlan) -> Result<ProxyStatus, BrokerError> {
         let mut state = self.state.lock().await;
+        state.reap_finished().await;
         if let ProxyRuntimeState::Started(runtime) = &*state {
             if runtime.matches_plan(&plan) {
                 return Ok(ProxyStatus::Started(runtime.status()));
@@ -259,6 +260,7 @@ impl ProxyService {
     #[tracing::instrument(level = "trace", skip_all)]
     pub async fn stop(&self) -> Result<ProxyStatus, BrokerError> {
         let mut state = self.state.lock().await;
+        state.reap_finished().await;
         if let ProxyRuntimeState::Stopped(stopped) = &*state {
             return Ok(ProxyStatus::Stopped(stopped.status()));
         }
@@ -278,12 +280,27 @@ impl ProxyService {
 
     /// Returns the current proxy status.
     pub async fn status(&self) -> ProxyStatus {
-        let state = self.state.lock().await;
+        let mut state = self.state.lock().await;
+        state.reap_finished().await;
         state.status()
     }
 }
 
 impl ProxyRuntimeState {
+    /// Reconcile a failed ingress worker before reporting or restarting it.
+    async fn reap_finished(&mut self) {
+        if let Self::Started(runtime) = self
+            && runtime.task.join_handle.is_finished()
+        {
+            let Self::Started(runtime) = std::mem::replace(self, Self::stopped()) else {
+                unreachable!("started runtime was checked before replacement");
+            };
+            if let Err(error) = runtime.stop().await {
+                tracing::error!(%error, "broker ingress worker terminated");
+            }
+        }
+    }
+
     fn stopped() -> Self {
         Self::Stopped(StoppedProxyRuntime::new())
     }
@@ -310,6 +327,12 @@ impl StoppedProxyRuntime {
     ) -> Result<StartedProxyRuntime, BrokerError> {
         let requested_plan = plan.clone();
         let task = match plan {
+            #[cfg(target_os = "linux")]
+            ProxyPlan::LinuxTun { tun } => {
+                let started =
+                    Self::bind_factory(tun.into_factory(services.network.clone())).await?;
+                Self::spawn_started(started, services)
+            }
             ProxyPlan::Explicit { explicit } => {
                 let started =
                     Self::bind_factory(explicit.into_factory(services.network.clone())).await?;
@@ -463,6 +486,10 @@ where
                         Err(error) => {
                             self.diagnostics.record_accept_error(error.to_string());
                             tracing::warn!(%error, "broker ingress accept failed");
+                            #[cfg(target_os = "linux")]
+                            if matches!(error, crate::ingress::IngressError::LinuxTun(_)) {
+                                break;
+                            }
                         }
                     }
                 }
@@ -735,6 +762,32 @@ mod tests {
             error.to_string().contains("already running"),
             "error should explain that a proxy is already running"
         );
+    }
+
+    #[tokio::test]
+    async fn failed_worker_is_reported_stopped_and_can_restart() {
+        let service = test_proxy_service().await;
+        service.start(test_plan()).await.expect("start proxy");
+        {
+            let state = service.state.lock().await;
+            let super::ProxyRuntimeState::Started(runtime) = &*state else {
+                panic!("proxy must be started");
+            };
+            runtime.task.join_handle.abort();
+        }
+        timeout(Duration::from_secs(1), async {
+            while service.status().await.lifecycle() != ProxyLifecycle::Stopped {
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .expect("failed worker must transition to stopped");
+        let restarted = service
+            .start(test_plan())
+            .await
+            .expect("restart after worker failure");
+        assert_eq!(restarted.lifecycle(), ProxyLifecycle::Running);
+        service.stop().await.expect("stop restarted worker");
     }
 
     #[tokio::test]

@@ -9,12 +9,13 @@ class HealthResponse(TypedDict):
 
 
 class _IngressStatusRequired(TypedDict):
-    source: Literal["explicit_http", "macos_network_extension", "windows_wfp"]
+    source: Literal["explicit_http", "macos_network_extension", "windows_wfp", "linux_tun"]
     listen_addr: Optional[str]
 
 
 class IngressStatus(_IngressStatusRequired, total=False):
     socket_path: str
+    device_name: str
 
 
 class _ProxyStatusRequired(TypedDict):

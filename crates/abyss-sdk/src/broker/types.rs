@@ -46,6 +46,8 @@ pub enum IngressSource {
     MacosNetworkExtension,
     /// Windows WFP redirected TCP ingress.
     WindowsWfp,
+    /// Linux TUN TCP ingress.
+    LinuxTun,
 }
 
 /// One bound ingress returned by the status API.
@@ -58,6 +60,9 @@ pub struct IngressStatus {
     /// Bound Unix socket for filesystem-based ingresses.
     #[serde(default)]
     pub socket_path: Option<String>,
+    /// Linux TUN interface name; absent on other ingresses.
+    #[serde(default)]
+    pub device_name: Option<String>,
 }
 
 /// Current local proxy status.
@@ -330,4 +335,28 @@ pub enum UpstreamProxyProtocol {
     HttpConnect,
     /// SOCKS5 TCP CONNECT with proxy-side target DNS.
     Socks5,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{IngressSource, ProxyStatus};
+
+    #[test]
+    fn linux_tun_status_decodes_without_a_tcp_listener() {
+        let status: ProxyStatus = serde_json::from_value(serde_json::json!({
+            "lifecycle": "running", "process_id": 123,
+            "mode": "transparent", "listen_addr": null,
+            "ingresses": [{"source": "linux_tun", "listen_addr": null, "device_name": "abyss0"}]
+        }))
+        .expect("additive TUN ingress must decode in the SDK");
+        assert!(matches!(
+            status.ingresses[0].source,
+            IngressSource::LinuxTun
+        ));
+        assert_eq!(status.ingresses[0].device_name.as_deref(), Some("abyss0"));
+        assert!(
+            status.listen_addr.is_none(),
+            "TUN has no proxy TCP listener"
+        );
+    }
 }
