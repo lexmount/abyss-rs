@@ -22,16 +22,21 @@ administrator privileges.
 The public configuration contains a `wireguard://host:port` endpoint and an
 absolute `wireguard_file` path. The broker loads and validates the local JSON
 file before publishing a route. The file carries keys, tunnel addresses,
-AllowedIPs, DNS servers, MTU and keepalive settings. Private and preshared keys
+AllowedIPs, MTU and keepalive settings. Private and preshared keys
 must never appear in serialized configuration, errors or diagnostics. Existing
 HTTP CONNECT and SOCKS5 configuration remains compatible.
 
-Only the peer endpoint uses operating-system DNS. Target A/AAAA queries use DNS
-over TCP through the encrypted tunnel. Target addresses and DNS servers must
-match AllowedIPs. DNS replies are matched by transaction ID, question and CNAME
-chain. Address families race through resolution and TCP connection establishment;
-an unusable IPv6 route cannot suppress a working IPv4 result. Unsuccessful resolution, authentication or connection setup
-fails closed. Target TLS identity and certificate verification remain unchanged.
+Both the peer endpoint and target hostnames use the operating-system resolver
+through Tokio's `lookup_host`. DNS follows the host's resolver configuration;
+the broker does not send DNS queries through its WireGuard transport or maintain
+a separate resolver. Target results are filtered by AllowedIPs and configured
+address families before TCP connection attempts race through the tunnel. An
+unusable IPv6 route cannot suppress a working IPv4 connection. Unsuccessful
+resolution, authentication or connection setup fails closed. Target TLS identity
+and certificate verification remain unchanged.
+
+The earlier experimental `dns_servers` field is removed. Delete it from local
+JSON configuration files; unknown fields are rejected when loading a route.
 
 All connections of a route share its WireGuard identity and TCP/IP stacks.
 Reapplying identical material must reuse the transport: creating competing UDP
@@ -43,15 +48,10 @@ releases its key material, packet driver and stacks. This intentionally rejects
 incompatible updates rather than disrupting an existing session. The UDP socket
 accepts only the configured peer; endpoint roaming is outside this contract.
 
-Fixed configuration collections, stack endpoints and DNS results use boxed slices.
-Growable collections remain for file reads, the live route registry and CNAME
-traversal; smoltcp packet APIs also require `Vec`. DNS resolution borrows route settings and the active tunnel;
-validated responses borrow their question and CNAME records instead of cloning
-names. The DNS response type is constructed only after checking the transaction,
-question and response flags. The packet driver follows BoringTun's result variants
-directly when draining pending datagrams. These ownership and control-flow changes
-follow the workspace Rust style rules without changing the public route contract,
-deadlines, retry behavior or tunnel lifetime.
+Fixed configuration collections and stack endpoints use boxed slices. Growable
+collections remain for file reads and the live route registry; smoltcp packet APIs
+also require `Vec`. The packet driver follows BoringTun's result variants directly
+when draining pending datagrams.
 
 The `connect_timeout_ms` budget bounds peer DNS; `handshake_timeout_ms` covers
 UDP setup, WireGuard establishment, target DNS and target TCP. Failures use the
@@ -67,19 +67,21 @@ updating its release pin are separate consumer work.
 ## Validation plan
 
 - Unit tests: strict configuration, key validation, AllowedIPs, secret-safe
-  errors, DNS response checks, deadlines, and transport ownership.
+  errors, system-resolved address filtering, deadlines, and transport ownership.
 - Black-box tests: a real broker and independent WireGuard peer, encrypted HTTP
-  and TLS, target DNS inside the tunnel, PSK mismatch, no direct fallback, hot
-  updates and persistence. Existing upstream and SDK regression suites remain
-  required.
+  and TLS over IPv4/IPv6, system-resolved loopback rejection, PSK mismatch, no
+  direct fallback, hot updates and persistence. Existing upstream and SDK
+  regression suites remain required.
 - Live validation: actual installed Codex and dsh provider traffic through the
-  changed broker and WireGuard peer, delivered to a real backend and correlated
-  with stored events.
+  changed broker and WireGuard peer, using system-resolved provider hostnames,
+  delivered to a real backend and correlated with stored events.
 - Quality: workspace build and tests, nightly rustfmt, Clippy, SDK checks, CI,
   and an HTML report recording submitted revisions and actual outcomes.
 
 The reproducible peer in `scripts/fixtures/wireguard/` uses Linux's independent
-kernel WireGuard implementation, DNS, HTTP and TLS services, plus Internet NAT.
+kernel WireGuard implementation, HTTP and TLS services, plus Internet NAT. It
+does not run a DNS service. Deterministic transport tests use IP-literal targets;
+the live provider runs cover successful system resolution and tunneled TCP.
 It recalculates outgoing inner TCP checksums with `tc csum` before encryption:
 Docker Desktop can forward checksum-offload placeholders that are invalid once
 encrypted. This is confined to the test peer; production packet checksum and TLS

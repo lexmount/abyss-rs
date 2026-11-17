@@ -60,7 +60,6 @@ class WireguardPeer:
             "preshared_key": preshared,
             "addresses": ["10.77.0.2", "fd77::2"],
             "allowed_ips": ["0.0.0.0/0", "::/0"],
-            "dns_servers": ["10.77.0.1"],
             "persistent_keepalive_secs": 15,
         }
         self.file = directory / "wireguard.json"
@@ -174,11 +173,11 @@ def assert_invalid(broker, candidate, expected):
 def exercise(broker, peer, origin):
     route = peer.network()
     configure(broker, route)
-    for host in ["plain.invalid", "10.77.0.1", "[fd77::1]"]:
+    for host in ["10.77.0.1", "[fd77::1]"]:
         for connect in (False, True):
             print(f"Checking {host}:80 CONNECT={connect}", flush=True)
             explicit_request(broker, host + ":80", connect)
-    with broker.connect("plain.invalid:80") as stream:
+    with broker.connect("10.77.0.1:80") as stream:
         stream.sendall(
             b"GET /large HTTP/1.1\r\nHost: plain.invalid\r\nConnection: close\r\n\r\n"
         )
@@ -189,7 +188,7 @@ def exercise(broker, peer, origin):
         )
     context = ssl.create_default_context(cafile=str(broker.ca_file))
     with (
-        broker.connect("tls.invalid:443") as raw,
+        broker.connect("10.77.0.1:443") as raw,
         context.wrap_socket(raw, server_hostname="tls.invalid") as stream,
     ):
         assert stream.getpeercert(binary_form=True) == ssl.PEM_cert_to_DER_cert(
@@ -199,14 +198,14 @@ def exercise(broker, peer, origin):
             b"GET /probe HTTP/1.1\r\nHost: tls.invalid\r\nConnection: close\r\n\r\n"
         )
         assert read_all(stream).endswith(b"secure")
-    with broker.connect("plain.invalid:80") as stream:
+    with broker.connect("10.77.0.1:80") as stream:
         stream.sendall(
             b"GET /sse HTTP/1.1\r\nHost: plain.invalid\r\nConnection: close\r\n\r\n"
         )
         read_head(stream)
         assert exact(stream, len(b"data: first\n\n")) == b"data: first\n\n"
         configure(broker, route)
-        explicit_request(broker)
+        explicit_request(broker, "10.77.0.1:80")
         # Changing identity-owned settings must not interrupt this live stream.
         peer.file.write_text(json.dumps(dict(peer.material, mtu=1300)))
         assert_invalid(broker, route, route)
@@ -226,16 +225,18 @@ def exercise(broker, peer, origin):
         assert b"data: second" in read_all(stream)
     configure(broker, route)
     peer.file.write_text("secret-invalid-json")
-    explicit_request(broker)
+    explicit_request(broker, "10.77.0.1:80")
     assert_invalid(broker, route, route)
     peer.file.write_text(json.dumps(peer.material))
     before = origin.accepted
     with broker.connect(f"127.0.0.1:{origin.server_address[1]}", 502):
         pass
+    with broker.connect(f"localhost:{origin.server_address[1]}", 502):
+        pass
     assert origin.accepted == before, "WireGuard failure fell back to direct"
     broker.restart()
     assert broker.request("GET", "/v1/network/config") == route
-    explicit_request(broker)
+    explicit_request(broker, "10.77.0.1:80")
     stats = peer.stats()
     assert stats["received"] > 0 and stats["sent"] > 1_048_576, stats
     # Change the peer PSK independently: the broker must time out, then recover
@@ -251,7 +252,7 @@ def exercise(broker, peer, origin):
     configure(broker, {"upstream": None})
     time.sleep(0.3)
     configure(broker, route)
-    explicit_request(broker)
+    explicit_request(broker, "10.77.0.1:80")
     rows = broker.request("GET", "/v1/network/observations?limit=100")
     for key in ["private_key", "preshared_key"]:
         assert peer.material[key] not in json.dumps(rows)
@@ -259,7 +260,7 @@ def exercise(broker, peer, origin):
             peer.material[key] not in (broker.home / "runtime-policy.toml").read_text()
         )
     print(
-        "PASS: kernel WireGuard interoperability, PSK, tunnel DNS, IPv4/IPv6, HTTP/CONNECT, TLS, 1 MiB transfer, route snapshots, restart, no fallback, timeout and secret-safe configuration"
+        "PASS: kernel WireGuard interoperability, PSK, system-resolved address policy, IPv4/IPv6, HTTP/CONNECT, TLS, 1 MiB transfer, route snapshots, restart, no fallback, timeout and secret-safe configuration"
     )
     return stats
 
@@ -288,10 +289,14 @@ def main():
                     native.mkdir()
                     broker = Broker(native, proxy, transparent=True)
                     configure(broker, peer.network())
-                    assert request(broker).endswith(b"secure")
+                    assert request(broker, "10.77.0.1", 80, "10.77.0.1").endswith(
+                        b"secure"
+                    )
                     assert request(broker, "fd77::1", 80, "fd77::1").endswith(b"secure")
                     broker.restart()
-                    assert request(broker).endswith(b"secure")
+                    assert request(broker, "10.77.0.1", 80, "10.77.0.1").endswith(
+                        b"secure"
+                    )
                     print(
                         "PASS: macOS framed transparent ingress and restart through WireGuard"
                     )

@@ -16,7 +16,6 @@ pub(super) struct Settings {
     pub(super) keys: Keys,
     pub(super) addresses: Box<[IpAddr]>,
     pub(super) allowed_ips: Box<[IpNet]>,
-    pub(super) dns_servers: Box<[IpAddr]>,
     pub(super) mtu: usize,
     pub(super) keepalive: Option<u16>,
 }
@@ -37,8 +36,6 @@ struct FileSettings {
     preshared_key: Option<Zeroizing<String>>,
     addresses: Box<[IpAddr]>,
     allowed_ips: Box<[IpNet]>,
-    #[serde(default)]
-    dns_servers: Box<[IpAddr]>,
     #[serde(default = "default_mtu")]
     mtu: usize,
     #[serde(default)]
@@ -99,22 +96,13 @@ impl Settings {
         if file.persistent_keepalive_secs == Some(0) {
             return Err(invalid("WireGuard keepalive must be positive or omitted"));
         }
-        let settings = Self {
+        Ok(Self {
             keys,
             addresses: file.addresses,
             allowed_ips: file.allowed_ips,
-            dns_servers: file.dns_servers,
             mtu: file.mtu,
             keepalive: file.persistent_keepalive_secs,
-        };
-        if settings.dns_servers.len() > 4
-            || settings.dns_servers.iter().any(|ip| !settings.allows(ip))
-        {
-            return Err(invalid(
-                "WireGuard DNS servers must be routable through allowed_ips (at most four)",
-            ));
-        }
-        Ok(settings)
+        })
     }
 
     pub(super) fn allows(&self, ip: &IpAddr) -> bool {

@@ -7,7 +7,6 @@ import socket
 import ssl
 import subprocess
 import threading
-import time
 
 
 def run(*args):
@@ -68,17 +67,6 @@ run(
     "-j",
     "MASQUERADE",
 )
-dns = subprocess.Popen(
-    [
-        "dnsmasq",
-        "--keep-in-foreground",
-        "--bind-interfaces",
-        "--listen-address=10.77.0.1",
-        "--listen-address=fd77::1",
-        "--address=/plain.invalid/tls.invalid/10.77.0.1",
-        "--address=/plain.invalid/tls.invalid/fd77::1",
-    ]
-)
 release = threading.Event()
 
 
@@ -127,6 +115,4 @@ for address, cls in [
             server.socket = context.wrap_socket(server.socket, server_side=True)
         threading.Thread(target=server.serve_forever, daemon=True).start()
 print("READY", flush=True)
-while dns.poll() is None:
-    time.sleep(1)
-raise RuntimeError("DNS service stopped")
+threading.Event().wait()

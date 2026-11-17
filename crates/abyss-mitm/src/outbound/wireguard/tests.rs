@@ -9,7 +9,7 @@ use serde_json::{Value, json};
 use super::{WireguardRoute, config::Settings};
 use crate::{
     TargetAuthority,
-    outbound::{UpstreamProxy, UpstreamProxyConfig, UpstreamProxyProtocol},
+    outbound::{UpstreamProxy, UpstreamProxyConfig, UpstreamProxyError, UpstreamProxyProtocol},
 };
 
 fn material() -> Value {
@@ -22,7 +22,6 @@ fn material() -> Value {
         "preshared_key": STANDARD.encode([9; 32]),
         "addresses": ["10.77.0.2", "fd77::2"],
         "allowed_ips": ["10.77.0.0/24", "fd77::/64"],
-        "dns_servers": ["10.77.0.1"],
         "persistent_keepalive_secs": 25
     })
 }
@@ -62,7 +61,7 @@ fn strict_material_validation_never_exposes_keys() {
         ("addresses", json!(["10.77.0.2", "10.77.0.3"])),
         ("addresses", json!(["::ffff:10.77.0.2"])),
         ("allowed_ips", json!([])),
-        ("dns_servers", json!(["1.1.1.1"])),
+        ("dns_servers", json!(["10.77.0.1"])),
         ("mtu", json!(100_u16)),
         ("persistent_keepalive_secs", json!(0_u16)),
         ("unexpected_secret", json!("private-value")),
@@ -159,6 +158,27 @@ fn repeated_snapshots_share_identity_until_the_last_owner_is_dropped() {
         WireguardRoute::load(&config).is_ok(),
         "drained identities can be reconfigured"
     );
+}
+
+#[tokio::test]
+async fn system_resolved_targets_still_obey_wireguard_address_policy() {
+    let file = tempfile::NamedTempFile::new().unwrap();
+    std::fs::write(file.path(), material().to_string()).unwrap();
+    let mut config = config(&file);
+    config.handshake_timeout_ms = 2000;
+    let proxy = UpstreamProxy::new(&config).unwrap();
+    let target = TargetAuthority::parse("localhost:80").unwrap();
+    let error = proxy.connect_tunnel(&target, &[]).await.err().unwrap();
+    match error {
+        UpstreamProxyError::Io { source, .. } => {
+            assert_eq!(source.kind(), std::io::ErrorKind::NotFound);
+            assert_eq!(
+                source.to_string(),
+                "target resolved to no addresses permitted by WireGuard settings"
+            );
+        }
+        error => panic!("system resolution must finish before the tunnel deadline: {error}"),
+    }
 }
 
 #[tokio::test]

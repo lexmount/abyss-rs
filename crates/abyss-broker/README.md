@@ -208,7 +208,6 @@ Unix). Replace key placeholders with base64-encoded 32-byte WireGuard keys:
   "preshared_key": "OPTIONAL_PRESHARED_KEY",
   "addresses": ["10.77.0.2", "fd77::2"],
   "allowed_ips": ["0.0.0.0/0", "::/0"],
-  "dns_servers": ["10.77.0.1"],
   "mtu": 1280,
   "persistent_keepalive_secs": 25
 }
@@ -221,11 +220,13 @@ one. `allowed_ips` contains 1–256 CIDR networks and restricts both target
 destinations and decrypted source addresses. MTU accepts 1280–1420 and defaults
 to 1280; keepalive is disabled when omitted.
 
-Only peer endpoint DNS uses the host resolver. Target DNS runs over TCP port 53
-inside the tunnel, using up to four IP-literal `dns_servers` within AllowedIPs
-and a configured address family. Without DNS servers, only IP-literal targets
-work. IPv4 and IPv6 resolution/connection attempts race. Invalid targets and
-failed tunnels never fall back to direct routing. Target TLS trust is unchanged.
+Both peer endpoints and target hostnames use the host resolver. DNS follows the
+system configuration; no separate WireGuard DNS configuration is needed. Resolved
+target addresses must match `allowed_ips` and a configured address family before
+TCP connection attempts race through the tunnel. Invalid targets and failed
+tunnels never fall back to direct routing. Target TLS trust is unchanged.
+Remove the earlier experimental `dns_servers` field from existing files;
+unknown fields are rejected.
 
 The same network REST API applies this route. File contents are validated before
 publication and never appear in API replies or persisted policy. Editing the
@@ -237,7 +238,7 @@ before changing that identity's settings. A subsequent connection can recreate
 a failed UDP driver.
 
 The connection budget bounds peer DNS; the handshake budget bounds UDP setup,
-WireGuard establishment, tunneled DNS and target TCP setup. The first resolved
+WireGuard establishment, system hostname resolution and target TCP setup. The first resolved
 peer endpoint address remains selected for that transport; use an IP-literal
 endpoint to choose a specific address. Peer endpoint roaming is not enabled.
 This setting carries broker-accepted TCP traffic only and does not affect the

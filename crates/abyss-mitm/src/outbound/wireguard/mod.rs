@@ -2,7 +2,6 @@
 
 mod config;
 mod device;
-mod dns;
 #[cfg(test)]
 mod tests;
 mod tunnel;
@@ -16,9 +15,11 @@ use std::{
     time::Duration,
 };
 
+use futures_util::{StreamExt as _, stream::FuturesUnordered};
 use parking_lot::Mutex;
 use tokio::{
     io::{AsyncRead, AsyncWrite, ReadBuf},
+    net::lookup_host,
     time,
 };
 
@@ -136,9 +137,22 @@ impl WireguardRoute {
             let name = target.host().as_dns_name().ok_or_else(|| {
                 io::Error::new(io::ErrorKind::InvalidInput, "invalid target hostname")
             })?;
-            dns::TargetResolver::new(&self.settings, tunnel)
-                .connect(name, target.port())
-                .await
+            let mut attempts = lookup_host((name, target.port()))
+                .await?
+                .filter(|address| self.settings.allows(&address.ip()))
+                .map(|address| tunnel.connect(address))
+                .collect::<FuturesUnordered<_>>();
+            let mut last_error = io::Error::new(
+                io::ErrorKind::NotFound,
+                "target resolved to no addresses permitted by WireGuard settings",
+            );
+            while let Some(result) = attempts.next().await {
+                match result {
+                    Ok(stream) => return Ok(stream),
+                    Err(error) => last_error = error,
+                }
+            }
+            Err(last_error)
         }
     }
 }
