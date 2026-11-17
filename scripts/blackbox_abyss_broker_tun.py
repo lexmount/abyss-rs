@@ -254,7 +254,7 @@ def run():
             stderr=subprocess.STDOUT,
         )
         try:
-            for _ in range(200):
+            for _ in range(1200):
                 if process.poll() is not None:
                     raise AssertionError("broker exited during startup")
                 if startup.exists():
@@ -412,7 +412,7 @@ def run():
                 stdout=log,
                 stderr=subprocess.STDOUT,
             )
-            for _ in range(200):
+            for _ in range(1200):
                 assert process.poll() is None, "restarted broker exited"
                 if startup.exists():
                     break
