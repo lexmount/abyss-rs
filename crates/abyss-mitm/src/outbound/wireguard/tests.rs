@@ -52,7 +52,7 @@ fn strict_material_validation_never_exposes_keys() {
         ("10.78.0.1", false),
         ("127.0.0.1", false),
     ] {
-        assert_eq!(settings.allows(address.parse().unwrap()), allowed);
+        assert_eq!(settings.allows(&address.parse().unwrap()), allowed);
     }
     for (field, value) in [
         ("private_key", json!("secret-not-a-key")),
@@ -74,16 +74,16 @@ fn strict_material_validation_never_exposes_keys() {
             .err()
             .expect("invalid configuration")
             .to_string();
-        for secret in [
-            valid["private_key"].as_str().unwrap(),
-            "secret-not-a-key",
-            "private-value",
-        ] {
-            assert!(
-                !error.contains(secret),
-                "configuration errors must redact material"
-            );
-        }
+        assert!(
+            [
+                valid["private_key"].as_str().unwrap(),
+                "secret-not-a-key",
+                "private-value",
+            ]
+            .iter()
+            .all(|secret| !error.contains(secret)),
+            "configuration errors must redact material"
+        );
     }
     std::fs::write(file.path(), vec![b' '; 0x0001_0001]).unwrap();
     assert!(

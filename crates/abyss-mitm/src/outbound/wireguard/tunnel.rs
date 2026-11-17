@@ -25,7 +25,7 @@ use super::{config::Settings, device::PacketDevice};
 /// The route and every target stream retain this owner; dropping it stops the driver.
 pub(super) struct Tunnel {
     pub(super) peer: SocketAddr,
-    stacks: Vec<(IpAddr, Net)>,
+    stacks: Box<[(IpAddr, Net)]>,
     driver: AbortHandle,
 }
 
@@ -45,24 +45,31 @@ impl Tunnel {
         // is intentionally not enabled for a fixed outbound route.
         socket.connect(peer).await?;
         let (outgoing, packets) = mpsc::channel(64);
-        let mut stacks = Vec::new();
-        let mut incoming = Vec::new();
-        for address in &settings.addresses {
-            let (sender, receiver) = mpsc::channel(64);
-            let device = PacketDevice::new(receiver, outgoing.clone(), settings.mtu);
-            let mut interface = iface::Config::new(HardwareAddress::Ip);
-            let random = uuid::Uuid::new_v4();
-            interface.random_seed =
-                u64::from_ne_bytes(random.as_bytes()[..8].try_into().expect("UUID prefix"));
-            let prefix = if address.is_ipv4() { 32 } else { 128 };
-            let config = NetConfig::new(
-                interface,
-                IpCidr::new((*address).into(), prefix),
-                vec![(*address).into()],
-            );
-            stacks.push((*address, Net::new(device, config)));
-            incoming.push((*address, sender));
-        }
+        let (stacks, incoming): (Vec<_>, Vec<_>) = settings
+            .addresses
+            .iter()
+            .map(|address| {
+                let (sender, receiver) = mpsc::channel(64);
+                let device = PacketDevice::new(receiver, outgoing.clone(), settings.mtu);
+                let mut interface = iface::Config::new(HardwareAddress::Ip);
+                let random = uuid::Uuid::new_v4();
+                interface.random_seed =
+                    u64::from_ne_bytes(random.as_bytes()[..8].try_into().expect("UUID prefix"));
+                let prefix = if address.is_ipv4() { 32 } else { 128 };
+                let config = NetConfig::new(
+                    interface,
+                    IpCidr::new((*address).into(), prefix),
+                    vec![(*address).into()],
+                );
+                (
+                    (*address, Net::new(device, config)),
+                    StackInput {
+                        address: *address,
+                        sender,
+                    },
+                )
+            })
+            .unzip();
         drop(outgoing);
         let tunn = Tunn::new(
             StaticSecret::from(settings.keys.private),
@@ -76,14 +83,14 @@ impl Tunnel {
             socket,
             tunn,
             packets,
-            incoming,
+            incoming: incoming.into_boxed_slice(),
             allowed_ips: settings.allowed_ips.clone(),
             peer,
         };
         let handle = tokio::spawn(driver.run());
         Ok(Arc::new(Self {
             peer,
-            stacks,
+            stacks: stacks.into_boxed_slice(),
             driver: handle.abort_handle(),
         }))
     }
@@ -109,12 +116,18 @@ impl Drop for Tunnel {
     }
 }
 
+/// Routes decrypted packets to the stack owning their destination address.
+struct StackInput {
+    address: IpAddr,
+    sender: mpsc::Sender<io::Result<Vec<u8>>>,
+}
+
 struct Driver {
     socket: UdpSocket,
     tunn: Tunn,
     packets: mpsc::Receiver<Vec<u8>>,
-    incoming: Vec<(IpAddr, mpsc::Sender<io::Result<Vec<u8>>>)>,
-    allowed_ips: Vec<ipnet::IpNet>,
+    incoming: Box<[StackInput]>,
+    allowed_ips: Box<[ipnet::IpNet]>,
     peer: SocketAddr,
 }
 
@@ -123,12 +136,12 @@ impl Driver {
         if self.pump().await.is_err() {
             // Wake stack readers with a generic error, without logging decrypted
             // traffic or handshake/key material supplied by the peer.
-            for (_, sender) in &self.incoming {
-                let _result = sender.try_send(Err(io::Error::new(
+            self.incoming.iter().for_each(|input| {
+                let _result = input.sender.try_send(Err(io::Error::new(
                     io::ErrorKind::BrokenPipe,
                     "WireGuard UDP transport failed",
                 )));
-            }
+            });
         }
     }
 
@@ -137,8 +150,8 @@ impl Driver {
         reason = "Tokio's randomized select uses modulo internally for fair scheduling."
     )]
     async fn pump(&mut self) -> io::Result<()> {
-        let mut receive = vec![0; 0x0001_0000];
-        let mut output = vec![0; 0x0001_0000];
+        let mut receive = vec![0; 0x0001_0000].into_boxed_slice();
+        let mut output = vec![0; 0x0001_0000].into_boxed_slice();
         let mut timers = time::interval(Duration::from_millis(250));
         timers.set_missed_tick_behavior(time::MissedTickBehavior::Delay);
         loop {
@@ -150,14 +163,14 @@ impl Driver {
                 }
                 received = self.socket.recv(&mut receive) => {
                     let length = received?;
-                    let result = self.tunn.decapsulate(Some(self.peer.ip()), &receive[..length], &mut output);
-                    let mut drain = matches!(result, TunnResult::WriteToNetwork(_));
-                    Self::dispatch(&self.socket, &self.incoming, &self.allowed_ips, result).await?;
-                    while drain {
-                        let result = self.tunn.decapsulate(None, &[], &mut output);
-                        drain = matches!(result, TunnResult::WriteToNetwork(_));
-                        Self::dispatch(&self.socket, &self.incoming, &self.allowed_ips, result).await?;
+                    let mut result = self.tunn.decapsulate(Some(self.peer.ip()), &receive[..length], &mut output);
+                    // Only a network result requests draining queued datagrams.
+                    // Follow that variant directly instead of mirroring it in a flag.
+                    while let TunnResult::WriteToNetwork(packet) = result {
+                        self.socket.send(packet).await?;
+                        result = self.tunn.decapsulate(None, &[], &mut output);
                     }
+                    Self::dispatch(&self.socket, &self.incoming, &self.allowed_ips, result).await?;
                 }
                 _ = timers.tick() => {
                     let result = self.tunn.update_timers(&mut output);
@@ -169,7 +182,7 @@ impl Driver {
 
     async fn dispatch(
         socket: &UdpSocket,
-        incoming: &[(IpAddr, mpsc::Sender<io::Result<Vec<u8>>>)],
+        incoming: &[StackInput],
         allowed_ips: &[ipnet::IpNet],
         result: TunnResult<'_>,
     ) -> io::Result<()> {
@@ -190,10 +203,10 @@ impl Driver {
         let Some(destination) = Tunn::dst_address(packet) else {
             return Ok(());
         };
-        if let Some((_, sender)) = incoming.iter().find(|(ip, _)| *ip == destination) {
+        if let Some(input) = incoming.iter().find(|input| input.address == destination) {
             // UDP cannot exert end-to-end backpressure. Drop at the bounded queue
             // instead of stalling handshakes; the inner TCP connection retransmits.
-            let _result = sender.try_send(Ok(packet.to_vec()));
+            let _result = input.sender.try_send(Ok(packet.to_vec()));
         }
         Ok(())
     }

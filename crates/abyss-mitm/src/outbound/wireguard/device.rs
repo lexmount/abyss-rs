@@ -14,6 +14,7 @@ use tokio_smoltcp::{
 };
 use tokio_util::sync::{PollSendError, PollSender};
 
+/// Packet ownership uses `Vec` because smoltcp's `AsyncDevice` requires it.
 pub(super) struct PacketDevice {
     incoming: mpsc::Receiver<io::Result<Vec<u8>>>,
     outgoing: PollSender<Vec<u8>>,
@@ -26,6 +27,7 @@ impl PacketDevice {
         outgoing: mpsc::Sender<Vec<u8>>,
         mtu: usize,
     ) -> Self {
+        // This external type is non-exhaustive and exposes fields, not setters.
         let mut capabilities = DeviceCapabilities::default();
         capabilities.medium = Medium::Ip;
         capabilities.max_transmission_unit = mtu;

@@ -14,9 +14,9 @@ use crate::outbound::UpstreamProxyConfigError;
 #[derive(PartialEq)]
 pub(super) struct Settings {
     pub(super) keys: Keys,
-    pub(super) addresses: Vec<IpAddr>,
-    pub(super) allowed_ips: Vec<IpNet>,
-    pub(super) dns_servers: Vec<IpAddr>,
+    pub(super) addresses: Box<[IpAddr]>,
+    pub(super) allowed_ips: Box<[IpNet]>,
+    pub(super) dns_servers: Box<[IpAddr]>,
     pub(super) mtu: usize,
     pub(super) keepalive: Option<u16>,
 }
@@ -35,10 +35,10 @@ struct FileSettings {
     public_key: String,
     #[serde(default)]
     preshared_key: Option<Zeroizing<String>>,
-    addresses: Vec<IpAddr>,
-    allowed_ips: Vec<IpNet>,
+    addresses: Box<[IpAddr]>,
+    allowed_ips: Box<[IpNet]>,
     #[serde(default)]
-    dns_servers: Vec<IpAddr>,
+    dns_servers: Box<[IpAddr]>,
     #[serde(default = "default_mtu")]
     mtu: usize,
     #[serde(default)]
@@ -82,7 +82,7 @@ impl Settings {
         }
         if file.addresses.is_empty()
             || file.addresses.len() > 2
-            || file.addresses.iter().any(|ip| !unicast(*ip))
+            || file.addresses.iter().any(|ip| !unicast(ip))
             || (file.addresses.len() == 2
                 && file.addresses[0].is_ipv4() == file.addresses[1].is_ipv4())
         {
@@ -108,7 +108,7 @@ impl Settings {
             keepalive: file.persistent_keepalive_secs,
         };
         if settings.dns_servers.len() > 4
-            || settings.dns_servers.iter().any(|ip| !settings.allows(*ip))
+            || settings.dns_servers.iter().any(|ip| !settings.allows(ip))
         {
             return Err(invalid(
                 "WireGuard DNS servers must be routable through allowed_ips (at most four)",
@@ -117,14 +117,14 @@ impl Settings {
         Ok(settings)
     }
 
-    pub(super) fn allows(&self, ip: IpAddr) -> bool {
+    pub(super) fn allows(&self, ip: &IpAddr) -> bool {
         unicast(ip)
-            && !self.addresses.contains(&ip)
+            && !self.addresses.contains(ip)
             && self
                 .addresses
                 .iter()
                 .any(|local| local.is_ipv4() == ip.is_ipv4())
-            && self.allowed_ips.iter().any(|network| network.contains(&ip))
+            && self.allowed_ips.iter().any(|network| network.contains(ip))
     }
 
     pub(super) fn identity(&self) -> ([u8; 32], [u8; 32]) {
@@ -150,11 +150,11 @@ pub(super) const fn invalid(reason: &'static str) -> UpstreamProxyConfigError {
     UpstreamProxyConfigError(reason)
 }
 
-pub(super) fn unicast(ip: IpAddr) -> bool {
+fn unicast(ip: &IpAddr) -> bool {
     !ip.is_unspecified()
         && !ip.is_multicast()
         && !ip.is_loopback()
-        && ip != IpAddr::V4(std::net::Ipv4Addr::BROADCAST)
+        && *ip != IpAddr::V4(std::net::Ipv4Addr::BROADCAST)
         && !matches!(ip, IpAddr::V6(v6) if v6.to_ipv4_mapped().is_some() || v6.is_unicast_link_local())
         && !matches!(ip, IpAddr::V4(v4) if v4.is_link_local())
 }

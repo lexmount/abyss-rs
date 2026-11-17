@@ -52,17 +52,20 @@ impl WireguardRoute {
                 .ok_or_else(|| config::invalid("wireguard_file is required"))?,
         )?;
         let endpoint = config.target()?;
+        let identity = settings.identity();
         let mut identities = IDENTITIES.lock();
         identities.retain(|entry| entry.strong_count() > 0);
-        for entry in identities.iter().filter_map(Weak::upgrade) {
-            if entry.settings.identity() == settings.identity() {
-                if entry.settings == settings && entry.endpoint == endpoint {
-                    return Ok(entry);
-                }
-                return Err(config::invalid(
-                    "WireGuard identity is still in use with different settings; rotate the key or drain the old route first",
-                ));
+        if let Some(entry) = identities
+            .iter()
+            .filter_map(Weak::upgrade)
+            .find(|entry| entry.settings.identity() == identity)
+        {
+            if entry.settings == settings && entry.endpoint == endpoint {
+                return Ok(entry);
             }
+            return Err(config::invalid(
+                "WireGuard identity is still in use with different settings; rotate the key or drain the old route first",
+            ));
         }
         let route = Arc::new(Self {
             settings,
@@ -122,7 +125,7 @@ impl WireguardRoute {
         tunnel: &Tunnel,
     ) -> io::Result<tokio_smoltcp::TcpStream> {
         if let Some(ip) = target.host().as_ip_addr() {
-            if !self.settings.allows(ip) {
+            if !self.settings.allows(&ip) {
                 return Err(io::Error::new(
                     io::ErrorKind::PermissionDenied,
                     "target is outside WireGuard allowed_ips or address families",
@@ -133,7 +136,9 @@ impl WireguardRoute {
             let name = target.host().as_dns_name().ok_or_else(|| {
                 io::Error::new(io::ErrorKind::InvalidInput, "invalid target hostname")
             })?;
-            dns::connect(name, target.port(), &self.settings, tunnel).await
+            dns::TargetResolver::new(&self.settings, tunnel)
+                .connect(name, target.port())
+                .await
         }
     }
 }

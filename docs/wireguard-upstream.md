@@ -43,6 +43,16 @@ releases its key material, packet driver and stacks. This intentionally rejects
 incompatible updates rather than disrupting an existing session. The UDP socket
 accepts only the configured peer; endpoint roaming is outside this contract.
 
+Fixed configuration collections, stack endpoints and DNS results use boxed slices.
+Growable collections remain for file reads, the live route registry and CNAME
+traversal; smoltcp packet APIs also require `Vec`. DNS resolution borrows route settings and the active tunnel;
+validated responses borrow their question and CNAME records instead of cloning
+names. The DNS response type is constructed only after checking the transaction,
+question and response flags. The packet driver follows BoringTun's result variants
+directly when draining pending datagrams. These ownership and control-flow changes
+follow the workspace Rust style rules without changing the public route contract,
+deadlines, retry behavior or tunnel lifetime.
+
 The `connect_timeout_ms` budget bounds peer DNS; `handshake_timeout_ms` covers
 UDP setup, WireGuard establishment, target DNS and target TCP. Failures use the
 existing upstream handshake diagnostics, with no synthetic HTTP proxy status.
