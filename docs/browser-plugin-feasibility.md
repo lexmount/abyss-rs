@@ -4,6 +4,8 @@ Task: `browser-plugin.md`. Research scope confirmed on 2026-11-16: feasibility,
 implementation alternatives, and minimal validation, not a distributable extension.
 Source baseline: `01639cbc10c2dcf705e24d3d75ee5552a15ec3f1` (workspace version
 `1.6.0`). Browser documentation was consulted on 2026-11-16/17.
+Scope refined on 2026-11-17: reuse CLI/App configuration, launch a separate
+browser broker, and require no `abyss-rs` functional changes for Phase 1.
 
 ## Decision
 
@@ -13,6 +15,15 @@ traffic processing. **Expose broker capabilities to the browser; do not attempt
 to move the whole broker into the extension runtime.** A thin native-messaging
 host should bridge lifecycle, authenticated control, and bounded status updates.
 The extension is a new client of the endpoint, not a new proxy implementation.
+
+The selected first implementation reuses the existing domain policy and runs an
+**independent native broker instance in explicit-proxy mode**. Attaching to an
+already running CLI/App broker, or adding simultaneous platform and explicit
+ingress to one process, is outside this phase. Existing broker binaries and SDK
+operations are sufficient for routing and control; new work belongs in the
+extension, native messaging host, PAC generation, and native distribution.
+This zero-runtime-change conclusion does not include complete browser
+conversation capture, which remains a separate identity/site-adapter workstream.
 
 [Oxylabs' documented workflow](https://oxylabs.io/products/chrome-proxy-extension)
 is profile creation, profile selection, and one-click connection to a chosen
@@ -32,6 +43,7 @@ approval and end-to-end browser conversation collection remain future gates.
 | Capability | Existing implementation | Reuse and remaining work |
 | --- | --- | --- |
 | Browser HTTP/HTTPS routing | [Explicit ingress](../crates/abyss-broker/src/ingress/explicit.rs), [broker configuration](../crates/abyss-broker/src/config.rs) | Reuse HTTP absolute-form requests and CONNECT. Configure Chrome to use an HTTP proxy even for HTTPS destinations. The ingress is not a SOCKS server. |
+| Domain configuration | [CLI defaults](../crates/abyss-cli/defaults/runtime-policy.toml), [local configuration types](../crates/abyss-cli/src/local_config.rs), [TLS policy](../crates/abyss-mitm/src/transparent/decrypt_policy.rs) | Reuse `mitm.tls_decryption.rules[].destination_hosts`; generate PAC from compatible rules without introducing a separately maintained browser domain list. |
 | TLS, HTTP, streaming and WebSocket relay | [MITM crate](../crates/abyss-mitm/src/lib.rs) | Keep native. HTTPS content needs broker CA trust in the actual browser trust configuration. Validate negotiated protocols and capture limits; connection success alone proves neither decryption nor complete content. |
 | Upstream proxy selection | [Network runtime](../crates/abyss-broker/src/network_config.rs), [upstream design](upstream-proxy-design.md) | Reuse existing outbound routing. Browser points at the local broker; broker points at the selected remote upstream. Keep these endpoints distinct to avoid loops. |
 | Inspection and modification | [Request control](../crates/abyss-broker/src/proxy/request_control.rs), [inspection protocol](../crates/abyss-broker/src/plugin/inspection.rs) | Run policy decisions natively. Browser popup/service-worker availability must not become a synchronous request dependency. Preserve native timeout, rejection, and modification semantics. |
@@ -39,6 +51,82 @@ approval and end-to-end browser conversation collection remain future gates.
 | Local control and diagnostics | [REST router](../crates/abyss-broker/src/api.rs), [startup discovery](../crates/abyss-broker/src/startup_info.rs), [Rust SDK client](../crates/abyss-sdk/src/broker/client.rs) | Native host can reuse endpoint discovery and authenticated SDK calls. Health/proxy status are public; policy, diagnostics, traffic and shutdown routes require the local bearer token. No browser-native bridge exists today. |
 | Events and delivery | [Plugin transport](../crates/abyss-broker/src/plugin), [delivery uploader](../crates/abyss-delivery-plugin/src/uploader.rs) | Keep IPC, destination credentials and spooling native. Existing live publication is best-effort; upload spooling cannot recover events dropped before delivery receives them. |
 | TypeScript clients | [REST client](../sdks/typescript/src/broker/client.ts), [plugin transport](../sdks/typescript/src/plugin/transport.ts), [event types](../sdks/typescript/src/event.ts) | Types and pure decoding logic are candidates for reuse. The shipped clients import Node filesystem/network APIs; they are not drop-in browser modules. Prefer the Rust SDK in the native host. |
+
+### Shared configuration and browser routing
+
+The CLI stores domain selectors in `runtime-policy.toml`, under
+`mitm.tls_decryption.rules[].destination_hosts`. The inspected AbyssApp dashboard
+also translates provider selections and custom relay domains into that field;
+its native bridge reads and updates the broker through `GET/PUT /v1/mitm/config`.
+The App source inspected was revision `7526ab077478a739a7ef57d92055b3993d166db5`:
+`dashboard/src/config/harnessSettings.ts` and
+`platform/macos/Abyss/Abyss/Host/AbyssBrokerClient.swift`. These are shared policy
+semantics, not a single file already shared by all installations.
+
+Domain policy is evaluated inside the broker. Native platform adapters first
+select candidate flows using their own process/application/network rules. The
+browser's equivalent ingress selection is a generated PAC script installed with
+`chrome.proxy`; PAC decides which request destinations reach the explicit
+listener. Reuse the domain policy, not the App's platform adapter configuration.
+
+The proposed configuration path is:
+
+```text
+Selected CLI/App-compatible runtime policy source
+    -> Native host imports policy into the independent browser instance
+    -> Existing broker validates/persists it through its configuration API
+    -> Native host reads effective policy and generates PAC
+    -> Extension installs PAC with chrome.proxy
+
+Selected request host -> browser broker -> existing broker policy and forwarding
+Other request host    -> DIRECT in the selected-domain routing mode
+```
+
+The native host keeps the source identity and synchronizes imported changes; it
+does not maintain a second editable domain allowlist. The independent instance
+owns its runtime-policy file, ports, token, startup file, plugin endpoint and
+mutable state. Two brokers must not write the same runtime-policy file. Source
+changes require validation, application to this instance, and PAC regeneration;
+record the applied configuration version/hash and report synchronization errors.
+Installing PAC and changing broker policy are separate operations, not an atomic
+cross-process transaction. Reconcile after interruption and distinguish desired
+from effective configuration. The initial extension may expose imported policy
+read-only; a future editor must define write-back ownership explicitly.
+
+PAC is a derived ingress filter, not a replacement TLS-policy engine. The first
+prototype targets the existing domain-based policies with passthrough defaults:
+
+- Build a conservative candidate set from enabled, destination-only rules,
+  including passthrough exceptions. Send those hosts to the broker and leave
+  final ordered action selection there. For example, `ab.chatgpt.com` remains
+  opaque according to its exception before the broader ChatGPT intercept rule.
+- Preserve exact-host normalization and the current wildcard contract.
+  `*.example.com` matches `api.example.com`, but neither `example.com` nor
+  `deep.api.example.com`. The Rust matcher and its tests explicitly enforce one
+  subdomain label. A generic suffix test or unrestricted glob would widen scope.
+- Preserve rule order, enabled flags and defaults in the imported broker policy.
+  `passthrough` means opaque forwarding through the broker, not PAC `DIRECT`.
+  `intercept`, `redirect`, and `block`, where supported by the selected runtime,
+  remain broker actions; a blocked or redirected destination must reach it.
+- PAC has no process name, application ID, executable path or entry-point
+  attribution. Explicit ingress supplies no source process either, so rules
+  requiring that metadata do not match this ingress. Report that applicability
+  limit; never drop a source selector and turn it into a broader domain rule.
+- A restrictive default or missing-SNI action cannot be preserved by blindly
+  routing unlisted hosts directly. Such policies need a separately validated
+  broader routing mode or an explicit compatibility error. PAC sees a URL host,
+  while the TLS policy uses available handshake metadata; do not claim identical
+  enforcement for every request merely because both use domain names.
+- Keep outbound proxy configuration separate. Direct routing for unselected
+  hosts intentionally bypasses the broker and its configured upstream. This
+  mode is not equivalent to forwarding all browser traffic through that upstream.
+
+The native host must check the selected broker's schema/capabilities before
+importing policy. The inspected App pins endpoint `1.4.5`, while this research
+checkout is `1.6.0`; shared field names do not establish support for every newer
+action or selector. Reject unsupported policy explicitly rather than silently
+discarding fields. The PAC generator and synchronization bridge are proposed
+work, not components implemented or exercised by this research.
 
 ### Routing does not imply browser conversation support
 
@@ -65,6 +153,9 @@ never backend ownership. Preserve server-provided conversation/response IDs when
 available; represent missing identities honestly. Cross-tab concurrency, reloads,
 retries and multiple browser profiles need deterministic isolation tests. Any
 new event fields require a separate coordinated producer/consumer design.
+Unlike Phase 1 routing/control, this follow-up can require changes to
+`abyss-agent-hook` and related endpoint contracts. Existing TLS interception
+alone does not provide website identity, parser coverage or normalized events.
 
 ## Browser constraints and alternatives
 
@@ -134,10 +225,13 @@ from Chromium results.
 ```mermaid
 flowchart LR
     UI[Extension popup / options] --> SW[MV3 service worker]
-    SW --> Settings[Browser proxy settings]
+    SW --> Settings[Browser proxy settings / generated PAC]
     SW <-->|bounded JSON control| Host[Native messaging host]
-    Host <-->|local SDK / bearer token| Broker[Existing broker]
-    Browser[Browser network stack] -->|HTTP / CONNECT| Broker
+    Policy[CLI / App-compatible policy source] --> Host
+    Host <-->|launch / local SDK / bearer token| Broker[Independent broker / existing binary]
+    Settings -.-> Browser[Browser network stack]
+    Browser -->|selected hosts / HTTP / CONNECT| Broker
+    Browser -->|unselected hosts / DIRECT| Direct[Origin]
     Broker --> MITM[TLS / HTTP / WebSocket / hooks]
     MITM --> Origin[Origin or configured upstream]
     MITM --> IPC[Native plugin IPC]
@@ -153,10 +247,14 @@ neither framing nor endpoints should be connected directly. Limit status
 messages well below the host-to-browser 1 MB maximum. Send counters and bounded
 summaries, not full conversation bodies or bulk event streams.
 
-The host discovers the existing broker through its startup information, retains
-the local bearer token and invokes typed SDK operations. Define a versioned
+The host launches the dedicated broker with isolated runtime paths, discovers
+that instance through its startup information, retains its local bearer token
+and invokes existing typed SDK operations. It does not attach to or shut down
+the user's running CLI/App broker. Define a versioned
 bridge with request IDs and explicit operations such as `getStatus`,
-`getProfiles`, `selectProfile`, and `getDiagnosticsSummary`. Return capability
+`getProfiles`, `selectProfile`, `getRoutingConfig`, and `getDiagnosticsSummary`.
+The host compiles the effective domain policy into PAC and returns the derived
+script and its configuration version to the extension. Return capability
 and runtime version information so the extension can reject unsupported actions.
 Do not provide arbitrary URL fetch, shell execution, filesystem access or generic
 REST forwarding to page scripts. Validate origin, operation and payload at the
@@ -171,15 +269,17 @@ new work. Native messaging better matches existing discovery and IPC boundaries.
 
 ### Connection state and failure behavior
 
-1. Discover the installed host and supported broker version. If missing, offer
-   installation instructions without altering the browser's routing.
-2. Confirm an explicit loopback listener and browser-trust readiness. A listener
+1. Discover the installed host and supported existing broker binary. If missing,
+   offer installation instructions without altering the browser's routing.
+2. Start the independent instance, import compatible policy, and confirm its
+   explicit loopback listener. Check browser-trust readiness when inspection is
+   requested; opaque HTTPS forwarding alone does not require a MITM CA. A listener
    health response does not certify CA trust; use a controlled HTTPS probe with
    an expected payload and verified certificate chain during setup.
-3. Apply the selected route only when proxy settings are controllable. Keep
-   local control endpoints and unrelated destinations outside interception.
-   A dedicated broker instance is preferable when changing a profile would
-   otherwise change upstream routing for unrelated native clients.
+3. Generate PAC from the effective policy and apply it only when proxy settings
+   are controllable. Keep local control endpoints and unrelated destinations
+   outside interception.
+   Configuration and profile changes affect only the independent instance.
 4. Record desired state; compare it with effective proxy control and broker
    health on startup, worker wake and settings changes. Show conflicts, missing
    trust, unavailable broker, and unsupported capture separately.
@@ -206,7 +306,7 @@ under the [Chrome Web Store data policies](https://developer.chrome.com/docs/web
 | Phase | Work and owners | Exit evidence |
 | --- | --- | --- |
 | 0: this research | Public endpoint design and tests of existing behavior | Source trace, unit results, real broker proxy/control black-box results and isolated browser transport probe; documented gaps |
-| 1: routing/control prototype | Extension client and generic native host; public SDK reuse | Real extension install; connect/disconnect; effective proxy ownership; worker restart; native host absent/crash; authenticated control denial; HTTPS trust success/failure |
+| 1: routing/control prototype | Extension, native host, policy import and PAC generation; independent existing broker binary and public SDK reuse; no `abyss-rs` functional changes | Real extension install; domain/exception/wildcard parity; incompatible-policy errors; configuration synchronization; isolated instance lifecycle; proxy ownership; worker/host failure; authenticated control denial; HTTPS trust success/failure |
 | 2: browser capture | Endpoint harness/identity and selected site adapters; keep parsers native | Actual chosen web clients through broker, SSE/WS, tab/profile isolation, reload/retry, missing-token semantics, privacy scope and complete upload/query correlation |
 | 3: product distribution | Platform-owned native-host registration, trust UX, extension packaging and upgrades | macOS/Windows installers, upgrade/uninstall restoration, browser store review and browser/OS matrix |
 
@@ -216,17 +316,22 @@ Routing/control is the smaller workstream; site protocol compatibility, identity
 and native distribution are the largest uncertainties. Fixed delivery dates
 would need prototype results first.
 
-The open endpoint repository should own generic broker changes, portable bridge
-contracts and parser tests. Product-native packaging and authentication remain
-with the native product; web/service stacks only change if their presentation or
-data contracts change. A new extension repository/location is a follow-up
-ownership decision. This research requires no companion repository PR.
+Phase 1 introduces an external client of existing endpoint contracts; it does not
+require broker, CLI, SDK, parser or multi-ingress changes in `abyss-rs`. Extension
+and native-host source placement remains a follow-up ownership decision.
+Product-native packaging and authentication remain with the native product;
+web/service stacks only change if their presentation or data contracts change.
+If Phase 2 requires shared runtime behavior or parser changes, those changes and
+tests belong in the open endpoint repository. This documentation change requires
+no companion repository PR.
 
-Release order for implementation is: additive endpoint/SDK support, pinned native
-host distribution, then a compatible extension. Adjacent source changes do not
-update packaged binaries. Inspect the product's actual runtime/library pins at
-implementation time, and use an explicit local artifact override for pre-release
-validation. Native host protocol negotiation must cover upgrades in either order.
+Phase 1 distribution pins a compatible existing broker release, packages the
+native host, and ships a compatible extension; no new endpoint release is a
+prerequisite. A later phase that changes endpoint contracts must release that
+support before distributing consumers that require it. Adjacent source changes
+do not update packaged binaries. Inspect actual runtime/library pins and use an
+explicit local artifact override when validating unpublished changes. Native
+host protocol negotiation must cover upgrades in either order.
 
 ## Validation and limits of this research
 
@@ -251,6 +356,10 @@ behavior. An additional isolated Chromium process can test the browser network
 stack against the same explicit listener using only a synthetic local page.
 That command-line routing experiment does **not** validate `chrome.proxy`, a
 native messaging host, CA installation or production web conversation capture.
+It also does not validate policy-to-PAC compilation or synchronization. The
+2026-11-17 configuration/independent-instance refinement is based on source
+inspection. Its documentation checks are recorded separately from the original
+runtime experiments; unchanged runtime results are not new extension evidence.
 
 No running product/standalone stack, native installer or live Codex/DSH workload
 is claimed: this task changes no application, skill, traffic handling, parser or
