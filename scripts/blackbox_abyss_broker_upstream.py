@@ -217,7 +217,9 @@ def network(proxy):
 
 
 class Broker:
-    def __init__(self, directory, proxy, transparent=False):
+    def __init__(
+        self, directory, proxy, transparent=False, origin_sans="DNS:tls.invalid"
+    ):
         self.directory = directory
         self.home = directory / "home"
         self.home.mkdir()
@@ -271,7 +273,7 @@ class Broker:
         )
         extension = directory / "origin.ext"
         extension.write_text(
-            "subjectAltName=DNS:tls.invalid\nbasicConstraints=critical,CA:FALSE\n"
+            f"subjectAltName={origin_sans}\nbasicConstraints=critical,CA:FALSE\n"
             "keyUsage=critical,digitalSignature,keyEncipherment\nextendedKeyUsage=serverAuth\n"
         )
         openssl(

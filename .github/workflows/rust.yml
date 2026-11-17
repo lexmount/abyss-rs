@@ -161,6 +161,10 @@ jobs:
         if: runner.os != 'Windows'
         run: make test-blackbox-broker-upstream
 
+      - name: Run kernel WireGuard interoperability black-box
+        if: runner.os == 'Linux'
+        run: make test-blackbox-broker-wireguard
+
       - name: Request blocking black-box
         if: runner.os != 'Windows'
         run: make test-blackbox-request-blocking

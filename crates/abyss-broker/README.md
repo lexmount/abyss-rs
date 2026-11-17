@@ -184,6 +184,72 @@ proxies also record status 407; SOCKS reply codes never populate `proxy_status`.
 See [the design and API compatibility notes](../../docs/upstream-proxy-design.md)
 for the flow model and validation plan.
 
+## Forward through WireGuard
+
+The broker supports an in-process WireGuard tunnel without a system VPN interface,
+host route changes, or administrator privileges:
+
+```toml
+[proxy.upstream]
+protocol = "wireguard"
+endpoint = "wireguard://vpn.example.com:51820"
+wireguard_file = "/absolute/path/wireguard.json"
+connect_timeout_ms = 10000
+handshake_timeout_ms = 10000
+```
+
+Create the broker-local JSON file with owner-only permissions (`chmod 600` on
+Unix). Replace key placeholders with base64-encoded 32-byte WireGuard keys:
+
+```json
+{
+  "private_key": "CLIENT_PRIVATE_KEY",
+  "public_key": "PEER_PUBLIC_KEY",
+  "preshared_key": "OPTIONAL_PRESHARED_KEY",
+  "addresses": ["10.77.0.2", "fd77::2"],
+  "allowed_ips": ["0.0.0.0/0", "::/0"],
+  "mtu": 1280,
+  "persistent_keepalive_secs": 25
+}
+```
+
+`addresses` accepts at most one address per IP family, without CIDR suffixes.
+The peer must authorize these addresses for the client's public key and provide
+any required forwarding/NAT. Omit `preshared_key` when the peer does not require
+one. `allowed_ips` contains 1–256 CIDR networks and restricts both target
+destinations and decrypted source addresses. MTU accepts 1280–1420 and defaults
+to 1280; keepalive is disabled when omitted.
+
+Both peer endpoints and target hostnames use the host resolver. DNS follows the
+system configuration; no separate WireGuard DNS configuration is needed. Resolved
+target addresses must match `allowed_ips` and a configured address family before
+TCP connection attempts race through the tunnel. Invalid targets and failed
+tunnels never fall back to direct routing. Target TLS trust is unchanged.
+Remove the earlier experimental `dns_servers` field from existing files;
+unknown fields are rejected.
+
+The same network REST API applies this route. File contents are validated before
+publication and never appear in API replies or persisted policy. Editing the
+file alone does not change active snapshots. Identical material reuses the peer
+transport through state owned by the broker's route manager and shared across
+configuration snapshots, including transitions through direct mode. Independent
+route managers do not share this state. Concurrent reuse of the same client/peer identity with different
+settings is rejected to prevent endpoint roaming from breaking active streams.
+Use a new client key, or select direct routing and drain the old connections
+before changing that identity's settings. A subsequent connection can recreate
+a failed UDP driver.
+
+The connection budget bounds peer DNS; the handshake budget bounds UDP setup,
+WireGuard establishment, system hostname resolution and target TCP setup. The first resolved
+peer endpoint address remains selected for that transport; use an IP-literal
+endpoint to choose a specific address. Peer endpoint roaming is not enabled.
+This setting carries broker-accepted TCP traffic only and does not affect the
+delivery plugin. Windows TCP redirect records do not apply to its outer UDP socket.
+
+See the [WireGuard design](../../docs/wireguard-upstream.md). Run
+`make test-blackbox-broker-wireguard` against an independent Linux-kernel peer;
+Docker and container `NET_ADMIN` are required, with no host network changes.
+
 ## macOS transparent routing
 
 `[proxy.upstream]` also applies to `mode = "macos_network_extension"`.

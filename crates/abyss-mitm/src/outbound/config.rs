@@ -17,6 +17,8 @@ pub enum UpstreamProxyProtocol {
     HttpConnect,
     /// SOCKS5 TCP CONNECT, with target DNS resolved by the proxy.
     Socks5,
+    /// TCP over an in-process `WireGuard` tunnel.
+    Wireguard,
 }
 
 /// Static next-hop settings shared by the broker and its configuration editors.
@@ -34,6 +36,9 @@ pub struct UpstreamProxyConfig {
     /// Contents are loaded when the configuration is applied, never serialized here.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub credentials_file: Option<PathBuf>,
+    /// Absolute path to local `WireGuard` key and tunnel settings. Never returned inline.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub wireguard_file: Option<PathBuf>,
     /// Shared budget for proxy DNS and TCP connection establishment.
     #[serde(default = "default_timeout_ms")]
     pub connect_timeout_ms: u64,
@@ -90,12 +95,27 @@ impl UpstreamProxyConfig {
     /// Returns an error for unsupported transports, credentials, or invalid limits.
     pub fn validate(&self) -> Result<(), UpstreamProxyConfigError> {
         let _endpoint = self.target()?;
+        if (self.protocol == UpstreamProxyProtocol::Wireguard) != self.wireguard_file.is_some() {
+            return Err(UpstreamProxyConfigError(
+                "wireguard requires wireguard_file; other protocols must omit it",
+            ));
+        }
+        if self.protocol == UpstreamProxyProtocol::Wireguard && self.credentials_file.is_some() {
+            return Err(UpstreamProxyConfigError(
+                "WireGuard does not use proxy credentials",
+            ));
+        }
         if self.ca_file.is_some() && !self.endpoint.starts_with("https://") {
             return Err(UpstreamProxyConfigError(
                 "ca_file requires an https:// proxy",
             ));
         }
-        for path in self.ca_file.iter().chain(&self.credentials_file) {
+        for path in self
+            .ca_file
+            .iter()
+            .chain(&self.credentials_file)
+            .chain(&self.wireguard_file)
+        {
             if !path.is_absolute() {
                 return Err(UpstreamProxyConfigError(
                     "proxy file paths must be absolute",
@@ -161,6 +181,7 @@ impl UpstreamProxyConfig {
                 .strip_prefix("http://")
                 .or_else(|| self.endpoint.strip_prefix("https://")),
             UpstreamProxyProtocol::Socks5 => self.endpoint.strip_prefix("socks5://"),
+            UpstreamProxyProtocol::Wireguard => self.endpoint.strip_prefix("wireguard://"),
         }
         .ok_or(UpstreamProxyConfigError(
             "endpoint scheme must match the proxy protocol",

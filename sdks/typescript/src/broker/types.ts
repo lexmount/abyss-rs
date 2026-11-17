@@ -136,14 +136,16 @@ export interface NetworkObservationsResponse {
   observations: Record<string, unknown>[];
 }
 
-/** HTTP CONNECT or SOCKS5 next hop shared by explicit and supported transparent ingress. */
+/** Next hop shared by explicit and supported transparent ingress. */
 export interface UpstreamProxyConfig {
-  protocol: "http_connect" | "socks5";
+  protocol: "http_connect" | "socks5" | "wireguard";
   endpoint: string;
   /** Absolute broker-local PEM path; extends trust for the HTTPS proxy only. */
   ca_file?: string;
   /** Absolute broker-local JSON path containing proxy username and password. */
   credentials_file?: string;
+  /** Absolute broker-local JSON path containing WireGuard keys and tunnel settings. */
+  wireguard_file?: string;
   connect_timeout_ms?: number;
   handshake_timeout_ms?: number;
 }

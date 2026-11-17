@@ -10,6 +10,7 @@ mod http_connect;
 mod listener;
 mod socks5;
 mod transport;
+mod wireguard;
 
 #[cfg(test)]
 mod secure_tests;
@@ -19,7 +20,7 @@ mod socks5_tests;
 mod tests;
 
 pub use config::{UpstreamProxyConfig, UpstreamProxyConfigError, UpstreamProxyProtocol};
-pub use connector::{ConnectedTunnel, UpstreamProxy};
+pub use connector::{ConnectedTunnel, UpstreamProxy, UpstreamProxyFactory};
 /// Compatibility name for the shared next-hop connector.
 pub type HttpConnectProxy = UpstreamProxy;
 pub use listener::ListenerEndpoint;

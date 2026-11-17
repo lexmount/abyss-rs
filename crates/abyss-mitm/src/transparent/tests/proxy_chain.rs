@@ -68,6 +68,7 @@ async fn run_tls_chain(action: TlsDecryptionAction, transparent: bool) {
         protocol: UpstreamProxyProtocol::HttpConnect,
         ca_file: None,
         credentials_file: None,
+        wireguard_file: None,
         endpoint: format!("http://{proxy_address}"),
         connect_timeout_ms: 1000,
         handshake_timeout_ms: 1000,

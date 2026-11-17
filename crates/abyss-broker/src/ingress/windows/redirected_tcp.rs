@@ -287,7 +287,7 @@ mod tests {
             "protocol": "http_connect", "endpoint": "http://127.0.0.1:3128"
         }}))
         .unwrap();
-        network.publish(crate::network_config::NetworkRuntime::validate(configured).unwrap());
+        network.publish(network.validate(configured).unwrap());
         let mut ingress =
             RedirectedTcpIngress::bind("127.0.0.1:0".parse().unwrap(), network.clone())
                 .await
@@ -295,10 +295,9 @@ mod tests {
         let first_client = TcpStream::connect(ingress.listen_addr()).await.unwrap();
         let first = ingress.accept().await.unwrap();
         network.publish(
-            crate::network_config::NetworkRuntime::validate(
-                crate::network_config::NetworkConfig::default(),
-            )
-            .unwrap(),
+            network
+                .validate(crate::network_config::NetworkConfig::default())
+                .unwrap(),
         );
         let second_client = TcpStream::connect(ingress.listen_addr()).await.unwrap();
         let second = ingress.accept().await.unwrap();

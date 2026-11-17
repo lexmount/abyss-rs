@@ -19,6 +19,7 @@ fn config() -> UpstreamProxyConfig {
         endpoint: "socks5://127.0.0.1:1080".into(),
         ca_file: None,
         credentials_file: None,
+        wireguard_file: None,
         connect_timeout_ms: 1000,
         handshake_timeout_ms: 1000,
     }

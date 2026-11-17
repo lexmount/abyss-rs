@@ -1,0 +1,80 @@
+//! Bounded IP-packet transport between smoltcp and the `WireGuard` UDP driver.
+
+use std::{
+    io,
+    pin::Pin,
+    task::{Context, Poll},
+};
+
+use futures_util::{Sink, Stream};
+use tokio::sync::mpsc;
+use tokio_smoltcp::{
+    device::{AsyncDevice, DeviceCapabilities},
+    smoltcp::phy::Medium,
+};
+use tokio_util::sync::{PollSendError, PollSender};
+
+/// Packet ownership uses `Vec` because smoltcp's `AsyncDevice` requires it.
+pub(super) struct PacketDevice {
+    incoming: mpsc::Receiver<io::Result<Vec<u8>>>,
+    outgoing: PollSender<Vec<u8>>,
+    capabilities: DeviceCapabilities,
+}
+
+impl PacketDevice {
+    pub(super) fn new(
+        incoming: mpsc::Receiver<io::Result<Vec<u8>>>,
+        outgoing: mpsc::Sender<Vec<u8>>,
+        mtu: usize,
+    ) -> Self {
+        // This external type is non-exhaustive and exposes fields, not setters.
+        let mut capabilities = DeviceCapabilities::default();
+        capabilities.medium = Medium::Ip;
+        capabilities.max_transmission_unit = mtu;
+        capabilities.max_burst_size = Some(32);
+        Self {
+            incoming,
+            outgoing: PollSender::new(outgoing),
+            capabilities,
+        }
+    }
+}
+
+impl Stream for PacketDevice {
+    type Item = io::Result<Vec<u8>>;
+
+    fn poll_next(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Option<Self::Item>> {
+        self.incoming.poll_recv(cx)
+    }
+}
+
+impl Sink<Vec<u8>> for PacketDevice {
+    type Error = io::Error;
+
+    fn poll_ready(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<io::Result<()>> {
+        self.outgoing.poll_reserve(cx).map_err(closed)
+    }
+
+    fn start_send(mut self: Pin<&mut Self>, packet: Vec<u8>) -> io::Result<()> {
+        self.outgoing.send_item(packet).map_err(closed)
+    }
+
+    fn poll_flush(self: Pin<&mut Self>, _: &mut Context<'_>) -> Poll<io::Result<()>> {
+        Poll::Ready(Ok(()))
+    }
+
+    fn poll_close(mut self: Pin<&mut Self>, _: &mut Context<'_>) -> Poll<io::Result<()>> {
+        self.outgoing.close();
+        Poll::Ready(Ok(()))
+    }
+}
+
+impl AsyncDevice for PacketDevice {
+    fn capabilities(&self) -> &DeviceCapabilities {
+        &self.capabilities
+    }
+}
+
+fn closed(_: PollSendError<Vec<u8>>) -> io::Error {
+    io::Error::new(io::ErrorKind::BrokenPipe, "WireGuard packet driver closed")
+}

@@ -9,11 +9,14 @@
 
 use std::sync::Arc;
 
-use abyss_mitm::outbound::{UpstreamProxy, UpstreamProxyConfig};
+use abyss_mitm::outbound::{UpstreamProxy, UpstreamProxyConfig, UpstreamProxyFactory};
 use parking_lot::RwLock;
 use serde::{Deserialize, Serialize};
 
 use crate::error::BrokerError;
+
+#[cfg(test)]
+mod tests;
 
 /// Editable outbound route. No upstream means direct routing.
 #[derive(Debug, Clone, Default, Deserialize, PartialEq, Serialize)]
@@ -30,16 +33,29 @@ pub struct NetworkSnapshot {
 }
 
 impl NetworkSnapshot {
+    fn new(config: NetworkConfig, routes: &UpstreamProxyFactory) -> Result<Arc<Self>, BrokerError> {
+        let proxy = config
+            .upstream
+            .as_ref()
+            .map(|config| routes.prepare(config))
+            .transpose()
+            .map_err(|error| BrokerError::invalid_config(error.to_string()))?;
+        Ok(Arc::new(Self { config, proxy }))
+    }
+
     /// Borrows the validated next hop without changing this connection's route.
     pub const fn proxy(&self) -> Option<&UpstreamProxy> {
         self.proxy.as_ref()
     }
 }
 
-/// Shared policy publisher; only the runtime configuration transaction writes it.
+/// Shared policy publisher and owner of reusable next-hop identities.
+/// Clones share the factory across updates, including time spent in direct mode.
+/// Only the runtime configuration transaction writes the active snapshot.
 #[derive(Clone)]
 pub struct NetworkRuntime {
     current: Arc<RwLock<Arc<NetworkSnapshot>>>,
+    routes: Arc<UpstreamProxyFactory>,
     persisted: Option<NetworkConfig>,
 }
 
@@ -52,9 +68,11 @@ impl NetworkRuntime {
         let config = persisted.clone().unwrap_or(NetworkConfig {
             upstream: startup_upstream,
         });
-        let snapshot = Self::validate(config)?;
+        let routes = Arc::new(UpstreamProxyFactory::default());
+        let snapshot = NetworkSnapshot::new(config, &routes)?;
         Ok(Self {
             current: Arc::new(RwLock::new(snapshot)),
+            routes,
             persisted,
         })
     }
@@ -72,14 +90,8 @@ impl NetworkRuntime {
         self.persisted.clone()
     }
 
-    pub fn validate(config: NetworkConfig) -> Result<Arc<NetworkSnapshot>, BrokerError> {
-        let proxy = config
-            .upstream
-            .as_ref()
-            .map(UpstreamProxy::new)
-            .transpose()
-            .map_err(|error| BrokerError::invalid_config(error.to_string()))?;
-        Ok(Arc::new(NetworkSnapshot { config, proxy }))
+    pub fn validate(&self, config: NetworkConfig) -> Result<Arc<NetworkSnapshot>, BrokerError> {
+        NetworkSnapshot::new(config, &self.routes)
     }
 
     /// Infallible publication after the durable configuration commit.
