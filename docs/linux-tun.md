@@ -57,6 +57,7 @@ regressions. Final validation also requires workspace tests, formatter, Clippy,
 SDK checks, and real installed `codex` and `dsh` provider traffic delivered to a
 real backend. Synthetic provider traffic cannot replace those live harness runs.
 
+Review and validation evidence: [PR #93](https://github.com/lexmount/abyss-rs/pull/93).
 Persistent evidence: `task-artifacts/tun/` under the coordinator root. Record
 actual tested commits and unavailable requirements in the HTML report. A PR and
 passing CI are required before this task is ready for review.
