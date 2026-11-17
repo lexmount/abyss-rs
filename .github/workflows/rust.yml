@@ -115,7 +115,7 @@ jobs:
 
       - name: Test Linux TUN ingress in an isolated network namespace
         if: runner.os == 'Linux'
-        run: make test-blackbox-broker-tun
+        run: make test-blackbox-broker-tun-wireguard
 
       - name: Test and lint CLI without local deployment
         if: runner.os != 'Windows'

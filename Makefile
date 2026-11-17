@@ -112,3 +112,7 @@ test-blackbox-http2:
 .PHONY: test-blackbox-broker-tun
 test-blackbox-broker-tun:
 	bash scripts/blackbox_abyss_broker_tun.sh
+
+.PHONY: test-blackbox-broker-tun-wireguard
+test-blackbox-broker-tun-wireguard:
+	python3 scripts/blackbox_abyss_broker_tun_wireguard.py

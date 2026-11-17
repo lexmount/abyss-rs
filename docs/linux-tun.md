@@ -1,6 +1,6 @@
 # Linux TUN ingress
 
-Task: `tun.md`. Baseline: `01639cbc10c2dcf705e24d3d75ee5552a15ec3f1`.
+Task: `tun.md`. Baseline: `55524031806d05509d94f9ad5b0081bfcfd54af5` (endpoint 1.6.1).
 
 Linux currently accepts endpoint traffic only through an explicit HTTP proxy.
 Add an opt-in `linux_tun` broker ingress so TCP clients can enter the existing
@@ -17,17 +17,35 @@ an unrelated dedicated user keeps its provider, backend, and proxy connections
 outside the captured source-UID policy. Remove policy routing before stopping
 the broker; device and route ownership remain with the administrator.
 
-A bounded packet device and `smoltcp` provide IPv4/IPv6 TCP reassembly,
-retransmission, flow control, and FIN handling. Established streams enter the
-existing `PlatformFlow` interface with their original destination and the
-existing `LinuxTransparent` attribution. There is no CONNECT preamble and no
-process attribution. SNI-based TLS policy and the shared network next-hop policy
-retain ownership of routing and TLS decisions.
+TUN ingress and WireGuard egress share `tokio-smoltcp` 0.7 and the bounded
+asynchronous `PacketDevice` in `abyss-mitm::netstack`. The broker no longer owns
+smoltcp RX/TX tokens, a periodic polling loop, or a manually polled byte pump.
+`tokio-smoltcp` supplies asynchronous TCP streams, TCP reassembly, retransmission,
+flow control, and half-close handling. The shared `OwnedStream` retains each
+transport's resources until its last application stream is dropped; WireGuard
+retains its route/tunnel and TUN retains its stack/connection permit.
 
-The stack limits pending and established TCP sockets together to 256, bounds
-packet queues and per-socket buffers, and owns its task until asynchronous
-shutdown. A short bounded timer drives TCP retransmission and socket-to-async
-stream progress. TCP stack implementation remains separate from broker policy.
+A TUN packet router validates opening SYNs and demultiplexes packets by the
+source/destination socket pair. Each admitted flow owns one `Net` with the
+original destination as its local IP and listening endpoint. This preserves
+arbitrary IPv4/IPv6 destinations without retaining an unbounded listener cache
+or depending on private socket APIs. The tradeoff is one event-driven reactor
+per live flow plus a Tokio duplex forwarding task. The same 256-permit limit
+bounds pending and established connections together. Half-open connections expire after 30 seconds. Per-flow
+input channels hold 32 packets, the shared output channel holds 256, and socket
+buffers are 64 KiB per direction. Full input queues discard the packet so one
+slow flow cannot block other flows or the output driver; TCP retransmission
+recovers from congestion. The single-slot overwrite path is removed.
+
+Established streams enter the existing `PlatformFlow` interface with their
+original destination and the existing `LinuxTransparent` attribution. SNI-based
+TLS policy and the shared next-hop runtime retain routing ownership, including
+WireGuard identity reuse and snapshots. A standard `copy_bidirectional` adapter
+preserves the broker IO drop contract:
+closing the application-side duplex stream flushes TCP and sends FIN before the
+`Net` owner is released. It also preserves independent half-closes.
+All packet IO is event-driven; stopping the ingress cancels pending accepts and releases the TUN descriptor while the
+administrator's persistent interface remains configured.
 
 The status API reports `mode=transparent`, ingress `source=linux_tun`, a device
 name, and no TCP listen address. Update all three SDKs and OpenAPI with this
@@ -129,4 +147,7 @@ Run the actual TUN regression suite with `make test-blackbox-broker-tun`. Docker
 provides the temporary network namespace and `NET_ADMIN`; the broker and client
 processes inside it run under different unprivileged UIDs. The suite checks
 IPv4/IPv6, large HTTP bodies, independent TCP half-close, TLS passthrough, status,
-and process stop/restart while preserving the persistent interface.
+and process stop/restart while preserving the persistent interface. The combined
+`make test-blackbox-broker-tun-wireguard` suite reuses the upstream kernel
+WireGuard peer fixture and verifies IPv4/IPv6 targets and a 1 MiB transfer through
+TUN ingress and WireGuard egress together.

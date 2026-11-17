@@ -4,10 +4,9 @@
 //! This module preserves kernel network configuration and runs unprivileged
 //! when the persistent TUN device is assigned to the broker's user.
 
-mod device;
 mod stack;
 
-use std::{io, path::Path, time::Duration};
+use std::{io, path::Path};
 
 use abyss_mitm::{DestinationAddress, FlowIngress, TargetAuthority, TransparentFlowSource};
 use thiserror::Error;
@@ -19,7 +18,7 @@ use super::{
     PlatformFlowMetadata, StartedIngress,
 };
 use crate::network_config::NetworkRuntime;
-use stack::{FlowKey, TcpStack};
+use stack::{AcceptedFlow, PACKET_QUEUE_LIMIT, TcpStack};
 
 /// Validated administrator-provisioned TUN endpoint.
 #[derive(Debug, Clone, PartialEq)]
@@ -113,49 +112,48 @@ impl TunIngressFactory {
         clippy::integer_division_remainder_used,
         reason = "tokio::select! uses remainder internally"
     )]
+    #[expect(
+        clippy::significant_drop_tightening,
+        reason = "JoinSet must remain alive across packet-driver loop iterations"
+    )]
     async fn run(
         device: AsyncDevice,
         mtu: usize,
         network: NetworkRuntime,
         sender: mpsc::Sender<PlatformFlow>,
     ) -> io::Result<()> {
-        let mut stack = TcpStack::new(mtu);
-        let epoch = std::time::Instant::now();
-        let mut timer = tokio::time::interval(Duration::from_millis(5));
-        timer.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+        let (outgoing, mut packets) = mpsc::channel(PACKET_QUEUE_LIMIT);
+        let (accepted, mut connections) = mpsc::channel(32);
+        let mut stack = TcpStack::new(mtu, outgoing, accepted);
         let mut packet = vec![0; 0xFFFF].into_boxed_slice();
         loop {
             tokio::select! {
                 result = device.recv(&mut packet) => {
                     let size = result?;
                     if size <= mtu {
-                        stack.receive(packet[..size].into());
+                        stack.receive(packet[..size].to_vec()).await?;
                     }
                 }
-                _ = timer.tick() => {}
-                () = sender.closed() => return Ok(()),
-            }
-            let elapsed = i64::try_from(epoch.elapsed().as_millis()).unwrap_or(i64::MAX);
-            stack.poll(
-                smoltcp::time::Instant::from_millis(elapsed),
-                |key, stream| sender.try_send(Self::flow(key, stream, &network)).is_ok(),
-            );
-            while let Some(packet) = stack.device.outgoing.pop_front() {
-                if device.send(&packet).await? != packet.len() {
-                    return Err(io::Error::new(
-                        io::ErrorKind::WriteZero,
-                        "short TUN packet write",
-                    ));
+                packet = packets.recv() => {
+                    let Some(packet) = packet else { return Ok(()); };
+                    if device.send(&packet).await? != packet.len() {
+                        return Err(io::Error::new(io::ErrorKind::WriteZero, "short TUN packet write"));
+                    }
                 }
+                accepted = connections.recv() => {
+                    if let Some(accepted) = accepted {
+                        // A full handoff queue closes this flow through its bridge.
+                        let _result = sender.try_send(Self::flow(accepted, &network));
+                    }
+                }
+                reaped = stack.reap(), if stack.has_tasks() => { reaped?; }
+                () = sender.closed() => return Ok(()),
             }
         }
     }
 
-    fn flow(
-        key: &FlowKey,
-        stream: tokio::io::DuplexStream,
-        network: &NetworkRuntime,
-    ) -> PlatformFlow {
+    fn flow(accepted: AcceptedFlow, network: &NetworkRuntime) -> PlatformFlow {
+        let key = accepted.key;
         let metadata = PlatformFlowMetadata::from_destination_parts(
             Some(key.source),
             None,
@@ -163,9 +161,9 @@ impl TunIngressFactory {
             None,
             None,
         );
-        let flow = PlatformFlow::new(stream, metadata).with_ingress(FlowIngress::transparent(
-            TransparentFlowSource::LinuxTransparent,
-        ));
+        let flow = PlatformFlow::new(accepted.stream, metadata).with_ingress(
+            FlowIngress::transparent(TransparentFlowSource::LinuxTransparent),
+        );
         match network.snapshot().proxy() {
             Some(proxy) => flow.with_upstream_proxy(
                 proxy.clone(),

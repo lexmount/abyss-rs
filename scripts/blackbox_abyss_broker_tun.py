@@ -16,9 +16,16 @@ import sys
 import tempfile
 import threading
 import time
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
-from blackbox_abyss_broker_upstream import LocalServer, NextHop, network
+from blackbox_abyss_broker_upstream import (
+    LocalServer,
+    NextHop,
+    network,
+    read_all,
+    read_head,
+)
 
 BROKER_UID = 1000
 CLIENT_UID = 2001
@@ -52,11 +59,30 @@ def request_client(host, port, ca, mode):
     )
 
 
+def wireguard_client(host, port, ca, mode):
+    with socket.create_connection((host, int(port)), timeout=20) as stream:
+        if mode == "tls":
+            stream = ssl.create_default_context(cafile=ca).wrap_socket(
+                stream, server_hostname="tun.test"
+            )
+        authority = f"[{host}]:{port}" if ":" in host else f"{host}:{port}"
+        stream.sendall(
+            f"GET /large HTTP/1.1\r\nHost: {authority}\r\nConnection: close\r\n\r\n".encode()
+        )
+        head = read_head(stream)
+        assert head.startswith(b"HTTP/1.1 200"), head
+        assert read_all(stream) == bytes(range(256)) * 4096, (
+            "TUN/WireGuard transfer must preserve all 1 MiB"
+        )
+    print(f"PASS TUN -> WireGuard {host} {mode}: exact 1 MiB response")
+
+
 class Origin(http.server.BaseHTTPRequestHandler):
     def do_POST(self):
         payload = self.rfile.read(int(self.headers["Content-Length"]))
         assert payload == b"tun-payload" * 20000
-        self.server.requests += 1
+        with self.server.requests_lock:
+            self.server.requests += 1
         body = json.dumps({"path": self.path, "payload_bytes": len(payload)}).encode()
         self.send_response(200)
         self.send_header("Content-Length", str(len(body)))
@@ -71,7 +97,7 @@ class Origin6(http.server.ThreadingHTTPServer):
     address_family = socket.AF_INET6
 
 
-def certificates(directory):
+def certificates(directory, *, owner=BROKER_UID):
     ca = directory / "ca"
     ca.mkdir()
     command(
@@ -140,7 +166,8 @@ def certificates(directory):
         "-out",
         str(directory / "origin.pem"),
     )
-    os.chown(ca / "abyss-root-ca-key.pem", BROKER_UID, BROKER_UID)
+    if owner is not None:
+        os.chown(ca / "abyss-root-ca-key.pem", owner, owner)
     return ca
 
 
@@ -209,6 +236,7 @@ def run():
         servers[-1].socket = context.wrap_socket(servers[-1].socket, server_side=True)
         for server in servers:
             server.requests = 0
+            server.requests_lock = threading.Lock()
             threading.Thread(target=server.serve_forever, daemon=True).start()
         process = subprocess.Popen(
             [
@@ -297,6 +325,10 @@ def run():
             ]:
                 exercise(server, mode)
             assert [server.requests for server in servers] == [2, 1, 1]
+            with ThreadPoolExecutor(max_workers=4) as pool:
+                list(pool.map(lambda _: exercise(servers[0], "http"), range(4)))
+            assert servers[0].requests == 6
+            print("PASS concurrent TUN connections to the same endpoint", flush=True)
             proxy = LocalServer(NextHop)
             proxy.origin = servers[0]
             proxy.tls_origin = servers[2]
@@ -311,7 +343,7 @@ def run():
                 assert proxy.requests[0].startswith(expected), proxy.requests[
                     0
                 ].splitlines()[0]
-                assert servers[0].requests == 3
+                assert servers[0].requests == 7
                 api("PUT", "/v1/network/config", {"upstream": None})
                 print(
                     "PASS TUN flow uses the configured CONNECT next hop with its HTTP authority",
@@ -319,6 +351,48 @@ def run():
                 )
             finally:
                 proxy.close()
+            endpoint = os.environ.get("ABYSS_TUN_TEST_WIREGUARD_ENDPOINT")
+            if endpoint:
+                material = home / "wireguard.json"
+                material.write_text(
+                    Path(os.environ["ABYSS_TUN_TEST_WIREGUARD_FILE"]).read_text()
+                )
+                material.chmod(0o600)
+                os.chown(material, BROKER_UID, BROKER_UID)
+                api(
+                    "PUT",
+                    "/v1/network/config",
+                    {
+                        "upstream": {
+                            "protocol": "wireguard",
+                            "endpoint": endpoint,
+                            "wireguard_file": str(material),
+                            "handshake_timeout_ms": 5000,
+                        }
+                    },
+                )
+                for host, port, mode in [
+                    ("10.77.0.1", 80, "http"),
+                    ("fd77::1", 80, "http"),
+                    ("10.77.0.1", 443, "tls"),
+                ]:
+                    subprocess.run(
+                        [
+                            sys.executable,
+                            __file__,
+                            "--wireguard-client",
+                            host,
+                            str(port),
+                            os.environ["ABYSS_TUN_TEST_WIREGUARD_CA"],
+                            mode,
+                        ],
+                        check=True,
+                        timeout=30,
+                        user=CLIENT_UID,
+                        group=CLIENT_UID,
+                        extra_groups=[],
+                    )
+                api("PUT", "/v1/network/config", {"upstream": None})
             process.terminate()
             assert process.wait(timeout=15) == 0
             command("ip", "link", "show", "abyss0")
@@ -369,5 +443,7 @@ def run():
 if __name__ == "__main__":
     if len(sys.argv) > 1 and sys.argv[1] == "--client":
         request_client(*sys.argv[2:])
+    elif len(sys.argv) > 1 and sys.argv[1] == "--wireguard-client":
+        wireguard_client(*sys.argv[2:])
     else:
         run()

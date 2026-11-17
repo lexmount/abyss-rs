@@ -1,49 +1,62 @@
-//! TCP socket admission and bounded asynchronous stream bridging for Linux TUN.
+//! Bounded TUN flow admission and packet routing into the shared async TCP stack.
 //!
-//! Only this task touches smoltcp sockets. Duplex IO supplies backpressure at
-//! the broker boundary; no provider, TLS, or capture policy belongs here.
+//! Each live flow owns a tokio-smoltcp Net at its original destination. This
+//! avoids retaining listeners for arbitrary target addresses after flows end.
+//! TCP state, retransmission and byte-stream IO remain library-owned.
 
-use std::{collections::HashMap, io, net::SocketAddr};
-
-use futures_util::FutureExt as _;
-use smoltcp::{
-    iface::{Config, Interface, SocketHandle, SocketSet},
-    socket::tcp,
-    time::{Duration, Instant},
-    wire::{HardwareAddress, IpAddress, IpCidr, IpProtocol, Ipv4Packet, Ipv6Packet, TcpPacket},
+use std::{
+    collections::HashMap,
+    io,
+    net::{IpAddr, SocketAddr},
+    sync::{Arc, Weak},
+    time::Duration,
 };
-use tokio::io::{AsyncReadExt as _, AsyncWriteExt as _, DuplexStream};
 
-use super::device::PacketDevice;
+use abyss_mitm::netstack::{OwnedStream, PacketDevice};
+use tokio::{
+    sync::{OwnedSemaphorePermit, Semaphore, mpsc},
+    task::JoinSet,
+};
+use tokio_smoltcp::{
+    Net, NetConfig,
+    smoltcp::{
+        iface::Config,
+        wire::{HardwareAddress, IpAddress, IpCidr, IpProtocol, Ipv4Packet, Ipv6Packet, TcpPacket},
+    },
+};
 
 const SOCKET_LIMIT: usize = 256;
+const INPUT_QUEUE_LIMIT: usize = 32;
+pub(super) const PACKET_QUEUE_LIMIT: usize = 256;
 const STREAM_BUFFER_SIZE: usize = 0x0001_0000;
+const ACCEPT_TIMEOUT: Duration = Duration::from_secs(30);
 
-/// Original client and destination, including ports, identify one TCP socket.
-#[derive(Debug, Hash, PartialEq, Eq)]
+/// Both endpoints identify a client TCP connection independently of its target.
+#[derive(Debug, Clone, Hash, PartialEq, Eq)]
 pub(super) struct FlowKey {
     pub(super) source: SocketAddr,
     pub(super) destination: SocketAddr,
 }
 
-impl FlowKey {
-    /// Validates a complete unfragmented SYN before allocating a socket.
-    pub(super) fn from_syn(packet: &[u8]) -> Option<Self> {
+struct PacketHeader {
+    key: FlowKey,
+    opening: bool,
+}
+
+impl PacketHeader {
+    fn parse(packet: &[u8]) -> Option<Self> {
         let version = packet.first()?.checked_shr(4)?;
-        let (source, destination, payload) = match version {
+        let (source, destination, payload, checksum_valid) = match version {
             4 => {
                 let ip = Ipv4Packet::new_checked(packet).ok()?;
-                if ip.next_header() != IpProtocol::Tcp
-                    || ip.frag_offset() != 0
-                    || ip.more_frags()
-                    || !ip.verify_checksum()
-                {
+                if ip.next_header() != IpProtocol::Tcp || ip.frag_offset() != 0 || ip.more_frags() {
                     return None;
                 }
                 (
                     IpAddress::from(ip.src_addr()),
                     IpAddress::from(ip.dst_addr()),
                     &packet[usize::from(ip.header_len())..usize::from(ip.total_len())],
+                    ip.verify_checksum(),
                 )
             }
             6 => {
@@ -55,182 +68,173 @@ impl FlowKey {
                     IpAddress::from(ip.src_addr()),
                     IpAddress::from(ip.dst_addr()),
                     &packet[40..usize::from(ip.payload_len()).saturating_add(40)],
+                    true,
                 )
             }
             _ => return None,
         };
         let tcp = TcpPacket::new_checked(payload).ok()?;
-        if !tcp.syn()
-            || tcp.ack()
-            || tcp.rst()
-            || tcp.fin()
-            || !tcp.verify_checksum(&source, &destination)
+        let opening = tcp.syn() && !tcp.ack() && !tcp.rst() && !tcp.fin();
+        // Admission allocates a stack; reject corrupt SYNs before taking a permit.
+        // Subsequent packets are checksum-validated by the established TCP stack.
+        if opening && (!checksum_valid || !tcp.verify_checksum(&source, &destination)) {
+            return None;
+        }
+        let key = FlowKey {
+            source: SocketAddr::new(source.into(), tcp.src_port()),
+            destination: SocketAddr::new(destination.into(), tcp.dst_port()),
+        };
+        if key.source.port() == 0
+            || key.destination.port() == 0
+            || !Self::unicast(key.source.ip())
+            || !Self::unicast(key.destination.ip())
         {
             return None;
         }
-        Some(Self {
-            source: SocketAddr::new(source.into(), tcp.src_port()),
-            destination: SocketAddr::new(destination.into(), tcp.dst_port()),
-        })
+        Some(Self { key, opening })
+    }
+
+    const fn unicast(ip: IpAddr) -> bool {
+        match ip {
+            IpAddr::V4(ip) => !ip.is_unspecified() && !ip.is_multicast() && !ip.is_broadcast(),
+            IpAddr::V6(ip) => !ip.is_unspecified() && !ip.is_multicast(),
+        }
     }
 }
 
-struct FlowPipe {
-    handle: SocketHandle,
-    io: DuplexStream,
-    client: Option<DuplexStream>,
-    read_shutdown: bool,
-    accept_deadline: Instant,
+/// The stream and pending accept retain the stack and its admission permit.
+struct FlowState {
+    _net: Net,
+    input: mpsc::Sender<io::Result<Vec<u8>>>,
+    _permit: OwnedSemaphorePermit,
 }
 
-impl FlowPipe {
-    fn new(handle: SocketHandle, now: Instant) -> Self {
-        let (io, client) = tokio::io::duplex(STREAM_BUFFER_SIZE);
-        Self {
-            handle,
-            io,
-            client: Some(client),
-            read_shutdown: false,
-            accept_deadline: Instant::from_millis(now.total_millis().saturating_add(30_000)),
-        }
-    }
-
-    /// Nonblocking reads/writes preserve the socket's own buffered bytes when
-    /// the broker is backpressured. Both TCP half-closes remain independent.
-    fn pump(&mut self, socket: &mut tcp::Socket<'_>) -> io::Result<()> {
-        if socket.can_recv() {
-            socket
-                .recv(|bytes| match self.io.write(bytes).now_or_never() {
-                    Some(Ok(size)) => (size, Ok(())),
-                    Some(Err(error)) => (0, Err(error)),
-                    None => (0, Ok(())),
-                })
-                .map_err(io::Error::other)??;
-        }
-        if !socket.may_recv()
-            && !self.read_shutdown
-            && let Some(result) = self.io.shutdown().now_or_never()
-        {
-            result?;
-            self.read_shutdown = true;
-        }
-        if socket.can_send() {
-            let received = socket
-                .send(|bytes| {
-                    self.io
-                        .read(bytes)
-                        .now_or_never()
-                        .map_or((0, None), |result| {
-                            (result.as_ref().copied().unwrap_or_default(), Some(result))
-                        })
-                })
-                .map_err(io::Error::other)?;
-            if let Some(result) = received
-                && result? == 0
-            {
-                socket.close();
-            }
-        }
-        Ok(())
-    }
+/// One established connection prepared for the broker's existing MITM boundary.
+pub(super) struct AcceptedFlow {
+    pub(super) key: FlowKey,
+    pub(super) stream: tokio::io::DuplexStream,
 }
 
-/// One userspace TCP stack with bounded pending and active socket admission.
+/// Routes packets while weak entries leave stack lifetime to accepts and streams.
 pub(super) struct TcpStack {
-    pub(super) device: PacketDevice,
-    interface: Interface,
-    sockets: SocketSet<'static>,
-    flows: HashMap<FlowKey, FlowPipe>,
-    now: Instant,
+    flows: HashMap<FlowKey, Weak<FlowState>>,
+    permits: Arc<Semaphore>,
+    tasks: JoinSet<()>,
+    accepted: mpsc::Sender<AcceptedFlow>,
+    outgoing: mpsc::Sender<Vec<u8>>,
+    mtu: usize,
 }
 
 impl TcpStack {
-    pub(super) fn new(mtu: usize) -> Self {
-        let mut device = PacketDevice::new(mtu);
-        let mut config = Config::new(HardwareAddress::Ip);
-        config.random_seed = rand::random();
-        let mut interface = Interface::new(config, &mut device, Instant::from_millis(0_i64));
-        // These addresses exist only inside the userspace stack. Any-IP mode
-        // accepts routed destinations while listening sockets retain their IP.
-        interface.update_ip_addrs(|addresses| {
-            addresses
-                .push(IpCidr::new(IpAddress::v4(0, 0, 0, 1), 0))
-                .expect("IPv4 slot");
-            addresses
-                .push(IpCidr::new(IpAddress::v6(0, 0, 0, 0, 0, 0, 0, 1), 0))
-                .expect("IPv6 slot");
-        });
-        interface.set_any_ip(true);
+    pub(super) fn new(
+        mtu: usize,
+        outgoing: mpsc::Sender<Vec<u8>>,
+        accepted: mpsc::Sender<AcceptedFlow>,
+    ) -> Self {
         Self {
-            device,
-            interface,
-            sockets: SocketSet::new(Vec::new()),
             flows: HashMap::new(),
-            now: Instant::from_millis(0_i64),
+            permits: Arc::new(Semaphore::new(SOCKET_LIMIT)),
+            tasks: JoinSet::new(),
+            accepted,
+            outgoing,
+            mtu,
         }
     }
 
-    pub(super) fn receive(&mut self, packet: Box<[u8]>) {
-        if let Some(key) = FlowKey::from_syn(&packet)
-            && !self.flows.contains_key(&key)
-            && self.flows.len() < SOCKET_LIMIT
-        {
-            self.admit(key);
-        }
-        self.device.receive_packet(packet);
+    pub(super) fn has_tasks(&self) -> bool {
+        !self.tasks.is_empty()
     }
 
-    fn admit(&mut self, key: FlowKey) {
-        let mut socket = tcp::Socket::new(
-            tcp::SocketBuffer::new(vec![0; STREAM_BUFFER_SIZE]),
-            tcp::SocketBuffer::new(vec![0; STREAM_BUFFER_SIZE]),
-        );
-        socket.set_timeout(Some(Duration::from_secs(30)));
-        if socket.listen(key.destination).is_ok() {
-            let handle = self.sockets.add(socket);
-            self.flows.insert(key, FlowPipe::new(handle, self.now));
-        }
+    /// Reaps both expired accepts and completed forwarding tasks.
+    pub(super) async fn reap(&mut self) -> io::Result<()> {
+        self.tasks
+            .join_next()
+            .await
+            .map_or(Ok(()), |task| task.map_err(io::Error::other))
     }
 
-    /// Polls transport progress and hands established streams to the caller.
-    /// Rejected handoffs abort their TCP socket without accumulating work.
-    pub(super) fn poll<F>(&mut self, now: Instant, mut accepted: F)
-    where
-        F: FnMut(&FlowKey, DuplexStream) -> bool,
-    {
-        self.now = now;
-        self.interface
-            .poll(now, &mut self.device, &mut self.sockets);
-        self.flows.iter_mut().for_each(|(key, pipe)| {
-            let socket = self.sockets.get_mut::<tcp::Socket<'_>>(pipe.handle);
-            // Bound even sockets that never leave LISTEN after admission.
-            if pipe.client.is_some() && now >= pipe.accept_deadline {
-                socket.abort();
+    pub(super) async fn receive(&mut self, packet: Vec<u8>) -> io::Result<()> {
+        let Some(header) = PacketHeader::parse(&packet) else {
+            return Ok(());
+        };
+        let state = match self.flows.get(&header.key).and_then(Weak::upgrade) {
+            Some(state) => state,
+            None if header.opening => {
+                self.flows.retain(|_, state| state.strong_count() > 0);
+                let Ok(permit) = Arc::clone(&self.permits).try_acquire_owned() else {
+                    return Ok(());
+                };
+                self.admit(header.key, permit).await?
             }
-            if socket.state() == tcp::State::Established
-                && let Some(client) = pipe.client.take()
-            {
-                socket.set_timeout(Some(Duration::from_secs(7200)));
-                socket.set_keep_alive(Some(Duration::from_secs(30)));
-                if !accepted(key, client) {
-                    socket.abort();
+            None => return Ok(()),
+        };
+        match state.input.try_send(Ok(packet)) {
+            Ok(()) | Err(mpsc::error::TrySendError::Full(_)) => {
+                // Stalling here would also stall the shared output driver. Full
+                // input queues discard packets; TCP owns congestion recovery.
+                Ok(())
+            }
+            Err(mpsc::error::TrySendError::Closed(_)) => Err(io::Error::new(
+                io::ErrorKind::BrokenPipe,
+                "TUN TCP packet receiver closed",
+            )),
+        }
+    }
+
+    async fn admit(
+        &mut self,
+        key: FlowKey,
+        permit: OwnedSemaphorePermit,
+    ) -> io::Result<Arc<FlowState>> {
+        let (input, incoming) = mpsc::channel(INPUT_QUEUE_LIMIT);
+        let device = PacketDevice::new(incoming, self.outgoing.clone(), self.mtu);
+        let mut interface = Config::new(HardwareAddress::Ip);
+        interface.random_seed = rand::random();
+        let address = IpAddress::from(key.destination.ip());
+        let prefix = if key.destination.is_ipv4() { 32 } else { 128 };
+        let mut config = NetConfig::new(interface, IpCidr::new(address, prefix), vec![address]);
+        config.buffer_size.tcp_rx_size = STREAM_BUFFER_SIZE;
+        config.buffer_size.tcp_tx_size = STREAM_BUFFER_SIZE;
+        let net = Net::new(device, config);
+        // Install the listener before the first SYN is queued for the reactor.
+        let mut listener = net.tcp_bind(key.destination).await?;
+        let state = Arc::new(FlowState {
+            _net: net,
+            input,
+            _permit: permit,
+        });
+        self.flows.insert(key.clone(), Arc::downgrade(&state));
+        let owner = Arc::clone(&state);
+        let accepted = self.accepted.clone();
+        self.tasks.spawn(async move {
+            let stream = match tokio::time::timeout(ACCEPT_TIMEOUT, listener.accept()).await {
+                Ok(Ok((stream, _))) => stream,
+                Ok(Err(error)) => {
+                    tracing::debug!(%error, "TUN TCP accept failed");
+                    return;
                 }
+                Err(_) => return,
+            };
+            drop(listener);
+            let mut stream = OwnedStream::new(stream, owner);
+            let (client, mut bridge) = tokio::io::duplex(STREAM_BUFFER_SIZE);
+            if accepted
+                .send(AcceptedFlow {
+                    key,
+                    stream: client,
+                })
+                .await
+                .is_err()
+            {
+                return;
             }
-            if pipe.client.is_none() && pipe.pump(socket).is_err() {
-                socket.abort();
+            // The broker may drop its IO after an HTTP exchange. The duplex EOF
+            // makes Tokio drain writes and send TCP FIN before releasing Net.
+            if let Err(error) = tokio::io::copy_bidirectional(&mut bridge, &mut stream).await {
+                tracing::debug!(%error, "TUN TCP connection closed with IO error");
             }
         });
-        // Emit pending RSTs before removing aborted sockets.
-        self.interface
-            .poll(now, &mut self.device, &mut self.sockets);
-        self.flows.retain(|_, pipe| {
-            if self.sockets.get::<tcp::Socket<'_>>(pipe.handle).is_open() {
-                true
-            } else {
-                self.sockets.remove(pipe.handle);
-                false
-            }
-        });
+        Ok(state)
     }
 }
 

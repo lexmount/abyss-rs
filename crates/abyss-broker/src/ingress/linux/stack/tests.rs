@@ -1,11 +1,12 @@
 //! Packet validation and socket admission regression tests.
 
-use smoltcp::wire::{IpAddress, IpProtocol, Ipv4Packet, TcpPacket, TcpSeqNumber};
+use tokio_smoltcp::smoltcp::wire::{IpAddress, IpProtocol, Ipv4Packet, TcpPacket, TcpSeqNumber};
 
-use super::{FlowKey, SOCKET_LIMIT, TcpStack};
+use super::{PacketHeader, SOCKET_LIMIT, TcpStack};
+use tokio::sync::mpsc;
 
-fn syn(port: u16) -> Box<[u8]> {
-    let mut packet = vec![0; 40].into_boxed_slice();
+fn syn(port: u16) -> Vec<u8> {
+    let mut packet = vec![0; 40];
     let source = [192, 0, 2, 2].into();
     let destination = [198, 51, 100, 9].into();
     {
@@ -32,62 +33,118 @@ fn syn(port: u16) -> Box<[u8]> {
 
 #[test]
 fn syn_preserves_both_endpoints() {
-    let key = FlowKey::from_syn(&syn(12000)).expect("valid TCP SYN");
+    let key = PacketHeader::parse(&syn(12000)).expect("valid TCP SYN").key;
     assert_eq!(key.source.to_string(), "192.0.2.2:12000");
     assert_eq!(key.destination.to_string(), "198.51.100.9:443");
 }
 
-#[test]
-fn invalid_or_truncated_packets_cannot_allocate_connections() {
+#[tokio::test]
+async fn invalid_or_truncated_packets_cannot_allocate_connections() {
     let mut packet = syn(12000);
     packet[36] ^= 1;
-    assert!(FlowKey::from_syn(&packet).is_none(), "corrupt TCP checksum");
+    assert!(
+        PacketHeader::parse(&packet).is_none(),
+        "corrupt TCP checksum"
+    );
     let valid = syn(12000);
     for length in 0..valid.len() {
         assert!(
-            FlowKey::from_syn(&valid[..length]).is_none(),
+            PacketHeader::parse(&valid[..length]).is_none(),
             "truncated packet at {length}"
         );
     }
-    let mut stack = TcpStack::new(1500);
-    stack.receive(packet);
+    let (outgoing, _output) = mpsc::channel(256);
+    let (accepted, _connections) = mpsc::channel(32);
+    let mut stack = TcpStack::new(1500, outgoing, accepted);
+    stack.receive(packet).await.unwrap();
     assert!(
         stack.flows.is_empty(),
         "invalid packets must not consume socket capacity"
     );
+    drop(stack);
 }
 
-#[test]
-fn duplicate_syn_does_not_allocate_a_second_socket() {
-    let mut stack = TcpStack::new(1500);
-    stack.receive(syn(12000));
-    stack.receive(syn(12000));
+#[tokio::test]
+async fn duplicate_syn_does_not_allocate_a_second_socket() {
+    let (outgoing, _output) = mpsc::channel(256);
+    let (accepted, _connections) = mpsc::channel(32);
+    let mut stack = TcpStack::new(1500, outgoing, accepted);
+    stack.receive(syn(12000)).await.unwrap();
+    stack.receive(syn(12000)).await.unwrap();
     assert_eq!(
         stack.flows.len(),
         1,
         "retransmitted SYN reuses socket admission"
     );
+    drop(stack);
 }
 
-#[test]
-fn pending_connections_share_the_global_socket_limit() {
-    let mut stack = TcpStack::new(1500);
+#[tokio::test]
+async fn pending_connections_share_the_global_socket_limit() {
+    let (outgoing, _output) = mpsc::channel(256);
+    let (accepted, _connections) = mpsc::channel(32);
+    let mut stack = TcpStack::new(1500, outgoing, accepted);
     for port in 1..=u16::try_from(SOCKET_LIMIT.saturating_add(1)).unwrap() {
-        stack.receive(syn(port));
+        stack.receive(syn(port)).await.unwrap();
     }
     assert_eq!(
         stack.flows.len(),
         SOCKET_LIMIT,
         "pending handshakes must be bounded"
     );
+    drop(stack);
 }
 
-#[test]
-fn abandoned_handshakes_release_admission_capacity() {
-    let mut stack = TcpStack::new(1500);
-    stack.receive(syn(12000));
-    stack.poll(smoltcp::time::Instant::from_millis(31_000_i64), |_, _| {
-        panic!("an unacknowledged SYN must not become a broker connection")
-    });
-    assert!(stack.flows.is_empty(), "incomplete handshakes must expire");
+#[tokio::test(start_paused = true)]
+async fn abandoned_handshakes_release_admission_capacity() {
+    let (outgoing, _output) = mpsc::channel(256);
+    let (accepted, _connections) = mpsc::channel(32);
+    let mut stack = TcpStack::new(1500, outgoing, accepted);
+    stack.receive(syn(12000)).await.unwrap();
+    tokio::task::yield_now().await;
+    tokio::time::advance(std::time::Duration::from_secs(31)).await;
+    stack.reap().await.unwrap();
+    assert_eq!(
+        stack.permits.available_permits(),
+        SOCKET_LIMIT,
+        "expired accepts release their permits"
+    );
+    stack.receive(syn(12001)).await.unwrap();
+    assert_eq!(
+        stack.flows.len(),
+        1,
+        "dead routing entries must be pruned before the next admission"
+    );
+    drop(stack);
+}
+
+#[tokio::test]
+async fn packets_without_a_valid_opening_cannot_reserve_capacity() {
+    let (outgoing, _output) = mpsc::channel(256);
+    let (accepted, _connections) = mpsc::channel(32);
+    let mut stack = TcpStack::new(1500, outgoing, accepted);
+    let mut acknowledgement = syn(12000);
+    let mut tcp = TcpPacket::new_unchecked(&mut acknowledgement[20..]);
+    tcp.set_syn(false);
+    tcp.set_ack(true);
+    stack.receive(acknowledgement).await.unwrap();
+    stack.receive(syn(0)).await.unwrap();
+    assert_eq!(stack.permits.available_permits(), SOCKET_LIMIT);
+    assert!(stack.flows.is_empty());
+    drop(stack);
+}
+
+#[tokio::test]
+async fn congested_input_does_not_stall_the_shared_packet_driver() {
+    let (outgoing, _output) = mpsc::channel(256);
+    let (accepted, _connections) = mpsc::channel(32);
+    let mut stack = TcpStack::new(1500, outgoing, accepted);
+    // No reactor yield: repeated SYNs saturate this flow's bounded input queue.
+    for _ in 0..64_u8 {
+        stack.receive(syn(12000)).await.unwrap();
+    }
+    stack.receive(syn(12001)).await.unwrap();
+    assert_eq!(stack.flows.len(), 2, "other flows must still be admitted");
+    assert_eq!(stack.permits.available_permits(), SOCKET_LIMIT - 2);
+    drop(stack);
 }
