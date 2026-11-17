@@ -328,12 +328,10 @@ impl RuntimePolicyTransaction {
         config: NetworkConfig,
     ) -> Result<NetworkConfig, BrokerError> {
         let validation_config = config.clone();
-        let validated =
-            tokio::task::spawn_blocking(move || NetworkRuntime::validate(validation_config))
-                .await
-                .map_err(|source| {
-                    BrokerError::task("load upstream proxy configuration", source)
-                })??;
+        let network = self.network.clone();
+        let validated = tokio::task::spawn_blocking(move || network.validate(validation_config))
+            .await
+            .map_err(|source| BrokerError::task("load upstream proxy configuration", source))??;
         let candidate = RuntimePolicies {
             network: Some(config.clone()),
             ..self.current.clone()
@@ -1081,8 +1079,12 @@ mod tests {
     #[test]
     fn validating_a_proxy_does_not_publish_it() {
         let runtime = NetworkRuntime::new(None, None).unwrap();
-        assert!(NetworkRuntime::validate(proxy_network("http://127.0.0.1:3128")).is_ok());
-        assert!(NetworkRuntime::validate(super::NetworkConfig::default()).is_ok());
+        assert!(
+            runtime
+                .validate(proxy_network("http://127.0.0.1:3128"))
+                .is_ok()
+        );
+        assert!(runtime.validate(super::NetworkConfig::default()).is_ok());
         assert!(runtime.config().upstream.is_none());
     }
 

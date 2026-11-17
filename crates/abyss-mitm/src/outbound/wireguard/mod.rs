@@ -10,7 +10,7 @@ use std::{
     io,
     net::SocketAddr,
     pin::Pin,
-    sync::{Arc, LazyLock, Weak},
+    sync::{Arc, Weak},
     task::{Context, Poll},
     time::Duration,
 };
@@ -31,10 +31,12 @@ use crate::TargetAuthority;
 use config::Settings;
 use tunnel::Tunnel;
 
-// Weak entries avoid keeping keys, UDP sockets or tasks alive after the last
-// route/stream is gone. A process may never race two endpoints for one identity.
-static IDENTITIES: LazyLock<Mutex<Vec<Weak<WireguardRoute>>>> =
-    LazyLock::new(|| Mutex::new(Vec::new()));
+// The owning route manager shares this registry across configuration snapshots.
+// Weak entries leave key, socket and task lifetimes to active routes and streams.
+#[derive(Default)]
+pub(super) struct RouteRegistry {
+    identities: Mutex<Vec<Weak<WireguardRoute>>>,
+}
 
 pub(super) struct WireguardRoute {
     settings: Settings,
@@ -42,10 +44,11 @@ pub(super) struct WireguardRoute {
     tunnel: tokio::sync::Mutex<Option<Arc<Tunnel>>>,
 }
 
-impl WireguardRoute {
+impl RouteRegistry {
     pub(super) fn load(
+        &self,
         config: &UpstreamProxyConfig,
-    ) -> Result<Arc<Self>, UpstreamProxyConfigError> {
+    ) -> Result<Arc<WireguardRoute>, UpstreamProxyConfigError> {
         let settings = Settings::load(
             config
                 .wireguard_file
@@ -54,7 +57,7 @@ impl WireguardRoute {
         )?;
         let endpoint = config.target()?;
         let identity = settings.identity();
-        let mut identities = IDENTITIES.lock();
+        let mut identities = self.identities.lock();
         identities.retain(|entry| entry.strong_count() > 0);
         if let Some(entry) = identities
             .iter()
@@ -68,7 +71,7 @@ impl WireguardRoute {
                 "WireGuard identity is still in use with different settings; rotate the key or drain the old route first",
             ));
         }
-        let route = Arc::new(Self {
+        let route = Arc::new(WireguardRoute {
             settings,
             endpoint,
             tunnel: tokio::sync::Mutex::new(None),
@@ -77,7 +80,9 @@ impl WireguardRoute {
         drop(identities);
         Ok(route)
     }
+}
 
+impl WireguardRoute {
     pub(super) async fn connect(
         self: &Arc<Self>,
         target: &TargetAuthority,

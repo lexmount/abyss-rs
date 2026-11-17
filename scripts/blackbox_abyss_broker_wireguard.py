@@ -142,6 +142,11 @@ class WireguardPeer:
         ).split()
         return {"received": int(output[-2]), "sent": int(output[-1])}
 
+    def client_endpoint(self):
+        return subprocess.check_output(
+            ["docker", "exec", self.name, "wg", "show", "wg0", "endpoints"], text=True
+        ).split()[-1]
+
     def close(self):
         if self.started:
             subprocess.run(
@@ -204,12 +209,24 @@ def exercise(broker, peer, origin):
         )
         read_head(stream)
         assert exact(stream, len(b"data: first\n\n")) == b"data: first\n\n"
+        endpoint = peer.client_endpoint()
         configure(broker, route)
         explicit_request(broker, "10.77.0.1:80")
         # Changing identity-owned settings must not interrupt this live stream.
         peer.file.write_text(json.dumps(dict(peer.material, mtu=1300)))
         assert_invalid(broker, route, route)
         peer.file.write_text(json.dumps(peer.material))
+        configure(broker, {"upstream": None})
+        # The old stream is now the only owner of its route. The manager must
+        # still reject conflicting material and reuse it when WireGuard returns.
+        peer.file.write_text(json.dumps(dict(peer.material, mtu=1300)))
+        assert_invalid(broker, route, {"upstream": None})
+        peer.file.write_text(json.dumps(peer.material))
+        configure(broker, route)
+        explicit_request(broker, "10.77.0.1:80")
+        assert peer.client_endpoint() == endpoint, (
+            "route reload replaced the UDP transport"
+        )
         configure(broker, {"upstream": None})
         subprocess.run(
             [
@@ -260,7 +277,7 @@ def exercise(broker, peer, origin):
             peer.material[key] not in (broker.home / "runtime-policy.toml").read_text()
         )
     print(
-        "PASS: kernel WireGuard interoperability, PSK, system-resolved address policy, IPv4/IPv6, HTTP/CONNECT, TLS, 1 MiB transfer, route snapshots, restart, no fallback, timeout and secret-safe configuration"
+        "PASS: kernel WireGuard interoperability, PSK, system-resolved address policy, IPv4/IPv6, HTTP/CONNECT, TLS, 1 MiB transfer, manager-owned transport reuse across direct-mode reloads, old-stream continuity, restart, no fallback, timeout and secret-safe configuration"
     )
     return stats
 

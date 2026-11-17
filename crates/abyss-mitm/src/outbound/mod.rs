@@ -20,7 +20,7 @@ mod socks5_tests;
 mod tests;
 
 pub use config::{UpstreamProxyConfig, UpstreamProxyConfigError, UpstreamProxyProtocol};
-pub use connector::{ConnectedTunnel, UpstreamProxy};
+pub use connector::{ConnectedTunnel, UpstreamProxy, UpstreamProxyFactory};
 /// Compatibility name for the shared next-hop connector.
 pub type HttpConnectProxy = UpstreamProxy;
 pub use listener::ListenerEndpoint;

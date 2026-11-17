@@ -6,7 +6,7 @@ use base64::{Engine as _, engine::general_purpose::STANDARD};
 use boringtun::x25519::{PublicKey, StaticSecret};
 use serde_json::{Value, json};
 
-use super::{WireguardRoute, config::Settings};
+use super::{RouteRegistry, config::Settings};
 use crate::{
     TargetAuthority,
     outbound::{UpstreamProxy, UpstreamProxyConfig, UpstreamProxyError, UpstreamProxyProtocol},
@@ -136,12 +136,13 @@ fn route_round_trips_paths_and_validates_protocol_fields() {
 
 #[test]
 fn repeated_snapshots_share_identity_until_the_last_owner_is_dropped() {
+    let registry = RouteRegistry::default();
     let file = tempfile::NamedTempFile::new().unwrap();
     let mut value = material();
     std::fs::write(file.path(), value.to_string()).unwrap();
     let config = config(&file);
-    let first = WireguardRoute::load(&config).unwrap();
-    let second = WireguardRoute::load(&config).unwrap();
+    let first = registry.load(&config).unwrap();
+    let second = registry.load(&config).unwrap();
     assert!(
         Arc::ptr_eq(&first, &second),
         "reapply must not cause endpoint roaming"
@@ -149,14 +150,49 @@ fn repeated_snapshots_share_identity_until_the_last_owner_is_dropped() {
     value["mtu"] = json!(1300_u16);
     std::fs::write(file.path(), value.to_string()).unwrap();
     assert!(
-        WireguardRoute::load(&config).is_err(),
+        registry.load(&config).is_err(),
         "active identity conflicts are rejected"
     );
     drop(first);
     drop(second);
     assert!(
-        WireguardRoute::load(&config).is_ok(),
+        registry.load(&config).is_ok(),
         "drained identities can be reconfigured"
+    );
+}
+
+#[test]
+fn independent_registries_do_not_share_identities() {
+    let file = tempfile::NamedTempFile::new().unwrap();
+    std::fs::write(file.path(), material().to_string()).unwrap();
+    let config = config(&file);
+    let first = RouteRegistry::default().load(&config).unwrap();
+    let second = RouteRegistry::default().load(&config).unwrap();
+    assert!(
+        !Arc::ptr_eq(&first, &second),
+        "independent owners must not share a route through process-global state"
+    );
+}
+
+#[test]
+fn concurrent_snapshots_share_one_registered_identity() {
+    let registry = RouteRegistry::default();
+    let file = tempfile::NamedTempFile::new().unwrap();
+    std::fs::write(file.path(), material().to_string()).unwrap();
+    let config = config(&file);
+    let barrier = std::sync::Barrier::new(4);
+    let routes = std::thread::scope(|scope| {
+        let tasks = [(); 4].map(|()| {
+            scope.spawn(|| {
+                barrier.wait();
+                registry.load(&config).unwrap()
+            })
+        });
+        tasks.map(|task| task.join().unwrap())
+    });
+    assert!(
+        routes.iter().all(|route| Arc::ptr_eq(route, &routes[0])),
+        "concurrent validation must not create competing transports"
     );
 }
 

@@ -13,8 +13,10 @@ use crate::{BoxedDuplexStream, TargetAuthority, transparent::PrefixedDuplexStrea
 use super::{
     ListenerEndpoint, ProxyConnectStage, ProxySocketInitializer, UpstreamProxyConfig,
     UpstreamProxyConfigError, UpstreamProxyError, UpstreamProxyProtocol,
-    http_connect::HttpConnectHandshake, socks5::Socks5Handshake, transport::ProxyTransport,
-    wireguard::WireguardRoute,
+    http_connect::HttpConnectHandshake,
+    socks5::Socks5Handshake,
+    transport::ProxyTransport,
+    wireguard::{RouteRegistry, WireguardRoute},
 };
 
 /// A validated protocol-specific next hop. Target TLS is applied after negotiation.
@@ -37,13 +39,25 @@ pub struct ConnectedTunnel {
     pub proxy_peer: SocketAddr,
 }
 
-impl UpstreamProxy {
-    /// Validates a static configuration without performing network operations.
+/// Prepares next hops with `WireGuard` identity reuse scoped to one route manager.
+///
+/// Share this factory across configuration snapshots. Independent factories do
+/// not coordinate identities; active routes and streams own their transports.
+#[derive(Default)]
+pub struct UpstreamProxyFactory {
+    wireguard: RouteRegistry,
+}
+
+impl UpstreamProxyFactory {
+    /// Validates configuration and reuses matching identities without network I/O.
     ///
     /// # Errors
     ///
     /// Returns an error when the endpoint, timeouts, CA bundle or credentials are invalid.
-    pub fn new(config: &UpstreamProxyConfig) -> Result<Self, UpstreamProxyConfigError> {
+    pub fn prepare(
+        &self,
+        config: &UpstreamProxyConfig,
+    ) -> Result<UpstreamProxy, UpstreamProxyConfigError> {
         config.validate()?;
         let endpoint = config.target()?;
         let transport = ProxyTransport::new(config, &endpoint)?;
@@ -56,10 +70,10 @@ impl UpstreamProxy {
                 ProxyHandshake::Socks5(Socks5Handshake::new(credentials.as_ref())?)
             }
             UpstreamProxyProtocol::Wireguard => {
-                ProxyHandshake::Wireguard(WireguardRoute::load(config)?)
+                ProxyHandshake::Wireguard(self.wireguard.load(config)?)
             }
         };
-        Ok(Self {
+        Ok(UpstreamProxy {
             endpoint,
             transport,
             handshake,
@@ -68,6 +82,19 @@ impl UpstreamProxy {
             socket_initializer: None,
             excluded_endpoints: Vec::new(),
         })
+    }
+}
+
+impl UpstreamProxy {
+    /// Creates an independent next hop without performing network operations.
+    ///
+    /// Clone the returned connector for per-flow use. For configuration reloads,
+    /// retain an [`UpstreamProxyFactory`] to reuse active `WireGuard` identities.
+    ///
+    /// # Errors
+    /// Returns an error when the endpoint, timeouts, CA bundle or credentials are invalid.
+    pub fn new(config: &UpstreamProxyConfig) -> Result<Self, UpstreamProxyConfigError> {
+        UpstreamProxyFactory::default().prepare(config)
     }
 
     /// Associates this flow's platform state with every next-hop socket before TCP connect.
@@ -90,7 +117,7 @@ impl UpstreamProxy {
         &self.endpoint
     }
 
-    /// Establishes a tunnel without resolving the logical target locally.
+    /// Establishes a target tunnel using the selected protocol's resolver policy.
     ///
     /// `listener` is the actual bound broker endpoint, including dynamic ports.
     ///

@@ -41,12 +41,22 @@ JSON configuration files; unknown fields are rejected when loading a route.
 All connections of a route share its WireGuard identity and TCP/IP stacks.
 Reapplying identical material must reuse the transport: creating competing UDP
 endpoints with the same key would make the peer roam and disrupt existing flows.
-Incompatible concurrent reuse of the same identity is rejected. Old streams
+Incompatible concurrent reuse of the same identity within one route manager is
+rejected. Old streams
 retain their transport until closed; key rotation uses a distinct identity.
-The identity registry holds weak references, so the final route/stream owner
+`NetworkRuntime` owns an `Arc<UpstreamProxyFactory>`. Runtime clones share this
+factory for startup validation and every configuration update; selecting direct
+routing does not discard it. Its WireGuard identity registry is instance-owned,
+with no process-global state. It holds weak references, so the final route/stream owner
 releases its key material, packet driver and stacks. This intentionally rejects
 incompatible updates rather than disrupting an existing session. The UDP socket
 accepts only the configured peer; endpoint roaming is outside this contract.
+
+Independent route managers and factories do not share identities. Library callers
+that reload related routes must retain one `UpstreamProxyFactory` and call
+`prepare`; `UpstreamProxy::new` creates an independent connector, which can be
+cloned for per-flow use. Dropping the factory does not close existing streams:
+`OwnedStream` retains strong references to its route and tunnel until it closes.
 
 Fixed configuration collections and stack endpoints use boxed slices. Growable
 collections remain for file reads and the live route registry; smoltcp packet APIs
@@ -67,11 +77,14 @@ updating its release pin are separate consumer work.
 ## Validation plan
 
 - Unit tests: strict configuration, key validation, AllowedIPs, secret-safe
-  errors, system-resolved address filtering, deadlines, and transport ownership.
+  errors, system-resolved address filtering, deadlines, concurrent identity reuse,
+  independent manager isolation, and retained-snapshot ownership.
 - Black-box tests: a real broker and independent WireGuard peer, encrypted HTTP
   and TLS over IPv4/IPv6, system-resolved loopback rejection, PSK mismatch, no
-  direct fallback, hot updates and persistence. Existing upstream and SDK
-  regression suites remain required.
+  direct fallback, hot updates and persistence. A live SSE stream survives a
+  WireGuard-to-direct-to-WireGuard update, with the peer's observed UDP endpoint
+  unchanged and conflicting material rejected while only the old stream owns
+  that identity. Existing upstream and SDK regression suites remain required.
 - Live validation: actual installed Codex and dsh provider traffic through the
   changed broker and WireGuard peer, using system-resolved provider hostnames,
   delivered to a real backend and correlated with stored events.

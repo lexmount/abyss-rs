@@ -306,7 +306,7 @@ components:
           description: Absolute broker-local path to a JSON object with username and password strings for HTTP Basic or SOCKS5 username/password authentication (1–255 UTF-8 bytes per SOCKS5 field). Loaded at configuration application; credentials are never returned or persisted in this API.
         wireguard_file:
           type: string
-          description: Required only for wireguard. Absolute broker-local JSON path containing private_key, public_key, optional preshared_key, addresses, allowed_ips, mtu (1280–1420, default 1280), and optional persistent_keepalive_secs. Peer and target hostnames use the system resolver. Keys use base64. Loaded before publication; contents are never returned or persisted in this API. Incompatible concurrent reuse of a peer identity is rejected.
+          description: Required only for wireguard. Absolute broker-local JSON path containing private_key, public_key, optional preshared_key, addresses, allowed_ips, mtu (1280–1420, default 1280), and optional persistent_keepalive_secs. Peer and target hostnames use the system resolver. Keys use base64. Loaded before publication; contents are never returned or persisted in this API. Incompatible concurrent reuse of a peer identity within the same route manager is rejected.
         connect_timeout_ms:
           type: integer
           minimum: 1

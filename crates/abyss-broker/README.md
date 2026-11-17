@@ -231,7 +231,9 @@ unknown fields are rejected.
 The same network REST API applies this route. File contents are validated before
 publication and never appear in API replies or persisted policy. Editing the
 file alone does not change active snapshots. Identical material reuses the peer
-transport. Concurrent reuse of the same client/peer identity with different
+transport through state owned by the broker's route manager and shared across
+configuration snapshots, including transitions through direct mode. Independent
+route managers do not share this state. Concurrent reuse of the same client/peer identity with different
 settings is rejected to prevent endpoint roaming from breaking active streams.
 Use a new client key, or select direct routing and drain the old connections
 before changing that identity's settings. A subsequent connection can recreate
