@@ -300,13 +300,13 @@ def run():
             proxy = LocalServer(NextHop)
             proxy.origin = servers[0]
             proxy.tls_origin = servers[2]
-            proxy.plain_hosts = ("10.200.0.1",)
+            proxy.plain_hosts = ("tun.test",)
             try:
                 api("PUT", "/v1/network/config", network(proxy))
                 exercise(servers[0], "http")
                 assert len(proxy.requests) == 1
                 expected = (
-                    f"CONNECT 10.200.0.1:{servers[0].server_port} HTTP/1.1".encode()
+                    f"CONNECT tun.test:{servers[0].server_port} HTTP/1.1".encode()
                 )
                 assert proxy.requests[0].startswith(expected), proxy.requests[
                     0
@@ -314,7 +314,7 @@ def run():
                 assert servers[0].requests == 3
                 api("PUT", "/v1/network/config", {"upstream": None})
                 print(
-                    "PASS TUN flow uses the configured CONNECT next hop with its original target",
+                    "PASS TUN flow uses the configured CONNECT next hop with its HTTP authority",
                     flush=True,
                 )
             finally:
