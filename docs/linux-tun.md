@@ -32,7 +32,10 @@ stream progress. TCP stack implementation remains separate from broker policy.
 The status API reports `mode=transparent`, ingress `source=linux_tun`, a device
 name, and no TCP listen address. Update all three SDKs and OpenAPI with this
 additive ingress identity and optional device field. Existing consumers retain
-their current explicit/macOS/Windows status shapes.
+their current explicit/macOS/Windows status shapes. TypeScript and Python SDK
+manifest versions move to 1.6.0 to match the broker major/minor policy. Consumers
+using typed ingress identities need the updated SDK before opting into TUN.
+Publishing these packages remains a separate release operation.
 
 ## Compatibility and scope
 

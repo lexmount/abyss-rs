@@ -274,7 +274,7 @@ impl Serialize for IngressRuntimeStatus {
         #[cfg(target_os = "linux")]
         let device_name = match self {
             Self::LinuxTun { device_name } => Some(device_name.as_str()),
-            _ => None,
+            Self::ExplicitHttp { .. } => None,
         };
         #[cfg(not(target_os = "linux"))]
         let device_name = None;
