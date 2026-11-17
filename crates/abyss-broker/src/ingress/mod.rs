@@ -271,15 +271,19 @@ impl Serialize for IngressRuntimeStatus {
             device_name: Option<&'a str>,
         }
 
+        #[cfg(target_os = "linux")]
+        let device_name = match self {
+            Self::LinuxTun { device_name } => Some(device_name.as_str()),
+            _ => None,
+        };
+        #[cfg(not(target_os = "linux"))]
+        let device_name = None;
+
         IngressRuntimeStatusResponse {
             source: self.source(),
             listen_addr: self.listen_addr(),
             socket_path: self.socket_path(),
-            device_name: match self {
-                #[cfg(target_os = "linux")]
-                Self::LinuxTun { device_name } => Some(device_name),
-                _ => None,
-            },
+            device_name,
         }
         .serialize(serializer)
     }
