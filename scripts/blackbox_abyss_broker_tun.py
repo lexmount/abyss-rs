@@ -18,6 +18,8 @@ import threading
 import time
 from pathlib import Path
 
+from blackbox_abyss_broker_upstream import LocalServer, NextHop, network
+
 BROKER_UID = 1000
 CLIENT_UID = 2001
 ROOT = Path(__file__).resolve().parents[1]
@@ -235,10 +237,16 @@ def run():
             info = json.loads(startup.read_text())
             token = Path(info["auth_token_file"]).read_text().strip()
 
-            def api(method, path):
+            def api(method, path, payload=None):
                 connection = http.client.HTTPConnection(info["api_addr"], timeout=10)
                 connection.request(
-                    method, path, headers={"Authorization": f"Bearer {token}"}
+                    method,
+                    path,
+                    body=json.dumps(payload) if payload is not None else None,
+                    headers={
+                        "Authorization": f"Bearer {token}",
+                        "Content-Type": "application/json",
+                    },
                 )
                 response = connection.getresponse()
                 body = response.read()
@@ -253,12 +261,8 @@ def run():
             assert status["ingresses"] == [
                 {"source": "linux_tun", "listen_addr": None, "device_name": "abyss0"}
             ], status
-            for server, mode in [
-                (servers[0], "http"),
-                (servers[0], "half-close"),
-                (servers[1], "http"),
-                (servers[2], "tls"),
-            ]:
+
+            def exercise(server, mode):
                 child = subprocess.run(
                     [
                         sys.executable,
@@ -284,7 +288,37 @@ def run():
                 )
                 assert child.returncode == 0, child.stdout + child.stderr
                 print(child.stdout.strip(), flush=True)
+
+            for server, mode in [
+                (servers[0], "http"),
+                (servers[0], "half-close"),
+                (servers[1], "http"),
+                (servers[2], "tls"),
+            ]:
+                exercise(server, mode)
             assert [server.requests for server in servers] == [2, 1, 1]
+            proxy = LocalServer(NextHop)
+            proxy.origin = servers[0]
+            proxy.tls_origin = servers[2]
+            proxy.plain_hosts = ("10.200.0.1",)
+            try:
+                api("PUT", "/v1/network/config", network(proxy))
+                exercise(servers[0], "http")
+                assert len(proxy.requests) == 1
+                expected = (
+                    f"CONNECT 10.200.0.1:{servers[0].server_port} HTTP/1.1".encode()
+                )
+                assert proxy.requests[0].startswith(expected), proxy.requests[
+                    0
+                ].splitlines()[0]
+                assert servers[0].requests == 3
+                api("PUT", "/v1/network/config", {"upstream": None})
+                print(
+                    "PASS TUN flow uses the configured CONNECT next hop with its original target",
+                    flush=True,
+                )
+            finally:
+                proxy.close()
             process.terminate()
             assert process.wait(timeout=15) == 0
             command("ip", "link", "show", "abyss0")

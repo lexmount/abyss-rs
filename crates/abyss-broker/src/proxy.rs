@@ -774,6 +774,7 @@ mod tests {
                 panic!("proxy must be started");
             };
             runtime.task.join_handle.abort();
+            drop(state);
         }
         timeout(Duration::from_secs(1), async {
             while service.status().await.lifecycle() != ProxyLifecycle::Stopped {
