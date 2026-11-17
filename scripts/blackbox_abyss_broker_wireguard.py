@@ -179,7 +179,7 @@ def exercise(broker, peer, origin):
             explicit_request(broker, host + ":80", connect)
     with broker.connect("10.77.0.1:80") as stream:
         stream.sendall(
-            b"GET /large HTTP/1.1\r\nHost: plain.invalid\r\nConnection: close\r\n\r\n"
+            b"GET /large HTTP/1.1\r\nHost: 10.77.0.1\r\nConnection: close\r\n\r\n"
         )
         read_head(stream)
         assert (
@@ -189,18 +189,18 @@ def exercise(broker, peer, origin):
     context = ssl.create_default_context(cafile=str(broker.ca_file))
     with (
         broker.connect("10.77.0.1:443") as raw,
-        context.wrap_socket(raw, server_hostname="tls.invalid") as stream,
+        context.wrap_socket(raw, server_hostname="10.77.0.1") as stream,
     ):
         assert stream.getpeercert(binary_form=True) == ssl.PEM_cert_to_DER_cert(
             broker.origin_cert.read_text()
         )
         stream.sendall(
-            b"GET /probe HTTP/1.1\r\nHost: tls.invalid\r\nConnection: close\r\n\r\n"
+            b"GET /probe HTTP/1.1\r\nHost: 10.77.0.1\r\nConnection: close\r\n\r\n"
         )
         assert read_all(stream).endswith(b"secure")
     with broker.connect("10.77.0.1:80") as stream:
         stream.sendall(
-            b"GET /sse HTTP/1.1\r\nHost: plain.invalid\r\nConnection: close\r\n\r\n"
+            b"GET /sse HTTP/1.1\r\nHost: 10.77.0.1\r\nConnection: close\r\n\r\n"
         )
         read_head(stream)
         assert exact(stream, len(b"data: first\n\n")) == b"data: first\n\n"
@@ -275,7 +275,7 @@ def main():
     try:
         with tempfile.TemporaryDirectory(prefix="abyss-wireguard-") as temporary:
             directory = Path(temporary)
-            broker = Broker(directory, proxy)
+            broker = Broker(directory, proxy, origin_sans="IP:10.77.0.1")
             peer = WireguardPeer(directory)
             try:
                 peer.start()
