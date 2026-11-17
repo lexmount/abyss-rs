@@ -344,7 +344,7 @@ mod tests {
     #[test]
     fn linux_tun_status_decodes_without_a_tcp_listener() {
         let status: ProxyStatus = serde_json::from_value(serde_json::json!({
-            "lifecycle": "running", "process_id": 123,
+            "lifecycle": "running", "process_id": 123_u32,
             "mode": "transparent", "listen_addr": null,
             "ingresses": [{"source": "linux_tun", "listen_addr": null, "device_name": "abyss0"}]
         }))
