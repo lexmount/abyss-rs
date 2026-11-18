@@ -160,27 +160,32 @@ impl ScriptProcess {
         let executable = bundle.join("Contents/MacOS/Electron");
         fs::create_dir_all(executable.parent().unwrap()).unwrap();
         if !executable.exists() {
-            fs::copy("/bin/cat", &executable).unwrap();
-            // A relocated Apple platform binary needs a local test signature.
+            // Keep the native process alive with the actual Electron argv shape.
+            // The test needs its kernel-reported arguments, not a JS runtime.
+            let source = bundle.join("wait.c");
+            fs::write(
+                &source,
+                "#include <stdio.h>\nint main(void) { (void)getchar(); }\n",
+            )
+            .unwrap();
             assert!(
-                Command::new("/usr/bin/codesign")
-                    .args(["--force", "--sign", "-"])
+                Command::new("cc")
+                    .arg(&source)
+                    .arg("-o")
                     .arg(&executable)
-                    .output()
+                    .status()
                     .unwrap()
-                    .status
                     .success(),
-                "the relocated native fixture must be signed"
+                "the native entry fixture must compile"
             );
         }
         let script = bundle.join(entry);
         fs::create_dir_all(script.parent().unwrap()).unwrap();
         fs::write(&script, "").unwrap();
-        // A real native process with the same argv shape as a bundled runtime.
-        // It reads the empty entry file, then waits on stdin until dropped.
         let mut child = Command::new(&executable)
+            .arg("--disable-warning=ExperimentalWarning")
             .arg(&script)
-            .arg("-")
+            .arg("--stdio")
             .stdin(Stdio::piped())
             .stdout(Stdio::null())
             .stderr(Stdio::null())
