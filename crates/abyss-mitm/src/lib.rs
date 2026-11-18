@@ -11,6 +11,7 @@
 //! byte IO plus normalized target metadata.
 
 pub mod ca;
+pub mod netstack;
 pub mod outbound;
 
 mod explicit_http;

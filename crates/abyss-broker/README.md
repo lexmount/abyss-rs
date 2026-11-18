@@ -28,6 +28,23 @@ to trust the broker's CA. Explicit proxy connections do not require authenticati
 so use network access controls to restrict who can reach an exposed listener.
 The REST control API retains its separate loopback-only listener and bearer token.
 
+## Receive Linux TUN traffic
+
+Linux can attach to an administrator-provisioned persistent TUN interface:
+
+```toml
+[proxy]
+mode = "linux_tun"
+device_name = "abyss0"
+```
+
+TCP clients enter the same MITM, policy, diagnostics, and delivery pipeline
+without proxy environment variables. Provision routing and CA trust separately;
+capture a different UID from the broker to prevent outbound recapture. The
+explicit-only CLI lifecycle remains unchanged. See the
+[Linux TUN design and operator setup](../../docs/linux-tun.md) for prerequisites,
+IPv4/IPv6 examples, scope, cleanup, and actual TUN regression tests.
+
 ## Block network flows
 
 Add ordered rules to the existing MITM policy in `runtime-policy.toml`, or update

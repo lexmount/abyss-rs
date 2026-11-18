@@ -34,6 +34,7 @@ parking_lot = "0.12"
 subtle = "2"
 thiserror = "2"
 toml = "0.9"
+tokio-smoltcp = { version = "0.7", default-features = false, features = ["proto-ipv4", "proto-ipv6"] }
 
 [workspace.lints.rust]
 unsafe_code = "warn"

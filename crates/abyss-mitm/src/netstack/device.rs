@@ -1,4 +1,4 @@
-//! Bounded IP-packet transport between smoltcp and the `WireGuard` UDP driver.
+//! Bounded asynchronous IP-packet transport shared by TUN and `WireGuard` stacks.
 
 use std::{
     io,
@@ -14,15 +14,18 @@ use tokio_smoltcp::{
 };
 use tokio_util::sync::{PollSendError, PollSender};
 
+/// A channel-backed IP device with bounded queues supplied by its transport.
 /// Packet ownership uses `Vec` because smoltcp's `AsyncDevice` requires it.
-pub(super) struct PacketDevice {
+pub struct PacketDevice {
     incoming: mpsc::Receiver<io::Result<Vec<u8>>>,
     outgoing: PollSender<Vec<u8>>,
     capabilities: DeviceCapabilities,
 }
 
 impl PacketDevice {
-    pub(super) fn new(
+    /// Uses the supplied channel capacities for backpressure and preserves IP checksums.
+    #[must_use]
+    pub fn new(
         incoming: mpsc::Receiver<io::Result<Vec<u8>>>,
         outgoing: mpsc::Sender<Vec<u8>>,
         mtu: usize,
@@ -76,5 +79,5 @@ impl AsyncDevice for PacketDevice {
 }
 
 fn closed(_: PollSendError<Vec<u8>>) -> io::Error {
-    io::Error::new(io::ErrorKind::BrokenPipe, "WireGuard packet driver closed")
+    io::Error::new(io::ErrorKind::BrokenPipe, "IP packet transport closed")
 }

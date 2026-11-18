@@ -96,6 +96,9 @@ pub struct ProxyConfig {
     /// Unix socket used by the macOS Network Extension bridge.
     #[serde(default)]
     pub socket_path: Option<PathBuf>,
+    /// Existing persistent Linux TUN device, provisioned outside the broker.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub device_name: Option<String>,
     /// Initial HTTP CONNECT next hop for supported ingress modes.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub upstream: Option<abyss_mitm::outbound::UpstreamProxyConfig>,
@@ -112,6 +115,8 @@ pub enum ProxyIngressMode {
     MacosNetworkExtension,
     /// Windows WFP redirected TCP bridge.
     WindowsWfp,
+    /// Linux TCP flows received through a preconfigured TUN interface.
+    LinuxTun,
 }
 
 /// Errors returned while loading or validating broker config.
@@ -195,6 +200,7 @@ impl ProxyIngressMode {
             Self::Explicit => "explicit",
             Self::MacosNetworkExtension => "macos_network_extension",
             Self::WindowsWfp => "windows_wfp",
+            Self::LinuxTun => "linux_tun",
         }
     }
 }
@@ -341,6 +347,20 @@ impl ProxyConfig {
                 let endpoint = ExplicitIngressEndpoint::new(address);
                 Ok(ProxyPlan::explicit(endpoint))
             }
+            ProxyIngressMode::LinuxTun => {
+                #[cfg(target_os = "linux")]
+                {
+                    Ok(ProxyPlan::LinuxTun {
+                        tun: crate::ingress::linux::IngressEndpoint::new(
+                            self.device_name.clone().expect("validated TUN device name"),
+                        ),
+                    })
+                }
+                #[cfg(not(target_os = "linux"))]
+                {
+                    Err(self.unavailable_mode())
+                }
+            }
             ProxyIngressMode::MacosNetworkExtension => {
                 #[cfg(target_os = "macos")]
                 {
@@ -391,6 +411,11 @@ impl ProxyConfig {
     }
 
     fn validate_shape(&self) -> Result<(), BrokerConfigError> {
+        if self.mode != ProxyIngressMode::LinuxTun && self.device_name.is_some() {
+            return Err(BrokerConfigError::Invalid {
+                message: "proxy.device_name requires mode=linux_tun".to_owned(),
+            });
+        }
         if let Some(upstream) = &self.upstream {
             upstream
                 .validate()
@@ -399,6 +424,22 @@ impl ProxyConfig {
                 })?;
         }
         match self.mode {
+            ProxyIngressMode::LinuxTun => {
+                let valid_name = self.device_name.as_ref().is_some_and(|name| {
+                    !name.is_empty()
+                        && name.len() < 16
+                        && name != "."
+                        && name != ".."
+                        && name
+                            .bytes()
+                            .all(|byte| byte.is_ascii_alphanumeric() || b"_.-".contains(&byte))
+                });
+                if !valid_name || self.listen_addr.is_some() || self.socket_path.is_some() {
+                    return Err(BrokerConfigError::Invalid {
+                        message: "linux_tun requires a valid proxy.device_name (1-15 ASCII letters, digits, _, -, .) and no listen_addr or socket_path".to_owned(),
+                    });
+                }
+            }
             ProxyIngressMode::Explicit => {
                 if self.socket_path.is_some() {
                     return Err(BrokerConfigError::Invalid {
@@ -701,6 +742,60 @@ socket_path = "run/flow.sock"
             .expect("explicit proxy should be available on every broker artifact");
 
         assert_eq!(plan.endpoint_label(), "127.0.0.1:0");
+    }
+
+    #[tokio::test]
+    async fn tun_rejects_invalid_names_and_conflicting_endpoints() {
+        for fields in [
+            "",
+            "device_name = ''",
+            "device_name = '..'",
+            "device_name = 'tun/name'",
+            "device_name = 'abcdefghijklmnop'",
+            "device_name = 'tun%02d'",
+            "device_name = 'abyss0'\nlisten_addr = '127.0.0.1:8080'",
+            "device_name = 'abyss0'\nsocket_path = 'flow.sock'",
+        ] {
+            assert!(
+                load_temp_config(&format!(
+                    "schema_version = 1\n[proxy]\nmode = 'linux_tun'\n{fields}\n"
+                ))
+                .await
+                .is_err(),
+                "invalid TUN config: {fields}"
+            );
+        }
+        assert!(
+            load_temp_config(
+                "schema_version = 1\n[proxy]\nmode = 'explicit'\ndevice_name = 'abyss0'\n"
+            )
+            .await
+            .is_err(),
+            "explicit ingress must not accept a TUN endpoint"
+        );
+    }
+
+    #[cfg(target_os = "linux")]
+    #[tokio::test]
+    async fn tun_plan_preserves_the_device_name_and_has_no_tcp_listener() {
+        let config = load_temp_config(
+            "schema_version = 1\n[proxy]\nmode = 'linux_tun'\ndevice_name = 'abyss0'\n",
+        )
+        .await
+        .expect("valid TUN configuration");
+        let plan = config.proxy.plan().expect("Linux TUN plan");
+        assert_eq!(plan.mode(), crate::ingress::ProxyMode::Transparent);
+        assert_eq!(plan.endpoint_label(), "abyss0");
+        let status = crate::ingress::IngressRuntimeStatus::LinuxTun {
+            device_name: "abyss0".to_owned(),
+        };
+        let value = serde_json::to_value(status).expect("serialize TUN status");
+        assert_eq!(
+            value,
+            serde_json::json!({
+                "source": "linux_tun", "device_name": "abyss0", "listen_addr": null
+            })
+        );
     }
 
     #[tokio::test]

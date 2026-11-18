@@ -1,7 +1,6 @@
 //! `WireGuard` route snapshots, identity ownership and tunneled target connections.
 
 mod config;
-mod device;
 #[cfg(test)]
 mod tests;
 mod tunnel;
@@ -9,25 +8,19 @@ mod tunnel;
 use std::{
     io,
     net::SocketAddr,
-    pin::Pin,
     sync::{Arc, Weak},
-    task::{Context, Poll},
     time::Duration,
 };
 
 use futures_util::{StreamExt as _, stream::FuturesUnordered};
 use parking_lot::Mutex;
-use tokio::{
-    io::{AsyncRead, AsyncWrite, ReadBuf},
-    net::lookup_host,
-    time,
-};
+use tokio::{net::lookup_host, time};
 
 use super::{
     ConnectedTunnel, ProxyConnectStage, UpstreamProxyConfig, UpstreamProxyConfigError,
     UpstreamProxyError,
 };
-use crate::TargetAuthority;
+use crate::{TargetAuthority, netstack::OwnedStream};
 use config::Settings;
 use tunnel::Tunnel;
 
@@ -99,11 +92,7 @@ impl WireguardRoute {
         .map_err(|source| failed(ProxyConnectStage::Handshake, source))?;
         let proxy_peer = tunnel.peer;
         Ok(ConnectedTunnel {
-            stream: Box::new(OwnedStream {
-                stream,
-                _route: Arc::clone(self),
-                _tunnel: tunnel,
-            }),
+            stream: Box::new(OwnedStream::new(stream, (Arc::clone(self), tunnel))),
             proxy_peer,
         })
     }
@@ -159,38 +148,6 @@ impl WireguardRoute {
             }
             Err(last_error)
         }
-    }
-}
-
-struct OwnedStream {
-    stream: tokio_smoltcp::TcpStream,
-    _route: Arc<WireguardRoute>,
-    _tunnel: Arc<Tunnel>,
-}
-
-impl AsyncRead for OwnedStream {
-    fn poll_read(
-        mut self: Pin<&mut Self>,
-        cx: &mut Context<'_>,
-        buffer: &mut ReadBuf<'_>,
-    ) -> Poll<io::Result<()>> {
-        Pin::new(&mut self.stream).poll_read(cx, buffer)
-    }
-}
-
-impl AsyncWrite for OwnedStream {
-    fn poll_write(
-        mut self: Pin<&mut Self>,
-        cx: &mut Context<'_>,
-        bytes: &[u8],
-    ) -> Poll<io::Result<usize>> {
-        Pin::new(&mut self.stream).poll_write(cx, bytes)
-    }
-    fn poll_flush(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<io::Result<()>> {
-        Pin::new(&mut self.stream).poll_flush(cx)
-    }
-    fn poll_shutdown(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<io::Result<()>> {
-        Pin::new(&mut self.stream).poll_shutdown(cx)
     }
 }
 

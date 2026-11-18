@@ -4,17 +4,26 @@
 //! retains only one task control handle and its common status snapshot, keeping
 //! dynamic dispatch out of the connection path.
 
+mod lifecycle;
 mod request_control;
+
+use lifecycle::{WorkerExit, WorkerSupervisor};
 
 use request_control::RequestControl;
 
-use std::{net::SocketAddr, path::Path, sync::Arc};
+use std::{
+    net::SocketAddr,
+    path::Path,
+    sync::{Arc, Weak},
+};
 
 use serde::Serialize;
 use tokio::{
-    sync::{Mutex, oneshot},
-    task::{JoinError, JoinHandle, JoinSet},
+    sync::{Mutex, oneshot, watch},
+    task::{JoinError, JoinSet},
 };
+
+use uuid::Uuid;
 
 use crate::{
     diagnostics::{FlowDiagnosticContext, FlowDiagnostics, RecordFlowDiagnostics},
@@ -58,7 +67,7 @@ pub enum ProxyStatus {
 }
 
 /// Status fields that always exist while the proxy is started.
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct StartedProxyStatus {
     process_id: u32,
     mode: ProxyMode,
@@ -148,6 +157,7 @@ impl Serialize for ProxyStatus {
 #[derive(Clone)]
 pub struct ProxyService {
     state: Arc<Mutex<ProxyRuntimeState>>,
+    operations: Arc<Mutex<()>>,
     worker_services: ProxyWorkerServices,
 }
 
@@ -163,6 +173,7 @@ struct ProxyWorkerServices {
 enum ProxyRuntimeState {
     Stopped(StoppedProxyRuntime),
     Started(StartedProxyRuntime),
+    Stopping(StoppingProxyRuntime),
 }
 
 struct StoppedProxyRuntime {
@@ -171,6 +182,7 @@ struct StoppedProxyRuntime {
 
 struct StartedProxyRuntime {
     process_id: u32,
+    run_id: Uuid,
     requested_plan: ProxyPlan,
     task: IngressTask,
 }
@@ -178,7 +190,16 @@ struct StartedProxyRuntime {
 struct IngressTask {
     status: IngressRuntimeStatus,
     shutdown: oneshot::Sender<()>,
-    join_handle: JoinHandle<()>,
+    completed: watch::Receiver<WorkerExit>,
+    #[cfg(all(test, unix))]
+    abort_handle: tokio::task::AbortHandle,
+}
+
+/// Draining retains the running snapshot until the supervisor observes exit.
+struct StoppingProxyRuntime {
+    run_id: Uuid,
+    status: StartedProxyStatus,
+    completed: watch::Receiver<WorkerExit>,
 }
 
 impl ProxyService {
@@ -192,6 +213,7 @@ impl ProxyService {
     ) -> Self {
         Self {
             state: Arc::new(Mutex::new(ProxyRuntimeState::stopped())),
+            operations: Arc::new(Mutex::new(())),
             worker_services: ProxyWorkerServices {
                 network,
                 request_control: None,
@@ -219,7 +241,15 @@ impl ProxyService {
     /// different endpoint.
     #[tracing::instrument(level = "trace", skip_all)]
     pub async fn start(&self, plan: ProxyPlan) -> Result<ProxyStatus, BrokerError> {
+        let _operation = self.operations.lock().await;
         let mut state = self.state.lock().await;
+        if let ProxyRuntimeState::Stopping(runtime) = &*state {
+            let completed = runtime.completed.clone();
+            drop(state);
+            // A cancelled stop request still owns a draining run. Wait before binding.
+            let _outcome = WorkerExit::wait(completed).await?;
+            state = self.state.lock().await;
+        }
         if let ProxyRuntimeState::Started(runtime) = &*state {
             if runtime.matches_plan(&plan) {
                 return Ok(ProxyStatus::Started(runtime.status()));
@@ -234,13 +264,13 @@ impl ProxyService {
         let ProxyRuntimeState::Stopped(stopped) = previous else {
             unreachable!("started proxy state was handled before transition");
         };
-        let started = stopped.start(plan, self.worker_services.clone()).await?;
-        let started_status = started.status();
+        drop(state);
+        let started_status = stopped
+            .start(plan, self.worker_services.clone(), &self.state)
+            .await?;
         let listen_addr = started_status.ingress().listen_addr();
         let socket_path = started_status.ingress().socket_path();
         let mode = started_status.mode();
-        *state = ProxyRuntimeState::Started(started);
-        drop(state);
         tracing::info!(
             ?mode,
             ingress_count = 1_usize,
@@ -258,32 +288,50 @@ impl ProxyService {
     /// Returns an error when the listener task cannot be joined cleanly.
     #[tracing::instrument(level = "trace", skip_all)]
     pub async fn stop(&self) -> Result<ProxyStatus, BrokerError> {
+        let _operation = self.operations.lock().await;
         let mut state = self.state.lock().await;
         if let ProxyRuntimeState::Stopped(stopped) = &*state {
             return Ok(ProxyStatus::Stopped(stopped.status()));
         }
-
-        let previous = std::mem::replace(&mut *state, ProxyRuntimeState::stopped());
-        let ProxyRuntimeState::Started(started) = previous else {
-            unreachable!("stopped proxy state was handled before transition");
+        if matches!(&*state, ProxyRuntimeState::Started(_)) {
+            let previous = std::mem::replace(&mut *state, ProxyRuntimeState::stopped());
+            let ProxyRuntimeState::Started(started) = previous else {
+                unreachable!("started runtime was checked before transition");
+            };
+            *state = ProxyRuntimeState::Stopping(started.begin_stop());
+        }
+        let ProxyRuntimeState::Stopping(stopping) = &*state else {
+            unreachable!("stopped runtime was handled before shutdown");
         };
-        let endpoint = started.endpoint_label();
-        let stopped = started.stop().await?;
-        let stopped_status = stopped.status();
-        *state = ProxyRuntimeState::Stopped(stopped);
+        let endpoint = stopping.status.ingress.endpoint_label();
+        let completed = stopping.completed.clone();
+        // The supervisor needs this mutex to publish Stopped before notifying us.
         drop(state);
+        WorkerExit::wait(completed).await?.into_result()?;
+        let status = self.state.lock().await.status();
         tracing::info!(%endpoint, "broker proxy stopped");
-        Ok(ProxyStatus::Stopped(stopped_status))
+        Ok(status)
     }
 
     /// Returns the current proxy status.
     pub async fn status(&self) -> ProxyStatus {
-        let state = self.state.lock().await;
-        state.status()
+        self.state.lock().await.status()
     }
 }
 
 impl ProxyRuntimeState {
+    /// Only the supervisor for the currently owned run may publish its exit.
+    fn finish(&mut self, run_id: Uuid) {
+        let matches = match self {
+            Self::Started(runtime) => runtime.run_id == run_id,
+            Self::Stopping(runtime) => runtime.run_id == run_id,
+            Self::Stopped(_) => false,
+        };
+        if matches {
+            *self = Self::stopped();
+        }
+    }
+
     fn stopped() -> Self {
         Self::Stopped(StoppedProxyRuntime::new())
     }
@@ -292,6 +340,7 @@ impl ProxyRuntimeState {
         match self {
             Self::Stopped(stopped) => ProxyStatus::Stopped(stopped.status()),
             Self::Started(started) => ProxyStatus::Started(started.status()),
+            Self::Stopping(stopping) => ProxyStatus::Started(stopping.status.clone()),
         }
     }
 }
@@ -307,26 +356,51 @@ impl StoppedProxyRuntime {
         self,
         plan: ProxyPlan,
         services: ProxyWorkerServices,
-    ) -> Result<StartedProxyRuntime, BrokerError> {
+        state: &Arc<Mutex<ProxyRuntimeState>>,
+    ) -> Result<StartedProxyStatus, BrokerError> {
         let requested_plan = plan.clone();
-        let task = match plan {
+        match plan {
+            #[cfg(target_os = "linux")]
+            ProxyPlan::LinuxTun { tun } => {
+                let started =
+                    Self::bind_factory(tun.into_factory(services.network.clone())).await?;
+                Ok(self.publish(started, requested_plan, services, state).await)
+            }
             ProxyPlan::Explicit { explicit } => {
                 let started =
                     Self::bind_factory(explicit.into_factory(services.network.clone())).await?;
-                Self::spawn_started(started, services)
+                Ok(self.publish(started, requested_plan, services, state).await)
             }
             #[cfg(any(target_os = "macos", target_os = "windows"))]
             ProxyPlan::Transparent { transparent } => {
                 let factory = transparent.into_factory(services.network.clone());
                 let started = Self::bind_factory(factory).await?;
-                Self::spawn_started(started, services)
+                Ok(self.publish(started, requested_plan, services, state).await)
             }
-        };
-        Ok(StartedProxyRuntime {
+        }
+    }
+
+    /// Binding is complete; publish the run before its supervisor can finish it.
+    async fn publish<I: Ingress + 'static>(
+        self,
+        bound: StartedIngress<I>,
+        requested_plan: ProxyPlan,
+        services: ProxyWorkerServices,
+        state: &Arc<Mutex<ProxyRuntimeState>>,
+    ) -> StartedProxyStatus {
+        let mut current = state.lock().await;
+        let run_id = Uuid::new_v4();
+        let task = Self::spawn_started(bound, services, Arc::downgrade(state), run_id);
+        let started = StartedProxyRuntime {
             process_id: self.process_id,
+            run_id,
             requested_plan,
             task,
-        })
+        };
+        let status = started.status();
+        *current = ProxyRuntimeState::Started(started);
+        drop(current);
+        status
     }
 
     async fn bind_factory<F>(factory: F) -> Result<StartedIngress<F::Ingress>, BrokerError>
@@ -336,7 +410,12 @@ impl StoppedProxyRuntime {
         Ok(factory.start().await?)
     }
 
-    fn spawn_started<I>(started: StartedIngress<I>, services: ProxyWorkerServices) -> IngressTask
+    fn spawn_started<I>(
+        started: StartedIngress<I>,
+        services: ProxyWorkerServices,
+        state: Weak<Mutex<ProxyRuntimeState>>,
+        run_id: Uuid,
+    ) -> IngressTask
     where
         I: Ingress + 'static,
     {
@@ -352,10 +431,16 @@ impl StoppedProxyRuntime {
             .with_request_control(services.request_control)
             .run(shutdown_rx),
         );
+        let (completion, completed) = watch::channel(WorkerExit::Pending);
+        #[cfg(all(test, unix))]
+        let abort_handle = join_handle.abort_handle();
+        tokio::spawn(WorkerSupervisor::new(state, run_id, completion).run(join_handle));
         IngressTask {
             status,
             shutdown,
-            join_handle,
+            completed,
+            #[cfg(all(test, unix))]
+            abort_handle,
         }
     }
 
@@ -383,23 +468,14 @@ impl StartedProxyRuntime {
         }
     }
 
-    async fn stop(self) -> Result<StoppedProxyRuntime, BrokerError> {
-        self.task.stop().await?;
-        Ok(StoppedProxyRuntime {
-            process_id: self.process_id,
-        })
-    }
-}
-
-impl IngressTask {
-    async fn stop(self) -> Result<(), BrokerError> {
-        let endpoint = self.status.endpoint_label();
-        let _sent = self.shutdown.send(());
-        self.join_handle
-            .await
-            .map_err(|source| BrokerError::task("stop proxy listener", source))?;
-        tracing::info!(%endpoint, "broker ingress stopped");
-        Ok(())
+    fn begin_stop(self) -> StoppingProxyRuntime {
+        let status = self.status();
+        let _sent = self.task.shutdown.send(());
+        StoppingProxyRuntime {
+            run_id: self.run_id,
+            status,
+            completed: self.task.completed,
+        }
     }
 }
 
@@ -463,6 +539,10 @@ where
                         Err(error) => {
                             self.diagnostics.record_accept_error(error.to_string());
                             tracing::warn!(%error, "broker ingress accept failed");
+                            #[cfg(target_os = "linux")]
+                            if matches!(error, crate::ingress::IngressError::LinuxTun(_)) {
+                                break;
+                            }
                         }
                     }
                 }
@@ -638,6 +718,7 @@ where
 
 #[cfg(all(test, unix))]
 mod tests {
+    mod lifecycle;
     use std::{
         fs,
         net::SocketAddr,

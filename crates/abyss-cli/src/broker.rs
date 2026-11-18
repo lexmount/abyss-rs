@@ -99,6 +99,9 @@ pub struct IngressStatus {
     /// Bound Unix socket for filesystem-based ingresses.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub socket_path: Option<PathBuf>,
+    /// Administrator-provisioned TUN interface on Linux.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub device_name: Option<String>,
 }
 
 /// Ingress identities exposed by the broker REST API.
@@ -106,6 +109,8 @@ pub struct IngressStatus {
 #[non_exhaustive]
 #[serde(rename_all = "snake_case")]
 pub enum IngressSource {
+    /// Linux TUN TCP ingress.
+    LinuxTun,
     /// Local explicit HTTP proxy listener.
     ExplicitHttp,
     /// macOS Network Extension flow ingress.

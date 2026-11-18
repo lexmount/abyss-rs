@@ -20,7 +20,8 @@ use tokio_smoltcp::{
     },
 };
 
-use super::{config::Settings, device::PacketDevice};
+use super::config::Settings;
+use crate::netstack::PacketDevice;
 
 /// The route and every target stream retain this owner; dropping it stops the driver.
 pub(super) struct Tunnel {

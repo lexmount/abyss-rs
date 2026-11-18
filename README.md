@@ -18,8 +18,8 @@ without modifying agent source code or adding instrumentation to agent applicati
 
 Built in Rust, Abyss provides:
 
-- Explicit HTTP/HTTPS proxying and transparent proxying through macOS Network
-  Extension and Windows WFP adapters.
+- Explicit HTTP/HTTPS proxying and transparent TCP proxying through Linux TUN,
+  macOS Network Extension, and Windows WFP adapters.
 - Policy-controlled TLS interception and content capture for supported agent protocols.
 - Normalized events for model API protocols, including OpenAI's Responses API and
   Chat Completions API, and Anthropic's Messages API.

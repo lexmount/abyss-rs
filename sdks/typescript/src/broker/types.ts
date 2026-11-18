@@ -8,12 +8,14 @@ export interface HealthResponse {
 export type ProxyLifecycle = "running" | "stopped";
 export type ProxyMode = "explicit" | "transparent";
 export type IngressSource =
-  "explicit_http" | "macos_network_extension" | "windows_wfp";
+  "explicit_http" | "macos_network_extension" | "windows_wfp" | "linux_tun";
 
 export interface IngressStatus {
   source: IngressSource;
   listen_addr: string | null;
   socket_path?: string;
+  /** Administrator-provisioned Linux TUN interface. */
+  device_name?: string;
 }
 
 export interface ProxyStatus {

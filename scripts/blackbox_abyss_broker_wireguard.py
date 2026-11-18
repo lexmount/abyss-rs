@@ -10,25 +10,25 @@ import hashlib
 import http.client
 import json
 import os
-from pathlib import Path
 import ssl
 import subprocess
 import sys
 import tempfile
 import time
 import uuid
+from pathlib import Path
 
+from blackbox_abyss_broker_socks5_upstream import configure, exact
 from blackbox_abyss_broker_upstream import (
+    ROOT,
     Broker,
     LocalServer,
     NextHop,
     Origin,
-    ROOT,
     explicit_request,
     read_all,
     read_head,
 )
-from blackbox_abyss_broker_socks5_upstream import configure, exact
 
 
 def keypair():
@@ -113,7 +113,8 @@ class WireguardPeer:
             stdout=subprocess.DEVNULL,
         )
         self.started = True
-        for _ in range(100):
+        # Cold container startup can exceed ten seconds before the kernel peer is ready.
+        for _ in range(600):
             logs = subprocess.check_output(
                 ["docker", "logs", self.name], stderr=subprocess.STDOUT
             )
