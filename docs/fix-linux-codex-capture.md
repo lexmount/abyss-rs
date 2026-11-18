@@ -56,6 +56,28 @@ as semantically relevant even when its input is empty, so the existing
 accumulator, purpose contract, uploader, and backend preserve that distinction.
 Missing, true, or nonboolean generation flags keep their existing semantics.
 
+## Compatibility with Linux TUN ingress
+
+The branch incorporates upstream `d8769be` (PR #93). TUN ingress is an opt-in
+broker transport; the CLI continues to manage explicit ingress only. Upstream's
+additive `linux_tun` source and optional `device_name` status field are retained
+in the CLI client. Existing explicit status responses remain valid, and broker
+reuse still checks explicit mode, PID, token ownership, and a TCP endpoint before
+launching a proxied child.
+
+Upstream worker supervision publishes lifecycle changes independently of status
+reads and releases the state lock while connections drain. CLI reuse relies on
+that public lifecycle contract without taking ownership of the worker or changing
+its start/stop sequencing. The shared TUN/WireGuard network stack remains below
+MITM and Agent Hook; foreground Codex selection and explicit empty-prewarm
+classification apply unchanged above that transport boundary. The four task
+patches rebase without textual conflicts or changes to their code.
+
+Rebase verification includes workspace tests and Clippy, explicit-proxy and
+combined TUN/WireGuard black-box checks, and real Codex/DSH capture through the
+rebuilt broker. Revision-specific evidence is preserved in
+`task-artifacts/fix-linux/sync-main-20261118T050917Z/` under the coordinator root.
+
 ## Validation
 
 Unit tests cover Codex capability and argument handling, non-Codex preservation,
