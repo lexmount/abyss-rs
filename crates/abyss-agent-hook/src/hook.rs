@@ -632,6 +632,7 @@ mod tests {
             assert_eq!(events[0].purpose, Some(EventPurpose::Prewarm));
             assert_eq!(events[0].token_usage.input_tokens, 2);
             assert!(events[0].conversation.as_ref().unwrap().entries.is_empty());
+            drop(events);
         }
     }
 
