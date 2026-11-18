@@ -4,7 +4,7 @@ use std::path::PathBuf;
 
 use abyss_data_client::ApiEndpoint;
 use abyss_terminal_auth::NativeSessionCredential;
-use chrono::{DateTime, Utc};
+use jiff::Timestamp;
 use serde::{Deserialize, Serialize};
 use sha2::{Digest as _, Sha256};
 
@@ -18,7 +18,7 @@ use crate::{
 pub struct StoredCredential {
     binding: String,
     pub token: String,
-    pub expires_at: DateTime<Utc>,
+    pub expires_at: Timestamp,
 }
 
 pub struct CredentialVault {
@@ -82,7 +82,7 @@ impl CredentialVault {
     }
     pub fn write(&self, session: NativeSessionCredential) -> Result<(), Error> {
         validate_token(&session.token)?;
-        if session.expires_at <= Utc::now() {
+        if session.expires_at <= Timestamp::now() {
             return Err(Error::Auth("login returned an expired credential"));
         }
         let value = serde_json::to_string(&StoredCredential {
@@ -168,7 +168,7 @@ impl CredentialResolver {
             }
             Authentication::Terminal { .. } => {
                 let credential = CredentialVault::new(config, name, profile)?.read()?;
-                if credential.expires_at <= Utc::now() {
+                if credential.expires_at <= Timestamp::now() {
                     return Err(Error::Auth("credential expired; run auth login"));
                 }
                 validate_token(&credential.token)?;
@@ -194,7 +194,7 @@ mod tests {
         config::{Authentication, ConfigFile, Profile},
     };
     use abyss_terminal_auth::{AuthenticatedUser, NativeSessionCredential};
-    use chrono::Utc;
+    use jiff::Timestamp;
     use std::os::unix::fs::PermissionsExt as _;
 
     fn profile() -> Profile {
@@ -218,8 +218,8 @@ mod tests {
             ConfigFile::new(Some(&directory.path().join("profiles.json"))).expect("config path");
         let profile = profile();
         let vault = CredentialVault::new(&config, "test", &profile).expect("vault");
-        let expires_at = Utc::now()
-            .checked_add_signed(chrono::Duration::hours(1))
+        let expires_at = Timestamp::now()
+            .checked_add(jiff::SignedDuration::from_hours(1))
             .expect("expiry");
         vault
             .write(NativeSessionCredential {
@@ -248,8 +248,8 @@ mod tests {
         let mut stored: StoredCredential =
             serde_json::from_slice(&std::fs::read(&vault.path).expect("read fixture"))
                 .expect("parse fixture");
-        stored.expires_at = Utc::now()
-            .checked_sub_signed(chrono::Duration::hours(1))
+        stored.expires_at = Timestamp::now()
+            .checked_sub(jiff::SignedDuration::from_hours(1))
             .expect("past");
         std::fs::write(&vault.path, serde_json::to_vec(&stored).expect("encode"))
             .expect("write expired");

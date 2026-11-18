@@ -70,7 +70,7 @@ impl<'a> AuthClient<'a> {
             json!({"schema_version":1_u32,"login":{"verification_url":start.verification_url,"expires_at":start.expires_at}})
         )?;
         loop {
-            if start.expires_at <= chrono::Utc::now() {
+            if start.expires_at <= jiff::Timestamp::now() {
                 return Err(Error::Auth("login attempt expired; run auth login again"));
             }
             let poll: TerminalPollResponse = self.transport(remaining(deadline)?)?.post(
@@ -135,7 +135,7 @@ pub fn execute(
             if let Authentication::Terminal { .. } = profile.auth {
                 let credential = CredentialVault::new(config, name, profile)?.read()?;
                 return Ok(
-                    json!({"mode":"terminal","credential_available":true,"expires_at":credential.expires_at,"expired":credential.expires_at <= chrono::Utc::now()}),
+                    json!({"mode":"terminal","credential_available":true,"expires_at":credential.expires_at,"expired":credential.expires_at <= jiff::Timestamp::now()}),
                 );
             }
             CredentialResolver::resolve(config, name, profile)?;

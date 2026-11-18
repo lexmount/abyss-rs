@@ -10,9 +10,9 @@ publish = ["crates-io"]
 readme = "README.md"
 
 [dependencies]
-chrono = { version = "0.4", features = ["serde"] }
+jiff.workspace = true
 reqwest = { version = "0.12", default-features = false, features = ["blocking", "json", "rustls-tls-native-roots"] }
-schemars = { version = "1", features = ["chrono04", "uuid1"] }
+schemars = { version = "1", features = ["jiff02", "uuid1"] }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 thiserror.workspace = true

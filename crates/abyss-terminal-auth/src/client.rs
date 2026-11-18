@@ -1,6 +1,6 @@
 //! Blocking HTTP client for Abyss terminal SSO endpoints.
 
-use chrono::{DateTime, Utc};
+use jiff::Timestamp;
 use reqwest::{Url, blocking::Client};
 use serde::{Deserialize, Serialize, de::DeserializeOwned};
 use uuid::Uuid;
@@ -95,7 +95,7 @@ pub struct TerminalStartResponse {
     /// Browser URL the user opens to complete SSO.
     pub verification_url: String,
     /// Expiration timestamp for this login attempt.
-    pub expires_at: DateTime<Utc>,
+    pub expires_at: Timestamp,
     /// Server-recommended polling interval.
     pub poll_interval_seconds: u64,
 }
@@ -139,7 +139,7 @@ pub struct TerminalExchangeResponse {
     /// Native bearer token used by command-line clients.
     pub token: String,
     /// Expiration timestamp for the bearer token.
-    pub expires_at: DateTime<Utc>,
+    pub expires_at: Timestamp,
     /// Authenticated user metadata.
     pub user: AuthenticatedUser,
 }

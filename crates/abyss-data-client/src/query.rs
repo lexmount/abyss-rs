@@ -1,7 +1,7 @@
 //! Typed query selectors serialized as repeated HTTP query parameters.
 
 use crate::DataClientError;
-use chrono::{DateTime, Utc};
+use jiff::Timestamp;
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
@@ -10,9 +10,9 @@ use uuid::Uuid;
 #[derive(Default, Clone, Deserialize, Serialize, JsonSchema)]
 pub struct Filters {
     /// Inclusive lower time bound.
-    pub from: Option<DateTime<Utc>>,
+    pub from: Option<Timestamp>,
     /// Exclusive upper time bound.
-    pub to: Option<DateTime<Utc>>,
+    pub to: Option<Timestamp>,
     /// Exact Agent names, OR within this dimension.
     pub agents: Vec<String>,
     /// Exact provider names.
@@ -30,10 +30,10 @@ impl Filters {
         }
         let mut pairs = Vec::new();
         if let Some(from) = self.from {
-            pairs.push(("from".into(), from.to_rfc3339()));
+            pairs.push(("from".into(), from.strftime("%FT%T%.f%:z").to_string()));
         }
         if let Some(to) = self.to {
-            pairs.push(("to".into(), to.to_rfc3339()));
+            pairs.push(("to".into(), to.strftime("%FT%T%.f%:z").to_string()));
         }
         for (name, values) in [
             ("agent_name", &self.agents),

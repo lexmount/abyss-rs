@@ -1,7 +1,7 @@
 //! Session identity, page windows, and ordered backend projections.
 
 use super::Extensions;
-use chrono::{DateTime, Utc};
+use jiff::Timestamp;
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
@@ -16,7 +16,7 @@ pub struct Session {
     /// Observed Agent name.
     pub agent_name: String,
     /// Earliest observation in the session.
-    pub started_at: DateTime<Utc>,
+    pub started_at: Timestamp,
     /// Backend metadata, counts, titles and content availability fields.
     #[serde(flatten)]
     pub fields: Extensions,

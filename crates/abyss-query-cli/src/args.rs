@@ -5,8 +5,8 @@ use std::path::PathBuf;
 use abyss_data_client::query::{
     EventFields, EventQuery, EventSide, Filters, PageQuery, PreviewQuery, SummaryQuery,
 };
-use chrono::{DateTime, Utc};
 use clap::{Args, Parser, Subcommand, ValueEnum};
+use jiff::Timestamp;
 use uuid::Uuid;
 
 #[derive(Parser)]
@@ -148,9 +148,9 @@ pub enum AuthCommand {
 #[derive(Args, Clone, Default)]
 pub struct FilterArgs {
     #[arg(long)]
-    pub from: Option<DateTime<Utc>>,
+    pub from: Option<Timestamp>,
     #[arg(long)]
-    pub to: Option<DateTime<Utc>>,
+    pub to: Option<Timestamp>,
     #[arg(long = "agent")]
     pub agents: Vec<String>,
     #[arg(long = "provider")]

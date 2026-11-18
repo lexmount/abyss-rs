@@ -6,7 +6,7 @@ use std::{
     path::{Path, PathBuf},
 };
 
-use chrono::{DateTime, Utc};
+use jiff::Timestamp;
 use serde::{Deserialize, Serialize};
 
 use crate::{error::TerminalAuthError, session::NativeSessionCredential};
@@ -22,7 +22,7 @@ pub struct CredentialFile {
     /// Native bearer token used by command-line clients.
     pub token: String,
     /// Expiration timestamp for the bearer token.
-    pub expires_at: DateTime<Utc>,
+    pub expires_at: Timestamp,
     /// Authenticated user metadata.
     pub user: crate::session::AuthenticatedUser,
 }
@@ -308,7 +308,7 @@ mod tests {
         sync::atomic::{AtomicU64, Ordering},
     };
 
-    use chrono::{DateTime, Utc};
+    use jiff::Timestamp;
     use uuid::Uuid;
 
     use super::{CredentialFile, FileCredentialStore};
@@ -324,7 +324,7 @@ mod tests {
             FileCredentialStore::for_app(Some(&path), "abyss-test", "ABYSS_TEST_CREDENTIAL_FILE")
                 .expect("store should build");
         let expires_at = "2099-01-01T00:00:00Z"
-            .parse::<DateTime<Utc>>()
+            .parse::<Timestamp>()
             .expect("timestamp should parse");
 
         store
@@ -385,7 +385,7 @@ mod tests {
             FileCredentialStore::for_app(Some(&path), "abyss-test", "ABYSS_TEST_CREDENTIAL_FILE")
                 .expect("store should build");
         let expires_at = "2099-01-01T00:00:00Z"
-            .parse::<DateTime<Utc>>()
+            .parse::<Timestamp>()
             .expect("timestamp should parse");
 
         store

@@ -9,7 +9,7 @@ use std::{
     io::{self, IsTerminal as _},
 };
 
-use chrono::{DateTime, Local, Utc};
+use jiff::{Timestamp, tz::TimeZone};
 
 use super::{DiagnosisSeverity, NetworkDiagnosis, NetworkDiagnosticsReport};
 
@@ -202,13 +202,13 @@ impl TerminalStyle {
 fn format_timestamp(unix_ms: u64) -> String {
     i64::try_from(unix_ms)
         .ok()
-        .and_then(DateTime::<Utc>::from_timestamp_millis)
+        .and_then(|millis| Timestamp::from_millisecond(millis).ok())
         .map_or_else(
             || "unknown time".to_owned(),
             |timestamp| {
                 timestamp
-                    .with_timezone(&Local)
-                    .format("%Y-%m-%d %H:%M:%S")
+                    .to_zoned(TimeZone::system())
+                    .strftime("%Y-%m-%d %H:%M:%S")
                     .to_string()
             },
         )

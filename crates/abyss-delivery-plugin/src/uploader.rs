@@ -394,7 +394,7 @@ impl TryFrom<AgentEvent> for IngestUsageEvent {
         }
         Ok(Self {
             event_id: event.event_id,
-            observed_at: event.observed_at.to_rfc3339(),
+            observed_at: event.observed_at.strftime("%FT%T%.f%:z").to_string(),
             device: DevicePayload {
                 host_name: event.device.host_name,
                 platform: event.device.platform,
@@ -616,7 +616,7 @@ mod tests {
     fn keeps_the_backend_envelope_inside_the_delivery_plugin() {
         let event = AgentEvent {
             event_id: "event-1".to_owned(),
-            observed_at: chrono::Utc::now(),
+            observed_at: jiff::Timestamp::now(),
             device: DeviceContext {
                 host_name: "host".to_owned(),
                 platform: "linux".to_owned(),
