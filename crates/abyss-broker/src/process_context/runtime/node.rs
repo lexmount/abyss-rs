@@ -27,6 +27,10 @@ impl RuntimeEntryPointResolver for NodeEntryPoint {
                 "--" => return arguments.next(),
                 "--optimize-for-size" | "--no-warnings" | "--enable-source-maps" => {}
                 option
+                    if option
+                        .strip_prefix("--disable-warning=")
+                        .is_some_and(|name| !name.is_empty()) => {}
+                option
                     if ["--max-semi-space-size=", "--max-old-space-size="]
                         .iter()
                         .any(|prefix| {
@@ -136,6 +140,7 @@ mod tests {
             argv: [
                 "node",
                 "--no-warnings",
+                "--disable-warning=ExperimentalWarning",
                 "--max-semi-space-size=2",
                 "/opt/daemon.js",
                 "--token",
@@ -160,6 +165,14 @@ mod tests {
             vec!["node", "--require", "/opt/daemon.js"],
             vec!["node", "--type=renderer", "/opt/daemon.js"],
             vec!["node", "--unknown", "/opt/daemon.js"],
+            vec!["node", "--disable-warning=", "/opt/daemon.js"],
+            vec!["node", "--disable-warning", "/opt/daemon.js"],
+            vec![
+                "node",
+                "--disable-warning=ExperimentalWarning",
+                "-e",
+                "/opt/daemon.js",
+            ],
             vec!["node", "--max-old-space-size=invalid", "/opt/daemon.js"],
             vec!["node", "-"],
             vec!["node", "--"],
