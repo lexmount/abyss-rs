@@ -5,7 +5,6 @@
 //! CA trust management, and explicit proxy service control. Product parsing,
 //! MITM behavior, and event production remain in shared crates.
 
-mod agent_command;
 mod auth;
 mod broker;
 mod claude_code;

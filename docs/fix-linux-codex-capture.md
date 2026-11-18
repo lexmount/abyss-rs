@@ -1,101 +1,56 @@
-# Linux Codex capture through the explicit launcher
+# Linux explicit-proxy startup reuse
 
-## Problem and observed behavior
+## Investigation and current scope
 
 Task: `fix-linux.md`. The installed Linux CLI and broker were version 1.6.0;
 Codex was 0.169.0 and its shared app-server was 0.169.1. The task baseline is
 `5552403` (endpoint 1.6.1).
 
-`abyss run` gives its child the explicit-proxy environment. Interactive Codex
-can instead submit work to a previously started shared app-server, whose
-environment has no proxy variables. The model request then bypasses Abyss even
-though the TUI inherited the proxy. A real interactive control returned its
-marker with no matching persisted events. The same control with
-`codex --no-daemon` returned its marker and produced three persisted events.
-`codex exec` also successfully captured and uploaded its request and response.
-This isolates the problem to the process that owns the model connection rather
-than parsing or delivery.
+Two independent behaviors were observed while investigating missing Codex
+events. First, interactive Codex can send model requests through a shared
+app-server started without the proxy environment. Second, the Linux CLI can
+fail before launching the child because it unconditionally requests sudo to
+reinstall an unchanged CA and enable/start an already healthy broker.
 
-The exact launcher also failed before spawning Codex in a noninteractive
-terminal: Linux unconditionally invoked sudo to reinstall the already trusted
-CA and enable/start the already healthy broker.
+The current implementation addresses the Linux startup operations. Automatic
+Codex foreground selection and the unrelated empty-prewarm parsing change were
+removed during review. Agent commands are passed through with their original
+arguments. Shared app-server requests originating outside the proxy environment
+remain outside this fix's capture guarantee.
 
 ## Implementation
 
-The CLI owns agent command preparation. For a directly invoked `codex`
-executable, it detects support for `--no-daemon` from that executable's help
-and adds the option before caller arguments. This keeps model traffic in a
-process inheriting the launch environment without editing Codex configuration,
-stopping shared servers, or changing the model/provider. Older versions lacking
-the option keep their original arguments. Explicit remote-server operations,
-queueing, and daemon management retain their requested behavior and are outside
-the local capture guarantee. An explicit `--no-daemon` is preserved.
-The argument scan skips option values and stops at `--`, so directory/model
-values and prompt text cannot be mistaken for server-selection options.
-Codex's [versioned CLI implementation](https://github.com/openai/codex/blob/rust-v0.169.0/codex-rs/cli/src/main.rs)
-defines the foreground option and its explicit-remote incompatibility.
-
 Linux checks the current CA fingerprint before requesting privileged
-installation. Broker startup reuses an authenticated, healthy CLI-owned explicit
-endpoint under the existing lifecycle lock when no restart or alternate service
-user was requested. Missing trust and genuinely required service operations
-still follow the installation/systemd path. Startup identity, token, mode, and
-PID checks remain authoritative.
+installation. If the matching certificate is already installed, startup skips
+that privileged installation command.
 
-No event schema, ingestion API, storage, backend, SDK, or packaged native
-dependency changes are needed. The fix belongs entirely in `abyss-rs`.
+Broker startup reuses an authenticated, healthy CLI-owned explicit endpoint
+under the existing lifecycle lock when no restart or alternate service user
+was requested. Startup identity, token, mode, and PID checks remain authoritative.
+Missing trust and required service operations follow the existing
+installation/systemd path.
 
 ## Compatibility with Linux TUN ingress
 
 The branch incorporates upstream `d8769be` (PR #93). TUN ingress is an opt-in
 broker transport; the CLI continues to manage explicit ingress only. Upstream's
 additive `linux_tun` source and optional `device_name` status field are retained
-in the CLI client. Existing explicit status responses remain valid, and broker
-reuse still checks explicit mode, PID, token ownership, and a TCP endpoint before
-launching a proxied child.
+in the CLI client. Broker reuse checks explicit mode, PID, token ownership, and
+a TCP endpoint before launching a proxied child.
 
 Upstream worker supervision publishes lifecycle changes independently of status
 reads and releases the state lock while connections drain. CLI reuse relies on
-that public lifecycle contract without taking ownership of the worker or changing
-its start/stop sequencing. The shared TUN/WireGuard network stack remains below
-MITM and Agent Hook; foreground Codex selection applies above that transport
-boundary. The CLI patches rebase without textual conflicts or changes to their
-code.
-
-Rebase verification includes workspace tests and Clippy, explicit-proxy and
-combined TUN/WireGuard black-box checks, and real Codex/DSH capture through the
-rebuilt broker. Revision-specific evidence is preserved in
-`task-artifacts/fix-linux/sync-main-20261118T050917Z/` under the coordinator root.
+that public lifecycle contract without taking ownership of the worker or
+changing its start/stop sequencing.
 
 ## Validation
 
-Unit tests cover Codex capability and argument handling, non-Codex preservation,
-explicit remote/control operations, and supported/older help output. Public CLI
-black-box checks exercise command preparation and runtime reuse. Required
-verification also includes workspace tests, formatting, linting, broker black-box
-tests, and real Codex interactive/headless and DSH traffic through the submitted
-broker and delivery plugin into a dedicated local backend. Persisted session
-markers, request/response content, usage, and spool state establish delivery.
+The broker reuse regression verifies authenticated endpoint ownership and
+startup without invoking service operations. Existing CLI tests cover lifecycle
+locking, endpoint validation, and command execution.
 
-The persistent HTML report and sanitized logs live under
-`task-artifacts/fix-linux/` in the coordinator workspace. Final tested revisions,
-commands, counts, and artifact links will be recorded there before handoff.
-
-Run the interactive regression against a prepared environment with:
-
-```sh
-python3 scripts/blackbox_codex_launcher.py \
-  --abyss /absolute/path/to/abyss \
-  --state-root /absolute/path/to/cli-state \
-  --backend-url http://127.0.0.1:BACKEND_PORT \
-  --bearer-file /private/path/to/backend.bearer \
-  --artifacts /private/path/to/interactive-evidence
-```
-
-This test deliberately avoids model/configuration/sandbox overrides that can
-make Codex select an embedded server independently of the launcher. It checks
-an actual completed terminal turn, persisted request and response markers,
-Codex identification, and nonzero output usage. The private terminal trace is
-kept separate from the credential-free JSON result. The exact-launch local
-environment reuses this machine's existing CA without installing a test CA into
-system trust; its backend database, bearer, broker, worker, and spool are isolated.
+Revision-specific reports and logs are preserved under
+`task-artifacts/fix-linux/` in the coordinator workspace. Earlier native Codex
+capture results include the now-removed automatic foreground behavior; those
+historical results do not establish capture through an unproxied shared
+app-server for the current implementation.
