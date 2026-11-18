@@ -18,8 +18,12 @@ class ModifyAction:
     """One explicit semantic operation; credential values are excluded from repr."""
 
     op: Literal[
-        "route_provider", "set_auth_headers", "set_auth_token",
-        "remove_auth_token", "set_model", "remove_model",
+        "route_provider",
+        "set_auth_headers",
+        "set_auth_token",
+        "remove_auth_token",
+        "set_model",
+        "remove_model",
     ]
     value: Union[str, dict[str, str], None] = field(default=None, repr=False)
 
