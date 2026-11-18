@@ -24,8 +24,9 @@ use crate::protocol::{
 ///
 /// A frame whose payload is not JSON is reported as undecodable so the turn
 /// side it belongs to is marked partial. A decodable frame that carries no
-/// request content, response content, tools, usage, or terminal state, such as
-/// `response.created`, is irrelevant and leaves the pending turn untouched.
+/// request content, response content, tools, usage, terminal state, or an
+/// explicit prewarm flag, such as `response.created`, is irrelevant and leaves
+/// the pending turn untouched.
 /// Server frames keep their decoded document because the turn's response is
 /// assembled from the complete stream when the terminal event arrives.
 #[must_use]
@@ -57,7 +58,14 @@ pub fn parse_openai_websocket_message(message: &WebSocketMessage) -> OpenAiWebSo
     let response = (!is_client_message).then(|| {
         ResponsesParser::parse_response(ResponseInput::new(std::slice::from_ref(payload.as_ref())))
     });
-    let relevant = request.as_ref().is_some_and(|request| !request.is_empty())
+    let generates_output = is_client_message.then(|| {
+        string_field(&payload, "type") != Some("response.create")
+            || request_payload.get("generate").and_then(Value::as_bool) != Some(false)
+    });
+    // Real Codex prewarm requests can have no conversation entries. Their
+    // explicit flag must survive until the server's usage completes the turn.
+    let relevant = generates_output == Some(false)
+        || request.as_ref().is_some_and(|request| !request.is_empty())
         || response.as_ref().is_some_and(|response| {
             response.has_content
                 || response
@@ -78,10 +86,7 @@ pub fn parse_openai_websocket_message(message: &WebSocketMessage) -> OpenAiWebSo
         message.direction, host, path, message.sequence, payload_text
     ));
     let exchange = ParsedOpenAiExchange {
-        generates_output: is_client_message.then(|| {
-            string_field(&payload, "type") != Some("response.create")
-                || request_payload.get("generate").and_then(Value::as_bool) != Some(false)
-        }),
+        generates_output,
         session_id: websocket_session_id(message, &payload),
         request_hash,
         request_conversation: request

@@ -589,6 +589,53 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn empty_websocket_prewarm_retains_explicit_purpose_and_observed_usage() {
+        use abyss_mitm::{WebSocketDirection, WebSocketMessage};
+        use serde_json::json;
+
+        for nested in [false, true] {
+            let sink = Arc::new(RecordingSink::default());
+            let hook = hook(Arc::clone(&sink));
+            let exchange = openai_exchange("acme-agent");
+            let (parts, _) = exchange.request.into_parts();
+            let upgrade = Request::from_parts(parts, ());
+            let payload = json!({"model": "test", "generate": false, "input": []});
+            let request = if nested {
+                json!({"type": "response.create", "response": payload})
+            } else {
+                let mut payload = payload;
+                payload["type"] = json!("response.create");
+                payload
+            };
+            let terminal = json!({"type": "response.completed", "response": {
+                "id": "empty-warm", "output": [],
+                "usage": {"input_tokens": 2_u64, "output_tokens": 0_u64, "total_tokens": 2_u64}
+            }});
+            for (sequence, direction, payload) in [
+                (1, WebSocketDirection::ClientToServer, request),
+                (2, WebSocketDirection::ServerToClient, terminal),
+            ] {
+                hook.on_websocket_message(&WebSocketMessage::new(
+                    exchange.flow.clone(),
+                    upgrade.clone(),
+                    Response::builder().status(101).body(()).unwrap(),
+                    direction,
+                    sequence,
+                    Some(payload.to_string()),
+                    None,
+                ))
+                .await
+                .unwrap();
+            }
+            let events = sink.events.lock().unwrap();
+            assert_eq!(events.len(), 1);
+            assert_eq!(events[0].purpose, Some(EventPurpose::Prewarm));
+            assert_eq!(events[0].token_usage.input_tokens, 2);
+            assert!(events[0].conversation.as_ref().unwrap().entries.is_empty());
+        }
+    }
+
+    #[tokio::test]
     async fn websocket_prewarm_requires_explicit_false_and_does_not_leak_to_next_call() {
         use abyss_mitm::{WebSocketDirection, WebSocketMessage};
         use serde_json::{Value, json};

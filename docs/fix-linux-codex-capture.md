@@ -45,6 +45,17 @@ PID checks remain authoritative.
 No event schema, ingestion API, storage, backend, SDK, or packaged native
 dependency changes are needed. The fix belongs entirely in `abyss-rs`.
 
+Real headless validation also exposed a pre-existing empty-prewarm case. Codex
+sent an explicit `response.create` with `generate: false` and no conversation
+content. The decoder discarded the client frame as irrelevant before recording
+the generation flag; the later server usage was therefore emitted without its
+prewarm purpose. This added two observed input tokens to inference accounting.
+A read-only request inspector established the actual flag; no token-size or
+event-position heuristic is used. Retain an explicitly disabled generation frame
+as semantically relevant even when its input is empty, so the existing
+accumulator, purpose contract, uploader, and backend preserve that distinction.
+Missing, true, or nonboolean generation flags keep their existing semantics.
+
 ## Validation
 
 Unit tests cover Codex capability and argument handling, non-Codex preservation,
