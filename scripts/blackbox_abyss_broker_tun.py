@@ -429,6 +429,23 @@ def run():
                 "PASS stop/restart preserves the administrator-owned interface",
                 flush=True,
             )
+            # Removing the device must stop only the proxy ingress; the REST
+            # service remains available and reports the supervisor's state.
+            command("ip", "link", "delete", "dev", "abyss0")
+            deadline = time.monotonic() + 30
+            while time.monotonic() < deadline:
+                status = api("GET", "/v1/proxy/status")
+                if status["lifecycle"] == "stopped":
+                    break
+                time.sleep(0.05)
+            else:
+                raise AssertionError("failed TUN worker did not publish stopped status")
+            assert status["ingresses"] == [] and status["mode"] is None, status
+            assert process.poll() is None, "broker API must survive ingress failure"
+            print(
+                "PASS device failure actively publishes stopped ingress status",
+                flush=True,
+            )
         finally:
             process.terminate()
             process.wait(timeout=15)

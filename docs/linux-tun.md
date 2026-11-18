@@ -47,6 +47,11 @@ closing the application-side duplex stream flushes TCP and sends FIN before the
 All packet IO is event-driven; stopping the ingress cancels pending accepts and releases the TUN descriptor while the
 administrator's persistent interface remains configured.
 
+Worker completion actively updates the proxy lifecycle through the supervisor
+described in [Proxy worker lifecycle](proxy-worker-lifecycle.md). Status reads do
+not poll task handles, and stop/restart remains serialized while connections
+drain.
+
 The status API reports `mode=transparent`, ingress `source=linux_tun`, a device
 name, and no TCP listen address. Update all three SDKs and OpenAPI with this
 additive ingress identity and optional device field. Existing consumers retain

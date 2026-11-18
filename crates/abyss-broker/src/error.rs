@@ -1,6 +1,6 @@
 //! Error types shared by the broker REST server and proxy worker.
 
-use std::io;
+use std::{io, sync::Arc};
 
 use axum::{
     Json,
@@ -21,7 +21,7 @@ pub enum BrokerError {
     #[error("background task failed during {operation}: {source}")]
     Task {
         operation: &'static str,
-        source: tokio::task::JoinError,
+        source: Arc<tokio::task::JoinError>,
     },
     #[error("proxy ingress is already running on {current}; requested {requested}")]
     ProxyAlreadyRunning { current: String, requested: String },
@@ -57,8 +57,14 @@ impl BrokerError {
         Self::Io { operation, source }
     }
 
-    pub const fn task(operation: &'static str, source: tokio::task::JoinError) -> Self {
-        Self::Task { operation, source }
+    pub fn task<T>(operation: &'static str, source: T) -> Self
+    where
+        T: Into<Arc<tokio::task::JoinError>>,
+    {
+        Self::Task {
+            operation,
+            source: source.into(),
+        }
     }
 
     pub const fn unauthorized() -> Self {
