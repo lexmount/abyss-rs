@@ -3,7 +3,7 @@
 //! Public commands describe product intent. CA installation, broker lifecycle,
 //! broker RPC, and proxy environment setup stay behind this boundary.
 
-use std::{io::Write as _, process::Command as ProcessCommand};
+use std::io::Write as _;
 
 use abyss_agent_hook::{
     BuiltInHarness, HarnessConfig, HarnessId, HarnessUsageContentConfig, HooksConfig,
@@ -552,11 +552,9 @@ impl DiagnosticsCommandRunner {
 fn run_agent(args: &RunArgs, running: Option<&RunningBroker>) -> Result<(), CliError> {
     let running = require_bootstrapped_runtime(running)?;
     let proxy_addr = running.proxy_addr();
-    let mut command = ProcessCommand::new(&args.command[0]);
+    let mut command = crate::agent_command::AgentCommand::new(&args.command).prepare()?;
     let proxy_url = format!("http://{proxy_addr}");
-    command
-        .args(&args.command[1..])
-        .envs(platform_adapter().proxy_environment_variables(&proxy_url));
+    command.envs(platform_adapter().proxy_environment_variables(&proxy_url));
     let status = command
         .status()
         .map_err(|source| CliError::filesystem("start agent command", &args.command[0], source))?;

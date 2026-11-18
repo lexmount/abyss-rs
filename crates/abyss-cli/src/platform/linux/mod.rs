@@ -49,6 +49,11 @@ impl PlatformAdapter for LinuxPlatformAdapter {
     }
 
     fn install_ca_trust(&self, ca_dir: &Path) -> Result<(), CliError> {
+        // A trusted, unchanged CA needs no privileged write or bundle refresh.
+        let ca = CaStore::at(ca_dir).load_required()?;
+        if ca.trust_status(TrustStoreScope::LocalMachine)?.installed {
+            return Ok(());
+        }
         let executable = std::env::current_exe()
             .map_err(|source| CliError::filesystem("resolve abyss executable", "abyss", source))?;
         let ca_dir = ca_dir.to_str().ok_or_else(|| {

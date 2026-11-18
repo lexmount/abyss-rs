@@ -23,6 +23,20 @@ usage and preserve Harness enablement and matching rules. The broker persists
 the policy and applies it to subsequent event processing; previously captured
 events, including pending delivery retries, are not rewritten or deleted.
 
+Run Codex through the explicit proxy with `abyss run -- codex`. On versions
+advertising `--no-daemon`, the launcher adds that option so the model connection
+inherits the proxy environment. A shared Codex app-server started earlier can
+otherwise send requests directly even when its TUI was launched through Abyss.
+The launcher preserves an explicit `--no-daemon` and leaves older Codex versions
+unchanged. Explicit `--remote`, `queue`, `agents`, and `remote-control` operations
+keep their server selection; their server must be configured for capture
+separately. Invoke the `codex` executable directly rather than through a shell
+wrapper to use automatic foreground selection.
+
+Linux reuses the matching installed CA and a healthy, authenticated CLI-owned
+broker without sudo. First-time CA installation, service startup, an explicit
+service-user selection, or a requested port change can still require sudo.
+
 The CLI's packaged policy enables DeepSeek Harness and intercepts
 `api.deepseek.com`, `open.bigmodel.cn`, `api.z.ai`, `api.moonshot.cn`, and
 `api.moonshot.ai`, and the Qwen API hosts listed below. DSH Web (`dsh web`),
