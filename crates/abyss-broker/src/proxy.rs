@@ -191,7 +191,7 @@ struct IngressTask {
     status: IngressRuntimeStatus,
     shutdown: oneshot::Sender<()>,
     completed: watch::Receiver<WorkerExit>,
-    #[cfg(test)]
+    #[cfg(all(test, unix))]
     abort_handle: tokio::task::AbortHandle,
 }
 
@@ -432,14 +432,14 @@ impl StoppedProxyRuntime {
             .run(shutdown_rx),
         );
         let (completion, completed) = watch::channel(WorkerExit::Pending);
-        #[cfg(test)]
+        #[cfg(all(test, unix))]
         let abort_handle = join_handle.abort_handle();
         tokio::spawn(WorkerSupervisor::new(state, run_id, completion).run(join_handle));
         IngressTask {
             status,
             shutdown,
             completed,
-            #[cfg(test)]
+            #[cfg(all(test, unix))]
             abort_handle,
         }
     }
