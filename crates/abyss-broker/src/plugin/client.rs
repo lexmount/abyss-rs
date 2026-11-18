@@ -9,7 +9,6 @@ use tokio::{
     sync::{mpsc, oneshot, watch},
     time::{Instant, timeout_at},
 };
-use uuid::Uuid;
 
 use super::{
     inspection::DECISION_TIMEOUT,
@@ -21,13 +20,13 @@ use super::{
 #[derive(Debug, Clone)]
 pub struct PluginClient {
     commands: mpsc::Sender<PluginCommand>,
-    participants: watch::Receiver<Arc<[Uuid]>>,
+    participants: watch::Receiver<Arc<[InspectionParticipant]>>,
 }
 
 impl PluginClient {
     pub(super) const fn new(
         commands: mpsc::Sender<PluginCommand>,
-        participants: watch::Receiver<Arc<[Uuid]>>,
+        participants: watch::Receiver<Arc<[InspectionParticipant]>>,
     ) -> Self {
         Self {
             commands,
@@ -41,6 +40,15 @@ impl PluginClient {
         (!self.commands.is_closed() && !participants.is_empty()).then(|| InspectionPlan {
             sessions: participants.clone(),
         })
+    }
+
+    pub(crate) fn plan_for(&self, is_model_operation: bool) -> Option<InspectionPlan> {
+        let plan = self.inspection_plan()?;
+        if is_model_operation || plan.sessions.iter().all(|p| !p.model_only) {
+            return Some(plan);
+        }
+        let sessions: Arc<[_]> = plan.participants().filter(|p| !p.model_only).collect();
+        (!sessions.is_empty()).then_some(InspectionPlan { sessions })
     }
 
     /// Submits already parsed context to one selected participant.
@@ -91,7 +99,10 @@ mod tests {
     #[tokio::test(start_paused = true)]
     async fn event_publication_is_best_effort_and_inspection_queueing_has_a_deadline() {
         let (commands, mut receiver) = mpsc::channel(1);
-        let (_participants, snapshot) = watch::channel(Arc::from([Uuid::new_v4()]));
+        let (_participants, snapshot) = watch::channel(Arc::from([InspectionParticipant {
+            id: uuid::Uuid::new_v4(),
+            model_only: false,
+        }]));
         let client = PluginClient::new(commands, snapshot);
         for _ in 0_u8..2 {
             let event = serde_json::from_str(include_str!("fixtures/agent-event.json")).unwrap();

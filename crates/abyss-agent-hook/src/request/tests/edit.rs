@@ -240,3 +240,35 @@ fn unsupported_requests_remain_inspectable() {
         .unwrap();
     assert!(editor.view().body.json().unwrap().get("model").is_none());
 }
+
+#[test]
+fn explicit_provider_headers_replace_bearer_and_keep_values_private() {
+    let mut source = EditableRequest::new("/v1/responses", &json!({"input":"hi"}));
+    source
+        .head
+        .headers_mut()
+        .insert("authorization", "Bearer original".parse().unwrap());
+    source
+        .head
+        .headers_mut()
+        .insert("cookie", "old=value".parse().unwrap());
+    let mut editor = RequestEditor::new(source.view(RequestTransport::Http));
+    RequestActions::new(&editor.view())
+        .apply(
+            &mut editor,
+            Box::new([ModifyAction::SetAuthHeaders(
+                [
+                    ("x-provider-pass".into(), "configured".into()),
+                    ("authorization".into(), "Basic configured".into()),
+                ]
+                .into(),
+            )]),
+        )
+        .unwrap();
+    let current = editor.view();
+    assert_eq!(current.head.headers()["authorization"], "Basic configured");
+    assert_eq!(current.head.headers()["x-provider-pass"], "configured");
+    assert!(current.head.headers()["x-provider-pass"].is_sensitive());
+    assert!(!current.head.headers().contains_key("cookie"));
+    assert_eq!(current.head.headers()["host"], "api.openai.com");
+}

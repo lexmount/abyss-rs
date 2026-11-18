@@ -1,5 +1,7 @@
 //! One independent HTTP/2 exchange, including inspection and local rejections.
 
+use std::sync::{Arc, atomic::AtomicU64};
+
 use bytes::Bytes;
 use h2::{RecvStream, client::SendRequest, server::SendResponse};
 use http::{Request, Response};
@@ -23,8 +25,9 @@ impl<C: RequestForwardingControl> Http2Relay<'_, C> {
         request: Request<RecvStream>,
         mut respond: SendResponse<Bytes>,
         upstream: SendRequest<Bytes>,
+        written: Arc<AtomicU64>,
     ) -> Option<HttpExchange> {
-        match self.forward(request, &mut respond, upstream).await {
+        match self.forward(request, &mut respond, upstream, written).await {
             Ok(exchange) => Some(exchange),
             Err(TransparentFlowError::Rejected(rejection)) => {
                 if let Err(error) = reject(&mut respond, &rejection).await {
@@ -50,11 +53,51 @@ impl<C: RequestForwardingControl> Http2Relay<'_, C> {
         }
     }
 
+    async fn provider_connection(
+        &self,
+        route: &super::super::provider_route::ProviderRoute,
+        written: Arc<AtomicU64>,
+    ) -> Result<
+        (
+            SendRequest<Bytes>,
+            h2::client::Connection<super::io::CountedIo<super::super::BoxedDuplexStream>, Bytes>,
+        ),
+        TransparentFlowError,
+    > {
+        let (stream, alpn) = self
+            .provider_connector
+            .for_route(route)
+            .connect_with_alpn(
+                &self.context.original_destination,
+                self.engine,
+                self.observer.clone(),
+                vec![b"h2".to_vec()],
+            )
+            .await?;
+        if alpn.as_deref() != Some(b"h2") {
+            return Err(LocalRejection::new(
+                http::StatusCode::BAD_GATEWAY,
+                "provider_protocol",
+                "Selected provider does not support HTTP/2",
+                self.context.flow_id.to_string(),
+            )
+            .into());
+        }
+        h2::client::Builder::new()
+            .enable_push(false)
+            .max_header_list_size(64 * 1024)
+            .max_send_buffer_size(16 * 1024)
+            .handshake::<_, Bytes>(super::io::CountedIo::new(stream, written))
+            .await
+            .map_err(error)
+    }
+
     async fn forward(
         &self,
         request: Request<RecvStream>,
         respond: &mut SendResponse<Bytes>,
         upstream: SendRequest<Bytes>,
+        written: Arc<AtomicU64>,
     ) -> Result<HttpExchange, TransparentFlowError> {
         let (parts, body) = request.into_parts();
         let mut head = Request::from_parts(parts, ());
@@ -71,7 +114,7 @@ impl<C: RequestForwardingControl> Http2Relay<'_, C> {
                 .expect("static continue response");
             respond.send_informational(response).map_err(error)?;
         }
-        let body = if let Some(plan) = self.control.plan() {
+        let body = if let Some(plan) = self.control.plan_for(&self.context, &head) {
             RequestBody::Retained(Box::new(
                 validator
                     .inspect(&mut head, body, self.control, plan)
@@ -82,6 +125,18 @@ impl<C: RequestForwardingControl> Http2Relay<'_, C> {
         };
         // Continue was handled locally before any inspection retained the body.
         head.headers_mut().remove(http::header::EXPECT);
+        let mut drivers = tokio::task::JoinSet::new();
+        let upstream = if let Some(route) = head
+            .extensions()
+            .get::<super::super::provider_route::ProviderRoute>()
+        {
+            let (sender, driver) = self.provider_connection(route, written).await?;
+            // This provider connection belongs to one stream. Dropping the stream also stops its driver.
+            drivers.spawn(driver);
+            sender
+        } else {
+            upstream
+        };
         let mut upstream =
             ready_upstream(upstream, respond, self.engine.timeouts.http1_response_head).await?;
         // Host is synthesized for inspection and existing Agent parsers. Send

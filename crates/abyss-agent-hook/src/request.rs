@@ -116,6 +116,7 @@ impl AgentRequestParser {
             source_process: request.flow.source_process.as_ref().map(|source| {
                 RequestSourceProcess {
                     pid: source.pid,
+                    routing_uid: source.routing_uid,
                     pid_version: source.pid_version,
                     name: source.name.clone(),
                     executable_path: source.executable_path.clone(),
@@ -163,7 +164,7 @@ impl AgentRequestParser {
             .head
             .headers()
             .iter()
-            .filter(|(name, _)| !abyss_mitm::is_sensitive_header(name))
+            .filter(|(name, value)| !value.is_sensitive() && !abyss_mitm::is_sensitive_header(name))
             .map(|(name, value)| {
                 (
                     name.to_string(),

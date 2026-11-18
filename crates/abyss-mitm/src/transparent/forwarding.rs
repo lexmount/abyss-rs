@@ -43,6 +43,16 @@ pub trait RequestForwardingControl: Send + Sync {
     /// Returns a snapshot when inspection is active. `None` keeps streaming.
     fn plan(&self) -> Option<Self::Plan>;
 
+    /// Select inspectors before retaining an HTTP body or a websocket frame.
+    fn plan_for(&self, _flow: &FlowContext, _head: &Request<()>) -> Option<Self::Plan> {
+        self.plan()
+    }
+
+    /// A provider selector may choose the origin after inspecting a complete model call.
+    fn defers_provider(&self, _flow: &FlowContext, _head: &Request<()>) -> bool {
+        false
+    }
+
     /// Decides before any request bytes reach the provider and returns annotations
     /// to retain on the captured body for later observation.
     fn before_forward(

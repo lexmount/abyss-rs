@@ -103,11 +103,15 @@ impl PlainHttpFlow {
             decision.redirect_target(),
         )?;
         decoded.redirect(decision.redirect_target())?;
-        let upstream = decoded
-            .connect_upstream(upstream, engine, self.traffic_observer)
-            .await?;
-        let relay = Box::pin(decoded.relay_to(
-            upstream,
+        let connector = upstream.provider_connector();
+        let destination = decoded.context.original_destination.clone();
+        let relay = Box::pin(decoded.relay_with_connector(
+            upstream.connect(&destination, engine, self.traffic_observer.clone()),
+            |route| {
+                connector
+                    .for_route(&route)
+                    .connect(&destination, engine, self.traffic_observer)
+            },
             &engine.hooks,
             engine.timeouts.clone(),
             engine.max_http1_body_bytes,

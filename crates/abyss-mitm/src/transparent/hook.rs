@@ -228,6 +228,8 @@ impl FlowContext {
 pub struct SourceProcess {
     /// Operating-system process identifier.
     pub pid: Option<u32>,
+    /// Unix account attributed by the local ingress for provider selection.
+    pub routing_uid: Option<u32>,
     /// Kernel process incarnation identifier when the platform exposes one.
     pub pid_version: Option<u32>,
     /// Human-readable process name such as `codex`.
@@ -256,12 +258,20 @@ impl SourceProcess {
         Self {
             pid,
             pid_version: None,
+            routing_uid: None,
             name,
             executable_path,
             application_id: None,
             working_directory: None,
             entry_point: None,
         }
+    }
+
+    /// Attaches the Unix account verified by the adapter transport.
+    #[must_use]
+    pub const fn with_routing_uid(mut self, uid: Option<u32>) -> Self {
+        self.routing_uid = uid;
+        self
     }
 
     /// Attaches a kernel process incarnation identifier.

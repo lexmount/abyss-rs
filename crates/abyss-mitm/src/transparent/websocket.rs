@@ -268,7 +268,7 @@ where
                 // Reassembly already uses tungstenite's bounded message/frame limits
                 // for both modes. Inspection never sends an oversized prefix to a plugin.
                 if matches!(&client_message, Err(TransparentFlowError::WebSocket { source: WebSocketError::Capacity(_), .. }))
-                    && control.plan().is_some()
+                    && control.plan_for(flow, &upgrade.request).is_some()
                 {
                     let rejection = super::LocalRejection::new(http::StatusCode::PAYLOAD_TOO_LARGE,
                         "inspection_body_too_large", "WebSocket message exceeds the relay limit", flow.flow_id.to_string());
@@ -283,7 +283,7 @@ where
                     Message::Binary(_) => Some(super::RequestTransport::WebSocketBinary { sequence: next_sequence(&mut client_sequence)? }),
                     _ => None,
                 };
-                if let Some(transport) = transport && let Some(plan) = control.plan() {
+                if let Some(transport) = transport && let Some(plan) = control.plan_for(flow, &upgrade.request) {
                     let mut body = super::CapturedBody::from_bytes(forwarded.message.clone().into_data());
                     let result = {
                     let decision = control.before_forward(plan, super::RequestView { flow, head: &upgrade.request, body: &body, transport });

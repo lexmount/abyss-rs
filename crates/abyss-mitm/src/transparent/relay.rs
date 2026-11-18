@@ -105,6 +105,42 @@ pub(super) struct RelayOutcome {
     pub(super) upstream_to_client_bytes: u64,
 }
 
+async fn connection_result<U, S: AsyncWrite + Unpin>(
+    result: Result<U, TransparentFlowError>,
+    stream: &mut S,
+    context: &FlowContext,
+) -> Result<U, TransparentFlowError> {
+    match result {
+        Ok(stream) => Ok(stream),
+        Err(error) => {
+            let status = match &error {
+                TransparentFlowError::Timeout { .. } => StatusCode::GATEWAY_TIMEOUT,
+                TransparentFlowError::UpstreamProxy {
+                    source: crate::outbound::UpstreamProxyError::Loop { .. },
+                    ..
+                } => StatusCode::FORBIDDEN,
+                TransparentFlowError::UpstreamProxy { source, .. } if source.is_timeout() => {
+                    StatusCode::GATEWAY_TIMEOUT
+                }
+                TransparentFlowError::Io { source, .. }
+                    if source.kind() == std::io::ErrorKind::PermissionDenied =>
+                {
+                    StatusCode::FORBIDDEN
+                }
+                _ => StatusCode::BAD_GATEWAY,
+            };
+            let rejection = LocalRejection::new(
+                status,
+                "upstream_connection_failed",
+                "Could not connect to the selected upstream",
+                context.flow_id.to_string(),
+            );
+            let _response = rejection.response_error(stream).await;
+            Err(error)
+        }
+    }
+}
+
 impl<S> DecodedClientFlow<S>
 where
     S: AsyncRead + Unpin,
@@ -149,50 +185,11 @@ where
         Ok(())
     }
 
-    pub(super) async fn connect_upstream(
-        &mut self,
-        upstream: super::upstream::HttpUpstream,
-        engine: &super::MitmEngine,
-        observer: Option<std::sync::Arc<dyn super::TrafficObserver>>,
-    ) -> Result<super::BoxedDuplexStream, TransparentFlowError> {
-        match upstream
-            .connect(&self.context.original_destination, engine, observer)
-            .await
-        {
-            Ok(stream) => Ok(stream),
-            Err(error) => {
-                let status = match &error {
-                    TransparentFlowError::Timeout { .. } => StatusCode::GATEWAY_TIMEOUT,
-                    TransparentFlowError::UpstreamProxy {
-                        source: crate::outbound::UpstreamProxyError::Loop { .. },
-                        ..
-                    } => StatusCode::FORBIDDEN,
-                    TransparentFlowError::UpstreamProxy { source, .. } if source.is_timeout() => {
-                        StatusCode::GATEWAY_TIMEOUT
-                    }
-                    TransparentFlowError::Io { source, .. }
-                        if source.kind() == std::io::ErrorKind::PermissionDenied =>
-                    {
-                        StatusCode::FORBIDDEN
-                    }
-                    _ => StatusCode::BAD_GATEWAY,
-                };
-                let rejection = LocalRejection::new(
-                    status,
-                    "upstream_connection_failed",
-                    "Could not connect to the selected upstream",
-                    self.context.flow_id.to_string(),
-                );
-                let _response = rejection.response_error(&mut self.stream).await;
-                Err(error)
-            }
-        }
-    }
-
-    #[tracing::instrument(level = "trace", skip_all)]
-    pub(super) async fn relay_to<U, C: super::RequestForwardingControl>(
-        self,
-        upstream: U,
+    /// Inspection owns one request snapshot. Resolve its selected destination before writing its head.
+    pub(super) async fn relay_with_connector<U, C, O, F, Fut>(
+        mut self,
+        original: O,
+        connect: F,
         hooks: &HookDispatcher,
         timeouts: MitmTimeouts,
         max_body_bytes: usize,
@@ -200,49 +197,48 @@ where
     ) -> Result<RelayOutcome, TransparentFlowError>
     where
         U: AsyncRead + AsyncWrite + Unpin + Send,
+        C: RequestForwardingControl,
+        O: std::future::Future<Output = Result<U, TransparentFlowError>>,
+        F: FnOnce(super::provider_route::ProviderRoute) -> Fut,
+        Fut: std::future::Future<Output = Result<U, TransparentFlowError>>,
     {
-        // Keep the top-level relay as a protocol dispatcher. All details about
-        // body framing, downgrade handling, and WebSocket stream construction
-        // live behind the branch-specific helpers.
-        if is_websocket_upgrade_request(&self.first_request) {
+        tokio::pin!(original);
+        // Ordinary inspections retain the established upstream handshake and timing.
+        let ready = if control.defers_provider(&self.context, &self.first_request) {
+            None
+        } else {
+            Some(connection_result(original.as_mut().await, &mut self.stream, &self.context).await?)
+        };
+        let mut relay = RequestRelay::new(
+            &mut self.first_request,
+            &self.request_head_buffer,
+            &self.context,
+            max_body_bytes,
+        )?;
+        relay.prepare(&mut self.stream, control).await?;
+        let route = relay
+            .request
+            .extensions()
+            .get::<super::provider_route::ProviderRoute>()
+            .cloned();
+        let connected = match (route, ready) {
+            (Some(route), _) => connect(route).await,
+            (None, Some(stream)) => Ok(stream),
+            (None, None) => original.await,
+        };
+        let mut upstream = connection_result(connected, &mut self.stream, &self.context).await?;
+        let capture = relay.forward(&mut self.stream, &mut upstream).await?;
+        let response = decode_response_from_upstream(upstream, timeouts).await?;
+        if is_websocket_upgrade_request(&self.first_request)
+            && response.head.status() == StatusCode::SWITCHING_PROTOCOLS
+        {
             return self
-                .relay_websocket_to(upstream, hooks, timeouts, max_body_bytes, control)
+                .relay_websocket_response(response, capture, hooks, control)
                 .await;
         }
-
-        self.relay_plain_http_to(upstream, hooks, timeouts, max_body_bytes, control)
-            .await
-    }
-
-    #[tracing::instrument(level = "trace", skip_all)]
-    async fn relay_plain_http_to<U, C: super::RequestForwardingControl>(
-        mut self,
-        mut upstream: U,
-        hooks: &HookDispatcher,
-        timeouts: MitmTimeouts,
-        max_body_bytes: usize,
-        control: &C,
-    ) -> Result<RelayOutcome, TransparentFlowError>
-    where
-        U: AsyncRead + AsyncWrite + Unpin + Send,
-    {
-        // The normal HTTP path is a single exchange:
-        // client request -> upstream response -> captured hook event.
-        //
-        // `forward_http_response_and_submit` is also used by WebSocket upgrade
-        // attempts whose upstream response is not 101, because those responses
-        // are ordinary HTTP responses with ordinary body framing.
-        // Forward the request first because the upstream cannot produce a
-        // response until it receives the client's complete first request. The
-        // helper mirrors bytes to upstream and captures the decoded body for
-        // the eventual hook event.
-        let request_capture =
-            Box::pin(self.forward_http_request_to(&mut upstream, max_body_bytes, control)).await?;
-
-        let response = decode_response_from_upstream(upstream, timeouts).await?;
         self.forward_http_response_and_submit(
             response,
-            request_capture,
+            capture,
             hooks,
             max_body_bytes,
             CapturedExchangeLog::Http1,
@@ -250,26 +246,24 @@ where
         .await
     }
 
-    #[tracing::instrument(level = "trace", skip_all)]
-    async fn forward_http_request_to<U, C: super::RequestForwardingControl>(
-        &mut self,
-        upstream: &mut U,
-        max_body_bytes: usize,
+    #[cfg(test)]
+    pub(super) async fn relay_to<U, C: RequestForwardingControl>(
+        self,
+        upstream: U,
+        hooks: &HookDispatcher,
+        timeouts: MitmTimeouts,
+        limit: usize,
         control: &C,
-    ) -> Result<MessageCapture, TransparentFlowError>
+    ) -> Result<RelayOutcome, TransparentFlowError>
     where
-        U: AsyncWrite + Unpin + Send,
+        U: AsyncRead + AsyncWrite + Unpin + Send,
     {
-        // This method exists so the high-level flow does not need to know the
-        // exact HTTP body framing rules. `forward_controlled_request` owns the byte-level
-        // preservation and capture logic.
-        forward_controlled_request(
-            &mut self.stream,
-            upstream,
-            &mut self.first_request,
-            &self.request_head_buffer,
-            &self.context,
-            max_body_bytes,
+        self.relay_with_connector(
+            std::future::ready(Ok(upstream)),
+            |_| async { unreachable!("test upstream was supplied directly") },
+            hooks,
+            timeouts,
+            limit,
             control,
         )
         .await
@@ -340,40 +334,16 @@ where
     }
 
     #[tracing::instrument(level = "trace", skip_all)]
-    async fn relay_websocket_to<U, C: super::RequestForwardingControl>(
-        mut self,
-        mut upstream: U,
+    async fn relay_websocket_response<U, C: RequestForwardingControl>(
+        self,
+        response: DecodedUpstreamResponse<U>,
+        request_capture: MessageCapture,
         hooks: &HookDispatcher,
-        timeouts: MitmTimeouts,
-        max_body_bytes: usize,
         control: &C,
     ) -> Result<RelayOutcome, TransparentFlowError>
     where
         U: AsyncRead + AsyncWrite + Unpin + Send,
     {
-        // A WebSocket attempt still starts as HTTP/1. Only after upstream
-        // returns 101 may both streams be interpreted as WebSocket frame
-        // streams.
-        let request_capture = self
-            .forward_http_request_to(&mut upstream, max_body_bytes, control)
-            .await?;
-        let response = decode_response_from_upstream(upstream, timeouts).await?;
-
-        if response.head.status() != StatusCode::SWITCHING_PROTOCOLS {
-            // Upstream declined the upgrade. The request we forwarded has no
-            // HTTP body, but the response may have one, so reuse the normal
-            // HTTP response path instead of switching protocols locally.
-            return self
-                .forward_http_response_and_submit(
-                    response,
-                    request_capture,
-                    hooks,
-                    max_body_bytes,
-                    CapturedExchangeLog::Http1,
-                )
-                .await;
-        }
-
         let upgrade = self
             .forward_websocket_success(response, request_capture, hooks)
             .await?;
@@ -685,6 +655,7 @@ enum BodyFraming {
 /// Prepare the request, handle local negotiation, inspect when configured, and
 /// forward only after the control stage succeeds.
 #[tracing::instrument(level = "trace", skip_all)]
+#[cfg(test)]
 async fn forward_controlled_request<R, W, C: super::RequestForwardingControl>(
     client: &mut R,
     upstream: &mut W,
@@ -699,14 +670,7 @@ where
     W: AsyncWrite + Unpin,
 {
     let mut relay = RequestRelay::new(request, head_buffer, flow, max_body_bytes)?;
-    let plan = control.plan();
-    relay.handle_expect_continue(client).await?;
-    if let Some(plan) = plan
-        && let Err(rejection) = relay.inspect(client, control, plan).await
-    {
-        rejection.response_error(client).await?;
-        return Err(rejection.into());
-    }
+    relay.prepare(client, control).await?;
     relay.forward(client, upstream).await
 }
 
@@ -756,6 +720,26 @@ impl<'a> RequestRelay<'a> {
             edited_head,
             retained: None,
         })
+    }
+
+    async fn prepare<R, C>(
+        &mut self,
+        client: &mut R,
+        control: &C,
+    ) -> Result<(), TransparentFlowError>
+    where
+        R: AsyncRead + AsyncWrite + Unpin,
+        C: RequestForwardingControl,
+    {
+        let plan = control.plan_for(self.flow, self.request);
+        self.handle_expect_continue(client).await?;
+        if let Some(plan) = plan
+            && let Err(rejection) = self.inspect(client, control, plan).await
+        {
+            rejection.response_error(client).await?;
+            return Err(rejection.into());
+        }
+        Ok(())
     }
 
     async fn handle_expect_continue<W: AsyncWrite + Unpin>(

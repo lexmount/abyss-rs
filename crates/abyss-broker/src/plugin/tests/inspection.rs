@@ -241,3 +241,39 @@ async fn capacity_rejects_excess_inspections_and_recovers_after_decisions() {
     assert_eq!(recovered.await.unwrap(), Ok(InspectionDecision::Allow));
     server.stop().await;
 }
+
+#[tokio::test]
+async fn model_routing_sessions_receive_only_routing_metadata() {
+    let server = Server::start().await;
+    let mut plugin = connect_capabilities(
+        &server.endpoint,
+        "model-router",
+        vec![PluginCapability::ModelRouting],
+    )
+    .await;
+    assert!(
+        server.client.plan_for(false).is_none(),
+        "non-model traffic must keep streaming"
+    );
+    let decision = server.inspect("model-call");
+    let frame: serde_json::Value = read_json(&mut plugin).await;
+    assert_eq!(frame["type"], "model_route_request");
+    let fields = frame["context"].as_object().unwrap();
+    assert_eq!(
+        fields.len(),
+        9,
+        "the router needs only the routing envelope"
+    );
+    assert_eq!(fields["request_id"], "model-call");
+    assert_eq!(fields["path"], "/v1/responses");
+    assert_eq!(fields["routable"], true);
+    for key in ["auth_token", "headers", "json", "body", "agent"] {
+        assert!(
+            !fields.contains_key(key),
+            "raw inspection fields must stay at the broker"
+        );
+    }
+    reply(&mut plugin, "model-call", true).await;
+    assert_eq!(decision.await.unwrap(), Ok(InspectionDecision::Allow));
+    server.stop().await;
+}

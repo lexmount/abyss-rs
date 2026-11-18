@@ -13,13 +13,13 @@ fn context() -> Arc<InspectionRequest> {
     let abyss_plugin_protocol::message::BrokerMessage::InspectRequest { context } = message else {
         panic!("inspection fixture");
     };
-    Arc::new(InspectionRequest::new(context).unwrap())
+    Arc::new(InspectionRequest::new(context, false).unwrap())
 }
 
 #[tokio::test(start_paused = true)]
 async fn timeout_and_cancellation_remove_waiters_and_late_replies_are_ignored() {
     let registry = Arc::new(InspectionRegistry::default());
-    let (registration, mut requests) = registry.register();
+    let (registration, mut requests) = registry.register(false);
     let session = registration.session.clone();
     let pending = tokio::spawn(async move {
         session
@@ -66,8 +66,8 @@ async fn selected_disconnect_fails_current_request_and_future_requests_use_curre
         participants.borrow().is_empty(),
         "no plugins means ordinary streaming"
     );
-    let (first, mut requests) = registry.register();
-    let (second, _requests) = registry.register();
+    let (first, mut requests) = registry.register(false);
+    let (second, _requests) = registry.register(false);
     let plan = InspectionPlan {
         sessions: participants.borrow().clone(),
     };
@@ -119,7 +119,7 @@ async fn selected_disconnect_fails_current_request_and_future_requests_use_curre
 #[tokio::test]
 async fn caller_cancellation_cancels_server_task_and_session_waiter() {
     let registry = Arc::new(InspectionRegistry::default());
-    let (registration, mut requests) = registry.register();
+    let (registration, mut requests) = registry.register(false);
     let plan = InspectionPlan {
         sessions: registry.subscribe().borrow().clone(),
     };

@@ -25,7 +25,53 @@ pub(super) struct HttpUpstream {
     server_name: Option<String>,
 }
 
+/// The network policy selected by ingress also applies to a plugin-selected model server.
+#[derive(Clone)]
+pub(super) struct ProviderConnector {
+    proxy: Option<crate::outbound::UpstreamProxy>,
+    excluded_listener: Option<std::net::SocketAddr>,
+}
+
+impl ProviderConnector {
+    pub(super) fn for_route(&self, route: &super::provider_route::ProviderRoute) -> HttpUpstream {
+        let target = route.target().clone();
+        let connection = match &self.proxy {
+            Some(proxy) => UpstreamConnection::Proxied {
+                proxy: proxy.clone(),
+                target,
+            },
+            None => UpstreamConnection::Direct {
+                target,
+                excluded_listener: self.excluded_listener,
+            },
+        };
+        HttpUpstream {
+            connection,
+            server_name: Some(route.tls_name().to_owned()),
+        }
+    }
+}
+
 impl HttpUpstream {
+    pub(super) fn provider_connector(&self) -> ProviderConnector {
+        match &self.connection {
+            UpstreamConnection::Proxied { proxy, .. } => ProviderConnector {
+                proxy: Some(proxy.clone()),
+                excluded_listener: None,
+            },
+            UpstreamConnection::Direct {
+                excluded_listener, ..
+            } => ProviderConnector {
+                proxy: None,
+                excluded_listener: *excluded_listener,
+            },
+            _ => ProviderConnector {
+                proxy: None,
+                excluded_listener: None,
+            },
+        }
+    }
+
     /// Negotiates a common HTTP protocol before completing client-side TLS.
     /// Only the HTTP/2-capable path uses this; the HTTP/1 relay never receives h2 bytes.
     pub(super) async fn connect_with_alpn(

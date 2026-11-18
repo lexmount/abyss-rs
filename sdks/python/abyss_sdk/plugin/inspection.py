@@ -2,7 +2,7 @@
 
 from collections.abc import Iterable, Mapping
 from dataclasses import dataclass, field
-from typing import Any, Callable, Literal, Optional
+from typing import Any, Callable, Literal, Optional, Union
 
 from ..event import (
     Conversation,
@@ -17,12 +17,23 @@ from ..event import (
 class ModifyAction:
     """One explicit semantic operation; credential values are excluded from repr."""
 
-    op: Literal["set_auth_token", "remove_auth_token", "set_model", "remove_model"]
-    value: Optional[str] = field(default=None, repr=False)
+    op: Literal[
+        "route_provider", "set_auth_headers", "set_auth_token",
+        "remove_auth_token", "set_model", "remove_model",
+    ]
+    value: Union[str, dict[str, str], None] = field(default=None, repr=False)
 
     @classmethod
     def set_auth_token(cls, token: str) -> "ModifyAction":
         return cls("set_auth_token", token)
+
+    @classmethod
+    def route_provider(cls, url: str) -> "ModifyAction":
+        return cls("route_provider", url)
+
+    @classmethod
+    def set_auth_headers(cls, headers: dict[str, str]) -> "ModifyAction":
+        return cls("set_auth_headers", dict(headers))
 
     @classmethod
     def remove_auth_token(cls) -> "ModifyAction":
@@ -37,7 +48,7 @@ class ModifyAction:
         return cls("remove_model")
 
     def to_dict(self) -> dict[str, Any]:
-        if self.op in ("set_auth_token", "set_model"):
+        if self.op in ("route_provider", "set_auth_token", "set_auth_headers", "set_model"):
             return {"op": self.op, "value": self.value}
         return {"op": self.op}
 

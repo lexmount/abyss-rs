@@ -381,14 +381,14 @@ fn published_message_schema_defines_handshake_and_control_contracts() {
     );
     assert_eq!(
         message_schema["oneOf"].as_array().map(Vec::len),
-        Some(7),
+        Some(8),
         "current frames include independent inspection requests and replies"
     );
     assert!(
         message_schema["$defs"]
             .as_object()
             .map(serde_json::Map::len)
-            == Some(7)
+            == Some(8)
             && message_schema["$defs"].get("pluginHello").is_some()
             && message_schema["$defs"].get("brokerHello").is_some()
             && message_schema["$defs"].get("brokerError").is_some()

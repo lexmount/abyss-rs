@@ -14,6 +14,8 @@ pub enum PluginCapability {
     AgentEvents,
     /// Decide on complete plaintext requests before forwarding.
     AgentRequest,
+    /// Require support for request-scoped provider destinations and literal credential headers.
+    ModelRouting,
 }
 
 /// Complete decoded bytes, without a lossy UTF-8 conversion.
@@ -53,6 +55,9 @@ pub enum RequestMessageType {
 #[derive(Debug, Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct RequestSourceProcess {
+    /// Broker-local account attribution used in the narrow model routing frame.
+    #[serde(skip)]
+    pub routing_uid: Option<u32>,
     /// OS process identifier.
     pub pid: Option<u32>,
     /// OS process incarnation identifier.
@@ -192,6 +197,10 @@ pub struct InspectResponse {
 pub enum ModifyAction {
     /// Set the credential selected by the target's authentication binding.
     SetAuthToken(String),
+    /// Route a model call to a fully specified HTTPS provider endpoint.
+    RouteProvider(String),
+    /// Replace provider authentication with these literal HTTP header names and values.
+    SetAuthHeaders(std::collections::BTreeMap<String, String>),
     /// Remove the selected credential.
     RemoveAuthToken,
     /// Set the requested model without changing the target or protocol.
@@ -209,13 +218,25 @@ impl<'de> Deserialize<'de> for ModifyAction {
             reason = "serde unit variants ignore extra fields; empty struct variants enforce the wire schema"
         )]
         enum WireAction {
-            SetAuthToken { value: String },
+            SetAuthToken {
+                value: String,
+            },
+            RouteProvider {
+                value: String,
+            },
+            SetAuthHeaders {
+                value: std::collections::BTreeMap<String, String>,
+            },
             RemoveAuthToken {},
-            SetModel { value: String },
+            SetModel {
+                value: String,
+            },
             RemoveModel {},
         }
         Ok(match WireAction::deserialize(deserializer)? {
             WireAction::SetAuthToken { value } => Self::SetAuthToken(value),
+            WireAction::RouteProvider { value } => Self::RouteProvider(value),
+            WireAction::SetAuthHeaders { value } => Self::SetAuthHeaders(value),
             WireAction::RemoveAuthToken {} => Self::RemoveAuthToken,
             WireAction::SetModel { value } => Self::SetModel(value),
             WireAction::RemoveModel {} => Self::RemoveModel,
@@ -227,6 +248,8 @@ impl std::fmt::Debug for ModifyAction {
     fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         formatter.write_str(match self {
             Self::SetAuthToken(_) => "SetAuthToken(<redacted>)",
+            Self::RouteProvider(_) => "RouteProvider(<redacted>)",
+            Self::SetAuthHeaders(_) => "SetAuthHeaders(<redacted>)",
             Self::RemoveAuthToken => "RemoveAuthToken",
             Self::SetModel(_) => "SetModel(<redacted>)",
             Self::RemoveModel => "RemoveModel",

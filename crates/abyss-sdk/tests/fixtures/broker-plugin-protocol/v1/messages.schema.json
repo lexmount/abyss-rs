@@ -23,6 +23,9 @@
     },
     {
       "$ref": "#/$defs/inspectResponse"
+    },
+    {
+      "$ref": "#/$defs/modelRouteRequest"
     }
   ],
   "$defs": {
@@ -53,7 +56,8 @@
           "items": {
             "enum": [
               "agent_events",
-              "agent_request"
+              "agent_request",
+              "model_routing"
             ]
           },
           "minItems": 1
@@ -235,6 +239,25 @@
                         "type": "object",
                         "additionalProperties": false,
                         "required": [
+                          "op",
+                          "value"
+                        ],
+                        "properties": {
+                          "op": {
+                            "const": "set_auth_headers"
+                          },
+                          "value": {
+                            "type": "object",
+                            "additionalProperties": {
+                              "type": "string"
+                            }
+                          }
+                        }
+                      },
+                      {
+                        "type": "object",
+                        "additionalProperties": false,
+                        "required": [
                           "op"
                         ],
                         "properties": {
@@ -270,6 +293,22 @@
                             "const": "remove_model"
                           }
                         }
+                      },
+                      {
+                        "type": "object",
+                        "additionalProperties": false,
+                        "required": [
+                          "op",
+                          "value"
+                        ],
+                        "properties": {
+                          "op": {
+                            "const": "route_provider"
+                          },
+                          "value": {
+                            "type": "string"
+                          }
+                        }
                       }
                     ]
                   }
@@ -277,6 +316,79 @@
               }
             }
           ]
+        }
+      }
+    },
+    "modelRouteRequest": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "type",
+        "context"
+      ],
+      "properties": {
+        "type": {
+          "const": "model_route_request"
+        },
+        "context": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "request_id",
+            "pid",
+            "harness",
+            "path",
+            "authority",
+            "routable",
+            "websocket",
+            "model_writable",
+            "uid"
+          ],
+          "properties": {
+            "request_id": {
+              "type": "string"
+            },
+            "pid": {
+              "type": [
+                "integer",
+                "null"
+              ],
+              "minimum": 0,
+              "maximum": 4294967295
+            },
+            "harness": {
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "path": {
+              "type": "string"
+            },
+            "authority": {
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "routable": {
+              "type": "boolean"
+            },
+            "websocket": {
+              "type": "boolean"
+            },
+            "model_writable": {
+              "type": "boolean"
+            },
+            "uid": {
+              "type": [
+                "integer",
+                "null"
+              ],
+              "minimum": 0,
+              "maximum": 4294967295
+            }
+          }
         }
       }
     }

@@ -3,6 +3,7 @@
 
 import http.client
 import json
+import os
 import select
 import socket
 import ssl
@@ -34,7 +35,7 @@ def exact(stream, length):
     return bytes(result)
 
 
-def framed_connection(broker, host, port, destination_ip=None):
+def framed_connection(broker, host, port, destination_ip=None, *, attribute_adapter=False):
     """Adapt a socket pair to the published framed-flow wire contract."""
     transport = socket.socket(socket.AF_UNIX)
     transport.settimeout(5)
@@ -58,7 +59,8 @@ def framed_connection(broker, host, port, destination_ip=None):
                 "flow_id": str(flow_id),
                 "platform": "macos",
                 "protocol": "tcp",
-                "source_process": "codex",
+                "source_process": sys.executable if attribute_adapter else "codex",
+                "source_pid": os.getpid() if attribute_adapter else None,
                 "destination_host": host,
                 "destination_ip": destination_ip,
                 "destination_port": port,

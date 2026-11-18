@@ -1,8 +1,11 @@
 //! Applies explicit Agent actions to their original protocol locations.
 //! No context diff, routing changes, or reconstruction from observation projections.
 
+use std::collections::BTreeMap;
+
 use abyss_mitm::{RequestEditor, RequestTransport, RequestView};
 use abyss_plugin_protocol::inspection::{AgentRequestContext, ModifyAction};
+use http::{HeaderName, HeaderValue};
 use serde_json::Value;
 
 use super::auth::AuthBinding;
@@ -18,6 +21,9 @@ pub enum RequestActionError {
     /// There is no supported model write-back location.
     #[error("Model actions are unavailable for this request")]
     ModelUnavailable,
+    /// The selected endpoint is unavailable at this forwarding boundary.
+    #[error("Invalid provider endpoint for this request")]
+    InvalidProvider,
     /// The token cannot be represented in the selected credential header.
     #[error("Invalid authentication token encoding")]
     InvalidToken,
@@ -126,6 +132,27 @@ impl RequestActions {
                         .map_err(|_| RequestActionError::InvalidToken)?;
                     request.headers_mut().insert(binding.header(), value);
                 }
+                ModifyAction::RouteProvider(endpoint) => {
+                    let current = request.view();
+                    let model_upgrade = current.head.method() == http::Method::GET
+                        && current.head.uri().path().ends_with("/responses")
+                        && current
+                            .head
+                            .headers()
+                            .get(http::header::UPGRADE)
+                            .is_some_and(|value| {
+                                value.as_bytes().eq_ignore_ascii_case(b"websocket")
+                            });
+                    if !(model_upgrade
+                        || current.head.method() == http::Method::POST && self.model.is_some())
+                    {
+                        return Err(RequestActionError::InvalidProvider);
+                    }
+                    request
+                        .route_provider(&endpoint)
+                        .map_err(|_| RequestActionError::InvalidProvider)?;
+                }
+                ModifyAction::SetAuthHeaders(values) => Self::set_auth_headers(request, values)?,
                 ModifyAction::RemoveAuthToken => {
                     let binding = self.writable_auth()?;
                     request.headers_mut().remove(binding.header());
@@ -143,6 +170,56 @@ impl RequestActions {
         if let Some(document) = document {
             let bytes = serde_json::to_vec(&document).map_err(|_| RequestActionError::Encoding)?;
             request.replace_body(bytes.into());
+        }
+        Ok(())
+    }
+
+    fn set_auth_headers(
+        request: &mut RequestEditor<'_>,
+        values: BTreeMap<String, String>,
+    ) -> Result<(), RequestActionError> {
+        if !matches!(request.view().transport, RequestTransport::Http) {
+            return Err(RequestActionError::AuthenticationUnavailable);
+        }
+        let headers = request.headers_mut();
+        let previous: Box<[_]> = headers
+            .keys()
+            .filter(|name| {
+                abyss_mitm::is_sensitive_header(name)
+                    || headers.get_all(*name).iter().any(HeaderValue::is_sensitive)
+            })
+            .cloned()
+            .collect();
+        for name in previous {
+            headers.remove(name);
+        }
+        for (name, value) in values {
+            let name = HeaderName::from_bytes(name.as_bytes())
+                .map_err(|_| RequestActionError::InvalidToken)?;
+            // Credential edits cannot change HTTP routing, framing or protocol negotiation.
+            if matches!(
+                name.as_str(),
+                "host"
+                    | "connection"
+                    | "keep-alive"
+                    | "proxy-authorization"
+                    | "proxy-connection"
+                    | "content-length"
+                    | "transfer-encoding"
+                    | "content-encoding"
+                    | "content-type"
+                    | "upgrade"
+                    | "te"
+                    | "trailer"
+                    | "expect"
+            ) || name.as_str().starts_with("sec-websocket-")
+            {
+                return Err(RequestActionError::InvalidToken);
+            }
+            let mut value =
+                HeaderValue::from_str(&value).map_err(|_| RequestActionError::InvalidToken)?;
+            value.set_sensitive(true);
+            headers.insert(name, value);
         }
         Ok(())
     }
