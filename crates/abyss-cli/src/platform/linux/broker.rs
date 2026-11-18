@@ -246,7 +246,7 @@ mod tests {
             serde_json::json!({
                 "api_addr": address,
                 "auth_token_file": paths.broker_token_file(),
-                "pid": 42,
+                "pid": 42_u32,
             })
             .to_string(),
         )
@@ -264,8 +264,8 @@ mod tests {
                 let mut request = String::new();
                 loop {
                     let mut line = String::new();
-                    reader.read_line(&mut line).expect("request should read");
-                    if line == "\r\n" {
+                    let bytes = reader.read_line(&mut line).expect("request should read");
+                    if bytes == 0 || line == "\r\n" {
                         break;
                     }
                     request.push_str(&line);
