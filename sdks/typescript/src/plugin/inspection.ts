@@ -3,7 +3,10 @@ import type { Conversation, EventPurpose, ImageAttachment } from "../event.js";
 
 export type ModifyAction =
   | { readonly op: "route_provider"; readonly value: string }
-  | { readonly op: "set_auth_headers"; readonly value: Readonly<Record<string, string>> }
+  | {
+      readonly op: "set_auth_headers";
+      readonly value: Readonly<Record<string, string>>;
+    }
   | { readonly op: "set_auth_token"; readonly value: string }
   | { readonly op: "remove_auth_token" }
   | { readonly op: "set_model"; readonly value: string }

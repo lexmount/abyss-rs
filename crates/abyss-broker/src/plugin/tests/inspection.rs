@@ -256,7 +256,8 @@ async fn model_routing_sessions_receive_only_routing_metadata() {
         "non-model traffic must keep streaming"
     );
     let decision = server.inspect("model-call");
-    let frame: serde_json::Value = read_json(&mut plugin).await;
+    let payload = read_payload(&mut plugin).await.unwrap().unwrap();
+    let frame: serde_json::Value = serde_json::from_slice(&payload).unwrap();
     assert_eq!(frame["type"], "model_route_request");
     let fields = frame["context"].as_object().unwrap();
     assert_eq!(
