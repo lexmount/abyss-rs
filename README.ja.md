@@ -1,17 +1,17 @@
 [English](README.md) | [简体中文](README.zh-CN.md) | **日本語**
 
-# Abyss：AI エージェントの動きを、コード変更なしで可視化
+# アビス：AI エージェントの動きを、コード変更なしで可視化
 
 <p align="center">
   <picture>
     <source media="(prefers-color-scheme: dark)" srcset="docs/assets/abyss-overview-dark.svg" />
-    <img src="docs/assets/abyss-overview-light.svg" width="720" alt="Abyss は AI エージェントの通信を観測し、セッション、ツール呼び出し、トークン使用量をイベントとして出力します。" />
+    <img src="docs/assets/abyss-overview-light.svg" width="720" alt="アビス は AI エージェントの通信を観測し、セッション、ツール呼び出し、トークン使用量をイベントとして出力します。" />
   </picture>
 </p>
 
 ## 概要
 
-Abyss は、AI エージェントの動作を把握するためのオープンソースの可観測性プラットフォームです。エージェントとモデルプロバイダー間の通信をローカルプロキシで観測し、会話の内容、ツールの呼び出し、トークン使用量、通信エラーを確認できます。エージェントのソースコードを変更したり、計測用のコードを追加したりする必要はありません。
+アビス は、AI エージェントの動作を把握するためのオープンソースの可観測性プラットフォームです。エージェントとモデルプロバイダー間の通信をローカルプロキシで観測し、会話の内容、ツールの呼び出し、トークン使用量、通信エラーを確認できます。エージェントのソースコードを変更したり、計測用のコードを追加したりする必要はありません。
 
 Rust で実装されており、次の機能を備えています。
 
@@ -31,7 +31,7 @@ curl --proto '=https' --tlsv1.2 -fsSL \
 
 ## クイックスタート
 
-Node.js 22 以上、npm 10 以上、および利用するエージェントをあらかじめインストールしてください。次のコマンドでローカル環境を起動し、Abyss 経由でエージェントを実行します。
+Node.js 22 以上、npm 10 以上、および利用するエージェントをあらかじめインストールしてください。次のコマンドでローカル環境を起動し、アビス 経由でエージェントを実行します。
 
 ```bash
 abyss deploy-local start
@@ -44,7 +44,7 @@ abyss run -- codex
 abyss dashboard
 ```
 
-設定方法、取得する内容の切り替え、サービスの起動・停止については、[Abyss CLI ガイド](https://abyss.lexmount.com/docs/product/open-source-software/abyss-cli)をご覧ください。
+設定方法、取得する内容の切り替え、サービスの起動・停止については、[アビス CLI ガイド](https://abyss.lexmount.com/docs/product/open-source-software/abyss-cli)をご覧ください。
 
 ## 対応するエージェントとモデル
 
@@ -106,7 +106,7 @@ flowchart LR
     Provider[モデルプロバイダー]
     EventAPI[エージェントイベント API]
 
-    subgraph Endpoint[Abyss のローカルランタイム]
+    subgraph Endpoint[アビス のローカルランタイム]
         CLI[abyss CLI]
         Ingress[abyss-broker<br/>トラフィックの受け入れ]
         MITM[abyss-mitm<br/>TLS・HTTP の中継]
