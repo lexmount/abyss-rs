@@ -29,6 +29,15 @@ impl BrokerController {
         restart: bool,
     ) -> Result<BrokerEndpoint, CliError> {
         let _lifecycle_lock = BrokerLifecycleLock::acquire(paths)?;
+        // Reusing the authenticated endpoint must not require sudo on every run.
+        // An alternate service user or port change still takes the systemd path.
+        if !restart
+            && user.is_none()
+            && let Some(endpoint) = BrokerEndpoint::discover(paths)?
+            && endpoint.require_owned_explicit().is_ok()
+        {
+            return Ok(endpoint);
+        }
         service_control("enable", user)?;
         service_control(if restart { "restart" } else { "start" }, user)?;
         wait_until_ready(paths)
@@ -197,11 +206,13 @@ impl Drop for BrokerLifecycleLock {
 mod tests {
     use std::{
         fs,
+        io::{BufRead as _, BufReader, Write as _},
+        net::TcpListener,
         os::unix::fs::PermissionsExt as _,
         time::{SystemTime, UNIX_EPOCH},
     };
 
-    use super::{BrokerLifecycleLock, service_unit};
+    use super::{BrokerController, BrokerLifecycleLock, service_unit};
     use crate::paths::CliPaths;
 
     #[test]
@@ -215,6 +226,69 @@ mod tests {
     #[test]
     fn service_unit_rejects_path_like_user() {
         assert!(service_unit(Some("../root")).is_err());
+    }
+
+    #[test]
+    fn healthy_owned_explicit_broker_is_reused_without_service_operations() {
+        let nonce = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .expect("test clock should be valid")
+            .as_nanos();
+        let root =
+            std::env::temp_dir().join(format!("abyss-linux-reuse-{}-{nonce}", std::process::id()));
+        let paths = CliPaths::at(root.clone());
+        fs::create_dir_all(root.join("runtime")).expect("runtime should create");
+        fs::write(paths.broker_token_file(), "reuse-token").expect("token should write");
+        let listener = TcpListener::bind("127.0.0.1:0").expect("broker should bind");
+        let address = listener.local_addr().expect("broker address should read");
+        fs::write(
+            paths.broker_startup_info_file(),
+            serde_json::json!({
+                "api_addr": address,
+                "auth_token_file": paths.broker_token_file(),
+                "pid": 42_u32,
+            })
+            .to_string(),
+        )
+        .expect("startup identity should write");
+        let server = std::thread::spawn(move || {
+            for (route, body) in [
+                (
+                    "/v1/proxy/status",
+                    r#"{"lifecycle":"running","process_id":42,"mode":"explicit","ingresses":[],"listen_addr":"127.0.0.1:18191"}"#,
+                ),
+                ("/v1/support/diagnostics", "{}"),
+            ] {
+                let (mut stream, _) = listener.accept().expect("request should arrive");
+                let mut reader = BufReader::new(stream.try_clone().expect("stream should clone"));
+                let mut request = String::new();
+                loop {
+                    let mut line = String::new();
+                    let bytes = reader.read_line(&mut line).expect("request should read");
+                    if bytes == 0 || line == "\r\n" {
+                        break;
+                    }
+                    request.push_str(&line);
+                }
+                assert!(request.starts_with(&format!("GET {route} HTTP/1.1")));
+                if route == "/v1/support/diagnostics" {
+                    assert!(
+                        request
+                            .to_ascii_lowercase()
+                            .contains("authorization: bearer reuse-token")
+                    );
+                }
+                write!(stream, "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}", body.len()).expect("response should write");
+            }
+        });
+
+        let endpoint = BrokerController::start(&paths, None, false)
+            .expect("healthy broker reuse must not invoke sudo or systemctl");
+
+        assert_eq!(endpoint.api_addr(), address);
+        assert_eq!(endpoint.pid(), 42);
+        server.join().expect("broker server should finish");
+        fs::remove_dir_all(root).expect("fixture should remove");
     }
 
     #[test]

@@ -23,6 +23,10 @@ usage and preserve Harness enablement and matching rules. The broker persists
 the policy and applies it to subsequent event processing; previously captured
 events, including pending delivery retries, are not rewritten or deleted.
 
+Linux reuses the matching installed CA and a healthy, authenticated CLI-owned
+broker without sudo. First-time CA installation, service startup, an explicit
+service-user selection, or a requested port change can still require sudo.
+
 The CLI's packaged policy enables DeepSeek Harness and intercepts
 `api.deepseek.com`, `open.bigmodel.cn`, `api.z.ai`, `api.moonshot.cn`, and
 `api.moonshot.ai`, and the Qwen API hosts listed below. DSH Web (`dsh web`),
