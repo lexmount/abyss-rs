@@ -100,11 +100,6 @@ pub enum BrokerMessage {
     BrokerError(BrokerError),
     /// Final session frame.
     BrokerClose(BrokerClose),
-    /// Metadata for an attributed model call, sent to a model routing session.
-    ModelRouteRequest {
-        /// Public routing metadata. The inspector does not need message contents or original credentials.
-        context: ModelRouteContext,
-    },
     /// Independent observation event.
     AgentEvent {
         /// Normalized event.
@@ -115,58 +110,6 @@ pub enum BrokerMessage {
         /// Parsed and raw request context.
         context: std::sync::Arc<crate::inspection::AgentRequestContext>,
     },
-}
-
-/// Request metadata used by the desktop provider selector.
-#[derive(Debug, Deserialize, Serialize)]
-pub struct ModelRouteContext {
-    /// ID for the inspect response.
-    pub request_id: String,
-    /// Process attributed by the platform ingress.
-    pub pid: Option<u32>,
-    /// Verified Unix owner when supplied by the ingress.
-    pub uid: Option<u32>,
-    /// Recognized harness.
-    pub harness: Option<String>,
-    /// Operation path without query parameters.
-    pub path: String,
-    /// Authority of the current request or established socket.
-    pub authority: Option<String>,
-    /// Whether this request is a recognized model POST or a Responses websocket upgrade.
-    pub routable: bool,
-    /// Whether this is a frame on an established websocket.
-    pub websocket: bool,
-    /// Whether the broker can replace the model in this message.
-    pub model_writable: bool,
-}
-
-impl From<&crate::inspection::AgentRequestContext> for ModelRouteContext {
-    fn from(context: &crate::inspection::AgentRequestContext) -> Self {
-        let path = context.path.split('?').next().unwrap_or_default();
-        let upgrade = context.method == "GET"
-            && path.ends_with("/responses")
-            && context.headers.iter().any(|(name, value)| {
-                name.eq_ignore_ascii_case("upgrade") && value.eq_ignore_ascii_case("websocket")
-            });
-        Self {
-            request_id: context.request_id.clone(),
-            uid: context
-                .source_process
-                .as_ref()
-                .and_then(|source| source.routing_uid),
-            pid: context
-                .source_process
-                .as_ref()
-                .and_then(|source| source.pid),
-            harness: context.harness.as_ref().map(|harness| harness.id.clone()),
-            path: path.to_owned(),
-            authority: context.authority.clone(),
-            routable: upgrade
-                || (context.method == "POST" && context.agent.is_some() && context.model_writable),
-            websocket: context.websocket,
-            model_writable: context.model_writable,
-        }
-    }
 }
 
 /// Handshake response sent from `abyss-broker` to one plugin process.

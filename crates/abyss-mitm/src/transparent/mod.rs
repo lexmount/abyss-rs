@@ -22,7 +22,6 @@ mod io;
 mod passthrough;
 mod plain_http;
 mod protocol;
-mod provider_route;
 mod redirect;
 mod relay;
 mod request_edit;

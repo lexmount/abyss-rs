@@ -30,35 +30,6 @@ impl RequestForwardingControl for RequestControl {
         self.plugins.inspection_plan()
     }
 
-    fn plan_for(
-        &self,
-        flow: &abyss_mitm::FlowContext,
-        head: &axum::http::Request<()>,
-    ) -> Option<Self::Plan> {
-        let path = head.uri().path();
-        let model_call = flow.source_process.as_ref().and_then(|p| p.pid).is_some()
-            && ((head.method() == axum::http::Method::POST
-                && ["/responses", "/messages", "/chat/completions"]
-                    .iter()
-                    .any(|suffix| path.ends_with(suffix)))
-                || (head.method() == axum::http::Method::GET
-                    && path.ends_with("/responses")
-                    && head
-                        .headers()
-                        .get("upgrade")
-                        .is_some_and(|v| v.as_bytes().eq_ignore_ascii_case(b"websocket"))));
-        self.plugins.plan_for(model_call)
-    }
-
-    fn defers_provider(
-        &self,
-        flow: &abyss_mitm::FlowContext,
-        head: &axum::http::Request<()>,
-    ) -> bool {
-        self.plan_for(flow, head)
-            .is_some_and(|plan| plan.has_model_selector())
-    }
-
     async fn before_forward(
         &self,
         plan: Self::Plan,

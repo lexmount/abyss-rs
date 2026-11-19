@@ -373,12 +373,7 @@ impl IngressConnection for FramedUnixConnection {
             socket_path,
             process_context_resolver,
         } = self;
-        let (flow_id, mut payload) = FramedUnixIngress::read_open_frame(&mut stream).await?;
-        // System extensions supply the audit-token UID. User-mode adapters act for their socket peer.
-        payload.source_uid = stream.peer_cred().ok().and_then(|peer| match peer.uid() {
-            0 => payload.source_uid,
-            uid => Some(uid),
-        });
+        let (flow_id, payload) = FramedUnixIngress::read_open_frame(&mut stream).await?;
         let target = proxy
             .as_ref()
             .map(|_| configured_target(&payload))
@@ -512,7 +507,6 @@ impl<'a> SourceProcessBuilder<'a> {
         Some(
             abyss_mitm::SourceProcess::new(self.payload.source_pid, name, executable_path)
                 .with_pid_version(self.payload.source_pid_version)
-                .with_routing_uid(self.payload.source_uid)
                 .with_application_id(self.payload.source_application_id.clone())
                 .with_entry_point(process_context_resolver.entry_point(self.payload.source_pid))
                 .with_working_directory(
@@ -948,7 +942,6 @@ mod tests {
             platform: "macos".to_owned(),
             protocol_name: FlowTransportProtocol::Tcp,
             source_pid: None,
-            source_uid: None,
             source_pid_version: None,
             source_process: None,
             source_application_id: Some("com.openai.codex".to_owned()),

@@ -10,24 +10,20 @@ use uuid::Uuid;
 /// Immutable connection identities selected before request retention.
 /// Callers cannot address sessions or replace the participants of a plan.
 pub struct InspectionPlan {
-    pub(super) sessions: Arc<[InspectionParticipant]>,
+    pub(super) sessions: Arc<[Uuid]>,
 }
 
 /// Opaque participant selected for one request; session ownership stays in the server.
-#[derive(Clone, Copy, Debug)]
 pub struct InspectionParticipant {
-    pub(super) model_only: bool,
     pub(super) id: Uuid,
 }
 
 impl InspectionPlan {
-    pub(crate) fn has_model_selector(&self) -> bool {
-        self.sessions.iter().any(|p| p.model_only)
-    }
-
     /// Iterates the request's fixed registration order without selecting new sessions.
     pub fn participants(&self) -> impl Iterator<Item = InspectionParticipant> + '_ {
-        self.sessions.iter().copied()
+        self.sessions
+            .iter()
+            .map(|id| InspectionParticipant { id: *id })
     }
 }
 

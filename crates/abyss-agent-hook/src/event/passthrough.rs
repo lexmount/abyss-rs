@@ -44,7 +44,7 @@ impl ExchangePassthrough {
             .iter()
             .map(|(name, value)| HttpHeader {
                 name: name.as_str().to_owned(),
-                value: if value.is_sensitive() || is_sensitive_header(name) {
+                value: if is_sensitive_header(name) {
                     HttpHeaderValue::Text(REDACTED_HEADER_VALUE.to_owned())
                 } else {
                     std::str::from_utf8(value.as_bytes()).map_or_else(

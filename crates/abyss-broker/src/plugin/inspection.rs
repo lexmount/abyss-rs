@@ -35,26 +35,16 @@ pub(super) struct InspectionRequest {
 }
 
 impl InspectionRequest {
-    fn new(
-        context: Arc<AgentRequestContext>,
-        model_only: bool,
-    ) -> Result<Self, super::codec::PluginFrameError> {
+    fn new(context: Arc<AgentRequestContext>) -> Result<Self, super::codec::PluginFrameError> {
         let request_id = context.request_id.clone();
-        let message = if model_only {
-            BrokerMessage::ModelRouteRequest {
-                context: context.as_ref().into(),
-            }
-        } else {
-            BrokerMessage::InspectRequest { context }
-        };
-        let frame = super::codec::EncodedFrame::new(&message)?;
+        let frame = super::codec::EncodedFrame::new(&BrokerMessage::InspectRequest { context })?;
         Ok(Self { request_id, frame })
     }
 }
 
 pub(super) struct InspectionRegistry {
     sessions: Mutex<Vec<Arc<InspectionSession>>>,
-    participants: watch::Sender<Arc<[InspectionParticipant]>>,
+    participants: watch::Sender<Arc<[Uuid]>>,
 }
 
 impl Default for InspectionRegistry {
@@ -68,7 +58,6 @@ impl Default for InspectionRegistry {
 
 pub(super) struct InspectionSession {
     id: Uuid,
-    model_only: bool,
     sender: mpsc::Sender<Arc<InspectionRequest>>,
     pending: Mutex<HashMap<String, oneshot::Sender<InspectResponse>>>,
     closed: AtomicBool,
@@ -80,20 +69,13 @@ pub(super) struct SessionRegistration {
 }
 
 impl InspectionRegistry {
-    pub(super) fn subscribe(&self) -> watch::Receiver<Arc<[InspectionParticipant]>> {
+    pub(super) fn subscribe(&self) -> watch::Receiver<Arc<[Uuid]>> {
         self.participants.subscribe()
     }
 
     fn publish_participants(&self, sessions: &[Arc<InspectionSession>]) {
-        self.participants.send_replace(
-            sessions
-                .iter()
-                .map(|session| InspectionParticipant {
-                    id: session.id,
-                    model_only: session.model_only,
-                })
-                .collect(),
-        );
+        self.participants
+            .send_replace(sessions.iter().map(|session| session.id).collect());
     }
 
     fn select(
@@ -110,12 +92,10 @@ impl InspectionRegistry {
 
     pub(super) fn register(
         self: &Arc<Self>,
-        model_only: bool,
     ) -> (SessionRegistration, mpsc::Receiver<Arc<InspectionRequest>>) {
         let (sender, receiver) = mpsc::channel(SESSION_CAPACITY);
         let session = Arc::new(InspectionSession {
             id: Uuid::new_v4(),
-            model_only,
             sender,
             pending: Mutex::new(HashMap::new()),
             closed: AtomicBool::new(false),
@@ -248,14 +228,14 @@ impl InspectionTask {
         deadline: Instant,
     ) -> Result<InspectionDecision, InspectionError> {
         let session = session?;
-        let request = Arc::new(InspectionRequest::new(context, session.model_only).map_err(
-            |error| match error {
+        let request = Arc::new(
+            InspectionRequest::new(context).map_err(|error| match error {
                 super::codec::PluginFrameError::PayloadTooLarge { .. } => {
                     InspectionError::PayloadTooLarge
                 }
                 _ => InspectionError::Encoding,
-            },
-        )?);
+            })?,
+        );
         let response = session
             .inspect(request, deadline)
             .await

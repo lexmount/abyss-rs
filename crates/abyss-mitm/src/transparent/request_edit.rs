@@ -48,11 +48,9 @@ impl<'a> RequestEditor<'a> {
 
     /// Edits the current head without altering method, URI, or flow routing.
     pub fn headers_mut(&mut self) -> &mut HeaderMap {
-        self.edited_head().headers_mut()
-    }
-
-    pub(super) fn edited_head(&mut self) -> &mut Request<()> {
-        self.head.get_or_insert_with(|| self.original.head.clone())
+        self.head
+            .get_or_insert_with(|| self.original.head.clone())
+            .headers_mut()
     }
 
     /// Installs identity-encoded content and resets obsolete body parsing state.

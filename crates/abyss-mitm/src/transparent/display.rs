@@ -87,7 +87,7 @@ impl fmt::Display for HttpHeadersDisplay<'_> {
         let mut separator = "";
         for (name, value) in self.headers {
             write!(formatter, "{separator}{}: ", name.as_str())?;
-            if value.is_sensitive() || is_sensitive_header(name) {
+            if is_sensitive_header(name) {
                 formatter.write_str(REDACTED_HEADER_VALUE)?;
             } else {
                 HeaderValueDisplay::new(value).fmt(formatter)?;

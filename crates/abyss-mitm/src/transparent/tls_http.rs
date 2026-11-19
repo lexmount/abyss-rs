@@ -79,7 +79,6 @@ impl TlsHttpFlow {
         let negotiate_h2 = offered.iter().any(|protocol| protocol == b"h2");
         let context = metadata.context(server_name);
         let selected = HttpUpstream::new(metadata.upstream, &context, metadata.redirect.as_ref())?;
-        let connector = selected.provider_connector();
         let (route, alpn) = if negotiate_h2 {
             let (stream, alpn) = selected
                 .connect_with_alpn(
@@ -109,21 +108,36 @@ impl TlsHttpFlow {
             operation: super::FlowOperation::AcceptAgentTls,
             timeout: engine.timeouts.client_tls_handshake,
         })??;
-        let original_destination = metadata.original_destination.clone();
         let relay = match route {
-            HttpRoute::Connected(upstream) if http2 => {
-                super::http2::Http2Relay::new(
-                    context,
-                    engine,
-                    control,
-                    metadata.redirect.as_ref(),
-                    connector,
-                    metadata.traffic_observer,
-                )
-                .relay(client_tls.stream, upstream)
-                .await?
+            HttpRoute::Connected(upstream) => {
+                if http2 {
+                    super::http2::Http2Relay::new(
+                        context,
+                        engine,
+                        control,
+                        metadata.redirect.as_ref(),
+                    )
+                    .relay(client_tls.stream, upstream)
+                    .await?
+                } else {
+                    let mut decoded = DecodedClientFlow::from_http1(
+                        client_tls.stream,
+                        context,
+                        engine.timeouts.clone(),
+                    )
+                    .await?;
+                    decoded.redirect(metadata.redirect.as_ref())?;
+                    Box::pin(decoded.relay_to(
+                        upstream,
+                        &engine.hooks,
+                        engine.timeouts.clone(),
+                        engine.max_http1_body_bytes,
+                        control,
+                    ))
+                    .await?
+                }
             }
-            original => {
+            HttpRoute::Deferred(selected) => {
                 let mut decoded = DecodedClientFlow::from_http1(
                     client_tls.stream,
                     context,
@@ -131,28 +145,11 @@ impl TlsHttpFlow {
                 )
                 .await?;
                 decoded.redirect(metadata.redirect.as_ref())?;
-                Box::pin(decoded.relay_with_connector(
-                    async {
-                        match original {
-                            HttpRoute::Connected(stream) => Ok(stream),
-                            HttpRoute::Deferred(upstream) => {
-                                upstream
-                                    .connect(
-                                        &metadata.original_destination,
-                                        engine,
-                                        metadata.traffic_observer.clone(),
-                                    )
-                                    .await
-                            }
-                        }
-                    },
-                    |route| {
-                        connector.for_route(&route).connect(
-                            &metadata.original_destination,
-                            engine,
-                            metadata.traffic_observer.clone(),
-                        )
-                    },
+                let upstream = decoded
+                    .connect_upstream(*selected, engine, metadata.traffic_observer)
+                    .await?;
+                Box::pin(decoded.relay_to(
+                    upstream,
                     &engine.hooks,
                     engine.timeouts.clone(),
                     engine.max_http1_body_bytes,
@@ -164,7 +161,7 @@ impl TlsHttpFlow {
         Ok(Self::outcome(
             metadata.peer_addr,
             metadata.local_addr,
-            original_destination,
+            metadata.original_destination,
             relay,
         ))
     }

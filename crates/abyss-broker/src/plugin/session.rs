@@ -93,11 +93,9 @@ where
             return Ok(());
         };
         let mut events = self.events.subscribe();
-        let model_only = hello.capabilities.contains(&PluginCapability::ModelRouting)
-            && !hello.capabilities.contains(&PluginCapability::AgentRequest);
         let (registration, mut requests) =
-            if model_only || hello.capabilities.contains(&PluginCapability::AgentRequest) {
-                let (registration, requests) = self.inspections.register(model_only);
+            if hello.capabilities.contains(&PluginCapability::AgentRequest) {
+                let (registration, requests) = self.inspections.register();
                 (Some(registration), requests)
             } else {
                 (None, tokio::sync::mpsc::channel(1).1)

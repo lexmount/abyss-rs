@@ -61,11 +61,7 @@ The v1 reply contains exactly one tagged `decision`:
 - `{"action":"block","reason":"safe explanation"}` rejects the request.
 - `{"action":"modify","actions":[...]}` applies explicit semantic actions.
 
-A plugin selecting a new model provider advertises `model_routing` alone. It receives `model_route_request` frames for OS-attributed model operations. Each frame supplies the request ID, PID, harness, API path, authority and model-edit flags. Prompts and original credentials stay at the broker. The reply uses the usual correlated `inspect_response`. Send `route_provider` with the full HTTPS operation URL before the credential and model actions. The broker connects this exchange to that origin. The provider must speak the original API dialect. An older broker rejects the new capability at handshake.
-
-Use `set_auth_headers` with a string-to-string JSON object to replace provider authentication with literal header values at the HTTP or WebSocket handshake boundary.
-
-Other actions are `set_auth_token` / `set_model` with a string `value`, or
+Actions are `set_auth_token` / `set_model` with a string `value`, or
 `remove_auth_token` / `remove_model` without a value. Lists execute in order; the
 last action for a field wins. An empty list is equivalent to Allow. Invalid edits
 reject the pending request before any upstream bytes are written.

@@ -422,10 +422,7 @@ pub struct FlowOpenPayload {
     /// Transport protocol.
     #[serde(rename = "protocol")]
     pub protocol_name: FlowTransportProtocol,
-    /// Effective user ID from the macOS source audit token.
-    #[serde(rename = "source_uid")]
-    pub source_uid: Option<u32>,
-    /// Source PID from the platform audit token.
+    /// Source process identifier.
     #[serde(rename = "source_pid")]
     pub source_pid: Option<u32>,
     /// Source process incarnation identifier from the macOS audit token.

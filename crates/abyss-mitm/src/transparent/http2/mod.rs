@@ -25,8 +25,6 @@ pub(super) struct Http2Relay<'a, C> {
     engine: &'a MitmEngine,
     control: &'a C,
     redirect: Option<&'a RedirectTarget>,
-    provider_connector: super::upstream::ProviderConnector,
-    observer: Option<Arc<dyn super::TrafficObserver>>,
 }
 
 impl<'a, C: RequestForwardingControl> Http2Relay<'a, C> {
@@ -35,16 +33,12 @@ impl<'a, C: RequestForwardingControl> Http2Relay<'a, C> {
         engine: &'a MitmEngine,
         control: &'a C,
         redirect: Option<&'a RedirectTarget>,
-        provider_connector: super::upstream::ProviderConnector,
-        observer: Option<Arc<dyn super::TrafficObserver>>,
     ) -> Self {
         Self {
             context,
             engine,
             control,
             redirect,
-            provider_connector,
-            observer,
         }
     }
 
@@ -115,7 +109,7 @@ impl<'a, C: RequestForwardingControl> Http2Relay<'a, C> {
                     if origin_closed || pending.len() >= usize::try_from(MAX_CONCURRENT_STREAMS).unwrap_or(32) {
                         respond.send_reset(h2::Reason::REFUSED_STREAM);
                     } else {
-                        pending.push(self.exchange(request, respond, sender.clone(), upstream_bytes.clone()));
+                        pending.push(self.exchange(request, respond, sender.clone()));
                     }
                 }
                 result = pending.next(), if !pending.is_empty() => {
