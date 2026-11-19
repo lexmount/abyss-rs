@@ -71,13 +71,7 @@ impl<'a, C: RequestForwardingControl> Http2Relay<'a, C> {
                 timeout: self.engine.timeouts.http1_request_head,
             })?
             .map_err(error)?;
-        let (sender, origin) = h2::client::Builder::new()
-            .enable_push(false)
-            .max_header_list_size(64 * 1024)
-            .max_send_buffer_size(16 * 1024)
-            .handshake::<_, Bytes>(io::CountedIo::new(upstream, upstream_bytes.clone()))
-            .await
-            .map_err(error)?;
+        let (sender, origin) = upstream_handshake(upstream, upstream_bytes.clone()).await?;
         tokio::pin!(origin);
         let pending = FuturesUnordered::new();
         tokio::pin!(pending);
@@ -144,6 +138,21 @@ impl<'a, C: RequestForwardingControl> Http2Relay<'a, C> {
             upstream_to_client_bytes: client_bytes.load(Ordering::Relaxed),
         })
     }
+}
+
+type UpstreamDriver = h2::client::Connection<io::CountedIo<BoxedDuplexStream>, Bytes>;
+
+async fn upstream_handshake(
+    stream: BoxedDuplexStream,
+    written: Arc<AtomicU64>,
+) -> Result<(h2::client::SendRequest<Bytes>, UpstreamDriver), TransparentFlowError> {
+    h2::client::Builder::new()
+        .enable_push(false)
+        .max_header_list_size(64 * 1024)
+        .max_send_buffer_size(16 * 1024)
+        .handshake(io::CountedIo::new(stream, written))
+        .await
+        .map_err(error)
 }
 
 fn error(source: h2::Error) -> TransparentFlowError {

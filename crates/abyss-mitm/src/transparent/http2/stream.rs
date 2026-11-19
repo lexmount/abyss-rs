@@ -6,12 +6,15 @@ use bytes::Bytes;
 use h2::{RecvStream, client::SendRequest, server::SendResponse};
 use http::{Request, Response};
 
-use super::super::{HttpExchange, LocalRejection, RequestForwardingControl, TransparentFlowError};
+use super::super::{
+    HttpExchange, LocalRejection, RedirectTarget, RequestForwardingControl, TransparentFlowError,
+};
 use super::{
-    Http2Relay,
+    Http2Relay, UpstreamDriver,
     body::BodyCapture,
     error,
     request::{Http2Request, RetainedRequest},
+    upstream_handshake,
 };
 
 enum RequestBody {
@@ -55,15 +58,9 @@ impl<C: RequestForwardingControl> Http2Relay<'_, C> {
 
     async fn request_connection(
         &self,
-        route: &super::super::RedirectTarget,
+        route: &RedirectTarget,
         written: Arc<AtomicU64>,
-    ) -> Result<
-        (
-            SendRequest<Bytes>,
-            h2::client::Connection<super::io::CountedIo<super::super::BoxedDuplexStream>, Bytes>,
-        ),
-        TransparentFlowError,
-    > {
+    ) -> Result<(SendRequest<Bytes>, UpstreamDriver), TransparentFlowError> {
         let (stream, alpn) = self
             .request_connector
             .for_host(route)?
@@ -83,13 +80,7 @@ impl<C: RequestForwardingControl> Http2Relay<'_, C> {
             )
             .into());
         }
-        h2::client::Builder::new()
-            .enable_push(false)
-            .max_header_list_size(64 * 1024)
-            .max_send_buffer_size(16 * 1024)
-            .handshake::<_, Bytes>(super::io::CountedIo::new(stream, written))
-            .await
-            .map_err(error)
+        upstream_handshake(stream, written).await
     }
 
     async fn forward(
@@ -126,8 +117,7 @@ impl<C: RequestForwardingControl> Http2Relay<'_, C> {
         // Continue was handled locally before any inspection retained the body.
         head.headers_mut().remove(http::header::EXPECT);
         let mut drivers = tokio::task::JoinSet::new();
-        let upstream = if let Some(route) = head.extensions().get::<super::super::RedirectTarget>()
-        {
+        let upstream = if let Some(route) = head.extensions().get::<RedirectTarget>() {
             let (sender, driver) = self.request_connection(route, written).await?;
             // This provider connection belongs to one stream. Dropping the stream also stops its driver.
             drivers.spawn(driver);
