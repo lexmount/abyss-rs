@@ -118,7 +118,7 @@ def check_request_host(broker, origin, proxy):
             "tls_decryption": {"default_action": "intercept", "rules": []},
         },
     )
-    proxy.plain_hosts = ("original.invalid", "relay.invalid")
+    proxy.plain_hosts = ("relay.invalid",)
     endpoint = json.loads((broker.directory / "startup.json").read_text())[
         "plugin_endpoint"
     ]
@@ -155,6 +155,7 @@ def check_request_host(broker, origin, proxy):
             and b"chatgpt-account-id:" not in model
         )
         assert json.loads(origin.bodies[-1])["model"] == "selected-model"
+        proxy.plain_hosts = ("original.invalid", "relay.invalid")
         assert send(
             broker, headers=headers, path="/backend-api/plugins/export/curated"
         ).startswith(b"HTTP/1.1 200")
@@ -166,7 +167,7 @@ def check_request_host(broker, origin, proxy):
         assert b"cookie: session=private" in catalog
         assert [request.split()[1] for request in proxy.requests[start:]] == [
             f"{host}:{broker.redirect_port}".encode()
-            for host in ("original.invalid", "relay.invalid", "original.invalid")
+            for host in ("relay.invalid", "original.invalid")
         ]
         count = len(origin.requests)
         assert send(broker, body, headers, path="/denied").startswith(b"HTTP/1.1 502")
@@ -183,10 +184,7 @@ def check_request_host(broker, origin, proxy):
             assert send(broker, body, headers, path="/v1/responses").startswith(
                 b"HTTP/1.1 200"
             )
-            assert socks.requests == [
-                (host, broker.redirect_port, 3)
-                for host in ("original.invalid", "relay.invalid")
-            ]
+            assert socks.requests == [("relay.invalid", broker.redirect_port, 3)]
         finally:
             broker.request("PUT", "/v1/network/config", previous)
             socks.close()

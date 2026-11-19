@@ -202,7 +202,6 @@ where
         F: FnOnce(super::RedirectTarget) -> Fut,
         Fut: std::future::Future<Output = Result<U, TransparentFlowError>>,
     {
-        let original = connection_result(original.await, &mut self.stream, &self.context).await?;
         let mut relay = RequestRelay::new(
             &mut self.first_request,
             &self.request_head_buffer,
@@ -215,12 +214,11 @@ where
             .extensions()
             .get::<super::RedirectTarget>()
             .cloned();
-        let mut upstream = match route {
-            Some(host) => {
-                connection_result(connect(host).await, &mut self.stream, &self.context).await?
-            }
-            None => original,
+        let connection = match route {
+            Some(host) => connect(host).await,
+            None => original.await,
         };
+        let mut upstream = connection_result(connection, &mut self.stream, &self.context).await?;
         let capture = relay.forward(&mut self.stream, &mut upstream).await?;
         let response = decode_response_from_upstream(upstream, timeouts).await?;
         if is_websocket_upgrade_request(&self.first_request)

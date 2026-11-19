@@ -92,7 +92,7 @@ Previously allowed requests cannot be recalled.
 | [TLS policy:18](../crates/abyss-mitm/src/transparent/decrypt_policy.rs#L18) | `Intercept` or `Passthrough`; source and destination selectors already exist. | Add `Block` to this policy, preserving ordered rule evaluation and metadata-only decisions. |
 | [Explicit ingress:146](../crates/abyss-broker/src/ingress/explicit.rs#L146) | Acknowledges the local CONNECT tunnel; MITM selects the target before upstream setup. Source process is absent. | Preserve the existing metadata; enforce the MITM policy, including `Block`, before releasing client application traffic. |
 | [HTTP request forwarding:639](../crates/abyss-mitm/src/transparent/relay.rs#L639) | Writes the request head, then streams and captures the body. | Add a buffered inspection branch before the first upstream request write. |
-| [TLS HTTP handling:123](../crates/abyss-mitm/src/transparent/tls_http.rs#L123) | Establishes provider TLS before decoding the client HTTP request. | Preserve the handshake order; gate HTTP request writes in the relay after decoding and inspection. |
+| [TLS HTTP handling](../crates/abyss-mitm/src/transparent/tls_http.rs) | Connects to the default upstream during TLS negotiation when the client offers HTTP/2. | Gate HTTP request writes on inspection and defer HTTP/1.1 upstream setup when negotiation allows it. |
 | [WebSocket relay:212](../crates/abyss-mitm/src/transparent/websocket.rs#L212) | Submits an observation and forwards each client message immediately. | Await inspection before forwarding client data messages. |
 | [Agent Hook coordinator:58](../crates/abyss-agent-hook/src/hook.rs#L58) | Detects and parses a completed exchange. | Refactor the existing parsing pipeline to expose request-only results shared by inspection and observation. |
 | [Broker plugin server:65](../crates/abyss-broker/src/plugin/mod.rs#L65) | Owns local plugin sessions and broadcasts completed Agent events. | Extend this service with the request-inspection capability and broker-owned decision orchestration. |
@@ -391,9 +391,11 @@ view; request metadata and common forwarding logic are shared.
 [Configured redirects](mitm-redirect-design.md) select the destination before DNS,
 TCP or upstream CONNECT. Explicit ingress acknowledges the local CONNECT tunnel;
 MITM then evaluates policy, accepts client TLS and validates the original HTTP
-head. It opens the selected upstream TCP/TLS connection before Agent inspection.
-An established provider connection carries no HTTP request bytes until plugins
-allow the request. Plugin decisions do not select the route.
+head. For HTTP/1.1 with deferred upstream setup, MITM inspects the request first.
+It opens the connection to the host selected by `SetUpstreamHost`, or to the
+configured default when no plugin selects a host. If the TLS client offers HTTP/2,
+MITM still connects to the default upstream during protocol negotiation, even
+when the negotiated protocol is HTTP/1.1.
 
 The current `CapturedBody` may hold only an observation prefix. That is not an
 acceptable inspection result. A request exceeding the inspection limit, an
@@ -402,8 +404,7 @@ protected request before any part is forwarded. Reuse body-read/decode deadlines
 where available and add a finite request-body read deadline for this branch.
 There is no spill-to-disk inspection queue in the initial implementation.
 
-For an HTTP request with inspection-capable plugins connected, the sequence is
-below. HTTPS setup follows the selected MITM route.
+The sequence below shows HTTP/1.1 with deferred upstream setup and connected inspectors.
 The plugin interaction represents all selected sessions in registration order;
 a block or failure stops that sequence.
 
@@ -426,8 +427,6 @@ sequenceDiagram
     end
     A->>M: Request head and any prefetched body bytes
     M->>M: Validate original target and apply configured redirect
-    M->>P: Connect selected upstream, with TLS for HTTPS targets
-    P-->>M: Upstream established
     M->>B: Select forwarding plan
     B->>B: Select connected inspection sessions
     B-->>M: Buffer with byte limit and opaque broker state
@@ -445,6 +444,8 @@ sequenceDiagram
         alt Every applicable plugin allows
             H-->>B: allow=true
             B-->>M: Forward
+            M->>P: Connect selected upstream, with TLS for HTTPS targets
+            P-->>M: Upstream established
             M->>P: Shared writer forwards retained request
             P-->>M: Provider response
             M-->>A: Relay provider response
@@ -1044,9 +1045,10 @@ Acceptance tests should prove the boundary, not merely check decision enums:
   assert zero provider HTTP request bytes, including the head and any prefetched
   body. Cover explicit HTTP/CONNECT and platform ingress, direct and configured
   upstream routing. Separately account for permitted TCP/TLS/tunnel handshakes.
-- For intercepted HTTPS, verify provider TLS still completes before Agent
-  inspection runs. While the hook is pending and after a rejection, the provider
-  must receive zero HTTP request bytes even though its TLS connection exists.
+- For intercepted HTTP/1.1 with deferred upstream setup, verify a rejected
+  request opens no provider connection. When the TLS client offers HTTP/2,
+  verify that an upstream connection opened during negotiation receives no
+  HTTP request bytes before inspection allows the request.
 - Use one set of Agent parser fixtures and expected request projections for
   request-only inspection, completed-exchange parsing, and applicable client
   WebSocket messages. Compare conversation/instructions, tools, requested model,
