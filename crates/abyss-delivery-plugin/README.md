@@ -56,6 +56,8 @@ instead point `ABYSS_BROKER_STARTUP_INFO` at the broker-owned startup record.
 The worker writes its selected readiness path only after its loopback control
 listener is bound and the broker accepts the plugin handshake. The record
 contains both process IDs plus the control endpoint and local token-file path.
+Startup replay runs after readiness is published. A slow or unavailable
+destination can delay delivery while the connected worker remains ready.
 It removes the record and token when the event stream closes. These private
 lifecycle flags let a product distinguish a connected worker from a process
 that was merely spawned; they do not add plugin management to the public CLI.

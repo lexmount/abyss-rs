@@ -115,6 +115,94 @@ fn real_plugin_process_delivers_a_broker_event_to_the_configured_destination() {
 }
 
 #[test]
+fn startup_publishes_readiness_while_spool_replay_waits_for_the_destination() {
+    let directory = tempdir().expect("temporary directory should exist");
+    let socket_path = directory.path().join("plugins.sock");
+    let broker = UnixListener::bind(&socket_path).expect("broker should bind");
+    let destination = TcpListener::bind("127.0.0.1:0").expect("destination should bind");
+    let address = destination
+        .local_addr()
+        .expect("destination address should read");
+    let config = directory.path().join("product-config.json");
+    let spool = directory.path().join("failed-events.jsonl");
+    let readiness = directory.path().join("worker-startup.json");
+    let pending = serde_json::json!({"events": [], "diagnostic_captures": [{"id": "pending"}]});
+    let record = serde_json::json!({"request": pending, "reason": "offline"});
+    std::fs::write(&spool, format!("{record}\n")).expect("backlog should write");
+    std::fs::write(
+        &config,
+        product_config(&serde_json::json!({
+            "plugin_id": "startup-replay",
+            "broker_endpoint": socket_path,
+            "delivery": {
+                "endpoint": format!("http://{address}/events"),
+                "spool_enabled": true,
+                "spool_path": spool
+            },
+            "authentication": {"mode": "none"}
+        })),
+    )
+    .expect("config should write");
+
+    let (connected, plugin) = mpsc::channel();
+    thread::spawn(move || {
+        let (mut stream, _) = broker.accept().expect("plugin should connect");
+        assert!(matches!(
+            read_frame(&mut stream),
+            PluginMessage::PluginHello(_)
+        ));
+        write_frame(&mut stream, &BrokerMessage::BrokerHello(BrokerHello::v1()));
+        connected
+            .send(stream)
+            .expect("test should receive broker stream");
+    });
+    let (posted, request) = mpsc::channel();
+    thread::spawn(move || {
+        let (mut stream, _) = destination.accept().expect("replay should connect");
+        let body = read_http_request(&mut stream);
+        posted
+            .send((stream, body))
+            .expect("test should receive replay");
+    });
+    let mut child = Command::new(env!("CARGO_BIN_EXE_abyss-delivery-plugin"))
+        .arg("--config")
+        .arg(&config)
+        .arg("--startup-info-file")
+        .arg(&readiness)
+        .arg("--broker-pid")
+        .arg("4242")
+        .spawn()
+        .expect("worker should start");
+    let timeout = Duration::from_secs(5);
+    let (mut destination_stream, body) = request
+        .recv_timeout(timeout)
+        .expect("startup should replay backlog");
+    let info = wait_for_startup_info(&readiness);
+    assert_eq!(info["worker_pid"], child.id());
+    assert_eq!(info["broker_pid"], 4_242_u32);
+    assert_eq!(serde_json::from_slice::<Value>(&body).unwrap(), pending);
+    assert!(spool.exists(), "pending delivery must remain durable");
+
+    destination_stream
+        .write_all(b"HTTP/1.1 200 OK\r\nContent-Length: 14\r\n\r\n{\"rejected\":0}")
+        .expect("destination should acknowledge replay");
+    let deadline = Instant::now() + timeout;
+    while spool.exists() {
+        assert!(
+            Instant::now() < deadline,
+            "acknowledged backlog should drain"
+        );
+        thread::sleep(Duration::from_millis(25));
+    }
+    close_plugin(
+        &mut plugin
+            .recv_timeout(timeout)
+            .expect("broker should be connected"),
+    );
+    assert!(child.wait().expect("worker should exit").success());
+}
+
+#[test]
 fn managed_bearer_hot_update_replays_spool_without_restarting_worker() {
     let directory = tempdir().expect("temporary directory should exist");
     let socket_path = directory.path().join("plugins.sock");
