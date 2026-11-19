@@ -64,13 +64,16 @@ async fn run(arguments: Arguments) -> Result<(), DeliveryPluginError> {
     }
 }
 
+#[expect(
+    clippy::integer_division_remainder_used,
+    reason = "tokio::select! uses remainder internally for fair scheduling"
+)]
 async fn run_worker(
     arguments: Arguments,
     config: DeliveryPluginConfig,
     uploader: Arc<EventUploader>,
     control: &DeliveryControlServer,
 ) -> Result<(), DeliveryPluginError> {
-    let _ = uploader.replay_spool().await?;
     let mut plugin = BrokerPlugin::new(config.plugin_id);
     if let Some(endpoint) = config.broker_endpoint {
         plugin = plugin.with_endpoint(endpoint);
@@ -88,13 +91,25 @@ async fn run_worker(
             )
         })
         .transpose()?;
-    while let Some(event) = events.next().await {
-        Arc::clone(&uploader).deliver(event?).await?;
+    let receive = async {
+        while let Some(event) = events.next().await {
+            uploader.deliver(event?).await?;
+        }
+        events
+            .take_close()
+            .ok_or(BrokerPluginError::UnexpectedEof)?;
+        Ok(())
+    };
+    tokio::pin!(receive);
+    tokio::select! {
+        result = &mut receive => result,
+        replay = uploader.replay_spool() => {
+            if let Err(error) = replay {
+                eprintln!("Startup replay failed: {error}");
+            }
+            receive.await
+        }
     }
-    events
-        .take_close()
-        .ok_or(BrokerPluginError::UnexpectedEof)?;
-    Ok(())
 }
 
 fn default_control_token_path(startup_info_file: Option<&std::path::Path>) -> PathBuf {

@@ -149,7 +149,9 @@ impl EventUploader {
             replayed = replayed.saturating_add(1);
         }
         let remaining = records.split_off(replayed);
-        self.replace_spool(&remaining).await?;
+        if replayed > 0 || remaining.is_empty() {
+            self.replace_spool(&remaining).await?;
+        }
         Ok(ReplaySummary {
             replayed,
             remaining: remaining.len(),
