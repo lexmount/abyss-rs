@@ -1,6 +1,6 @@
 //! Shared authenticated session types returned by terminal SSO.
 
-use chrono::{DateTime, Utc};
+use jiff::Timestamp;
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
@@ -23,7 +23,7 @@ pub struct NativeSessionCredential {
     /// Native bearer token used by command-line clients.
     pub token: String,
     /// Expiration timestamp for the bearer token.
-    pub expires_at: DateTime<Utc>,
+    pub expires_at: Timestamp,
     /// Authenticated user metadata.
     pub user: AuthenticatedUser,
 }

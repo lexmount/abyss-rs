@@ -1,6 +1,6 @@
 //! Typed session-share creation response; snapshot policy is server-owned.
 
-use chrono::{DateTime, Utc};
+use jiff::Timestamp;
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
@@ -24,13 +24,13 @@ pub struct SessionShareSummary {
     /// Backend share UUID, distinct from the session UUID.
     pub id: Uuid,
     /// Creation time.
-    pub created_at: DateTime<Utc>,
+    pub created_at: Timestamp,
     /// Frozen snapshot time.
-    pub snapshot_at: DateTime<Utc>,
+    pub snapshot_at: Timestamp,
     /// Server-controlled expiry.
-    pub expires_at: DateTime<Utc>,
+    pub expires_at: Timestamp,
     /// Owner revocation time, when revoked.
-    pub revoked_at: Option<DateTime<Utc>>,
+    pub revoked_at: Option<Timestamp>,
     /// Current lifecycle state.
     pub status: SessionShareStatus,
     /// Forward-compatible server metadata.

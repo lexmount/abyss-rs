@@ -63,7 +63,7 @@ mod tests {
     use std::os::unix::fs::PermissionsExt as _;
 
     use abyss_terminal_auth::{AuthenticatedUser, CredentialFile, CredentialStore};
-    use chrono::{DateTime, Utc};
+    use jiff::Timestamp;
     use uuid::Uuid;
 
     use super::CliCredentialStore;
@@ -75,7 +75,7 @@ mod tests {
         let path = directory.join("auth").join("credentials.json");
         let store = CliCredentialStore::at(path.clone()).expect("store should build");
         let expires_at = "2099-01-01T00:00:00Z"
-            .parse::<DateTime<Utc>>()
+            .parse::<Timestamp>()
             .expect("timestamp should parse");
         let credential = CredentialFile::from_session(
             "https://abyss.example.invalid".to_owned(),

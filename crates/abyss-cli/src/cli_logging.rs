@@ -11,7 +11,7 @@ use std::{
     path::PathBuf,
 };
 
-use chrono::Utc;
+use jiff::Timestamp;
 
 use crate::{filesystem, paths::CliPaths};
 
@@ -48,7 +48,12 @@ impl CliLogger {
         fs::create_dir_all(directory)?;
         filesystem::protect(directory, 0o700)?;
         self.rotate_if_needed()?;
-        let line = format!("{} {} {}\n", Utc::now().to_rfc3339(), level, message);
+        let line = format!(
+            "{} {} {}\n",
+            Timestamp::now().strftime("%FT%T%.f%:z"),
+            level,
+            message
+        );
         let mut options = OpenOptions::new();
         options.create(true).append(true);
         filesystem::configure_file_creation(&mut options, 0o600);

@@ -9,7 +9,7 @@ use abyss_agent_hook::{
     BuiltInHarness, HarnessConfig, HarnessId, HarnessUsageContentConfig, HooksConfig,
 };
 use abyss_terminal_auth::CredentialStore as _;
-use chrono::Utc;
+use jiff::Timestamp;
 use serde_json::Value;
 
 use crate::{
@@ -408,7 +408,7 @@ impl StatusCommandRunner {
             .ok()
             .and_then(|store| store.read().ok());
         let auth = credential.as_ref().map_or("logged_out", |credential| {
-            if credential.expires_at <= Utc::now() {
+            if credential.expires_at <= Timestamp::now() {
                 "expired"
             } else {
                 "valid"
@@ -591,7 +591,7 @@ fn require_login_if_configured(paths: &CliPaths) -> Result<(), CliError> {
             "this command requires login; run `abyss login` first".to_owned(),
         )
     })?;
-    if credential.expires_at <= Utc::now() {
+    if credential.expires_at <= Timestamp::now() {
         return Err(CliError::InvalidConfiguration(
             "this command requires login; run `abyss login` first".to_owned(),
         ));

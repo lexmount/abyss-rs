@@ -6,7 +6,7 @@
 //! Agent event compatibility is part of the broker plugin protocol version, so
 //! an individual event does not carry a separate schema version.
 
-use chrono::{DateTime, Utc};
+use jiff::Timestamp;
 use serde::{Deserialize, Deserializer, Serialize, Serializer};
 mod conversation;
 pub use conversation::{ContentCompleteness, Conversation, ConversationEntry, EntryRole};
@@ -18,7 +18,7 @@ pub struct AgentEvent {
     /// Stable event identifier assigned by the event producer.
     pub event_id: String,
     /// Time at which the broker observed the logical event.
-    pub observed_at: DateTime<Utc>,
+    pub observed_at: Timestamp,
     /// Device context observed by the broker.
     pub device: DeviceContext,
     /// Agent product context inferred from traffic.
@@ -361,7 +361,7 @@ mod tests {
         AgentContext, AgentEvent, AgentEventSide, ContentCategory, DeviceContext, HttpHeader,
         HttpHeaderValue, LlmContext, LlmProvider, TokenUsage,
     };
-    use chrono::{TimeZone as _, Utc};
+    use jiff::Timestamp;
 
     #[test]
     fn agent_event_serializes_as_one_flat_typed_payload() {
@@ -523,9 +523,8 @@ mod tests {
     fn sample_event(provider: LlmProvider) -> AgentEvent {
         AgentEvent {
             event_id: "evt-test".to_owned(),
-            observed_at: Utc
-                .with_ymd_and_hms(2026, 8, 19, 10, 0, 0)
-                .single()
+            observed_at: "2026-08-19T10:00:00Z"
+                .parse::<Timestamp>()
                 .expect("sample timestamp should be valid"),
             device: DeviceContext {
                 host_name: "test-host".to_owned(),

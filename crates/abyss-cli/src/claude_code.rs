@@ -13,7 +13,7 @@ use std::{
     path::{Path, PathBuf},
 };
 
-use chrono::Utc;
+use jiff::Timestamp;
 use serde_json::{Map, Value, json};
 
 use crate::{error::CliError, filesystem, local_config::LocalConfig, paths::CliPaths, platform};
@@ -107,7 +107,7 @@ impl ClaudeCodeConfigurator {
         let backup_path = self.backup_settings()?;
         write_json_atomic(&self.settings_path, &Value::Object(settings), 0o600)?;
         let state = json!({
-            "configured_at": Utc::now().to_rfc3339(),
+            "configured_at": Timestamp::now().strftime("%FT%T%.f%:z").to_string(),
             "settings_path": self.settings_path,
             "managed_bundle_path": self.managed_bundle_path,
             "previous_environment": previous_environment,
@@ -235,7 +235,7 @@ impl ClaudeCodeConfigurator {
         if !self.settings_path.exists() {
             return Ok(None);
         }
-        let timestamp = Utc::now().format("%Y%m%d-%H%M%S");
+        let timestamp = Timestamp::now().strftime("%Y%m%d-%H%M%S");
         let backup_path = self.claude_directory.join(format!(
             "settings.json.abyss-backup-{timestamp}-{}",
             std::process::id()

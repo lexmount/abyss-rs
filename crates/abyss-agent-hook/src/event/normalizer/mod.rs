@@ -9,7 +9,7 @@ use abyss_plugin_protocol::event::{
     LlmContext, LlmProvider, TokenUsage as PluginTokenUsage,
 };
 use base64::{Engine as _, engine::general_purpose::STANDARD};
-use chrono::{DateTime, SecondsFormat, TimeDelta, Utc};
+use jiff::{SignedDuration, Timestamp};
 use serde::Serialize;
 use serde_json::{Value, json};
 use thiserror::Error;
@@ -33,7 +33,7 @@ pub enum AgentEventConversionError {
     InvalidTimestamp {
         value: String,
         #[source]
-        source: chrono::ParseError,
+        source: jiff::Error,
     },
     /// A token counter was negative before public normalization.
     #[error("{name} must be non-negative, got {value}")]
@@ -124,12 +124,12 @@ impl TryFrom<NormalizedUsageEvent> for AgentEvent {
             token_usage,
             attachments,
         } = event;
-        let observed_at = DateTime::parse_from_rfc3339(&observed_at)
-            .map_err(|source| AgentEventConversionError::InvalidTimestamp {
+        let observed_at = observed_at.parse::<Timestamp>().map_err(|source| {
+            AgentEventConversionError::InvalidTimestamp {
                 value: observed_at,
                 source,
-            })?
-            .with_timezone(&Utc);
+            }
+        })?;
 
         Ok(Self {
             event_id,
@@ -374,7 +374,7 @@ struct EventSide<'a> {
 /// collapse to the same timestamp. Timestamps are emitted at microsecond
 /// precision, so each step is at least one microsecond.
 struct EventTimestampSequence {
-    previous: Option<DateTime<Utc>>,
+    previous: Option<Timestamp>,
 }
 
 impl EventTimestampSequence {
@@ -382,11 +382,11 @@ impl EventTimestampSequence {
         Self { previous: None }
     }
 
-    fn next(&mut self) -> DateTime<Utc> {
-        let now = Utc::now();
+    fn next(&mut self) -> Timestamp {
+        let now = Timestamp::now();
         let observed_at = self.previous.map_or(now, |previous| {
             let monotonic = previous
-                .checked_add_signed(TimeDelta::microseconds(1))
+                .checked_add(SignedDuration::from_micros(1))
                 .unwrap_or(previous);
             now.max(monotonic)
         });
@@ -509,7 +509,7 @@ fn usage_event(
     config: &HarnessUsageHookConfig,
     parts: &ParsedEventParts<'_>,
     side: EventSide<'_>,
-    observed_at: DateTime<Utc>,
+    observed_at: Timestamp,
 ) -> NormalizedUsageEvent {
     let content_hash = event_content_hash(side.conversation, side.attachments);
     // Event ids must remain deterministic across repeated observations.
@@ -524,7 +524,7 @@ fn usage_event(
     ]);
     NormalizedUsageEvent {
         event_id,
-        observed_at: observed_at.to_rfc3339_opts(SecondsFormat::Micros, true),
+        observed_at: format!("{observed_at:.6}"),
         device: DevicePayload::from(&config.device),
         agent: AgentPayload {
             name: parts.harness_name.clone(),

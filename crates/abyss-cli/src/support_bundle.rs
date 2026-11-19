@@ -13,7 +13,7 @@ use std::{
 };
 
 use abyss_terminal_auth::CredentialStore;
-use chrono::{DateTime, Datelike as _, Timelike as _, Utc};
+use jiff::Timestamp;
 use regex::Regex;
 use serde::Serialize;
 use serde_json::{Value, json};
@@ -68,8 +68,8 @@ impl SupportBundleCollector {
     /// broker or diagnostics failures are recorded in `collection-errors.json`
     /// so a partial bundle remains usable.
     pub fn collect(&self, output: Option<PathBuf>) -> Result<PathBuf, CliError> {
-        let collected_at = Utc::now();
-        let bundle_name = format!("AbyssLogs-{}", collected_at.format("%Y%m%d-%H%M%S"));
+        let collected_at = Timestamp::now();
+        let bundle_name = format!("AbyssLogs-{}", collected_at.strftime("%Y%m%d-%H%M%S"));
         let output =
             output.unwrap_or_else(|| self.paths.logs_dir().join(format!("{bundle_name}.zip")));
         let work_root = std::env::temp_dir().join(format!(
@@ -109,7 +109,7 @@ impl SupportBundleCollector {
         &self,
         work_root: &Path,
         bundle_name: &str,
-        collected_at: DateTime<Utc>,
+        collected_at: Timestamp,
     ) -> Result<(), CliError> {
         let mut files = Vec::new();
         let mut errors = Vec::new();
@@ -185,7 +185,7 @@ impl SupportBundleCollector {
             schema_version: 1_u8,
             bundle_name: bundle_name.to_owned(),
             platform: std::env::consts::OS,
-            collected_at: collected_at.to_rfc3339(),
+            collected_at: collected_at.strftime("%FT%T%.f%:z").to_string(),
             partial: !errors.is_empty(),
             files,
         };
@@ -268,7 +268,7 @@ impl SupportBundleCollector {
         work_root: &Path,
         broker: Option<&BrokerClient>,
         proxy: Option<&ProxyStatusResponse>,
-        collected_at: DateTime<Utc>,
+        collected_at: Timestamp,
         files: &mut Vec<SupportBundleFileRecord>,
         errors: &mut Vec<SupportBundleCollectionError>,
     ) -> Result<Value, CliError> {
@@ -293,7 +293,7 @@ impl SupportBundleCollector {
         );
         let state = json!({
             "schema_version": 1_u8,
-            "collected_at": collected_at.to_rfc3339(),
+            "collected_at": collected_at.strftime("%FT%T%.f%:z").to_string(),
             "platform": std::env::consts::OS,
             "host_app": {
                 "package_name": "abyss-cli",
@@ -321,7 +321,7 @@ impl SupportBundleCollector {
         work_root: &Path,
         broker: Option<&BrokerClient>,
         diagnostics: &Value,
-        collected_at: DateTime<Utc>,
+        collected_at: Timestamp,
         files: &mut Vec<SupportBundleFileRecord>,
         errors: &mut Vec<SupportBundleCollectionError>,
     ) -> Result<(), CliError> {
@@ -375,7 +375,7 @@ impl SupportBundleCollector {
         );
         let runtime_config = json!({
             "schema_version": 1_u8,
-            "collected_at": collected_at.to_rfc3339(),
+            "collected_at": collected_at.strftime("%FT%T%.f%:z").to_string(),
             "platform": std::env::consts::OS,
             "host_app": {
                 "package_name": "abyss-cli",
@@ -407,7 +407,7 @@ impl SupportBundleCollector {
     fn write_system_info(
         &self,
         work_root: &Path,
-        collected_at: DateTime<Utc>,
+        collected_at: Timestamp,
         files: &mut Vec<SupportBundleFileRecord>,
     ) -> Result<(), CliError> {
         let text = format!(
@@ -423,7 +423,7 @@ impl SupportBundleCollector {
             env_present("HTTPS_PROXY", "https_proxy"),
             env_present("NODE_EXTRA_CA_CERTS", "node_extra_ca_certs"),
             env_present("SSL_CERT_FILE", "ssl_cert_file"),
-            collected_at.to_rfc3339(),
+            collected_at.strftime("%FT%T%.f%:z"),
         );
         Self::write_text_file(
             work_root,
@@ -559,7 +559,7 @@ fn auth_status(paths: &CliPaths) -> &'static str {
     let Ok(credential) = store.read() else {
         return "logged_out";
     };
-    if credential.expires_at <= Utc::now() {
+    if credential.expires_at <= Timestamp::now() {
         "expired"
     } else {
         "valid"
@@ -726,7 +726,7 @@ impl ZipArchive {
         let result = (|| -> io::Result<()> {
             let mut archive = Vec::new();
             let mut central_directory = Vec::new();
-            let timestamp = dos_timestamp(Utc::now());
+            let timestamp = dos_timestamp(Timestamp::now());
             for (path, content) in &self.entries {
                 let name = path.as_bytes();
                 let size = u32::try_from(content.len()).map_err(|_| {
@@ -857,12 +857,13 @@ fn append_u32(buffer: &mut Vec<u8>, value: u32) {
     buffer.extend_from_slice(&value.to_le_bytes());
 }
 
-fn dos_timestamp(timestamp: DateTime<Utc>) -> (u16, u16) {
+fn dos_timestamp(timestamp: Timestamp) -> (u16, u16) {
+    let timestamp = jiff::tz::Offset::UTC.to_datetime(timestamp);
     let year = u16::try_from(
         timestamp
             .year()
-            .saturating_sub(1980_i32)
-            .clamp(0_i32, 127_i32),
+            .saturating_sub(1980_i16)
+            .clamp(0_i16, 127_i16),
     )
     .unwrap_or(0_u16);
     let hour = u16::try_from(timestamp.hour()).unwrap_or(0_u16);

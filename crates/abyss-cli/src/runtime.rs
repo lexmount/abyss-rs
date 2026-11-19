@@ -7,7 +7,7 @@
 use std::{net::SocketAddr, thread, time::Duration};
 
 use abyss_terminal_auth::CredentialStore as _;
-use chrono::Utc;
+use jiff::Timestamp;
 
 use crate::{
     broker::BrokerEndpoint,
@@ -103,7 +103,7 @@ fn sync_delivery_credential(
         return delivery.clear_bearer_if_managed();
     }
     let credential = CliCredentialStore::from_paths(paths)?.read()?;
-    if credential.expires_at <= Utc::now() {
+    if credential.expires_at <= Timestamp::now() {
         return delivery.clear_bearer_if_managed();
     }
     delivery.set_bearer_if_managed(&credential.token, &credential.control_plane)

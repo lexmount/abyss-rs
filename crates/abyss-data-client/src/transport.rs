@@ -181,11 +181,11 @@ impl HttpTransport {
         let delay = if let Ok(seconds) = value.parse::<u64>() {
             Duration::from_secs(seconds)
         } else {
-            chrono::DateTime::parse_from_rfc2822(value)
+            jiff::fmt::rfc2822::DateTimeParser::new()
+                .parse_timestamp(value)
                 .ok()?
-                .with_timezone(&chrono::Utc)
-                .signed_duration_since(chrono::Utc::now())
-                .to_std()
+                .duration_since(jiff::Timestamp::now())
+                .try_into()
                 .unwrap_or(Duration::ZERO)
         };
         (delay <= Duration::from_secs(5)).then_some(delay)
