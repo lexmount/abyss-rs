@@ -224,6 +224,22 @@
                         ],
                         "properties": {
                           "op": {
+                            "const": "set_request_path"
+                          },
+                          "value": {
+                            "type": "string"
+                          }
+                        }
+                      },
+                      {
+                        "type": "object",
+                        "additionalProperties": false,
+                        "required": [
+                          "op",
+                          "value"
+                        ],
+                        "properties": {
+                          "op": {
                             "const": "set_auth_token"
                           },
                           "value": {

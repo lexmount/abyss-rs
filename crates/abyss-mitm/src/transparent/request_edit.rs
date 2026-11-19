@@ -53,6 +53,36 @@ impl<'a> RequestEditor<'a> {
             .headers_mut()
     }
 
+    /// Replace only the path on an HTTP request or upgrade, retaining its raw query.
+    ///
+    /// # Errors
+    /// Rejects non-path input and messages on an established WebSocket.
+    pub fn set_request_path(&mut self, path: &str) -> Result<(), &'static str> {
+        if !matches!(self.original.transport, RequestTransport::Http)
+            || !path.starts_with('/')
+            || path.starts_with("//")
+            || path.contains(['?', '#'])
+        {
+            return Err("Expected an absolute HTTP request path");
+        }
+        let uri = self.view().head.uri();
+        let path_and_query = uri
+            .query()
+            .map_or_else(|| path.to_owned(), |q| format!("{path}?{q}"));
+        let mut parts = uri.clone().into_parts();
+        parts.path_and_query = Some(
+            path_and_query
+                .parse()
+                .map_err(|_| "Invalid HTTP request path")?,
+        );
+        let uri = http::Uri::from_parts(parts).map_err(|_| "Invalid HTTP request URI")?;
+        *self
+            .head
+            .get_or_insert_with(|| self.original.head.clone())
+            .uri_mut() = uri;
+        Ok(())
+    }
+
     /// Installs identity-encoded content and resets obsolete body parsing state.
     pub fn replace_body(&mut self, bytes: Bytes) {
         if matches!(self.original.transport, RequestTransport::Http) {

@@ -61,7 +61,11 @@ The v1 reply contains exactly one tagged `decision`:
 - `{"action":"block","reason":"safe explanation"}` rejects the request.
 - `{"action":"modify","actions":[...]}` applies explicit semantic actions.
 
-Actions are `set_auth_token` / `set_model` with a string `value`, or
+The `set_request_path` action accepts an absolute path beginning with a single slash.
+It preserves the original authority and query and is available for HTTP requests,
+including upgrade requests before the WebSocket is established.
+
+Other actions are `set_auth_token` / `set_model` with a string `value`, or
 `remove_auth_token` / `remove_model` without a value. Lists execute in order; the
 last action for a field wins. An empty list is equivalent to Allow. Invalid edits
 reject the pending request before any upstream bytes are written.

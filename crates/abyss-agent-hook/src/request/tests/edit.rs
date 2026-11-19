@@ -240,3 +240,47 @@ fn unsupported_requests_remain_inspectable() {
         .unwrap();
     assert!(editor.view().body.json().unwrap().get("model").is_none());
 }
+
+#[test]
+fn request_path_edits_preserve_authority_and_query() {
+    let source = EditableRequest::new("https://relay.example/v1/responses?a=%2F&a=2", &json!({}));
+    let mut editor = RequestEditor::new(source.view(RequestTransport::Http));
+    let actions = RequestActions::new(&editor.view());
+    for path in [
+        "relative",
+        "//other.example/path",
+        "/x?y",
+        "/x#fragment",
+        "/bad path",
+    ] {
+        assert!(
+            actions
+                .apply(
+                    &mut editor,
+                    Box::new([ModifyAction::SetRequestPath(path.into())])
+                )
+                .is_err()
+        );
+    }
+    actions
+        .apply(
+            &mut editor,
+            Box::new([ModifyAction::SetRequestPath("/prefix/responses".into())]),
+        )
+        .unwrap();
+    assert_eq!(
+        editor.view().head.uri().to_string(),
+        "https://relay.example/prefix/responses?a=%2F&a=2"
+    );
+    assert!(editor.finish(()).body.is_none());
+    let mut frame =
+        RequestEditor::new(source.view(RequestTransport::WebSocketText { sequence: 1 }));
+    assert!(
+        actions
+            .apply(
+                &mut frame,
+                Box::new([ModifyAction::SetRequestPath("/new".into())])
+            )
+            .is_err()
+    );
+}

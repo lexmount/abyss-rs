@@ -164,6 +164,7 @@ def check(broker, origin, proxy):
         return {
             "action": "modify",
             "actions": [
+                {"op": "set_request_path", "value": "/compatible-mode/v1/responses"},
                 {"op": "set_auth_token", "value": "redirect-test-secret"},
                 {"op": "set_model", "value": "after"},
             ],
@@ -175,8 +176,11 @@ def check(broker, origin, proxy):
             broker,
             b'{"model":"before","input":"hello"}',
             b"Authorization: Bearer placeholder\r\n",
-            path="/v1/responses",
+            path="/v1/responses?keep=a%2Fb&keep=2",
         ).startswith(b"HTTP/1.1 200")
+        assert origin.requests[-1].startswith(
+            b"POST /compatible-mode/v1/responses?keep=a%2Fb&keep=2 HTTP/1.1\r\n"
+        )
         assert json.loads(origin.bodies[-1])["model"] == "after"
         assert (
             b"authorization: bearer redirect-test-secret\r\n"
