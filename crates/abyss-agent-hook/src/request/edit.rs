@@ -1,5 +1,5 @@
 //! Applies explicit Agent actions to their original protocol locations.
-//! No context diff, routing changes, or reconstruction from observation projections.
+//! Explicit transport edits and protocol write-backs are applied in plugin order.
 
 use abyss_mitm::{RequestEditor, RequestTransport, RequestView};
 use abyss_plugin_protocol::inspection::{AgentRequestContext, ModifyAction};
@@ -12,6 +12,9 @@ use crate::protocol::{AnthropicProtocol, LlmProtocol, OpenAiProtocol, ProtocolDe
 #[derive(Debug, thiserror::Error)]
 #[non_exhaustive]
 pub enum RequestActionError {
+    /// The next host is invalid or the connection has already upgraded.
+    #[error("Invalid upstream host action")]
+    InvalidUpstreamHost,
     /// The path is malformed or the HTTP handshake is already complete.
     #[error("Invalid HTTP request path action")]
     InvalidPath,
@@ -122,6 +125,9 @@ impl RequestActions {
         let mut document = None;
         for action in actions {
             match action {
+                ModifyAction::SetUpstreamHost(host) => request
+                    .set_upstream_host(&host)
+                    .map_err(|_| RequestActionError::InvalidUpstreamHost)?,
                 ModifyAction::SetRequestPath(path) => request
                     .set_request_path(&path)
                     .map_err(|_| RequestActionError::InvalidPath)?,

@@ -61,6 +61,14 @@ The v1 reply contains exactly one tagged `decision`:
 - `{"action":"block","reason":"safe explanation"}` rejects the request.
 - `{"action":"modify","actions":[...]}` applies explicit semantic actions.
 
+The `set_upstream_host` action selects a DNS hostname for one HTTP request, HTTP/2
+stream or WebSocket upgrade. Scheme, port, path, query and the configured
+network next hop are retained. A new origin receives protocol headers; place
+`set_auth_token` after the host action to authenticate it. `allow` continues on
+the existing route. An established WebSocket keeps its upstream. Each selected
+HTTP/2 stream connects to a provider that negotiates HTTP/2. The broker uses
+the selected hostname for upstream TLS certificate verification and SNI.
+
 The `set_request_path` action accepts an absolute path beginning with a single slash.
 It preserves the original authority and query and is available for HTTP requests,
 including upgrade requests before the WebSocket is established.

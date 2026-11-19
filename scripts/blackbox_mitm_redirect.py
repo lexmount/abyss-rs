@@ -12,6 +12,7 @@ import threading
 from pathlib import Path
 
 from blackbox_abyss_broker_https_upstream import proxy_tls
+from blackbox_abyss_broker_socks5_upstream import SocksProxy, network as socks_network
 from blackbox_abyss_broker_upstream import network
 from blackbox_request_blocking import (
     Broker,
@@ -107,6 +108,90 @@ def rejected_update(broker, target):
     finally:
         api.close()
     assert broker.request("GET", "/v1/mitm/config") == previous
+
+
+def check_request_host(broker, origin, proxy):
+    broker.request(
+        "PUT",
+        "/v1/mitm/config",
+        {
+            "tls_decryption": {"default_action": "intercept", "rules": []},
+        },
+    )
+    proxy.plain_hosts = ("original.invalid", "relay.invalid")
+    endpoint = json.loads((broker.directory / "startup.json").read_text())[
+        "plugin_endpoint"
+    ]
+
+    def route(context):
+        if context["path"].split("?")[0] == "/backend-api/plugins/export/curated":
+            return True
+        target = "denied.invalid" if context["path"] == "/denied" else "relay.invalid"
+        return {
+            "action": "modify",
+            "actions": [
+                {"op": "set_upstream_host", "value": target},
+                {"op": "set_request_path", "value": "/compatible-mode/v1/responses"},
+                {"op": "set_auth_token", "value": "selected-token"},
+                {"op": "set_model", "value": "selected-model"},
+            ],
+        }
+
+    plugin = Plugin(endpoint, route)
+    headers = b"Authorization: Bearer original-token\r\nCookie: session=private\r\nChatGPT-Account-Id: account\r\n"
+    try:
+        start = len(proxy.requests)
+        body = b'{"model":"original","input":"hello"}'
+        assert send(broker, body, headers, path="/v1/responses?keep=1").startswith(
+            b"HTTP/1.1 200"
+        )
+        model = origin.requests[-1].lower()
+        assert model.startswith(b"post /compatible-mode/v1/responses?keep=1 ")
+        assert f"host: relay.invalid:{broker.redirect_port}".encode() in model
+        assert b"authorization: bearer selected-token" in model
+        assert (
+            b"original-token" not in model
+            and b"cookie:" not in model
+            and b"chatgpt-account-id:" not in model
+        )
+        assert json.loads(origin.bodies[-1])["model"] == "selected-model"
+        assert send(
+            broker, headers=headers, path="/backend-api/plugins/export/curated"
+        ).startswith(b"HTTP/1.1 200")
+        catalog = origin.requests[-1].lower()
+        assert (
+            b"host: original.invalid:" in catalog
+            and b"authorization: bearer original-token" in catalog
+        )
+        assert b"cookie: session=private" in catalog
+        assert [request.split()[1] for request in proxy.requests[start:]] == [
+            f"{host}:{broker.redirect_port}".encode()
+            for host in ("original.invalid", "relay.invalid", "original.invalid")
+        ]
+        count = len(origin.requests)
+        assert send(broker, body, headers, path="/denied").startswith(b"HTTP/1.1 502")
+        assert len(origin.requests) == count
+        assert (
+            proxy.requests[-1].split()[1]
+            == f"denied.invalid:{broker.redirect_port}".encode()
+        )
+        previous = broker.request("GET", "/v1/network/config")
+        socks = LocalServer(SocksProxy)
+        socks.origin = origin
+        try:
+            broker.request("PUT", "/v1/network/config", socks_network(socks))
+            assert send(broker, body, headers, path="/v1/responses").startswith(
+                b"HTTP/1.1 200"
+            )
+            assert socks.requests == [
+                (host, broker.redirect_port, 3)
+                for host in ("original.invalid", "relay.invalid")
+            ]
+        finally:
+            broker.request("PUT", "/v1/network/config", previous)
+            socks.close()
+    finally:
+        plugin.close()
 
 
 def check(broker, origin, proxy):
@@ -256,6 +341,9 @@ def check(broker, origin, proxy):
     assert send(broker, port=broker.address[1]).startswith(b"HTTP/1.1 403")
     assert len(proxy.requests) == count, "self target reached next hop"
     configure(broker, target)
+    check_request_host(broker, origin, proxy)
+    configure(broker, target)
+    proxy.plain_hosts = ("localhost",)
     proxy.reject = True
     before = origin.accepted
     assert send(broker).startswith(b"HTTP/1.1 502")
@@ -291,7 +379,7 @@ def main():
                 if broker:
                     broker.close()
         print(
-            "PASS: redirect before DNS/connect, preserved protocol/ports/paths/body framing, auth/model plugins, WebSocket, persistence, validation, direct routing and authenticated HTTPS next hop"
+            "PASS: redirect before DNS/connect, preserved protocol/ports/paths/body framing, auth/model plugins, WebSocket, persistence, validation, direct routing and request-scoped routing over authenticated HTTPS and SOCKS5 next hops"
         )
     finally:
         proxy.close()

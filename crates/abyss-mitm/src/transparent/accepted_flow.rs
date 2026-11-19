@@ -33,12 +33,8 @@ pub(super) enum UpstreamConnection {
 }
 
 impl UpstreamConnection {
-    pub(super) fn redirect(
-        self,
-        host: &str,
-        flow: &super::FlowContext,
-    ) -> Result<Self, TransparentFlowError> {
-        let port = match &self {
+    pub(super) fn target_port(&self, flow: &super::FlowContext) -> Option<u16> {
+        match self {
             Self::Direct { target, .. } | Self::Proxied { target, .. } => Some(target.port()),
             Self::Deferred | Self::Prepared(_) => flow
                 .ingress
@@ -50,13 +46,22 @@ impl UpstreamConnection {
                         .map(|address| address.port())
                 }),
         }
-        .ok_or_else(|| TransparentFlowError::Io {
-            operation: super::FlowOperation::ConnectProviderTcp,
-            source: std::io::Error::new(
-                std::io::ErrorKind::InvalidInput,
-                "redirect requires the original destination port",
-            ),
-        })?;
+    }
+
+    pub(super) fn redirect(
+        self,
+        host: &str,
+        flow: &super::FlowContext,
+    ) -> Result<Self, TransparentFlowError> {
+        let port = self
+            .target_port(flow)
+            .ok_or_else(|| TransparentFlowError::Io {
+                operation: super::FlowOperation::ConnectProviderTcp,
+                source: std::io::Error::new(
+                    std::io::ErrorKind::InvalidInput,
+                    "redirect requires the original destination port",
+                ),
+            })?;
         let target = crate::TargetAuthority::from_host_port(host, port).map_err(|source| {
             TransparentFlowError::Io {
                 operation: super::FlowOperation::ConnectProviderTcp,

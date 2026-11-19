@@ -53,6 +53,68 @@ impl<'a> RequestEditor<'a> {
             .headers_mut()
     }
 
+    /// Select the upstream hostname for this HTTP exchange, retaining scheme, port and path.
+    /// The next connection uses the flow's existing proxy configuration.
+    ///
+    /// # Errors
+    /// Rejects invalid DNS names and data frames on an established WebSocket.
+    pub fn set_upstream_host(&mut self, host: &str) -> Result<(), &'static str> {
+        if !matches!(self.original.transport, RequestTransport::Http) {
+            return Err("cannot change upstream after WebSocket upgrade");
+        }
+        let target = super::RedirectTarget::parse(host)?;
+        let head = self.head.get_or_insert_with(|| self.original.head.clone());
+        let old_host = head.uri().host().or_else(|| {
+            head.headers()
+                .get(header::HOST)?
+                .to_str()
+                .ok()?
+                .split(':')
+                .next()
+        });
+        if old_host.is_some_and(|old| old.eq_ignore_ascii_case(target.host())) {
+            return Ok(());
+        }
+        target
+            .apply(head)
+            .map_err(|_| "invalid request authority")?;
+        head.extensions_mut().insert(target);
+        // Rebuild cross-origin headers from wire-protocol fields. A later token action
+        // can install the selected provider credential using the original carrier.
+        let upgrading = super::utils::is_websocket_upgrade_request(head);
+        let mut headers = HeaderMap::new();
+        for (name, value) in head.headers() {
+            if matches!(
+                name.as_str(),
+                "host"
+                    | "accept"
+                    | "accept-encoding"
+                    | "content-type"
+                    | "user-agent"
+                    | "originator"
+                    | "sec-websocket-version"
+                    | "sec-websocket-key"
+                    | "anthropic-version"
+                    | "anthropic-beta"
+                    | "openai-beta"
+            ) {
+                headers.append(name.clone(), value.clone());
+            }
+        }
+        if upgrading {
+            headers.insert(header::UPGRADE, http::HeaderValue::from_static("websocket"));
+            headers.insert(
+                header::CONNECTION,
+                http::HeaderValue::from_static("upgrade"),
+            );
+        }
+        *head.headers_mut() = headers;
+        // Reframe the decoded payload, excluding trailers tied to the old authority.
+        let bytes = self.view().body.bytes_ref().clone();
+        self.replace_body(bytes);
+        Ok(())
+    }
+
     /// Replace only the path on an HTTP request or upgrade, retaining its raw query.
     ///
     /// # Errors

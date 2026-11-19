@@ -25,7 +25,80 @@ pub(super) struct HttpUpstream {
     server_name: Option<String>,
 }
 
+/// Reconnect one inspected request using the flow's network policy and original port.
+pub(super) struct RequestConnector {
+    next_hop: NextHop,
+    port: Option<u16>,
+    tls: bool,
+}
+
+enum NextHop {
+    Direct(Option<std::net::SocketAddr>),
+    Proxy(crate::outbound::UpstreamProxy),
+    Prepared,
+}
+
+impl RequestConnector {
+    pub(super) async fn connect_host(
+        &self,
+        host: super::RedirectTarget,
+        destination: &DestinationAddress,
+        engine: &super::MitmEngine,
+        observer: Option<Arc<dyn TrafficObserver>>,
+    ) -> Result<BoxedDuplexStream, TransparentFlowError> {
+        self.for_host(&host)?
+            .connect(destination, engine, observer)
+            .await
+    }
+
+    pub(super) fn for_host(
+        &self,
+        host: &super::RedirectTarget,
+    ) -> Result<HttpUpstream, TransparentFlowError> {
+        let invalid = |reason| TransparentFlowError::Io {
+            operation: FlowOperation::ConnectProviderTcp,
+            source: std::io::Error::new(std::io::ErrorKind::InvalidInput, reason),
+        };
+        let port = self.port.ok_or_else(|| invalid("missing upstream port"))?;
+        let target = crate::TargetAuthority::from_host_port(host.host(), port)
+            .map_err(|_| invalid("invalid request upstream host"))?;
+        let connection = match &self.next_hop {
+            NextHop::Direct(excluded_listener) => UpstreamConnection::Direct {
+                target,
+                excluded_listener: *excluded_listener,
+            },
+            NextHop::Proxy(proxy) => UpstreamConnection::Proxied {
+                target,
+                proxy: proxy.clone(),
+            },
+            NextHop::Prepared => {
+                return Err(invalid("cannot retarget an externally prepared stream"));
+            }
+        };
+        Ok(HttpUpstream {
+            connection,
+            server_name: self.tls.then(|| host.host().to_owned()),
+        })
+    }
+}
+
 impl HttpUpstream {
+    pub(super) fn request_connector(&self, flow: &super::FlowContext) -> RequestConnector {
+        let next_hop = match &self.connection {
+            UpstreamConnection::Direct {
+                excluded_listener, ..
+            } => NextHop::Direct(*excluded_listener),
+            UpstreamConnection::Proxied { proxy, .. } => NextHop::Proxy(proxy.clone()),
+            UpstreamConnection::Deferred => NextHop::Direct(None),
+            UpstreamConnection::Prepared(_) => NextHop::Prepared,
+        };
+        RequestConnector {
+            next_hop,
+            port: self.connection.target_port(flow),
+            tls: self.server_name.is_some(),
+        }
+    }
+
     /// Negotiates a common HTTP protocol before completing client-side TLS.
     /// Only the HTTP/2-capable path uses this; the HTTP/1 relay never receives h2 bytes.
     pub(super) async fn connect_with_alpn(

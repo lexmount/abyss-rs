@@ -284,3 +284,47 @@ fn request_path_edits_preserve_authority_and_query() {
             .is_err()
     );
 }
+
+#[test]
+fn upstream_host_accepts_only_dns_names_before_upgrade() {
+    let source = EditableRequest::new(
+        "https://api.openai.com:8443/v1/responses?q=a%2Fb",
+        &json!({}),
+    );
+    let mut editor = RequestEditor::new(source.view(RequestTransport::Http));
+    let actions = RequestActions::new(&editor.view());
+    for host in [
+        "",
+        "https://other.example",
+        "other.example:443",
+        "other.example/path",
+        "127.0.0.1",
+    ] {
+        assert!(matches!(
+            actions.apply(
+                &mut editor,
+                Box::new([ModifyAction::SetUpstreamHost(host.into())])
+            ),
+            Err(RequestActionError::InvalidUpstreamHost)
+        ));
+    }
+    actions
+        .apply(
+            &mut editor,
+            Box::new([ModifyAction::SetUpstreamHost("relay.example".into())]),
+        )
+        .unwrap();
+    assert_eq!(
+        editor.view().head.uri().to_string(),
+        "https://relay.example:8443/v1/responses?q=a%2Fb"
+    );
+    let mut frame =
+        RequestEditor::new(source.view(RequestTransport::WebSocketText { sequence: 1 }));
+    assert!(matches!(
+        actions.apply(
+            &mut frame,
+            Box::new([ModifyAction::SetUpstreamHost("relay.example".into())])
+        ),
+        Err(RequestActionError::InvalidUpstreamHost)
+    ));
+}
