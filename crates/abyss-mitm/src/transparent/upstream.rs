@@ -67,11 +67,14 @@ impl RequestConnector {
                 target,
                 excluded_listener: *excluded_listener,
             },
+            // Pass the new hostname through the same proxy so it handles DNS
+            // and connects to the selected provider on the original target port.
             NextHop::Proxy(proxy) => UpstreamConnection::Proxied {
                 target,
                 proxy: proxy.clone(),
             },
             NextHop::Prepared => {
+                // The caller supplied an open stream without a way to dial another host.
                 return Err(invalid("cannot retarget an externally prepared stream"));
             }
         };

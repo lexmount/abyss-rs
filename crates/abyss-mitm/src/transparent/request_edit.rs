@@ -78,6 +78,8 @@ impl<'a> RequestEditor<'a> {
         target
             .apply(head)
             .map_err(|_| "invalid request authority")?;
+        // The rewritten authority goes on the wire. The relay reads this extension
+        // after inspection to choose the connection for this request.
         head.extensions_mut().insert(target);
         // Rebuild cross-origin headers from wire-protocol fields. A later token action
         // can install the selected provider credential using the original carrier.

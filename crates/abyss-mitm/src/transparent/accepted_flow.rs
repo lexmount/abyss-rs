@@ -36,6 +36,8 @@ impl UpstreamConnection {
     pub(super) fn target_port(&self, flow: &super::FlowContext) -> Option<u16> {
         match self {
             Self::Direct { target, .. } | Self::Proxied { target, .. } => Some(target.port()),
+            // Explicit proxy clients supply the destination port in the request
+            // authority. Transparent ingress gets it from the original socket address.
             Self::Deferred | Self::Prepared(_) => flow
                 .ingress
                 .proxy_target()

@@ -214,6 +214,8 @@ where
             .extensions()
             .get::<super::RedirectTarget>()
             .cloned();
+        // Poll the deferred default connection only when selected. A request
+        // routed elsewhere can then succeed even if the default host is unreachable.
         let connection = match route {
             Some(host) => connect(host).await,
             None => original.await,

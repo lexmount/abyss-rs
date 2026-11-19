@@ -81,6 +81,8 @@ impl TlsHttpFlow {
         let selected = HttpUpstream::new(metadata.upstream, &context, metadata.redirect.as_ref())?;
         let connector = selected.request_connector(&context);
         let (route, alpn) = if negotiate_h2 {
+            // This relay uses the same HTTP version on both TLS legs. Negotiate with
+            // the default upstream before completing client TLS and reading the path.
             let (stream, alpn) = selected
                 .connect_with_alpn(
                     &metadata.original_destination,
@@ -134,6 +136,8 @@ impl TlsHttpFlow {
                 Box::pin(decoded.relay_with_connector(
                     async {
                         match original {
+                            // An h2 offer can negotiate HTTP/1.1. In that case ALPN
+                            // already opened the connection for the default route.
                             HttpRoute::Connected(stream) => Ok(stream),
                             HttpRoute::Deferred(upstream) => {
                                 upstream

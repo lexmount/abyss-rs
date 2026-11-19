@@ -95,7 +95,8 @@ impl PlainHttpFlow {
             return Err(rejection.into());
         }
 
-        // Apply the selected route before resolving or connecting any target.
+        // Inspection sees the host after any flow-level redirect. This is the
+        // default route unless a plugin selects another host for this request.
         let upstream = HttpUpstream::new(
             self.upstream
                 .with_server_name(authority.as_ref().map(http::uri::Authority::host))?,

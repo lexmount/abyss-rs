@@ -95,6 +95,8 @@ impl RequestActions {
     /// Resolves the current target and protocol without copying request content.
     #[must_use]
     pub fn new(request: &RequestView<'_>) -> Self {
+        // A host change clears credentials. Keep the original header binding so
+        // a later SetAuthToken can write the new provider's token there.
         let auth = AuthBinding::detect(request);
         Self {
             auth,

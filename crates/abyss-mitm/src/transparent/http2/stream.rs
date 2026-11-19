@@ -117,6 +117,8 @@ impl<C: RequestForwardingControl> Http2Relay<'_, C> {
         // Continue was handled locally before any inspection retained the body.
         head.headers_mut().remove(http::header::EXPECT);
         let mut drivers = tokio::task::JoinSet::new();
+        // Inspection can reroute this stream while sibling streams on the same
+        // client connection continue using the shared upstream sender.
         let upstream = if let Some(route) = head.extensions().get::<RedirectTarget>() {
             let (sender, driver) = self.request_connection(route, written).await?;
             // This provider connection belongs to one stream. Dropping the stream also stops its driver.

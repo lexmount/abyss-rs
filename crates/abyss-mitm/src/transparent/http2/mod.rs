@@ -58,6 +58,8 @@ impl<'a, C: RequestForwardingControl> Http2Relay<'a, C> {
         upstream: BoxedDuplexStream,
     ) -> Result<RelayOutcome, TransparentFlowError> {
         let client_bytes = Arc::new(AtomicU64::new(0));
+        // The flow's upstream byte total includes writes to the shared connection
+        // and to any provider connections opened for individual streams.
         let upstream_bytes = Arc::new(AtomicU64::new(0));
         let handshake = h2::server::Builder::new()
             .max_concurrent_streams(MAX_CONCURRENT_STREAMS)
