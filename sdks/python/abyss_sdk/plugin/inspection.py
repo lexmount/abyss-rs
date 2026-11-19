@@ -17,8 +17,23 @@ from ..event import (
 class ModifyAction:
     """One explicit semantic operation; credential values are excluded from repr."""
 
-    op: Literal["set_auth_token", "remove_auth_token", "set_model", "remove_model"]
+    op: Literal[
+        "set_upstream_host",
+        "set_request_path",
+        "set_auth_token",
+        "remove_auth_token",
+        "set_model",
+        "remove_model",
+    ]
     value: Optional[str] = field(default=None, repr=False)
+
+    @classmethod
+    def set_upstream_host(cls, host: str) -> "ModifyAction":
+        return cls("set_upstream_host", host)
+
+    @classmethod
+    def set_request_path(cls, path: str) -> "ModifyAction":
+        return cls("set_request_path", path)
 
     @classmethod
     def set_auth_token(cls, token: str) -> "ModifyAction":
@@ -37,7 +52,7 @@ class ModifyAction:
         return cls("remove_model")
 
     def to_dict(self) -> dict[str, Any]:
-        if self.op in ("set_auth_token", "set_model"):
+        if self.op in ("set_upstream_host", "set_request_path", "set_auth_token", "set_model"):
             return {"op": self.op, "value": self.value}
         return {"op": self.op}
 

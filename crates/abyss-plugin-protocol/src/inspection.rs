@@ -190,6 +190,10 @@ pub struct InspectResponse {
 )]
 #[non_exhaustive]
 pub enum ModifyAction {
+    /// Select the next hostname for this HTTP request using its existing network route.
+    SetUpstreamHost(String),
+    /// Replace the HTTP path, preserving the authority and query.
+    SetRequestPath(String),
     /// Set the credential selected by the target's authentication binding.
     SetAuthToken(String),
     /// Remove the selected credential.
@@ -209,12 +213,16 @@ impl<'de> Deserialize<'de> for ModifyAction {
             reason = "serde unit variants ignore extra fields; empty struct variants enforce the wire schema"
         )]
         enum WireAction {
+            SetUpstreamHost { value: String },
+            SetRequestPath { value: String },
             SetAuthToken { value: String },
             RemoveAuthToken {},
             SetModel { value: String },
             RemoveModel {},
         }
         Ok(match WireAction::deserialize(deserializer)? {
+            WireAction::SetUpstreamHost { value } => Self::SetUpstreamHost(value),
+            WireAction::SetRequestPath { value } => Self::SetRequestPath(value),
             WireAction::SetAuthToken { value } => Self::SetAuthToken(value),
             WireAction::RemoveAuthToken {} => Self::RemoveAuthToken,
             WireAction::SetModel { value } => Self::SetModel(value),
@@ -226,6 +234,8 @@ impl<'de> Deserialize<'de> for ModifyAction {
 impl std::fmt::Debug for ModifyAction {
     fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         formatter.write_str(match self {
+            Self::SetUpstreamHost(_) => "SetUpstreamHost(<redacted>)",
+            Self::SetRequestPath(_) => "SetRequestPath(<redacted>)",
             Self::SetAuthToken(_) => "SetAuthToken(<redacted>)",
             Self::RemoveAuthToken => "RemoveAuthToken",
             Self::SetModel(_) => "SetModel(<redacted>)",

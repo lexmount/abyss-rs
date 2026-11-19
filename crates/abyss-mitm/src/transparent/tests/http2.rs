@@ -28,6 +28,13 @@ impl MitmHook for Capture {
 
 type ObservedRequests = Arc<Mutex<Vec<(Request<()>, Vec<u8>, Option<HeaderMap>)>>>;
 
+#[derive(Clone, Copy)]
+enum Routing {
+    Original,
+    DomainRedirect,
+    PerStream,
+}
+
 struct Fixture {
     sender: SendRequest<Bytes>,
     client: tokio::task::JoinHandle<()>,
@@ -48,29 +55,40 @@ impl Fixture {
         control: C,
         capture_limit: usize,
     ) -> Self {
-        Self::start_routed(control, capture_limit, false).await
+        Self::start_routed(control, capture_limit, Routing::Original).await
     }
 
     async fn start_routed<C: RequestForwardingControl + 'static>(
         control: C,
         capture_limit: usize,
-        redirect: bool,
+        routing: Routing,
     ) -> Self {
         let ca = test_ca();
         let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
         let address = listener.local_addr().unwrap();
         let authority = format!("http2.test:{}", address.port());
-        let config =
-            origin_config_for_name(&ca, if redirect { "localhost" } else { "http2.test" }).await;
+        let config = origin_config_for_name(
+            &ca,
+            if matches!(routing, Routing::DomainRedirect) {
+                "localhost"
+            } else {
+                "http2.test"
+            },
+        )
+        .await;
         let requests = Arc::new(Mutex::new(Vec::new()));
         let observed = requests.clone();
-        let origin = spawn_origin(listener, config, observed);
+        let mut origins = vec![config];
+        if matches!(routing, Routing::PerStream) {
+            origins.push(origin_config_for_name(&ca, "localhost").await);
+        }
+        let origin = spawn_origin(listener, origins, observed);
         let capture = Capture::default();
         let engine = test_mitm_engine_trusting(&ca)
             .with_tls_decryption_policy(crate::transparent::TlsDecryptionPolicy {
                 default_action: crate::transparent::TlsDecryptionAction::Intercept,
                 missing_sni_action: None,
-                rules: if redirect { vec![serde_json::from_value(serde_json::json!({
+                rules: if matches!(routing, Routing::DomainRedirect) { vec![serde_json::from_value(serde_json::json!({
                     "id": "h2-redirect", "action": "redirect", "destination_hosts": ["http2.test"], "target": "localhost",
                 })).unwrap()] } else { Vec::new() },
             })
@@ -273,6 +291,64 @@ impl RequestForwardingControl for Inspect {
         editor.replace_body(Bytes::from_static(b"edited"));
         future::ready(Ok(editor.finish("inspected".to_owned())))
     }
+}
+
+struct RouteModel;
+
+impl RequestForwardingControl for RouteModel {
+    type Plan = ();
+    fn plan(&self) -> Option<()> {
+        Some(())
+    }
+    fn before_forward(
+        &self,
+        (): (),
+        request: RequestView<'_>,
+    ) -> impl Future<Output = Result<RequestForwardingResult, LocalRejection>> + Send {
+        let mut editor = RequestEditor::new(request);
+        if editor.view().head.uri().path() == "/backend-api/codex/responses" {
+            editor.set_upstream_host("localhost").unwrap();
+            editor
+                .set_request_path("/compatible-mode/v1/responses")
+                .unwrap();
+        }
+        future::ready(Ok(editor.finish(())))
+    }
+}
+
+#[tokio::test]
+async fn model_and_catalog_streams_share_client_tls_but_use_distinct_verified_origins() {
+    let fixture = Fixture::start_routed(RouteModel, 1024, Routing::PerStream).await;
+    let (model, catalog) = tokio::join!(
+        fixture.call(
+            "/backend-api/codex/responses?stream=1",
+            Bytes::from_static(b"model")
+        ),
+        fixture.call(
+            "/backend-api/plugins/export/curated",
+            Bytes::from_static(b"catalog")
+        ),
+    );
+    assert_eq!((model.0, catalog.0), (StatusCode::OK, StatusCode::OK));
+    assert_eq!(model.1, b"model");
+    assert_eq!(catalog.1, b"catalog");
+    let requests = fixture.requests.lock().clone();
+    assert_eq!(requests.len(), 2);
+    for (request, body, trailers) in requests {
+        if body == b"model" {
+            assert_eq!(request.uri().host(), Some("localhost"));
+            assert_eq!(
+                request.uri().path_and_query().unwrap(),
+                "/compatible-mode/v1/responses?stream=1"
+            );
+            assert!(trailers.is_none());
+        } else {
+            assert_eq!(request.uri().host(), Some("http2.test"));
+            assert_eq!(request.uri().path(), "/backend-api/plugins/export/curated");
+            assert!(trailers.is_some());
+        }
+    }
+    fixture.close().await;
 }
 
 #[tokio::test]
@@ -592,98 +668,116 @@ async fn disconnect_retains_observed_response_bytes_as_incomplete() {
 
 fn spawn_origin(
     listener: TcpListener,
-    config: tokio_rustls::rustls::ServerConfig,
+    configs: Vec<tokio_rustls::rustls::ServerConfig>,
     observed: ObservedRequests,
 ) -> tokio::task::JoinHandle<()> {
     tokio::spawn(async move {
-        let (tcp, _) = listener.accept().await.unwrap();
-        let tls = TlsAcceptor::from(Arc::new(config))
-            .accept(tcp)
-            .await
-            .unwrap();
-        assert_eq!(tls.get_ref().1.alpn_protocol(), Some(&b"h2"[..]));
-        let mut connection = h2::server::handshake(tls).await.unwrap();
-        let mut workers = tokio::task::JoinSet::new();
-        while let Some(incoming) = connection.accept().await {
-            let (request, mut respond) = incoming.unwrap();
-            let observed = observed.clone();
-            workers.spawn(async move {
-                let (parts, mut body) = request.into_parts();
-                let head = Request::from_parts(parts, ());
-                let mut bytes = Vec::new();
-                while let Some(chunk) = body.data().await {
-                    let chunk = chunk.unwrap();
-                    bytes.extend_from_slice(&chunk);
-                    body.flow_control().release_capacity(chunk.len()).unwrap();
-                }
-                let trailers = body.trailers().await.unwrap();
-                let path = head.uri().path().to_owned();
-                observed.lock().push((head, bytes.clone(), trailers));
-                if path == "/refused" {
-                    respond.send_reset(h2::Reason::REFUSED_STREAM);
-                    return;
-                }
-                if path == "/slow" {
-                    tokio::time::sleep(Duration::from_millis(100)).await;
-                }
-                if path == "/cancel" {
-                    let reason = std::future::poll_fn(|cx| respond.poll_reset(cx))
-                        .await
-                        .unwrap();
-                    assert_eq!(reason, h2::Reason::CANCEL);
-                    return;
-                }
-                if path == "/info" {
-                    respond
-                        .send_informational(
-                            Response::builder()
-                                .status(StatusCode::EARLY_HINTS)
-                                .body(())
-                                .unwrap(),
-                        )
-                        .unwrap();
-                }
-                let response = Response::builder()
-                    .version(Version::HTTP_2)
-                    .header("content-type", "application/octet-stream")
-                    .body(())
-                    .unwrap();
-                let mut stream = respond.send_response(response, false).unwrap();
-                if path == "/idle" {
-                    let reason = std::future::poll_fn(|cx| stream.poll_reset(cx))
-                        .await
-                        .unwrap();
-                    assert_eq!(reason, h2::Reason::CANCEL);
-                    return;
-                }
-                crate::transparent::http2::body::send_data(&mut stream, Bytes::from(bytes))
-                    .await
-                    .unwrap();
-                if matches!(
-                    path.as_str(),
-                    "/cancel-after-data" | "/disconnect-after-data"
-                ) {
-                    let reason = std::future::poll_fn(|cx| stream.poll_reset(cx)).await;
-                    if path == "/cancel-after-data" {
-                        assert_eq!(reason.unwrap(), h2::Reason::CANCEL);
-                    }
-                    return;
-                }
-                let mut trailers = HeaderMap::new();
-                trailers.insert("x-response-trailer", "complete".parse().unwrap());
-                stream.send_trailers(trailers).unwrap();
-            });
+        let mut connections = tokio::task::JoinSet::new();
+        for config in configs {
+            let (tcp, _) = listener.accept().await.unwrap();
+            connections.spawn(serve_origin(tcp, config, observed.clone()));
         }
-        while let Some(result) = workers.join_next().await {
+        while let Some(result) = connections.join_next().await {
             result.unwrap();
         }
     })
 }
 
+async fn serve_origin(
+    tcp: tokio::net::TcpStream,
+    config: tokio_rustls::rustls::ServerConfig,
+    observed: ObservedRequests,
+) {
+    let tls = TlsAcceptor::from(Arc::new(config))
+        .accept(tcp)
+        .await
+        .unwrap();
+    assert_eq!(tls.get_ref().1.alpn_protocol(), Some(&b"h2"[..]));
+    let mut connection = h2::server::handshake(tls).await.unwrap();
+    let mut workers = tokio::task::JoinSet::new();
+    while let Some(incoming) = connection.accept().await {
+        let (request, mut respond) = incoming.unwrap();
+        let observed = observed.clone();
+        workers.spawn(async move {
+            let (parts, mut body) = request.into_parts();
+            let head = Request::from_parts(parts, ());
+            let mut bytes = Vec::new();
+            while let Some(chunk) = body.data().await {
+                let chunk = chunk.unwrap();
+                bytes.extend_from_slice(&chunk);
+                body.flow_control().release_capacity(chunk.len()).unwrap();
+            }
+            let trailers = body.trailers().await.unwrap();
+            let path = head.uri().path().to_owned();
+            observed.lock().push((head, bytes.clone(), trailers));
+            if path == "/refused" {
+                respond.send_reset(h2::Reason::REFUSED_STREAM);
+                return;
+            }
+            if path == "/slow" {
+                tokio::time::sleep(Duration::from_millis(100)).await;
+            }
+            if path == "/cancel" {
+                let reason = std::future::poll_fn(|cx| respond.poll_reset(cx))
+                    .await
+                    .unwrap();
+                assert_eq!(reason, h2::Reason::CANCEL);
+                return;
+            }
+            if path == "/info" {
+                respond
+                    .send_informational(
+                        Response::builder()
+                            .status(StatusCode::EARLY_HINTS)
+                            .body(())
+                            .unwrap(),
+                    )
+                    .unwrap();
+            }
+            let response = Response::builder()
+                .version(Version::HTTP_2)
+                .header("content-type", "application/octet-stream")
+                .body(())
+                .unwrap();
+            let mut stream = respond.send_response(response, false).unwrap();
+            if path == "/idle" {
+                let reason = std::future::poll_fn(|cx| stream.poll_reset(cx))
+                    .await
+                    .unwrap();
+                assert_eq!(reason, h2::Reason::CANCEL);
+                return;
+            }
+            crate::transparent::http2::body::send_data(&mut stream, Bytes::from(bytes))
+                .await
+                .unwrap();
+            if matches!(
+                path.as_str(),
+                "/cancel-after-data" | "/disconnect-after-data"
+            ) {
+                let reason = std::future::poll_fn(|cx| stream.poll_reset(cx)).await;
+                if path == "/cancel-after-data" {
+                    assert_eq!(reason.unwrap(), h2::Reason::CANCEL);
+                }
+                return;
+            }
+            let mut trailers = HeaderMap::new();
+            trailers.insert("x-response-trailer", "complete".parse().unwrap());
+            stream.send_trailers(trailers).unwrap();
+        });
+    }
+    while let Some(result) = workers.join_next().await {
+        result.unwrap();
+    }
+}
+
 #[tokio::test]
 async fn redirects_http2_authority_and_tls_identity_without_changing_path_or_body() {
-    let fixture =
-        Fixture::start_routed(crate::transparent::UncontrolledForwarding, 1024, true).await;
+    let fixture = Fixture::start_routed(
+        crate::transparent::UncontrolledForwarding,
+        1024,
+        Routing::DomainRedirect,
+    )
+    .await;
     let response = fixture
         .call("/path%2Fpart?q=a%2Bb", Bytes::from_static(b"unchanged"))
         .await;

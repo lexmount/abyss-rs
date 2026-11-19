@@ -1,5 +1,5 @@
 //! Applies explicit Agent actions to their original protocol locations.
-//! No context diff, routing changes, or reconstruction from observation projections.
+//! Explicit transport edits and protocol write-backs are applied in plugin order.
 
 use abyss_mitm::{RequestEditor, RequestTransport, RequestView};
 use abyss_plugin_protocol::inspection::{AgentRequestContext, ModifyAction};
@@ -12,6 +12,12 @@ use crate::protocol::{AnthropicProtocol, LlmProtocol, OpenAiProtocol, ProtocolDe
 #[derive(Debug, thiserror::Error)]
 #[non_exhaustive]
 pub enum RequestActionError {
+    /// The next host is invalid or the connection has already upgraded.
+    #[error("Invalid upstream host action")]
+    InvalidUpstreamHost,
+    /// The path is malformed or the HTTP handshake is already complete.
+    #[error("Invalid HTTP request path action")]
+    InvalidPath,
     /// The selected credential is unknown or belongs to an established connection.
     #[error("Authentication actions are unavailable for this request")]
     AuthenticationUnavailable,
@@ -89,6 +95,8 @@ impl RequestActions {
     /// Resolves the current target and protocol without copying request content.
     #[must_use]
     pub fn new(request: &RequestView<'_>) -> Self {
+        // A host change clears credentials. Keep the original header binding so
+        // a later SetAuthToken can write the new provider's token there.
         let auth = AuthBinding::detect(request);
         Self {
             auth,
@@ -119,6 +127,12 @@ impl RequestActions {
         let mut document = None;
         for action in actions {
             match action {
+                ModifyAction::SetUpstreamHost(host) => request
+                    .set_upstream_host(&host)
+                    .map_err(|_| RequestActionError::InvalidUpstreamHost)?,
+                ModifyAction::SetRequestPath(path) => request
+                    .set_request_path(&path)
+                    .map_err(|_| RequestActionError::InvalidPath)?,
                 ModifyAction::SetAuthToken(token) => {
                     let binding = self.writable_auth()?;
                     let value = binding

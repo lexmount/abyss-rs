@@ -2,6 +2,8 @@
 import type { Conversation, EventPurpose, ImageAttachment } from "../event.js";
 
 export type ModifyAction =
+  | { readonly op: "set_upstream_host"; readonly value: string }
+  | { readonly op: "set_request_path"; readonly value: string }
   | { readonly op: "set_auth_token"; readonly value: string }
   | { readonly op: "remove_auth_token" }
   | { readonly op: "set_model"; readonly value: string }

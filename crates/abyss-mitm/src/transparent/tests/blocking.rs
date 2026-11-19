@@ -58,18 +58,24 @@ impl RequestForwardingControl for DecisionControl {
     }
 }
 
+fn assert_no_provider_connection(listener: TcpListener) {
+    // Once the relay has finished, any connection it opened would be queued for accept.
+    assert_eq!(
+        listener.into_std().unwrap().accept().unwrap_err().kind(),
+        std::io::ErrorKind::WouldBlock
+    );
+}
+
 async fn exchange(
-    wire: Vec<u8>,
+    wire: &[u8],
     reject: bool,
     limit: usize,
+    destination: SocketAddr,
 ) -> (
-    Vec<u8>,
     Vec<u8>,
     usize,
     Result<crate::TransparentFlowOutcome, TransparentFlowError>,
 ) {
-    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
-    let destination = listener.local_addr().unwrap();
     let (mut client, server) = super::connected_pair().await;
     let calls = Arc::new(AtomicUsize::new(0));
     let control = DecisionControl {
@@ -86,36 +92,11 @@ async fn exchange(
         OriginalDestination::from(destination),
     );
     let relay = tokio::spawn(async move { engine.handle_flow_with_control(flow, &control).await });
-    let wire_length = wire.len();
-    let provider = tokio::spawn(async move {
-        let (mut stream, _) = listener.accept().await.unwrap();
-        let mut received = Vec::new();
-        if reject || limit < 20 {
-            stream.read_to_end(&mut received).await.unwrap();
-        } else {
-            let head = super::read_http_head(&mut stream).await;
-            received.extend_from_slice(head.as_bytes());
-            let length = wire_length.saturating_sub(head.len());
-            let mut body = vec![0; length];
-            stream.read_exact(&mut body).await.unwrap();
-            received.extend_from_slice(&body);
-            stream
-                .write_all(b"HTTP/1.1 200 OK\r\nContent-Length: 2\r\nConnection: close\r\n\r\nok")
-                .await
-                .unwrap();
-        }
-        received
-    });
-    client.write_all(&wire).await.unwrap();
+    client.write_all(wire).await.unwrap();
     let mut response = Vec::new();
     client.read_to_end(&mut response).await.unwrap();
     let result = relay.await.unwrap();
-    (
-        response,
-        provider.await.unwrap(),
-        calls.load(Ordering::Relaxed),
-        result,
-    )
+    (response, calls.load(Ordering::Relaxed), result)
 }
 
 #[tokio::test]
@@ -126,7 +107,9 @@ async fn complete_body_is_checked_before_any_provider_header_or_body_byte() {
     ] {
         let wire =
             format!("POST /v1/responses HTTP/1.1\r\nHost: example.test\r\n{framing}").into_bytes();
-        let (response, provider, calls, result) = exchange(wire, true, 1024).await;
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let (response, calls, result) =
+            exchange(&wire, true, 1024, listener.local_addr().unwrap()).await;
         assert!(
             response.starts_with(b"HTTP/1.1 403"),
             "must identify a local HTTP rejection"
@@ -137,10 +120,7 @@ async fn complete_body_is_checked_before_any_provider_header_or_body_byte() {
                 .contains("abyss-broker"),
             "local rejection must identify the broker"
         );
-        assert!(
-            provider.is_empty(),
-            "rejected headers and body must never reach provider"
-        );
+        assert_no_provider_connection(listener);
         assert_eq!(calls, 1);
         assert!(
             matches!(result, Err(TransparentFlowError::Rejected(_))),
@@ -151,8 +131,22 @@ async fn complete_body_is_checked_before_any_provider_header_or_body_byte() {
 
 #[tokio::test]
 async fn allow_reuses_original_chunk_framing() {
-    let wire = b"POST /v1/responses HTTP/1.1\r\nHost: example.test\r\nTransfer-Encoding: chunked\r\n\r\n12\r\n{\"input\":\"secret\"}\r\n0\r\n\r\n".to_vec();
-    let (response, provider, calls, result) = exchange(wire.clone(), false, 1024).await;
+    let wire = b"POST /v1/responses HTTP/1.1\r\nHost: example.test\r\nTransfer-Encoding: chunked\r\n\r\n12\r\n{\"input\":\"secret\"}\r\n0\r\n\r\n";
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let provider = async {
+        let (mut stream, _) = listener.accept().await.unwrap();
+        let mut received = vec![0; wire.len()];
+        stream.read_exact(&mut received).await.unwrap();
+        stream
+            .write_all(b"HTTP/1.1 200 OK\r\nContent-Length: 2\r\nConnection: close\r\n\r\nok")
+            .await
+            .unwrap();
+        received
+    };
+    let ((response, calls, result), received) = tokio::join!(
+        exchange(wire, false, 1024, listener.local_addr().unwrap()),
+        provider
+    );
     let crate::TransparentFlowOutcome::Intercepted(outcome) = result.unwrap() else {
         panic!("allowed request must produce an intercepted exchange");
     };
@@ -169,22 +163,20 @@ async fn allow_reuses_original_chunk_framing() {
         response.starts_with(b"HTTP/1.1 200"),
         "provider response must be relayed"
     );
-    assert_eq!(provider, wire, "allowed chunk framing must be preserved");
+    assert_eq!(received, wire, "allowed chunk framing must be preserved");
     assert_eq!(calls, 1);
 }
 
 #[tokio::test]
 async fn incomplete_inspection_never_invokes_a_plugin_with_a_prefix() {
-    let wire = b"POST / HTTP/1.1\r\nHost: example.test\r\nContent-Length: 18\r\n\r\n{\"input\":\"secret\"}".to_vec();
-    let (response, provider, calls, result) = exchange(wire, false, 8).await;
+    let wire = b"POST / HTTP/1.1\r\nHost: example.test\r\nContent-Length: 18\r\n\r\n{\"input\":\"secret\"}";
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let (response, calls, result) = exchange(wire, false, 8, listener.local_addr().unwrap()).await;
     assert!(
         response.starts_with(b"HTTP/1.1 413"),
         "inspection must reject oversized bodies"
     );
-    assert!(
-        provider.is_empty(),
-        "oversized requests must not reach provider"
-    );
+    assert_no_provider_connection(listener);
     assert_eq!(calls, 0);
     assert!(
         matches!(result, Err(TransparentFlowError::Rejected(_))),
@@ -290,26 +282,10 @@ async fn network_block_closes_tls_without_provider_connection_or_client_mitm() {
 }
 
 #[tokio::test]
-async fn provider_tls_completes_before_request_inspection_but_receives_no_rejected_http() {
+async fn rejected_https_http1_request_never_connects_to_provider() {
     let ca = super::test_ca();
     let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
     let destination = listener.local_addr().unwrap();
-    let acceptor = tokio_rustls::TlsAcceptor::from(
-        crate::tls::MitmTlsAuthority::from_ca(&ca)
-            .unwrap()
-            .server_config_for_sni("example.test")
-            .await
-            .unwrap(),
-    );
-    let (ready, handshake) = tokio::sync::oneshot::channel();
-    let provider = tokio::spawn(async move {
-        let (stream, _) = listener.accept().await.unwrap();
-        let mut stream = acceptor.accept(stream).await.unwrap();
-        ready.send(()).unwrap();
-        let mut bytes = Vec::new();
-        let _closed = stream.read_to_end(&mut bytes).await;
-        bytes
-    });
     let (client, server) = super::connected_pair().await;
     let flow = AcceptedTcpFlow::new(
         server,
@@ -335,10 +311,6 @@ async fn provider_tls_completes_before_request_inspection_but_receives_no_reject
         .await
         .unwrap();
     client.write_all(b"POST /v1/responses HTTP/1.1\r\nHost: example.test\r\nContent-Length: 18\r\n\r\n{\"input\":\"secret\"}").await.unwrap();
-    tokio::time::timeout(std::time::Duration::from_secs(2), handshake)
-        .await
-        .expect("provider TLS must finish before request inspection")
-        .unwrap();
     let mut response = Vec::new();
     client.read_to_end(&mut response).await.unwrap();
     assert!(
@@ -349,8 +321,5 @@ async fn provider_tls_completes_before_request_inspection_but_receives_no_reject
         matches!(relay.await.unwrap(), Err(TransparentFlowError::Rejected(_))),
         "request must be rejected after TLS setup"
     );
-    assert!(
-        provider.await.unwrap().is_empty(),
-        "provider TLS must carry no rejected HTTP bytes"
-    );
+    assert_no_provider_connection(listener);
 }

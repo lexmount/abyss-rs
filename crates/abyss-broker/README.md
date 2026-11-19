@@ -90,8 +90,10 @@ No inspector list or additional broker configuration is needed. Event-only plugi
 continue observing without enabling request inspection.
 
 The HTTP request, WebSocket upgrade, and each reassembled client WebSocket data
-message are checked before forwarding. Provider TCP/TLS setup follows route selection
-and HTTP head validation, before Agent inspection. All selected plugins must allow; a block returns `403 agent_request_blocked`,
+message are checked before forwarding. For HTTP/1.1, the broker opens a deferred
+upstream connection after inspection, using the host selected for that request.
+When the client offers HTTP/2, TLS protocol negotiation can open the default
+upstream connection earlier. All selected plugins must allow. A block returns `403 agent_request_blocked`,
 and a selected plugin's failure or five-second timeout returns `503 inspection_unavailable`.
 WebSocket decisions close with 1008 or 1011 respectively. Without connected inspectors,
 the existing streaming path is used. Network passthrough remains opaque and never
