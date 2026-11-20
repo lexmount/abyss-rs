@@ -54,19 +54,19 @@ abyss-runtime-v1.0.0-x86_64-pc-windows-msvc.zip
 ```
 
 The default CLI archives keep their existing names and contain `abyss`,
-`abyss-broker`, `abyss-delivery-plugin`, `abyss-broker@.service`, `VERSION`,
+`abyss-broker`, `abyss-delivery-plugin`, `abyss-model-route`, `abyss-broker@.service`, `VERSION`,
 `LICENSE`, and `endpoint-artifact.json`. The public installer continues to select
 these archives, with the `local` feature enabled. Deployment configuration,
 backend, and dashboard are prepared separately by `abyss deploy-local`.
 
 The `-no-local` archives have the same layout, but their CLI is built with
 `--no-default-features`: `abyss deploy-local` is absent. They reuse the exact
-broker and delivery plugin executables from the default archive for that target.
+broker, delivery plugin and model-routing plugin executables from the default archive for that target.
 Downstream products can select this variant and add their own configuration;
 the public installer does not select it.
 
 The Windows runtime ZIP contains `abyss-broker.exe`,
-`abyss-delivery-plugin.exe`, `abyss_callout_abi.h`, `VERSION`, `LICENSE`, and
+`abyss-delivery-plugin.exe`, `abyss-model-route.exe`, `abyss_callout_abi.h`, `VERSION`, `LICENSE`, and
 `endpoint-artifact.json`. It does not include a CLI, driver, or native installer.
 Host packagers provide the driver and product configuration, compare the bundled
 ABI header with their driver's header, and sign staged copies of the executables
@@ -93,7 +93,7 @@ executables on their native runners, and verifies that `deploy-local` is present
 only in the default CLI. Query archives also run `--help`, `--version`, and `schema`
 on their native runners. A separate assembly job requires all five endpoint
 archives with matching source revisions and versions, verifies payload and archive checksums,
-and checks that CLI variants share identical broker and delivery binaries. Query
+and checks that CLI variants share identical broker, delivery and model-routing binaries. Query
 assembly independently requires all three targets with matching versions and
 source revisions, and verifies payload and archive checksums.
 Pull requests and manual dispatches validate the complete release and upload
