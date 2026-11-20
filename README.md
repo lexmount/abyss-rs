@@ -50,6 +50,8 @@ Open the Abyss dashboard to explore sessions, model activity, and token usage:
 abyss dashboard
 ```
 
+Use `abyss model-route` to import your provider catalog and select a model for each harness. See the [model routing commands and control interface](docs/optimize-model-route.md).
+
 See the [Abyss CLI guide](https://abyss.lexmount.com/docs/product/open-source-software/abyss-cli)
 for configuration, capture controls, and lifecycle commands.
 

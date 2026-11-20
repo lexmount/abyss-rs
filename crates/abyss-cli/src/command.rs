@@ -72,6 +72,17 @@ impl CliCommand {
             ParsedCommand::Login(args) => AuthCommandRunner::login(&args),
             ParsedCommand::Logout(args) => AuthCommandRunner::logout(&args),
             ParsedCommand::Proxy { command } => ProxyCommandRunner::run(command, running.as_ref()),
+            ParsedCommand::ModelRoute { command } => {
+                let paths = CliPaths::from_env()?;
+                if let Some(endpoint) = crate::broker::BrokerEndpoint::discover(&paths)? {
+                    endpoint.require_owned_explicit()?;
+                    crate::model_route::Worker::ensure(&paths, &endpoint)?.run(&paths, command)
+                } else {
+                    let running = ensure_started(&paths, None, None)?;
+                    crate::model_route::Worker::ensure(&paths, running.endpoint())?
+                        .run(&paths, command)
+                }
+            }
             ParsedCommand::Config { command } => {
                 ConfigCommandRunner::run(command, running.as_ref())
             }

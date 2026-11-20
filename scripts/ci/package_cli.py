@@ -17,7 +17,7 @@ ROOT = Path(__file__).resolve().parents[2]
 WINDOWS_TARGET = "x86_64-pc-windows-msvc"
 TARGETS = ("aarch64-apple-darwin", "x86_64-unknown-linux-musl", WINDOWS_TARGET)
 VARIANTS = ("default", "no-local", "runtime")
-BINARIES = ("abyss", "abyss-broker", "abyss-delivery-plugin")
+BINARIES = ("abyss", "abyss-broker", "abyss-delivery-plugin", "abyss-model-route")
 METADATA_FILE = "endpoint-artifact.json"
 ABI_HEADER = "abyss_callout_abi.h"
 
@@ -88,7 +88,7 @@ def package(
     revision = subprocess.check_output(
         ["git", "rev-parse", "HEAD"], cwd=ROOT, text=True
     ).strip()
-    features = {"abyss-broker": [], "abyss-delivery-plugin": []}
+    features = {"abyss-broker": [], "abyss-delivery-plugin": [], "abyss-model-route": []}
     if variant != "runtime":
         features["abyss-cli"] = ["local"] if variant == "default" else []
     files[METADATA_FILE] = (

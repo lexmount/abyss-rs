@@ -14,7 +14,7 @@ import unittest
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 INSTALLER = REPO_ROOT / "scripts" / "install-cli.sh"
-BINARIES = ("abyss", "abyss-broker", "abyss-delivery-plugin")
+BINARIES = ("abyss", "abyss-broker", "abyss-delivery-plugin", "abyss-model-route")
 FAKE_TOOL = r"""#!/usr/bin/env python3
 import json
 import os
@@ -36,7 +36,7 @@ elif name == "cargo":
     target = args[args.index("--target") + 1]
     root = Path(args[args.index("--target-dir") + 1]) / target / "release"
     root.mkdir(parents=True, exist_ok=True)
-    for binary in ("abyss", "abyss-broker", "abyss-delivery-plugin"):
+    for binary in ("abyss", "abyss-broker", "abyss-delivery-plugin", "abyss-model-route"):
         if binary == os.environ.get("TEST_MISSING_BINARY"):
             continue
         code = 19 if binary == os.environ.get("TEST_BAD_BINARY") else 0
@@ -116,7 +116,7 @@ class InstallCliTests(unittest.TestCase):
         self.assertEqual(build[build.index("--target") + 1], "aarch64-apple-darwin")
         self.assertEqual(
             {build[index + 1] for index, arg in enumerate(build) if arg == "--package"},
-            {"abyss-cli", "abyss-broker", "abyss-delivery-plugin"},
+            {"abyss-cli", "abyss-broker", "abyss-delivery-plugin", "abyss-model-route"},
         )
         self.assertFalse(any(call[0] in ("sudo", "systemctl") for call in calls))
         self.assertFalse(list(binary_dir.glob(".abyss-install.*")))

@@ -36,7 +36,7 @@ def assemble(artifacts: Path, output: Path, revision: str) -> None:
         if identity[0] != WINDOWS_TARGET:
             runtime = {
                 name: metadata["files"][name]
-                for name in ("abyss-broker", "abyss-delivery-plugin")
+                for name in ("abyss-broker", "abyss-delivery-plugin", "abyss-model-route")
             }
             if identity[0] in runtimes and runtimes[identity[0]] != runtime:
                 raise ValueError(

@@ -85,6 +85,7 @@ jobs:
             --package abyss-agent-hook
             --package abyss-broker
             --package abyss-delivery-plugin
+            --package abyss-model-route
             --package abyss-mitm
             --package abyss-plugin-protocol
             --package abyss-sdk
@@ -156,6 +157,13 @@ jobs:
             --test broker_cli_blackbox \
             custom_harness_emits_events_through_real_broker_flow_and_plugin_boundaries \
             -- --exact --nocapture
+
+      - name: Verify CLI model routing with the real broker and plugin
+        if: runner.os != 'Windows'
+        shell: bash
+        run: |
+          cargo build --locked -p abyss-cli -p abyss-broker -p abyss-model-route
+          python3 scripts/blackbox_model_route_cli.py --bin-dir target/debug
 
       - name: Run broker explicit proxy black-box
         if: runner.os == 'Linux'

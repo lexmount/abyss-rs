@@ -380,8 +380,20 @@ where
     /// # Errors
     /// Returns transport, protocol, or handler errors and closes the connection.
     pub async fn run(self) -> Result<BrokerClose, BrokerPluginError> {
+        self.run_with_ready(|| ()).await
+    }
+
+    /// Runs an inspection session and signals the caller after the broker accepts it.
+    ///
+    /// # Errors
+    /// Returns transport, protocol, or handler errors and closes the connection.
+    pub async fn run_with_ready<R: FnOnce()>(
+        self,
+        ready: R,
+    ) -> Result<BrokerClose, BrokerPluginError> {
         self.run_session(
             None::<fn(AgentEvent) -> std::future::Ready<Result<(), std::convert::Infallible>>>,
+            ready,
         )
         .await
     }
@@ -399,12 +411,13 @@ where
         G: Future<Output = Result<(), D>>,
         D: std::fmt::Display,
     {
-        self.run_session(Some(handler)).await
+        self.run_session(Some(handler), || ()).await
     }
 
-    async fn run_session<A, G, D>(
+    async fn run_session<A, G, D, R: FnOnce()>(
         mut self,
         mut events: Option<A>,
+        ready: R,
     ) -> Result<BrokerClose, BrokerPluginError>
     where
         A: FnMut(AgentEvent) -> G,
@@ -416,6 +429,7 @@ where
             capabilities.push(PluginCapability::AgentEvents);
         }
         let mut stream = self.plugin.connect_transport(capabilities).await?;
+        ready();
         loop {
             match read_stream_message(stream.as_mut().get_mut()).await? {
                 BrokerMessage::InspectRequest { context } => {

@@ -54,7 +54,7 @@ def read_artifact(archive: Path) -> tuple[dict, dict[str, bytes]]:
     version = metadata["version"]
     if not re.fullmatch(r"[0-9]+\.[0-9]+\.[0-9]+", version):
         raise ValueError("endpoint version must be a stable version")
-    features = {"abyss-broker": [], "abyss-delivery-plugin": []}
+    features = {"abyss-broker": [], "abyss-delivery-plugin": [], "abyss-model-route": []}
     if target == WINDOWS_TARGET:
         if variant != "runtime":
             raise ValueError("Windows requires a runtime artifact")

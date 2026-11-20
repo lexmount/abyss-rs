@@ -28,6 +28,11 @@ pub enum Command {
         #[command(subcommand)]
         command: ProxyCommand,
     },
+    /// Import model catalogs and manage per-harness routing.
+    ModelRoute {
+        #[command(subcommand)]
+        command: crate::model_route::ModelRouteCommand,
+    },
     /// Change local capture policy.
     Config {
         /// Configuration operation.

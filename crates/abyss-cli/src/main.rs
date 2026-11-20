@@ -18,6 +18,7 @@ mod deploy_local;
 mod error;
 mod filesystem;
 mod local_config;
+mod model_route;
 mod network_diagnostics;
 mod paths;
 mod platform;

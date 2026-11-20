@@ -15,7 +15,7 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[2]
 LINUX = "x86_64-unknown-linux-musl"
 MACOS = "aarch64-apple-darwin"
-BINARIES = ("abyss", "abyss-broker", "abyss-delivery-plugin")
+BINARIES = ("abyss", "abyss-broker", "abyss-delivery-plugin", "abyss-model-route")
 
 
 class ReleaseInstallerTests(unittest.TestCase):
