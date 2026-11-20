@@ -20,7 +20,7 @@ abyss model-route disable codex
 abyss model-route clear
 ```
 
-Each import reads the selected source again. A source change clears obsolete selections. The optional SSO flag requires a current terminal login at the catalog URL's origin. Model discovery uses the selected credential. The CLI starts the worker on first use and reconnects it to subsequent CLI-owned broker processes. Launch the harness with `abyss run` or use the proxy environment produced by `abyss proxy env` in the harness process.
+Each import reads the selected source again. A source change clears obsolete selections. The optional SSO flag requires a current terminal login at the catalog URL's origin. Model discovery uses the selected credential. The CLI starts the worker on first use and reconnects it to subsequent CLI-owned broker processes.
 
 ## Local control and identity
 
@@ -34,7 +34,7 @@ The interactive helper validates the source before sending a local HTTP/1.1 requ
 | GET or PUT /profile | Read the caller's private profile for credential-specific discovery, or restore a previous installation if no state exists |
 | GET /status | Return the connected broker's process ID |
 
-The worker serializes updates, writes a private temporary file, flushes it, atomically replaces the durable profile and then publishes the new snapshot. Failed updates leave the previous selection active. Native traffic uses the source process's OS identity. A personal explicit broker accepts a routing credential from a loopback CONNECT client launched with the owner's proxy environment. The credential expires with the broker and is distinct from its management token. Other explicit clients bypass personal route selection.
+The worker serializes updates, writes a private temporary file, flushes it, atomically replaces the durable profile and then publishes the new snapshot. Failed updates leave the previous selection active. The worker selects a user's snapshot using the broker-supplied source PID. When the PID is unavailable, including on explicit proxy connections, the request passes through with its original model and destination.
 
 The executable black-box tests in `crates/abyss-model-route/tests` cover file and service imports, restart recovery and a selected inference request with the durable file removed. The desktop consumer documents installer integration in its [companion design](https://github.com/lexmount/AbyssApp/blob/task/optimize-model-route/docs/optimize-model-route.md).
 

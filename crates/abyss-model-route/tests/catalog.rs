@@ -144,10 +144,11 @@ fn selections_survive_host_restarts_and_clear_when_the_source_changes() {
     );
     assert!(select("primary").status.success());
     assert_eq!(
-        worker.inspect("explicit_proxy")["decision"]["action"],
+        worker.inspect("explicit_proxy", None)["decision"]["action"],
         "allow"
     );
-    let decision = worker.inspect("owned_explicit_proxy");
+    let source_pid = Some(std::process::id());
+    let decision = worker.inspect("macos_network_extension", source_pid);
     assert_eq!(decision["decision"]["action"], "modify");
     let state_dir = profile.with_extension("routes");
     let durable = fs::read_dir(&state_dir)
@@ -158,7 +159,7 @@ fn selections_survive_host_restarts_and_clear_when_the_source_changes() {
     let hidden = durable.with_extension("held");
     fs::rename(&durable, &hidden).unwrap();
     assert_eq!(
-        worker.inspect("owned_explicit_proxy"),
+        worker.inspect("macos_network_extension", source_pid),
         decision,
         "the worker serves an accepted snapshot from memory"
     );

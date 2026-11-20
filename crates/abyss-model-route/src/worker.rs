@@ -56,31 +56,17 @@ pub async fn run(
         .map_err(|_| "Model routing worker already running.")?;
     let store = Arc::new(Store::open(directory, broker.pid)?);
     let personal = profile.is_some();
-    let owner = if personal {
-        Some(
-            sys::process_principal(std::process::id())
-                .ok_or("Cannot identify routing worker owner.")?,
-        )
-    } else {
-        None
-    };
     let inspection = Arc::clone(&store);
     let (signal, connected) = tokio::sync::oneshot::channel();
     let plugin = BrokerPlugin::new("abyss.model-route")
         .with_endpoint(broker.plugin_endpoint)
         .on_agent_request(move |context| {
-            let principal = if context.ingress == "owned_explicit_proxy" {
-                owner.clone()
-            } else {
-                context
-                    .source_process
-                    .as_ref()
-                    .and_then(|p| p.pid)
-                    .and_then(sys::process_principal)
-            };
-            let decision = principal
-                .as_deref()
-                .and_then(|p| inspection.get(p))
+            let decision = context
+                .harness
+                .as_ref()
+                .and_then(|_| context.source_process.as_ref()?.pid)
+                .and_then(sys::process_principal)
+                .and_then(|principal| inspection.get(&principal))
                 .map_or(RequestDecision::Allow, |r| r.inspect(&context));
             ready(Ok::<_, Infallible>(decision))
         })

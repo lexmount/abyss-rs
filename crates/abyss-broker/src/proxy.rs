@@ -163,7 +163,6 @@ pub struct ProxyService {
 
 #[derive(Clone)]
 struct ProxyWorkerServices {
-    explicit_credential: Option<Arc<abyss_mitm::ExplicitClientCredential>>,
     network: crate::network_config::NetworkRuntime,
     mitm: Arc<abyss_mitm::MitmEngine>,
     request_control: Option<RequestControl>,
@@ -216,7 +215,6 @@ impl ProxyService {
             state: Arc::new(Mutex::new(ProxyRuntimeState::stopped())),
             operations: Arc::new(Mutex::new(())),
             worker_services: ProxyWorkerServices {
-                explicit_credential: None,
                 network,
                 request_control: None,
                 mitm,
@@ -224,13 +222,6 @@ impl ProxyService {
                 traffic,
             },
         }
-    }
-
-    pub(crate) fn with_explicit_credential(mut self, bearer: &str) -> Self {
-        self.worker_services.explicit_credential = Some(Arc::new(
-            abyss_mitm::ExplicitClientCredential::from_broker_token(bearer),
-        ));
-        self
     }
 
     pub(crate) fn with_plugins(
@@ -376,12 +367,8 @@ impl StoppedProxyRuntime {
                 Ok(self.publish(started, requested_plan, services, state).await)
             }
             ProxyPlan::Explicit { explicit } => {
-                let started = Self::bind_factory(
-                    explicit
-                        .into_factory(services.network.clone())
-                        .with_client_credential(services.explicit_credential.clone()),
-                )
-                .await?;
+                let started =
+                    Self::bind_factory(explicit.into_factory(services.network.clone())).await?;
                 Ok(self.publish(started, requested_plan, services, state).await)
             }
             #[cfg(any(target_os = "macos", target_os = "windows"))]

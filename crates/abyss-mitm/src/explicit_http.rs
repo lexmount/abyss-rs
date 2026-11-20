@@ -32,8 +32,6 @@ pub const DEFAULT_EXPLICIT_PROXY_HEADER_TIMEOUT: Duration = Duration::from_secs(
 pub enum ExplicitProxyProtocol {
     /// HTTPS-style tunnel established with an HTTP `CONNECT` request.
     HttpConnect,
-    /// CONNECT authenticated for the owner of a personal broker.
-    OwnerAuthenticatedConnect,
     /// Plain HTTP request carrying an absolute-form request target.
     HttpAbsoluteForm,
 }
@@ -62,7 +60,6 @@ pub struct TargetAuthority {
 pub struct DecodedExplicitRequest {
     /// Authority declared by the proxy client before broker DNS resolution.
     target: TargetAuthority,
-    proxy_authorization: Option<Box<[u8]>>,
     /// Proxy request form that produced the target and replay prefix.
     protocol: ExplicitProxyProtocol,
     /// Bytes that the shared MITM pipeline must see as the start of client IO.
@@ -278,62 +275,6 @@ impl fmt::Display for TargetAuthority {
     }
 }
 
-fn proxy_authorization(headers: &[httparse::Header<'_>]) -> Option<Box<[u8]>> {
-    let mut values = headers
-        .iter()
-        .filter(|h| h.name.eq_ignore_ascii_case("proxy-authorization"));
-    let value = values.next()?.value;
-    values.next().is_none().then(|| Box::from(value))
-}
-
-/// A short-lived proxy-client credential scoped to a single broker lifetime.
-/// Knowledge permits using the owner's explicit route, without granting broker REST access.
-pub struct ExplicitClientCredential {
-    password: String,
-    authorization: String,
-}
-
-impl ExplicitClientCredential {
-    /// Derives the opt-in proxy credential from the high-entropy broker token.
-    #[must_use]
-    pub fn from_broker_token(bearer: &str) -> Self {
-        use base64::{Engine as _, engine::general_purpose::STANDARD};
-        use sha2::{Digest as _, Sha256};
-        let mut hash = Sha256::new();
-        hash.update(b"abyss/explicit-route/v1\0");
-        hash.update(bearer.as_bytes());
-        let password = format!("{:x}", hash.finalize());
-        let authorization = format!(
-            "Basic {}",
-            STANDARD.encode(format!("abyss-route:{password}"))
-        );
-        Self {
-            password,
-            authorization,
-        }
-    }
-
-    /// Produces the proxy URL for a local, opted-in client.
-    #[must_use]
-    pub fn proxy_url(&self, address: std::net::SocketAddr) -> Option<String> {
-        address
-            .ip()
-            .is_loopback()
-            .then(|| format!("http://abyss-route:{}@{address}", self.password))
-    }
-
-    /// Tests only the outer CONNECT credential. It is never forwarded to the provider.
-    #[must_use]
-    pub fn authenticates(&self, request: &DecodedExplicitRequest) -> bool {
-        use subtle::ConstantTimeEq as _;
-        request.protocol == ExplicitProxyProtocol::HttpConnect
-            && request
-                .proxy_authorization
-                .as_deref()
-                .is_some_and(|header| bool::from(self.authorization.as_bytes().ct_eq(header)))
-    }
-}
-
 impl DecodedExplicitRequest {
     /// Returns the normalized target authority.
     #[must_use]
@@ -544,7 +485,6 @@ impl<'a> ExplicitRequestParser<'a> {
         // After the broker writes `200 Connection Established`, the preserved
         // prefix becomes the first bytes of the client's tunneled protocol.
         Ok(DecodedExplicitRequest {
-            proxy_authorization: proxy_authorization(headers),
             target,
             protocol: ExplicitProxyProtocol::HttpConnect,
             client_prefix: Box::from(&self.buffer[self.head_len..]),
@@ -587,7 +527,6 @@ impl<'a> ExplicitRequestParser<'a> {
             &self.buffer[self.head_len..],
         );
         Ok(DecodedExplicitRequest {
-            proxy_authorization: proxy_authorization(headers),
             target,
             protocol: ExplicitProxyProtocol::HttpAbsoluteForm,
             client_prefix,
@@ -898,38 +837,6 @@ mod tests {
         ExplicitProxyErrorCategory, ExplicitProxyProtocol, ExplicitRequestDecoder,
         ExplicitRequestError, MAX_EXPLICIT_PROXY_HEADERS, TargetHost,
     };
-
-    #[tokio::test]
-    async fn route_credential_is_scoped_to_one_broker_and_one_connect_header() {
-        let credential = super::ExplicitClientCredential::from_broker_token("test-broker");
-        let other = super::ExplicitClientCredential::from_broker_token("another-test-broker");
-        assert!(
-            credential
-                .proxy_url("127.0.0.1:1234".parse().expect("loopback"))
-                .is_some()
-        );
-        assert!(
-            credential
-                .proxy_url("192.0.2.1:1234".parse().expect("documentation address"))
-                .is_none()
-        );
-        let header = format!("Proxy-Authorization: {}\r\n", credential.authorization);
-        for (headers, expected) in [
-            (header.clone(), true),
-            (header.repeat(2), false),
-            (String::new(), false),
-        ] {
-            let request = format!(
-                "CONNECT model.example:443 HTTP/1.1\r\nHost: model.example:443\r\n{headers}\r\n"
-            );
-            let decoded = decode_once(request.as_bytes())
-                .await
-                .expect("valid CONNECT");
-            assert_eq!(credential.authenticates(&decoded), expected);
-            assert!(!other.authenticates(&decoded));
-            assert!(decoded.client_prefix().is_empty());
-        }
-    }
 
     #[tokio::test]
     async fn decodes_fragmented_connect_and_preserves_tunnel_prefix() {

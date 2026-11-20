@@ -88,13 +88,15 @@ impl Worker {
         Self { child, requests }
     }
 
-    pub fn inspect(&self, ingress: &str) -> Value {
+    pub fn inspect(&self, ingress: &str, source_pid: Option<u32>) -> Value {
         let mut request: Value = serde_json::from_str(include_str!(
             "../../../../specs/broker-plugin-protocol/v1/fixtures/inspect-request.json"
         ))
         .unwrap();
         request["context"]["ingress"] = json!(ingress);
-        request["context"]["source_process"] = Value::Null;
+        if let Some(pid) = source_pid {
+            request["context"]["source_process"] = json!({"pid": pid});
+        }
         request["context"]["harness"] = json!({"id":"codex"});
         let (tx, rx) = mpsc::channel();
         self.requests.send((request, tx)).unwrap();

@@ -261,12 +261,10 @@ impl ProxyCommandRunner {
                 let proxy_url = if let Some(proxy_url) = args.proxy_url {
                     proxy_url
                 } else {
-                    let running = require_bootstrapped_runtime(running)?;
-                    crate::model_route::Worker::proxy_url(
-                        &paths,
-                        running.endpoint(),
-                        running.proxy_addr(),
-                    )?
+                    format!(
+                        "http://{}",
+                        require_bootstrapped_runtime(running)?.proxy_addr()
+                    )
                 };
                 let environment = platform_adapter().proxy_environment(&proxy_url);
                 std::io::stdout().write_all(environment.as_bytes())?;
@@ -566,11 +564,7 @@ fn run_agent(args: &RunArgs, running: Option<&RunningBroker>) -> Result<(), CliE
     let running = require_bootstrapped_runtime(running)?;
     let proxy_addr = running.proxy_addr();
     let mut command = ProcessCommand::new(&args.command[0]);
-    let proxy_url = crate::model_route::Worker::proxy_url(
-        &CliPaths::from_env()?,
-        running.endpoint(),
-        proxy_addr,
-    )?;
+    let proxy_url = format!("http://{proxy_addr}");
     command
         .args(&args.command[1..])
         .envs(platform_adapter().proxy_environment_variables(&proxy_url));

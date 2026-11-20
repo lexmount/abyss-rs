@@ -5,8 +5,7 @@
 //! to MITM. Policy selects the final route before DNS or connection setup. Provider parsing,
 //! policy, auditing, and upload behavior remain outside this module.
 
-use abyss_mitm::ExplicitClientCredential;
-use std::{io, net::SocketAddr, sync::Arc};
+use std::{io, net::SocketAddr};
 
 use abyss_mitm::{
     ExplicitProxyErrorCategory, ExplicitProxyProtocol, ExplicitRequestDecoder,
@@ -51,26 +50,14 @@ impl ExplicitIngressEndpoint {
         ExplicitIngressFactory {
             listen_addr: self.listen_addr,
             network,
-            credential: None,
         }
     }
 }
 
 /// Factory that binds one explicit HTTP proxy listener.
 pub struct ExplicitIngressFactory {
-    credential: Option<Arc<ExplicitClientCredential>>,
     network: NetworkRuntime,
     listen_addr: SocketAddr,
-}
-
-impl ExplicitIngressFactory {
-    pub fn with_client_credential(
-        mut self,
-        credential: Option<Arc<ExplicitClientCredential>>,
-    ) -> Self {
-        self.credential = credential;
-        self
-    }
 }
 
 impl IngressFactory for ExplicitIngressFactory {
@@ -99,7 +86,6 @@ impl IngressFactory for ExplicitIngressFactory {
         Ok(StartedIngress::new(
             ExplicitIngress {
                 network: self.network,
-                credential: self.credential,
                 listener,
                 listen_addr,
             },
@@ -110,7 +96,6 @@ impl IngressFactory for ExplicitIngressFactory {
 
 /// Bound explicit HTTP proxy listener.
 pub struct ExplicitIngress {
-    credential: Option<Arc<ExplicitClientCredential>>,
     network: NetworkRuntime,
     listener: TcpListener,
     listen_addr: SocketAddr,
@@ -130,14 +115,12 @@ impl Ingress for ExplicitIngress {
             peer_addr,
             listen_addr: self.listen_addr,
             upstream: self.network.snapshot().proxy().cloned(),
-            credential: self.credential.clone(),
         })
     }
 }
 
 /// Accepted client connection awaiting proxy-protocol normalization.
 pub struct ExplicitConnection {
-    credential: Option<Arc<ExplicitClientCredential>>,
     client: TcpStream,
     peer_addr: SocketAddr,
     listen_addr: SocketAddr,
@@ -160,12 +143,6 @@ impl IngressConnection for ExplicitConnection {
                 return Err(ExplicitIngressError::Request { source }.into());
             }
         };
-        let owner_authenticated = self.peer_addr.ip().is_loopback()
-            && local_addr.ip().is_loopback()
-            && self
-                .credential
-                .as_ref()
-                .is_some_and(|c| c.authenticates(&decoded));
         let (target, protocol, client_prefix) = decoded.into_parts();
         if protocol == ExplicitProxyProtocol::HttpConnect {
             self.write_response(ProxyResponse::ConnectionEstablished)
@@ -181,11 +158,7 @@ impl IngressConnection for ExplicitConnection {
         let destination_host = Some(target.host().to_string());
         let route_target = target.clone();
         let ingress = FlowIngress::ExplicitProxy {
-            protocol: if owner_authenticated {
-                ExplicitProxyProtocol::OwnerAuthenticatedConnect
-            } else {
-                protocol
-            },
+            protocol,
             target,
             upstream_proxy: None,
             proxy_endpoint: self

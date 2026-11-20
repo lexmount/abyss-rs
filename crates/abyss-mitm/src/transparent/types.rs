@@ -248,27 +248,10 @@ impl FlowIngress {
         }
     }
 
-    /// Identifies owner-authenticated explicit connections to inspection plugins.
-    /// The transport and diagnostic labels continue to describe the network ingress.
-    #[must_use]
-    pub const fn inspection_label(&self) -> &'static str {
-        match self {
-            Self::ExplicitProxy {
-                protocol: ExplicitProxyProtocol::OwnerAuthenticatedConnect,
-                ..
-            } => "owned_explicit_proxy",
-            other => other.source_label(),
-        }
-    }
-
     /// Returns explicit proxy protocol metadata when this flow used that ingress.
     #[must_use]
     pub const fn proxy_protocol(&self) -> Option<ExplicitProxyProtocol> {
         match self {
-            Self::ExplicitProxy {
-                protocol: ExplicitProxyProtocol::OwnerAuthenticatedConnect,
-                ..
-            } => Some(ExplicitProxyProtocol::HttpConnect),
             Self::ExplicitProxy { protocol, .. } => Some(*protocol),
             Self::Transparent { .. } => None,
         }

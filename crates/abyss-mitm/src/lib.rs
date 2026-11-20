@@ -26,9 +26,9 @@ pub use ca::{
     CertificateAuthority, CertificateFingerprint, TrustStoreScope, TrustStoreStatus,
 };
 pub use explicit_http::{
-    DEFAULT_EXPLICIT_PROXY_HEADER_TIMEOUT, DecodedExplicitRequest, ExplicitClientCredential,
-    ExplicitProxyErrorCategory, ExplicitProxyProtocol, ExplicitRequestDecoder,
-    ExplicitRequestError, MAX_EXPLICIT_PROXY_HEADER_BYTES, TargetAuthority, TargetHost,
+    DEFAULT_EXPLICIT_PROXY_HEADER_TIMEOUT, DecodedExplicitRequest, ExplicitProxyErrorCategory,
+    ExplicitProxyProtocol, ExplicitRequestDecoder, ExplicitRequestError,
+    MAX_EXPLICIT_PROXY_HEADER_BYTES, TargetAuthority, TargetHost,
 };
 pub use http1::{Http1Error, MAX_HTTP1_HEADER_BYTES};
 pub use tls::{TlsMitmError, install_default_crypto_provider};

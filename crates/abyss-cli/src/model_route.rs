@@ -5,7 +5,6 @@ use std::os::unix::process::CommandExt as _;
 use std::{
     fs::{self, OpenOptions},
     io::{self, Write as _},
-    net::SocketAddr,
     path::PathBuf,
     process::{Command, Stdio},
     time::{Duration, Instant},
@@ -137,25 +136,6 @@ impl Worker {
         Err(CliError::InvalidConfiguration(
             "routing worker did not become ready".into(),
         ))
-    }
-
-    /// Only the local opted-in proxy receives a credential scoped to model routing.
-    pub fn proxy_url(
-        paths: &CliPaths,
-        broker: &BrokerEndpoint,
-        address: SocketAddr,
-    ) -> Result<String, CliError> {
-        if !Self::configured(paths) {
-            return Ok(format!("http://{address}"));
-        }
-        let token = fs::read_to_string(broker.auth_token_file())?;
-        abyss_mitm::ExplicitClientCredential::from_broker_token(token.trim())
-            .proxy_url(address)
-            .ok_or_else(|| {
-                CliError::InvalidConfiguration(
-                    "model routing requires a loopback proxy address".into(),
-                )
-            })
     }
 
     pub fn run(&self, paths: &CliPaths, command: ModelRouteCommand) -> Result<(), CliError> {
