@@ -37,3 +37,5 @@ The interactive helper validates the source before sending a local HTTP/1.1 requ
 The worker serializes updates, writes a private temporary file, flushes it, atomically replaces the durable profile and then publishes the new snapshot. Failed updates leave the previous selection active. Native traffic uses the source process's OS identity. A personal explicit broker accepts a routing credential from a loopback CONNECT client launched with the owner's proxy environment. The credential expires with the broker and is distinct from its management token. Other explicit clients bypass personal route selection.
 
 The executable black-box tests in `crates/abyss-model-route/tests` cover file and service imports, restart recovery and a selected inference request with the durable file removed. The desktop consumer documents installer integration in its [companion design](https://github.com/lexmount/AbyssApp/blob/task/optimize-model-route/docs/optimize-model-route.md).
+
+The coordinated changes are tracked in [endpoint PR 103](https://github.com/lexmount/abyss-rs/pull/103) and [desktop PR 100](https://github.com/lexmount/AbyssApp/pull/100).
