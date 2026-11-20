@@ -20,7 +20,7 @@ abyss model-route disable codex
 abyss model-route clear
 ```
 
-Each import reads the selected source again. A source change clears obsolete selections. The optional SSO flag requires a current terminal login at the catalog URL's origin. The worker lists the catalog's configured models or queries the provider using the selected credential. The CLI starts the worker on first use and reconnects it to subsequent CLI-owned broker processes.
+Each import reads the selected source again. A source change clears obsolete selections. The optional SSO flag requires a current terminal login at the catalog URL's origin. The worker lists the catalog's configured models or makes an asynchronous request to the provider using the selected credential. Remote pagination runs within the local request lifetime and never holds the snapshot lock across a network wait. The CLI starts the worker on first use and reconnects it to subsequent CLI-owned broker processes.
 
 ## Local control and identity
 

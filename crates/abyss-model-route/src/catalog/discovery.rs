@@ -1,7 +1,8 @@
 //! Read one credential's model list from its configured API origin.
-use std::{collections::BTreeSet, io::Read as _, time::Duration};
+use std::{collections::BTreeSet, time::Duration};
 
-use reqwest::{Url, blocking::Client, redirect::Policy};
+use http_body_util::{BodyExt as _, Limited};
+use reqwest::{Client, Url, redirect::Policy};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
@@ -69,7 +70,7 @@ fn endpoint(base: &str) -> Result<Url, &'static str> {
 }
 
 impl Catalog {
-    pub fn list_models(
+    pub async fn list_models(
         &self,
         selection: &ModelListRequest,
     ) -> Result<Vec<ListedModel>, &'static str> {
@@ -110,10 +111,11 @@ impl Catalog {
             credential,
             selection.provider == "anthropic" || url.path().contains("/anthropic/"),
         )
+        .await
     }
 }
 
-fn fetch(
+async fn fetch(
     client: &Client,
     url: &Url,
     credential: &Credential,
@@ -153,10 +155,15 @@ fn fetch(
         }
         let response = request
             .send()
-            .and_then(reqwest::blocking::Response::error_for_status)
+            .await
+            .and_then(reqwest::Response::error_for_status)
             .map_err(|_| "The provider model list is unavailable.")?;
-        let page: Page = serde_json::from_reader(response.take(4 * 1024 * 1024))
+        let body = Limited::new(reqwest::Body::from(response), 4 * 1024 * 1024)
+            .collect()
+            .await
             .map_err(|_| "Invalid provider model list.")?;
+        let page: Page =
+            serde_json::from_slice(&body.to_bytes()).map_err(|_| "Invalid provider model list.")?;
         for model in page.data {
             if super::valid_model_id(&model.id) && seen.insert(model.id.clone()) {
                 models.push(model.into());
@@ -177,8 +184,8 @@ fn fetch(
 mod tests {
     use super::*;
 
-    #[test]
-    fn reads_every_page_in_provider_order_with_the_selected_credential() {
+    #[tokio::test]
+    async fn reads_every_page_in_provider_order_with_the_selected_credential() {
         use std::{
             io::{BufRead as _, BufReader, Write as _},
             net::TcpListener,
@@ -229,7 +236,7 @@ mod tests {
             .build()
             .unwrap();
         assert_eq!(
-            serde_json::to_value(fetch(&client, &url, &auth, true).unwrap()).unwrap(),
+            serde_json::to_value(fetch(&client, &url, &auth, true).await.unwrap()).unwrap(),
             serde_json::json!([
                 {"id":"zulu", "created":1_767_225_600_i64},
                 {"id":"alpha", "created":1_769_904_000_i64},

@@ -59,24 +59,26 @@ async fn handle(
                 .await
             {
                 Ok(body) => {
-                    // File commits and catalog parsing cannot stall the inspection scheduler.
-                    let result = tokio::task::spawn_blocking(move || {
-                        dispatch(
-                            &parts.method,
-                            parts.uri.path(),
-                            &body.to_bytes(),
-                            &owner,
-                            &store,
-                        )
-                    })
-                    .await;
+                    let bytes = body.to_bytes();
+                    let result =
+                        if parts.method == Method::POST && parts.uri.path() == super::MODELS {
+                            list_models(&bytes, &owner, &store)
+                                .await
+                                .map_err(|error| (StatusCode::BAD_REQUEST, error))
+                        } else {
+                            // File commits and catalog parsing run outside the inspection scheduler.
+                            tokio::task::spawn_blocking(move || {
+                                dispatch(&parts.method, parts.uri.path(), &bytes, &owner, &store)
+                            })
+                            .await
+                            .unwrap_or(Err((
+                                StatusCode::INTERNAL_SERVER_ERROR,
+                                "Route management interrupted.",
+                            )))
+                        };
                     match result {
-                        Ok(Ok(value)) => response(StatusCode::OK, &value),
-                        Ok(Err((status, message))) => response(status, &json!({"error":message})),
-                        Err(_) => response(
-                            StatusCode::INTERNAL_SERVER_ERROR,
-                            &json!({"error":"Route management interrupted."}),
-                        ),
+                        Ok(value) => response(StatusCode::OK, &value),
+                        Err((status, message)) => response(status, &json!({"error":message})),
                     }
                 }
                 Err(_) => response(
@@ -87,6 +89,19 @@ async fn handle(
         }
     };
     Ok(reply)
+}
+
+async fn list_models(body: &[u8], owner: &str, store: &Store) -> Result<Value, &'static str> {
+    let request: crate::catalog::ModelListRequest =
+        serde_json::from_slice(body).map_err(|_| "Invalid model list request.")?;
+    let routes = store.get(owner).ok_or("No model catalog configured.")?;
+    let models = routes.list_models(&request).await?;
+    if request.include_metadata {
+        serde_json::to_value(models)
+    } else {
+        serde_json::to_value(models.into_iter().map(|model| model.id).collect::<Vec<_>>())
+    }
+    .map_err(|_| "Cannot encode model list.")
 }
 
 fn dispatch(
@@ -108,20 +123,6 @@ fn dispatch(
                     crate::routing::Routes::snapshot,
                 )
                 .map_err(bad);
-        }
-        (&Method::POST, super::MODELS) => {
-            let request: crate::catalog::ModelListRequest =
-                serde_json::from_slice(body).map_err(|_| bad("Invalid model list request."))?;
-            let routes = store
-                .get(owner)
-                .ok_or_else(|| bad("No model catalog configured."))?;
-            let models = routes.list_models(&request).map_err(bad)?;
-            return if request.include_metadata {
-                serde_json::to_value(models)
-            } else {
-                serde_json::to_value(models.into_iter().map(|model| model.id).collect::<Vec<_>>())
-            }
-            .map_err(|_| bad("Cannot encode model list."));
         }
         (&Method::PUT, super::PROFILE) => Change::Restore(
             serde_json::from_slice(body).map_err(|_| bad("Invalid saved profile."))?,

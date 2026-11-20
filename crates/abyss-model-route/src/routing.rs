@@ -54,11 +54,11 @@ fn http_operation(
 }
 
 impl Routes {
-    pub fn list_models(
+    pub async fn list_models(
         &self,
         request: &ModelListRequest,
     ) -> Result<Vec<ListedModel>, &'static str> {
-        self.catalog.list_models(request)
+        self.catalog.list_models(request).await
     }
 
     pub fn snapshot(&self) -> Result<Value, &'static str> {
