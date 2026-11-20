@@ -150,7 +150,7 @@ impl Provider {
             _ => None,
         });
         if let Some(url) = endpoint {
-            super::source::https_url(url)?;
+            https_url(url)?;
         }
         Ok(endpoint)
     }
@@ -251,4 +251,21 @@ impl Catalog {
             model: &selection.model,
         })
     }
+}
+
+pub fn https_url(value: &str) -> Result<reqwest::Url, &'static str> {
+    let url = reqwest::Url::parse(value).map_err(|_| "Invalid HTTPS URL.")?;
+    if url.scheme() != "https"
+        || !url.has_host()
+        || !url.username().is_empty()
+        || url.password().is_some()
+        || url.query().is_some()
+        || url.fragment().is_some()
+        || value
+            .chars()
+            .any(|c| c.is_whitespace() || c.is_control() || c == '\\')
+    {
+        return Err("Expected an HTTPS URL without credentials, query or fragment.");
+    }
+    Ok(url)
 }

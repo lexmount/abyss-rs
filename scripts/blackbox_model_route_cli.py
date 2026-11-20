@@ -8,6 +8,7 @@ from contextlib import contextmanager
 from functools import partial
 from http.server import SimpleHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
+import shutil
 import subprocess
 from tempfile import TemporaryDirectory
 from threading import Thread
@@ -15,6 +16,10 @@ from time import monotonic, sleep
 
 
 class CatalogHandler(SimpleHTTPRequestHandler):
+    def do_GET(self):
+        self.server.bearers.append(self.headers.get("Authorization"))
+        super().do_GET()
+
     def log_message(self, fmt, *args):
         pass
 
@@ -41,7 +46,12 @@ def running_broker(binaries, root, env):
             broker.wait(timeout=10)
 
 
-def verify(binaries, root):
+def verify(distribution, root):
+    binaries = root / "bin"
+    binaries.mkdir()
+    shutil.copy2(distribution / "abyss", binaries / "abyss")
+    for exe in ("abyss-broker", "abyss-delivery-plugin", "abyss-model-route"):
+        (binaries / exe).symlink_to(distribution / exe)
     runtime = root / "runtime"
     runtime.mkdir(mode=0o700)
     ca = root / "ca"
@@ -77,13 +87,39 @@ def verify(binaries, root):
         return json.loads(result.stdout)
 
     with running_broker(binaries, root, env):
+        legacy = runtime / "model-route.json"
+        legacy.write_text(json.dumps({"source": "legacy.json", "catalog": json.loads(path.read_text()), "selections": {}}))
+        assert cli("state")["source"] == "legacy.json"
+        assert not legacy.exists()
         assert cli("import-file", path)["source"] == str(path)
+        # A running worker is enough for management. Removing only the fixture's
+        # executable link catches any new subprocess use for readiness or commands.
+        (binaries / "abyss-model-route").unlink()
+        assert cli("state")["source"] == str(path)
+        (binaries / "abyss-model-route").symlink_to(distribution / "abyss-model-route")
+        bad_file = root / "bad.txt"
+        bad_file.write_bytes(path.read_bytes())
+        bad = subprocess.run([binaries / "abyss", "model-route", "import-file", bad_file], env=env, capture_output=True)
+        assert bad.returncode and b"fixture-private" not in bad.stderr
         assert cli("models", "test", "team") == [{"id": "a"}]
         with ThreadingHTTPServer(("127.0.0.1", 0), partial(CatalogHandler, directory=fixtures)) as server:
+            server.bearers = []
             Thread(target=server.serve_forever, daemon=True).start()
             url = f"http://127.0.0.1:{server.server_port}/catalog.json"
             try:
                 assert cli("import-url", url)["source"] == url
+                auth = root / "auth"
+                auth.mkdir(exist_ok=True, mode=0o700)
+                credentials = auth / "credentials.json"
+                credentials.write_text(json.dumps({"version": 1, "control_plane": url, "token": "fixture-login",
+                    "expires_at": "2099-01-01T00:00:00Z", "user": {"id": "00000000-0000-0000-0000-000000000000",
+                    "email": "fixture@example.invalid", "name": None, "roles": []}}))
+                credentials.chmod(0o600)
+                assert cli("import-url", url, "--sso")["source"] == url
+                denied = subprocess.run([binaries / "abyss", "model-route", "import-url",
+                    url.replace("127.0.0.1", "localhost"), "--sso"], env=env, capture_output=True)
+                assert denied.returncode and b"fixture-login" not in denied.stderr
+                assert server.bearers == [None, "Bearer fixture-login"]
             finally:
                 server.shutdown()
         selected = cli("select", "codex", "test", "team", "a")["selections"]

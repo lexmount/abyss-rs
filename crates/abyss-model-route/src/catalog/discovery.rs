@@ -56,7 +56,7 @@ struct Page {
 }
 
 fn endpoint(base: &str) -> Result<Url, &'static str> {
-    let mut url = crate::source::https_url(base)?;
+    let mut url = crate::catalog::https_url(base)?;
     let path = url.path().trim_end_matches('/');
     let path = match (url.host_str(), path) {
         (Some("api.deepseek.com"), "" | "/v1" | "/anthropic") => "/models".to_owned(),

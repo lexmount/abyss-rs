@@ -11,28 +11,23 @@ use std::{
     mem::{size_of, size_of_val},
     os::windows::{
         ffi::OsStrExt as _,
-        fs::OpenOptionsExt as _,
-        io::{
-            AsHandle as _, AsRawHandle as _, FromRawHandle as _, IntoRawHandle as _, OwnedHandle,
-        },
+        io::{AsHandle as _, AsRawHandle as _, FromRawHandle as _, OwnedHandle},
     },
     path::{Path, PathBuf},
     ptr,
 };
-use tokio::net::windows::named_pipe::{NamedPipeClient, NamedPipeServer, ServerOptions};
+use tokio::net::windows::named_pipe::{NamedPipeServer, ServerOptions};
 use windows_sys::Win32::{
     Foundation::{ERROR_SUCCESS, HANDLE, LocalFree},
     Security::{
         Authorization::{
             ConvertSidToStringSidA, ConvertStringSecurityDescriptorToSecurityDescriptorW,
-            GetSecurityInfo, SDDL_REVISION_1, SE_FILE_OBJECT, SE_KERNEL_OBJECT,
-            SetNamedSecurityInfoW,
+            SDDL_REVISION_1, SE_FILE_OBJECT, SetNamedSecurityInfoW,
         },
         DACL_SECURITY_INFORMATION, GetSecurityDescriptorDacl, GetTokenInformation,
-        OWNER_SECURITY_INFORMATION, PROTECTED_DACL_SECURITY_INFORMATION, RevertToSelf,
-        SECURITY_ATTRIBUTES, TOKEN_QUERY, TOKEN_USER, TokenUser,
+        PROTECTED_DACL_SECURITY_INFORMATION, RevertToSelf, SECURITY_ATTRIBUTES, TOKEN_QUERY,
+        TOKEN_USER, TokenUser,
     },
-    Storage::FileSystem::{FILE_FLAG_OVERLAPPED, SECURITY_IDENTIFICATION, SECURITY_SQOS_PRESENT},
     System::{
         Pipes::ImpersonateNamedPipeClient,
         Threading::{
@@ -42,7 +37,6 @@ use windows_sys::Win32::{
     },
 };
 
-pub type Client = NamedPipeClient;
 pub type Server = NamedPipeServer;
 pub type Peer = OwnedHandle;
 
@@ -250,53 +244,4 @@ pub fn process_principal(pid: u32) -> Option<String> {
     }
     // SAFETY: OpenProcessToken returned an owned handle.
     token_sid(&unsafe { OwnedHandle::from_raw_handle(raw) }).ok()
-}
-
-pub fn connect(path: &Path, personal: bool) -> std::future::Ready<io::Result<Client>> {
-    std::future::ready(connect_pipe(path, personal))
-}
-
-fn connect_pipe(path: &Path, personal: bool) -> io::Result<Client> {
-    let file = fs::OpenOptions::new()
-        .access_mode(0x0012_0003)
-        .custom_flags(FILE_FLAG_OVERLAPPED | SECURITY_SQOS_PRESENT | SECURITY_IDENTIFICATION)
-        .open(path)?;
-    let (mut owner, mut sd) = (ptr::null_mut(), ptr::null_mut());
-    // SAFETY: the pipe is open for READ_CONTROL; owner is inside the returned descriptor.
-    let status = unsafe {
-        GetSecurityInfo(
-            file.as_raw_handle(),
-            SE_KERNEL_OBJECT,
-            OWNER_SECURITY_INFORMATION,
-            &raw mut owner,
-            ptr::null_mut(),
-            ptr::null_mut(),
-            ptr::null_mut(),
-            &raw mut sd,
-        )
-    };
-    if status != ERROR_SUCCESS {
-        return Err(io::Error::from_raw_os_error(status.cast_signed()));
-    }
-    let _allocation = LocalAllocation(sd);
-    let trusted = if personal {
-        process_principal(std::process::id())
-            .ok_or_else(|| io::Error::other("unknown route owner"))?
-    } else {
-        "S-1-5-18".into()
-    };
-    if sid_text(owner)? != trusted {
-        return Err(io::Error::new(
-            io::ErrorKind::PermissionDenied,
-            "Unexpected routing service owner.",
-        ));
-    }
-    // SAFETY: transfer the uniquely owned overlapped named pipe handle to Tokio.
-    unsafe { NamedPipeClient::from_raw_handle(file.into_raw_handle()) }
-}
-
-pub fn personal_endpoint(profile: &Path) -> PathBuf {
-    use sha2::{Digest as _, Sha256};
-    let digest = Sha256::digest(profile.as_os_str().as_encoded_bytes());
-    PathBuf::from(format!(r"\\.\pipe\abyss-model-route-{digest:x}"))
 }

@@ -12,6 +12,11 @@ default = ["local"]
 local = ["dep:hex", "dep:rand"]
 
 [dependencies]
+bytes = "1"
+http-body-util = "0.1"
+hyper = { version = "1", features = ["client", "http1"] }
+hyper-util = { version = "0.1", features = ["tokio"] }
+tokio = { version = "1", features = ["rt", "net", "time"] }
 abyss-agent-hook.workspace = true
 abyss-delivery-plugin = { path = "../abyss-delivery-plugin" }
 abyss-mitm.workspace = true
@@ -19,7 +24,7 @@ abyss-terminal-auth.workspace = true
 clap = { version = "4", features = ["derive", "env"] }
 hex = { version = "0.4", optional = true }
 jiff.workspace = true
-nix = { version = "0.30", default-features = false, features = ["process", "signal"] }
+nix = { version = "0.30", default-features = false, features = ["process", "signal", "user"] }
 rand = { version = "0.9", optional = true }
 reqwest = { version = "0.12", default-features = false, features = ["blocking", "json", "rustls-tls"] }
 regex = "1"

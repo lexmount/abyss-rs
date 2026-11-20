@@ -106,7 +106,7 @@ impl Routes {
             .catalog
             .resolve(harness, self.selections.get(harness)?)
             .ok()?;
-        let endpoint = crate::source::https_url(route.base_url).ok()?;
+        let endpoint = crate::catalog::https_url(route.base_url).ok()?;
         let host = endpoint.host_str()?;
         let authority = context.authority.as_deref()?;
         let path = context.path.split('?').next()?;

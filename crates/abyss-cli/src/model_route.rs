@@ -1,22 +1,23 @@
 //! Manage the official routing worker for the per-user explicit proxy.
 
+mod client;
+mod import;
+
 #[cfg(unix)]
 use std::os::unix::process::CommandExt as _;
 use std::{
     fs::{self, OpenOptions},
-    io::{self, Write as _},
+    io,
     path::PathBuf,
     process::{Command, Stdio},
     time::{Duration, Instant},
 };
 
-use abyss_terminal_auth::CredentialStore as _;
 use clap::Subcommand;
-use serde_json::{Value, json};
+use hyper::Method;
+use serde_json::json;
 
-use crate::{
-    broker::BrokerEndpoint, credential::CliCredentialStore, error::CliError, paths::CliPaths,
-};
+use crate::{broker::BrokerEndpoint, error::CliError, paths::CliPaths};
 
 #[derive(Debug, Subcommand)]
 pub enum ModelRouteCommand {
@@ -52,21 +53,17 @@ pub enum ModelRouteCommand {
 pub struct Worker {
     profile: PathBuf,
     executable: PathBuf,
+    client: client::Client,
 }
 
 impl Worker {
     fn new(paths: &CliPaths) -> Result<Self, CliError> {
-        let executable = std::env::current_exe()?.with_file_name("abyss-model-route");
+        let profile = paths.root().join("runtime/model-route.json");
         Ok(Self {
-            profile: paths.root().join("runtime/model-route.json"),
-            executable,
+            client: client::Client::new(&profile).map_err(CliError::InvalidConfiguration)?,
+            executable: std::env::current_exe()?.with_file_name("abyss-model-route"),
+            profile,
         })
-    }
-
-    fn command(&self) -> Command {
-        let mut command = Command::new(&self.executable);
-        command.arg("--profile").arg(&self.profile);
-        command
     }
 
     pub fn configured(paths: &CliPaths) -> bool {
@@ -84,14 +81,10 @@ impl Worker {
             .open(worker.profile.with_extension("start.lock"))?;
         lock.lock()?;
         let current = || {
-            let reply = worker
-                .command()
-                .arg("status")
-                .stdin(Stdio::null())
-                .stderr(Stdio::null())
-                .output()
+            let value = worker
+                .client
+                .request(Method::GET, "/v1/model-route/status", Vec::new())
                 .ok()?;
-            let value: Value = serde_json::from_slice(&reply.stdout).ok()?;
             value["broker_pid"].as_u64()
         };
         let started = Instant::now();
@@ -106,9 +99,13 @@ impl Worker {
             }
             std::thread::sleep(Duration::from_millis(40));
         }
-        let mut command = worker.command();
+        let mut command = Command::new(&worker.executable);
         command
-            .arg("serve")
+            .arg("--profile")
+            .arg(&worker.profile)
+            .arg("--control")
+            .arg(worker.client.endpoint())
+            .arg("--serve")
             .arg(paths.broker_startup_info_file())
             .stdin(Stdio::null())
             .stdout(Stdio::null())
@@ -139,33 +136,47 @@ impl Worker {
     }
 
     pub fn run(&self, paths: &CliPaths, command: ModelRouteCommand) -> Result<(), CliError> {
-        let (operation, input) = match command {
-            ModelRouteCommand::State => ("state", None),
-            ModelRouteCommand::Clear => ("clear", None),
-            ModelRouteCommand::ImportFile { file } => (
-                "load",
-                Some(json!({"source":{"type":"file","path":fs::canonicalize(file)?}})),
-            ),
-            ModelRouteCommand::ImportUrl { url, sso } => {
-                let mut input = json!({"source":{"type":"service","url":url,"sso":sso}});
-                if sso {
-                    let credential = CliCredentialStore::from_paths(paths)?.read()?;
-                    if credential.expires_at <= jiff::Timestamp::now() {
-                        return Err(CliError::InvalidConfiguration(
-                            "sign in again to import this catalog".into(),
-                        ));
-                    }
-                    input["session"] =
-                        json!({"origin":credential.control_plane,"bearer":credential.token});
+        match fs::File::open(&self.profile) {
+            Ok(file) => {
+                let legacy = import::json(file, 4 * 1024 * 1024)?;
+                self.client
+                    .request(
+                        Method::PUT,
+                        "/v1/model-route/profile",
+                        serde_json::to_vec(&legacy)?,
+                    )
+                    .map_err(CliError::InvalidConfiguration)?;
+                if let Err(error) = fs::remove_file(&self.profile)
+                    && error.kind() != io::ErrorKind::NotFound
+                {
+                    return Err(error.into());
                 }
-                ("load", Some(input))
             }
+            Err(error) if error.kind() == io::ErrorKind::NotFound => {}
+            Err(error) => return Err(error.into()),
+        }
+        let (method, path, body) = match command {
+            ModelRouteCommand::State => (Method::GET, "/v1/model-route", None),
+            ModelRouteCommand::Clear => (Method::DELETE, "/v1/model-route", None),
+            ModelRouteCommand::ImportFile { file } => (
+                Method::PUT,
+                "/v1/model-route/catalog",
+                Some(import::file(&file)?),
+            ),
+            ModelRouteCommand::ImportUrl { url, sso } => (
+                Method::PUT,
+                "/v1/model-route/catalog",
+                Some(import::service(paths, &url, sso)?),
+            ),
             ModelRouteCommand::Models {
                 provider,
                 credential,
             } => (
-                "models",
-                Some(json!({ "provider":provider,"credential":credential,"include_metadata":true})),
+                Method::POST,
+                "/v1/model-route/models",
+                Some(
+                    json!({ "provider":provider, "credential":credential, "include_metadata":true }),
+                ),
             ),
             ModelRouteCommand::Select {
                 harness,
@@ -173,36 +184,30 @@ impl Worker {
                 credential,
                 model,
             } => (
-                "select",
+                Method::PUT,
+                "/v1/model-route/selection",
                 Some(
-                    json!({"harness":harness,"selection":{"provider":provider,"credential":credential,"model":model}}),
+                    json!({"harness":harness, "selection":{"provider":provider,"credential":credential,"model":model}}),
                 ),
             ),
             ModelRouteCommand::Disable { harness } => (
-                "select",
-                Some(json!({"harness":harness,"selection":Value::Null})),
+                Method::PUT,
+                "/v1/model-route/selection",
+                Some(json!({"harness":harness, "selection":null})),
             ),
         };
-        let mut child = self
-            .command()
-            .arg(operation)
-            .stdin(Stdio::piped())
-            .spawn()?;
-        if let Some(input) = input {
-            let mut stdin = child
-                .stdin
-                .take()
-                .ok_or_else(|| io::Error::other("missing routing worker stdin"))?;
-            stdin.write_all(&serde_json::to_vec(&input)?)?;
-        }
-        drop(child.stdin.take());
-        let status = child.wait()?;
-        if status.success() {
-            Ok(())
-        } else {
-            Err(CliError::InvalidConfiguration(format!(
-                "model route {operation} failed"
-            )))
-        }
+        let value = self
+            .client
+            .request(
+                method,
+                path,
+                body.as_ref()
+                    .map(serde_json::to_vec)
+                    .transpose()?
+                    .unwrap_or_default(),
+            )
+            .map_err(CliError::InvalidConfiguration)?;
+        serde_json::to_writer(io::stdout().lock(), &value)?;
+        Ok(())
     }
 }

@@ -9,7 +9,6 @@ use std::{
 use nix::unistd::Uid;
 use tokio::net::{UnixListener, UnixStream};
 
-pub type Client = UnixStream;
 pub type Server = UnixStream;
 pub struct Listener {
     inner: UnixListener,
@@ -66,22 +65,6 @@ impl Drop for Listener {
     }
 }
 
-pub async fn connect(path: &Path, personal: bool) -> io::Result<Client> {
-    let stream = UnixStream::connect(path).await?;
-    let trusted = if personal {
-        Uid::effective().as_raw()
-    } else {
-        0
-    };
-    if stream.peer_cred()?.uid() != trusted {
-        return Err(io::Error::new(
-            io::ErrorKind::PermissionDenied,
-            "Unexpected routing service owner.",
-        ));
-    }
-    Ok(stream)
-}
-
 pub type Peer = String;
 
 pub fn peer(stream: &Server) -> io::Result<Peer> {
@@ -124,19 +107,4 @@ pub fn process_principal(pid: u32) -> Option<String> {
 #[cfg(not(target_os = "macos"))]
 pub fn process_principal(pid: u32) -> Option<String> {
     Some(fs::metadata(format!("/proc/{pid}")).ok()?.uid().to_string())
-}
-
-pub fn personal_endpoint(profile: &Path) -> PathBuf {
-    use sha2::{Digest as _, Sha256};
-    let path = profile.with_extension("sock");
-    if path.as_os_str().as_encoded_bytes().len() < 100 {
-        return path;
-    }
-    // Peer credentials authenticate the service even for the short path required
-    // by sockaddr_un. Include the owner to separate independent CLI installations.
-    let digest = Sha256::digest(path.as_os_str().as_encoded_bytes());
-    PathBuf::from(format!(
-        "/tmp/abyss-route-{}-{digest:x}.sock",
-        Uid::effective()
-    ))
 }

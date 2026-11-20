@@ -109,17 +109,19 @@ fn dispatch(
                 )
                 .map_err(bad);
         }
-        // The interactive helper uses its own network identity for model discovery.
-        // This resource is available only to the OS principal that imported it.
-        (&Method::GET, super::PROFILE) => {
-            return store
+        (&Method::POST, super::MODELS) => {
+            let request: crate::catalog::ModelListRequest =
+                serde_json::from_slice(body).map_err(|_| bad("Invalid model list request."))?;
+            let routes = store
                 .get(owner)
-                .as_deref()
-                .map_or_else(
-                    || serde_json::to_value(crate::routing::Routes::default()),
-                    serde_json::to_value,
-                )
-                .map_err(|_| bad("Invalid saved profile."));
+                .ok_or_else(|| bad("No model catalog configured."))?;
+            let models = routes.list_models(&request).map_err(bad)?;
+            return if request.include_metadata {
+                serde_json::to_value(models)
+            } else {
+                serde_json::to_value(models.into_iter().map(|model| model.id).collect::<Vec<_>>())
+            }
+            .map_err(|_| bad("Cannot encode model list."));
         }
         (&Method::PUT, super::PROFILE) => Change::Restore(
             serde_json::from_slice(body).map_err(|_| bad("Invalid saved profile."))?,
