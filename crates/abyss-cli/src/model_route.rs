@@ -6,7 +6,7 @@ mod import;
 #[cfg(unix)]
 use std::os::unix::process::CommandExt as _;
 use std::{
-    fs::{self, OpenOptions},
+    fs::OpenOptions,
     io,
     path::PathBuf,
     process::{Command, Stdio},
@@ -58,7 +58,7 @@ pub struct Worker {
 
 impl Worker {
     fn new(paths: &CliPaths) -> Result<Self, CliError> {
-        let profile = paths.root().join("runtime/model-route.json");
+        let profile = paths.root().join("runtime/model-route");
         Ok(Self {
             client: client::Client::new(&profile).map_err(CliError::InvalidConfiguration)?,
             executable: std::env::current_exe()?.with_file_name("abyss-model-route"),
@@ -136,25 +136,6 @@ impl Worker {
     }
 
     pub fn run(&self, paths: &CliPaths, command: ModelRouteCommand) -> Result<(), CliError> {
-        match fs::File::open(&self.profile) {
-            Ok(file) => {
-                let legacy = import::json(file, 4 * 1024 * 1024)?;
-                self.client
-                    .request(
-                        Method::PUT,
-                        "/v1/model-route/profile",
-                        serde_json::to_vec(&legacy)?,
-                    )
-                    .map_err(CliError::InvalidConfiguration)?;
-                if let Err(error) = fs::remove_file(&self.profile)
-                    && error.kind() != io::ErrorKind::NotFound
-                {
-                    return Err(error.into());
-                }
-            }
-            Err(error) if error.kind() == io::ErrorKind::NotFound => {}
-            Err(error) => return Err(error.into()),
-        }
         let (method, path, body) = match command {
             ModelRouteCommand::State => (Method::GET, "/v1/model-route", None),
             ModelRouteCommand::Clear => (Method::DELETE, "/v1/model-route", None),

@@ -124,9 +124,6 @@ fn dispatch(
                 )
                 .map_err(bad);
         }
-        (&Method::PUT, super::PROFILE) => Change::Restore(
-            serde_json::from_slice(body).map_err(|_| bad("Invalid saved profile."))?,
-        ),
         (&Method::PUT, super::CATALOG) => {
             Change::Import(serde_json::from_slice(body).map_err(|_| bad("Invalid model catalog."))?)
         }

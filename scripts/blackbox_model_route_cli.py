@@ -88,9 +88,9 @@ def verify(distribution, root):
 
     with running_broker(binaries, root, env):
         legacy = runtime / "model-route.json"
-        legacy.write_text(json.dumps({"source": "legacy.json", "catalog": json.loads(path.read_text()), "selections": {}}))
-        assert cli("state")["source"] == "legacy.json"
-        assert not legacy.exists()
+        legacy.write_bytes(b"unrelated file")
+        assert cli("state")["source"] == ""
+        assert legacy.read_bytes() == b"unrelated file"
         assert cli("import-file", path)["source"] == str(path)
         # A running worker is enough for management. Removing only the fixture's
         # executable link catches any new subprocess use for readiness or commands.

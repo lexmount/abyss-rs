@@ -16,8 +16,6 @@ pub enum Change {
     Import(Load),
     Select(Select),
     Clear,
-    /// A client may offer its previous private profile once after upgrading.
-    Restore(Routes),
 }
 
 pub struct Store {
@@ -51,7 +49,7 @@ impl Store {
         })
     }
 
-    pub fn read(path: &Path) -> Result<Routes, &'static str> {
+    fn read(path: &Path) -> Result<Routes, &'static str> {
         let file = fs::File::open(path).map_err(|_| "Cannot open saved model routes.")?;
         if file
             .metadata()
@@ -71,22 +69,12 @@ impl Store {
     /// Acknowledgement follows atomic persistence and in-memory publication.
     pub fn update(&self, principal: &str, change: Change) -> Result<Value, &'static str> {
         let _serial = self.writer.lock();
-        let previous = self.get(principal);
-        if matches!(change, Change::Restore(_))
-            && let Some(previous) = &previous
-        {
-            return previous.snapshot();
-        }
-        let mut next = previous.as_deref().cloned().unwrap_or_default();
+        let mut next = self.get(principal).as_deref().cloned().unwrap_or_default();
         let state = match change {
             Change::Import(load) => next.load(load)?,
             Change::Select(update) => next.select(update)?,
             Change::Clear => {
                 next = Routes::default();
-                next.snapshot()?
-            }
-            Change::Restore(routes) => {
-                next = routes;
                 next.snapshot()?
             }
         };
@@ -118,7 +106,7 @@ mod tests {
     use serde_json::json;
 
     #[test]
-    fn rejected_edits_and_repeated_migration_preserve_the_owners_state() {
+    fn rejected_edits_and_clearing_another_owner_preserve_saved_state() {
         let directory = tempfile::tempdir().unwrap();
         let store = Store::open(directory.path().to_owned(), 1).unwrap();
         let load = serde_json::from_value(json!({
@@ -137,20 +125,10 @@ mod tests {
         assert!(store.update("100", Change::Select(invalid)).is_err());
         assert_eq!(store.get("100").unwrap().snapshot().unwrap(), imported);
         assert!(store.get("101").is_none());
-        let legacy = (*store.get("100").unwrap()).clone();
-        let cleared = store.update("100", Change::Clear).unwrap();
-        assert_eq!(
-            store
-                .update("100", Change::Restore(legacy.clone()))
-                .unwrap(),
-            cleared
-        );
-        assert_eq!(
-            store.update("101", Change::Restore(legacy)).unwrap(),
-            imported
-        );
+
+        let cleared = store.update("101", Change::Clear).unwrap();
         let restored = Store::open(directory.path().to_owned(), 2).unwrap();
-        assert_eq!(restored.get("100").unwrap().snapshot().unwrap(), cleared);
-        assert_eq!(restored.get("101").unwrap().snapshot().unwrap(), imported);
+        assert_eq!(restored.get("100").unwrap().snapshot().unwrap(), imported);
+        assert_eq!(restored.get("101").unwrap().snapshot().unwrap(), cleared);
     }
 }

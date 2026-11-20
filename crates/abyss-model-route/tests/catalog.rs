@@ -49,6 +49,9 @@ fn selections_survive_host_restarts_and_clear_when_the_source_changes() {
     let profile = dir.path().join("profile.json");
     let worker = support::Worker::start(&profile);
     let load = |name: &str| json!({"source":name,"catalog":catalog()});
+    let saved = json!({"source":"old.json","catalog":catalog(),"selections":{}});
+    assert_eq!(worker.request("PUT", "/profile", &saved).0, 404);
+    assert_eq!(worker.request("GET", "", &Value::Null).1["source"], "");
     let (status, imported) = worker.request("PUT", "/catalog", &load("file A.json"));
     assert_eq!(status, 200);
     assert!(

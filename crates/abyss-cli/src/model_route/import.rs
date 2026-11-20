@@ -7,12 +7,11 @@ use serde_json::{Value, json};
 
 use crate::{credential::CliCredentialStore, error::CliError, paths::CliPaths};
 
-pub(super) fn json(reader: impl Read, limit: usize) -> Result<Value, CliError> {
+fn read_catalog(reader: impl Read) -> Result<Value, CliError> {
+    const LIMIT: u32 = 2 * 1024 * 1024;
     let mut bytes = Vec::new();
-    reader
-        .take(u64::try_from(limit).unwrap_or(u64::MAX).saturating_add(1))
-        .read_to_end(&mut bytes)?;
-    if bytes.len() > limit {
+    reader.take(u64::from(LIMIT) + 1).read_to_end(&mut bytes)?;
+    if bytes.len() > usize::try_from(LIMIT).unwrap_or(usize::MAX) {
         return Err(CliError::InvalidConfiguration(
             "Model route document exceeds the size limit.".into(),
         ));
@@ -32,7 +31,7 @@ pub(super) fn file(path: &Path) -> Result<Value, CliError> {
             "Select a regular .json file.".into(),
         ));
     }
-    Ok(json!({"source":path, "catalog":json(File::open(&path)?, 2 * 1024 * 1024)?}))
+    Ok(json!({"source":path, "catalog":read_catalog(File::open(&path)?)?}))
 }
 
 pub(super) fn service(paths: &CliPaths, source: &str, sso: bool) -> Result<Value, CliError> {
@@ -75,5 +74,5 @@ pub(super) fn service(paths: &CliPaths, source: &str, sso: bool) -> Result<Value
     if !response.status().is_success() {
         return Err(invalid("Configuration service rejected the request."));
     }
-    Ok(json!({"source":source,"catalog":json(response, 2 * 1024 * 1024)?}))
+    Ok(json!({"source":source,"catalog":read_catalog(response)?}))
 }
