@@ -10,10 +10,11 @@ use std::{
 use parking_lot::{Mutex, RwLock};
 use serde_json::Value;
 
-use crate::routing::{Load, Routes, Select};
+use crate::catalog::Catalog;
+use crate::routing::{Routes, Select};
 
 pub enum Change {
-    Import(Load),
+    Import(Catalog),
     Select(Select),
     Clear,
 }
@@ -71,7 +72,7 @@ impl Store {
         let _serial = self.writer.lock();
         let mut next = self.get(principal).as_deref().cloned().unwrap_or_default();
         let state = match change {
-            Change::Import(load) => next.load(load)?,
+            Change::Import(catalog) => next.load(catalog)?,
             Change::Select(update) => next.select(update)?,
             Change::Clear => {
                 next = Routes::default();
@@ -110,11 +111,9 @@ mod tests {
         let directory = tempfile::tempdir().unwrap();
         let store = Store::open(directory.path().to_owned(), 1).unwrap();
         let load = serde_json::from_value(json!({
-            "source":"fixture", "catalog":{
-                "harness_providers":{"codex":["example"]},
-                "providers":{"example":{"base_url":"https://example.org/v1","models":["a"],
-                    "credentials":{"one":{"kind":"api_key","api_key":"fixture-only"}}}}
-            }
+            "harness_providers":{"codex":["example"]},
+            "providers":{"example":{"base_url":"https://example.org/v1","models":["a"],
+                "credentials":{"one":{"kind":"api_key","api_key":"fixture-only"}}}}
         }))
         .unwrap();
         let imported = store.update("100", Change::Import(load)).unwrap();

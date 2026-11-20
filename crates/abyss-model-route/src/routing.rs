@@ -10,15 +10,8 @@ use crate::catalog::{Catalog, ListedModel, ModelListRequest, Selection};
 
 #[derive(Clone, Default, Deserialize, Serialize)]
 pub struct Routes {
-    source: String,
     catalog: Catalog,
     selections: BTreeMap<String, Selection>,
-}
-
-#[derive(Deserialize, Serialize)]
-pub struct Load {
-    pub source: String,
-    pub catalog: Catalog,
 }
 
 #[derive(Deserialize, Serialize)]
@@ -62,25 +55,20 @@ impl Routes {
     }
 
     pub fn snapshot(&self) -> Result<Value, &'static str> {
-        Ok(
-            json!({"source": self.source, "catalog": self.catalog.choices()?, "selections": self.selections}),
-        )
+        Ok(json!({"catalog": self.catalog.choices()?, "selections": self.selections}))
     }
 
-    pub fn load(&mut self, load: Load) -> Result<Value, &'static str> {
-        let choices = load.catalog.choices()?;
+    pub fn load(&mut self, catalog: Catalog) -> Result<Value, &'static str> {
+        let choices = catalog.choices()?;
         self.selections.retain(|harness, selection| {
-            self.source == load.source
-                && self
-                    .catalog
-                    .resolve(harness, selection)
-                    .ok()
-                    .zip(load.catalog.resolve(harness, selection).ok())
-                    .is_some_and(|(old, new)| old.base_url == new.base_url)
+            self.catalog
+                .resolve(harness, selection)
+                .ok()
+                .zip(catalog.resolve(harness, selection).ok())
+                .is_some_and(|(old, new)| old.base_url == new.base_url)
         });
-        let response = json!({"source":load.source,"catalog":choices,"selections":self.selections});
-        self.source = load.source;
-        self.catalog = load.catalog;
+        let response = json!({"catalog":choices,"selections":self.selections});
+        self.catalog = catalog;
         Ok(response)
     }
 
@@ -160,21 +148,18 @@ mod tests {
 
     fn snapshot(key: &str) -> Value {
         json!({
-            "source": "service",
-            "catalog": {
-                "harness_providers": {"codex": ["missing", "other", "unresolved", "openai"]},
-                "providers": {
-                    "openai": {"base_url": null, "credentials": {
-                        "primary": {"kind": "api_key", "api_key": "fixture-unselected"}
-                    }},
-                    "unresolved": {"base_url": null, "credentials": {
-                        "primary": {"kind": "api_key", "api_key": "fixture-unresolved"}
-                    }},
-                    "other": {"base_url": "https://example.org/v1", "credentials": {
-                        "primary": {"kind": "api_key", "api_key": key},
-                        "subscription": {"kind": "account", "login": "fixture-user", "secret": "fixture-password"}
-                    }}
-                }
+            "harness_providers": {"codex": ["missing", "other", "unresolved", "openai"]},
+            "providers": {
+                "openai": {"base_url": null, "credentials": {
+                    "primary": {"kind": "api_key", "api_key": "fixture-unselected"}
+                }},
+                "unresolved": {"base_url": null, "credentials": {
+                    "primary": {"kind": "api_key", "api_key": "fixture-unresolved"}
+                }},
+                "other": {"base_url": "https://example.org/v1", "credentials": {
+                    "primary": {"kind": "api_key", "api_key": key},
+                    "subscription": {"kind": "account", "login": "fixture-user", "secret": "fixture-password"}
+                }}
             }
         })
     }
@@ -200,10 +185,7 @@ mod tests {
             state["catalog"]["providers"]["other"]["credentials"]["subscription"]["configured"],
             false
         );
-        assert_eq!(
-            serde_json::to_value(&routes).unwrap()["catalog"],
-            first["catalog"]
-        );
+        assert_eq!(serde_json::to_value(&routes).unwrap()["catalog"], first);
 
         let selection = json!({"provider":"other","credential":"primary","model":"model-b"});
         routes
@@ -259,7 +241,7 @@ mod tests {
                 ModifyAction::SetAuthToken("fixture-rotated".into())
             ]))
         );
-        let empty = json!({"source":"service","catalog":{"harness_providers":{},"providers":{}}});
+        let empty = json!({"harness_providers":{},"providers":{}});
         let state = routes.load(serde_json::from_value(empty).unwrap()).unwrap();
         assert_eq!(state["selections"], json!({}));
         assert_eq!(routes.inspect(&codex_call()), RequestDecision::Allow);
@@ -269,11 +251,11 @@ mod tests {
     fn provider_account_with_unrepresentable_headers_is_unavailable() {
         let mut routes = Routes::default();
         let load = serde_json::from_value(json!({
-            "source":"local", "catalog":{"harness_providers":{"codex":["example"]},
+            "harness_providers":{"codex":["example"]},
             "providers":{"example":{"base_url":"https://relay.example/api","credentials":{"team":{
                 "kind":"account","login":"unused","secret":"unused-secret",
                 "headers":{"Authorization":"Custom literal","X-Team":"team-7"}
-            }}}}}
+            }}}}
         }))
         .unwrap();
         let state = routes.load(load).unwrap();

@@ -31,28 +31,33 @@ fn executable_only_accepts_service_startup() {
 
 fn catalog() -> Value {
     json!({
-        "harness_providers": {"codex": ["relay", "openai"], "deepseek-harness": ["relay"], "claude-code": []},
-        "providers": {"relay": {
-            "base_url": "https://relay.example/custom/v1",
-            "credentials": {
-                "primary": {"kind":"api_key", "api_key":"fixture-api-key"},
-                "subscriber":{"kind":"account", "login":"fixture-login", "secret":"fixture-secret"}
-            },
-            "models":["model-a"]
-        }}
+        "harness_providers": {"codex": ["relay", "openai"], "deepseek-harness": ["relay"], "claude-code": ["anthropic"]},
+        "providers": {
+            "anthropic": {"credentials":{"team":{"kind":"api_key","api_key":"fixture-team"}}},
+            "relay": {
+                "base_url": "https://relay.example/custom/v1",
+                "credentials": {
+                    "primary": {"kind":"api_key", "api_key":"fixture-api-key"},
+                    "subscriber":{"kind":"account", "login":"fixture-login", "secret":"fixture-secret"}
+                },
+                "models":["model-a"]
+            }
+        }
     })
 }
 
 #[test]
-fn selections_survive_host_restarts_and_clear_when_the_source_changes() {
+fn selections_survive_restarts_and_follow_the_catalog_contents() {
     let dir = tempdir().unwrap();
     let profile = dir.path().join("profile.json");
     let worker = support::Worker::start(&profile);
-    let load = |name: &str| json!({"source":name,"catalog":catalog()});
     let saved = json!({"source":"old.json","catalog":catalog(),"selections":{}});
     assert_eq!(worker.request("PUT", "/profile", &saved).0, 404);
-    assert_eq!(worker.request("GET", "", &Value::Null).1["source"], "");
-    let (status, imported) = worker.request("PUT", "/catalog", &load("file A.json"));
+    assert_eq!(
+        worker.request("GET", "", &Value::Null).1["catalog"]["providers"],
+        json!({})
+    );
+    let (status, imported) = worker.request("PUT", "/catalog", &catalog());
     assert_eq!(status, 200);
     assert!(
         !imported.to_string().contains("fixture-api-key"),
@@ -88,6 +93,8 @@ fn selections_survive_host_restarts_and_clear_when_the_source_changes() {
         .map(|entry| entry.unwrap().path())
         .find(|p| p.extension().is_some_and(|e| e == "json"))
         .unwrap();
+    let persisted: Value = serde_json::from_slice(&fs::read(&durable).unwrap()).unwrap();
+    assert!(persisted.get("source").is_none());
     let hidden = durable.with_extension("held");
     fs::rename(&durable, &hidden).unwrap();
     assert_eq!(
@@ -101,6 +108,41 @@ fn selections_survive_host_restarts_and_clear_when_the_source_changes() {
     let (status, state) = restarted.request("GET", "", &Value::Null);
     assert_eq!(status, 200);
     assert_eq!(state["selections"]["codex"]["credential"], "primary");
-    let (_, changed) = restarted.request("PUT", "/catalog", &load("file B.json"));
-    assert_eq!(changed["selections"], json!({}));
+    assert!(state.get("source").is_none());
+    assert_eq!(
+        restarted.request("PUT", "/catalog", &catalog()),
+        (200, state.clone())
+    );
+
+    let selection = json!({"harness":"codex","selection":state["selections"]["codex"]});
+    let independent = json!({"provider":"anthropic","credential":"team","model":"model-b"});
+    assert_eq!(
+        restarted
+            .request(
+                "PUT",
+                "/selection",
+                &json!({"harness":"claude-code","selection":independent})
+            )
+            .0,
+        200
+    );
+    let mut no_credential = catalog();
+    no_credential["providers"]["relay"]["credentials"]
+        .as_object_mut()
+        .unwrap()
+        .remove("primary");
+    let mut no_provider = catalog();
+    no_provider["providers"]
+        .as_object_mut()
+        .unwrap()
+        .remove("relay");
+    let mut moved = catalog();
+    moved["providers"]["relay"]["base_url"] = json!("https://another.example/v1");
+    for replacement in [no_credential, no_provider, moved] {
+        let (status, changed) = restarted.request("PUT", "/catalog", &replacement);
+        assert_eq!(status, 200);
+        assert_eq!(changed["selections"], json!({"claude-code":independent}));
+        assert_eq!(restarted.request("PUT", "/catalog", &catalog()).0, 200);
+        assert_eq!(restarted.request("PUT", "/selection", &selection).0, 200);
+    }
 }

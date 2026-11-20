@@ -3,7 +3,7 @@ use std::{fs::File, io::Read, path::Path, time::Duration};
 
 use abyss_terminal_auth::CredentialStore as _;
 use reqwest::{Url, blocking::Client, redirect::Policy};
-use serde_json::{Value, json};
+use serde_json::Value;
 
 use crate::{credential::CliCredentialStore, error::CliError, paths::CliPaths};
 
@@ -31,7 +31,7 @@ pub(super) fn file(path: &Path) -> Result<Value, CliError> {
             "Select a regular .json file.".into(),
         ));
     }
-    Ok(json!({"source":path, "catalog":read_catalog(File::open(&path)?)?}))
+    read_catalog(File::open(path)?)
 }
 
 pub(super) fn service(paths: &CliPaths, source: &str, sso: bool) -> Result<Value, CliError> {
@@ -74,5 +74,5 @@ pub(super) fn service(paths: &CliPaths, source: &str, sso: bool) -> Result<Value
     if !response.status().is_success() {
         return Err(invalid("Configuration service rejected the request."));
     }
-    Ok(json!({"source":source,"catalog":read_catalog(response)?}))
+    read_catalog(response)
 }

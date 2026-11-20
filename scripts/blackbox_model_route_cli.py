@@ -89,25 +89,31 @@ def verify(distribution, root):
     with running_broker(binaries, root, env):
         legacy = runtime / "model-route.json"
         legacy.write_bytes(b"unrelated file")
-        assert cli("state")["source"] == ""
+        assert cli("state")["catalog"]["providers"] == {}
         assert legacy.read_bytes() == b"unrelated file"
-        assert cli("import-file", path)["source"] == str(path)
+        imported = cli("import-file", path)
+        assert "source" not in imported and imported["catalog"]["harness_providers"] == {"codex": ["test"]}
         # A running worker is enough for management. Removing only the fixture's
         # executable link catches any new subprocess use for readiness or commands.
         (binaries / "abyss-model-route").unlink()
-        assert cli("state")["source"] == str(path)
+        assert cli("state") == imported
         (binaries / "abyss-model-route").symlink_to(distribution / "abyss-model-route")
         bad_file = root / "bad.txt"
         bad_file.write_bytes(path.read_bytes())
         bad = subprocess.run([binaries / "abyss", "model-route", "import-file", bad_file], env=env, capture_output=True)
         assert bad.returncode and b"fixture-private" not in bad.stderr
         assert cli("models", "test", "team") == [{"id": "a"}]
+        selected = cli("select", "codex", "test", "team", "a")["selections"]
+        assert selected == {"codex": {"provider": "test", "credential": "team", "model": "a"}}
+        renamed = path.with_name("renamed.json")
+        path.rename(renamed)
+        assert cli("import-file", renamed)["selections"] == selected
         with ThreadingHTTPServer(("127.0.0.1", 0), partial(CatalogHandler, directory=fixtures)) as server:
             server.bearers = []
             Thread(target=server.serve_forever, daemon=True).start()
-            url = f"http://127.0.0.1:{server.server_port}/catalog.json"
+            url = f"http://127.0.0.1:{server.server_port}/renamed.json"
             try:
-                assert cli("import-url", url)["source"] == url
+                assert cli("import-url", url)["selections"] == selected
                 auth = root / "auth"
                 auth.mkdir(exist_ok=True, mode=0o700)
                 credentials = auth / "credentials.json"
@@ -115,15 +121,13 @@ def verify(distribution, root):
                     "expires_at": "2099-01-01T00:00:00Z", "user": {"id": "00000000-0000-0000-0000-000000000000",
                     "email": "fixture@example.invalid", "name": None, "roles": []}}))
                 credentials.chmod(0o600)
-                assert cli("import-url", url, "--sso")["source"] == url
+                assert cli("import-url", url, "--sso")["selections"] == selected
                 denied = subprocess.run([binaries / "abyss", "model-route", "import-url",
                     url.replace("127.0.0.1", "localhost"), "--sso"], env=env, capture_output=True)
                 assert denied.returncode and b"fixture-login" not in denied.stderr
                 assert server.bearers == [None, "Bearer fixture-login"]
             finally:
                 server.shutdown()
-        selected = cli("select", "codex", "test", "team", "a")["selections"]
-        assert selected == {"codex": {"provider": "test", "credential": "team", "model": "a"}}
         assert cli("state")["selections"] == selected
     with running_broker(binaries, root, env):
         assert cli("state")["selections"] == selected
