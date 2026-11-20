@@ -37,8 +37,10 @@ class ReleaseArtifactTests(unittest.TestCase):
             "abyss",
             "abyss-broker",
             "abyss-delivery-plugin",
+            "abyss-model-route",
             "abyss-broker.exe",
             "abyss-delivery-plugin.exe",
+            "abyss-model-route.exe",
         ):
             (self.binaries / name).write_bytes(f"fixture executable: {name}".encode())
         self.artifacts = self.root / "artifacts"
@@ -109,6 +111,7 @@ class ReleaseArtifactTests(unittest.TestCase):
             {
                 "abyss-broker.exe",
                 "abyss-delivery-plugin.exe",
+                "abyss-model-route.exe",
                 "abyss_callout_abi.h",
                 "LICENSE",
                 "VERSION",
@@ -129,7 +132,7 @@ class ReleaseArtifactTests(unittest.TestCase):
             no_local, other_payload = read_artifact(self.archives[target, "no-local"])
             self.assertEqual(default["features"]["abyss-cli"], ["local"])
             self.assertEqual(no_local["features"]["abyss-cli"], [])
-            for name in ("abyss-broker", "abyss-delivery-plugin"):
+            for name in ("abyss-broker", "abyss-delivery-plugin", "abyss-model-route"):
                 self.assertEqual(payload[name], other_payload[name])
             self.assertTrue(
                 (self.artifacts / target / f"SHA256SUMS.{target}").is_file()

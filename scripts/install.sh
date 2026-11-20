@@ -25,7 +25,7 @@ usage() {
     cat <<'EOF'
 Usage: sh install.sh [--prefix DIRECTORY] [--version VERSION]
 
-Download and install abyss, abyss-broker, and abyss-delivery-plugin.
+Download and install abyss, abyss-broker, abyss-delivery-plugin, and abyss-model-route.
 Supports macOS ARM64 and Linux x86_64 with systemd. No Rust toolchain required.
 
   --prefix DIRECTORY  Binary installation prefix (default: /usr/local).
@@ -108,13 +108,13 @@ main() {
 
     # Extract only known files to stdout, never archive-supplied filesystem paths.
     mkdir "$work/runtime"
-    for file in abyss abyss-broker abyss-delivery-plugin abyss-broker@.service VERSION LICENSE; do
+    for file in abyss abyss-broker abyss-delivery-plugin abyss-model-route abyss-broker@.service VERSION LICENSE; do
         tar -xOzf "$work/$archive" "$file" > "$work/runtime/$file" \
             || fail "invalid release archive: missing $file"
         [ -s "$work/runtime/$file" ] || fail "empty release file: $file"
     done
     [ "$(cat "$work/runtime/VERSION")" = "$version" ] || fail 'archive version does not match the release'
-    for binary in abyss abyss-broker abyss-delivery-plugin; do
+    for binary in abyss abyss-broker abyss-delivery-plugin abyss-model-route; do
         chmod 0755 "$work/runtime/$binary"
         "$work/runtime/$binary" --help >/dev/null || fail "$binary cannot run on this system"
         [ ! -d "$install_bin_dir/$binary" ] || fail "destination is a directory: $install_bin_dir/$binary"
@@ -133,7 +133,7 @@ main() {
     if [ "$use_sudo" = yes ]; then sudo -v; fi
     run_install mkdir -p "$install_bin_dir"
     bin_stage=$(run_install mktemp -d "$install_bin_dir/.abyss-install.XXXXXX")
-    for binary in abyss abyss-broker abyss-delivery-plugin; do
+    for binary in abyss abyss-broker abyss-delivery-plugin abyss-model-route; do
         run_install install -m 0755 "$work/runtime/$binary" "$bin_stage/$binary"
     done
     if [ "$platform" = Linux ]; then
@@ -143,7 +143,7 @@ main() {
             "$work/runtime/abyss-broker@.service" > "$work/unit"
         run_install install -m 0644 "$work/unit" "$service_stage/abyss-broker@.service"
     fi
-    for binary in abyss abyss-broker abyss-delivery-plugin; do
+    for binary in abyss abyss-broker abyss-delivery-plugin abyss-model-route; do
         run_install mv -f "$bin_stage/$binary" "$install_bin_dir/$binary"
     done
     if [ "$platform" = Linux ]; then

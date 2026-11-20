@@ -119,6 +119,7 @@ pub async fn serve(
         traffic.clone(),
         network.clone(),
     )
+    .with_explicit_credential(&bearer_token)
     .with_plugins(plugin_server.client(), hooks.clone());
     let diagnostics =
         BrokerDiagnosticsService::new(actual_addr, proxy_endpoint_label, flow_diagnostics).await;

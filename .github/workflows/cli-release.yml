@@ -108,7 +108,7 @@ jobs:
         env:
           CLI_TARGET: ${{ matrix.target }}
         run: |
-          packages=(-p abyss-broker -p abyss-delivery-plugin -p abyss-query-cli)
+          packages=(-p abyss-broker -p abyss-delivery-plugin -p abyss-model-route -p abyss-query-cli)
           if [[ "$RUNNER_OS" != Windows ]]; then
             packages+=(-p abyss-cli)
           fi

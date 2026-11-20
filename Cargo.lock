@@ -143,6 +143,7 @@ dependencies = [
  "serde",
  "serde_json",
  "sha2",
+ "subtle",
  "tempfile",
  "thiserror",
  "time",
@@ -158,6 +159,29 @@ dependencies = [
  "windows",
  "zeroize",
  "zstd",
+]
+
+[[package]]
+name = "abyss-model-route"
+version = "1.7.0"
+dependencies = [
+ "abyss-sdk",
+ "bytes",
+ "clap",
+ "http-body-util",
+ "hyper",
+ "hyper-util",
+ "jiff",
+ "libc",
+ "nix 0.31.3",
+ "parking_lot",
+ "reqwest",
+ "serde",
+ "serde_json",
+ "sha2",
+ "tempfile",
+ "tokio",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]

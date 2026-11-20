@@ -88,6 +88,9 @@ pub fn ensure_started_with_progress(
     let proxy_addr = wait_for_broker(&endpoint)?;
     let delivery = DeliveryWorker::ensure_running(paths, &endpoint)?;
     sync_delivery_credential(paths, &delivery)?;
+    if crate::model_route::Worker::configured(paths) {
+        crate::model_route::Worker::ensure(paths, &endpoint)?;
+    }
     Ok(RunningBroker {
         endpoint,
         proxy_addr,

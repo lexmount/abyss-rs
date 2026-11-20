@@ -72,6 +72,17 @@ impl CliCommand {
             ParsedCommand::Login(args) => AuthCommandRunner::login(&args),
             ParsedCommand::Logout(args) => AuthCommandRunner::logout(&args),
             ParsedCommand::Proxy { command } => ProxyCommandRunner::run(command, running.as_ref()),
+            ParsedCommand::ModelRoute { command } => {
+                let paths = CliPaths::from_env()?;
+                if let Some(endpoint) = crate::broker::BrokerEndpoint::discover(&paths)? {
+                    endpoint.require_owned_explicit()?;
+                    crate::model_route::Worker::ensure(&paths, &endpoint)?.run(&paths, command)
+                } else {
+                    let running = ensure_started(&paths, None, None)?;
+                    crate::model_route::Worker::ensure(&paths, running.endpoint())?
+                        .run(&paths, command)
+                }
+            }
             ParsedCommand::Config { command } => {
                 ConfigCommandRunner::run(command, running.as_ref())
             }
@@ -250,10 +261,12 @@ impl ProxyCommandRunner {
                 let proxy_url = if let Some(proxy_url) = args.proxy_url {
                     proxy_url
                 } else {
-                    format!(
-                        "http://{}",
-                        require_bootstrapped_runtime(running)?.proxy_addr()
-                    )
+                    let running = require_bootstrapped_runtime(running)?;
+                    crate::model_route::Worker::proxy_url(
+                        &paths,
+                        running.endpoint(),
+                        running.proxy_addr(),
+                    )?
                 };
                 let environment = platform_adapter().proxy_environment(&proxy_url);
                 std::io::stdout().write_all(environment.as_bytes())?;
@@ -553,7 +566,11 @@ fn run_agent(args: &RunArgs, running: Option<&RunningBroker>) -> Result<(), CliE
     let running = require_bootstrapped_runtime(running)?;
     let proxy_addr = running.proxy_addr();
     let mut command = ProcessCommand::new(&args.command[0]);
-    let proxy_url = format!("http://{proxy_addr}");
+    let proxy_url = crate::model_route::Worker::proxy_url(
+        &CliPaths::from_env()?,
+        running.endpoint(),
+        proxy_addr,
+    )?;
     command
         .args(&args.command[1..])
         .envs(platform_adapter().proxy_environment_variables(&proxy_url));

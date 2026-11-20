@@ -112,7 +112,7 @@ impl AgentRequestParser {
         let mut context = AgentRequestContext {
             flow_id: request.flow.flow_id.to_string(),
             request_id,
-            ingress: request.flow.ingress.source_label().to_owned(),
+            ingress: request.flow.ingress.inspection_label().to_owned(),
             source_process: request.flow.source_process.as_ref().map(|source| {
                 RequestSourceProcess {
                     pid: source.pid,

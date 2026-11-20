@@ -23,7 +23,7 @@ EOF
 chmod 0755 "$work/commands/curl"
 cat "$release/install.sh" | env PATH="$work/commands:$PATH" \
     ABYSS_RELEASE_FIXTURE="$release" DESTDIR="$work/stage" sh
-for binary in abyss abyss-broker abyss-delivery-plugin; do
+for binary in abyss abyss-broker abyss-delivery-plugin abyss-model-route; do
     "$work/stage/usr/local/bin/$binary" --help >/dev/null
 done
 "$work/stage/usr/local/bin/abyss" version

@@ -7,7 +7,7 @@ usage() {
   cat <<'EOF'
 Usage: bash scripts/install-cli.sh [--prefix DIRECTORY]
 
-Build and install abyss, abyss-broker, and abyss-delivery-plugin from source.
+Build and install abyss, abyss-broker, abyss-delivery-plugin, and abyss-model-route from source.
 Supports macOS and Linux. Requires Rust and a native C/C++ build toolchain.
 
   --prefix DIRECTORY  Install binaries in DIRECTORY/bin (default: /usr/local).
@@ -81,13 +81,13 @@ host_target="$(rustc -vV | sed -n 's/^host: //p')"
 target_dir="${CARGO_TARGET_DIR:-${repo_root}/target}"
 [[ "$target_dir" == /* ]] || target_dir="${repo_root}/${target_dir}"
 artifact_dir="${target_dir}/${host_target}/release"
-binaries=(abyss abyss-broker abyss-delivery-plugin)
+binaries=(abyss abyss-broker abyss-delivery-plugin abyss-model-route)
 
 printf 'Building the Abyss CLI runtime for %s...\n' "$host_target"
 cargo build --release --locked \
   --manifest-path "${repo_root}/Cargo.toml" \
   --target "$host_target" --target-dir "$target_dir" \
-  --package abyss-cli --package abyss-broker --package abyss-delivery-plugin
+  --package abyss-cli --package abyss-broker --package abyss-delivery-plugin --package abyss-model-route
 
 for binary in "${binaries[@]}"; do
   [[ -x "${artifact_dir}/${binary}" ]] || fail "build did not produce ${artifact_dir}/${binary}"
