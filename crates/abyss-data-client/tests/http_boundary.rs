@@ -79,6 +79,7 @@ fn transport(timeout: Duration, retries: u8) -> HttpTransport {
 
 #[test]
 fn limits_content_length_and_chunked_bodies() {
+    let client = transport(Duration::from_secs(2), 0);
     for response in [
         "HTTP/1.1 200 OK\r\nContent-Length: 2048\r\n\r\n".to_owned(),
         format!(
@@ -89,7 +90,7 @@ fn limits_content_length_and_chunked_bodies() {
         let server = Fixture::plain(vec![(response, Duration::ZERO)]);
         assert!(
             matches!(
-                transport(Duration::from_secs(2), 0).get::<Value>(&server.url, None),
+                client.get::<Value>(&server.url, None),
                 Err(DataClientError::ResponseTooLarge { .. })
             ),
             "both declared and streaming bodies must respect the size budget"
@@ -102,22 +103,24 @@ fn limits_content_length_and_chunked_bodies() {
 fn retries_transient_gets_but_not_auth_posts() {
     let unavailable = "HTTP/1.1 503 Unavailable\r\nContent-Length: 0\r\nRetry-After: 0\r\n\r\n";
     let success = "HTTP/1.1 200 OK\r\nContent-Length: 2\r\n\r\n{}";
+    let get_client = transport(Duration::from_secs(2), 1);
     let server = Fixture::plain(vec![
         (unavailable.into(), Duration::ZERO),
         (success.into(), Duration::ZERO),
     ]);
     assert_eq!(
-        transport(Duration::from_secs(2), 1)
+        get_client
             .get::<Value>(&server.url, None)
             .expect("retried GET"),
         json!({}),
         "GET retries"
     );
     server.finish();
+    let post_client = transport(Duration::from_secs(2), 3);
     let server = Fixture::plain(vec![(unavailable.into(), Duration::ZERO)]);
     assert!(
         matches!(
-            transport(Duration::from_secs(2), 3).post::<Value, _>(&server.url, None, &json!({})),
+            post_client.post::<Value, _>(&server.url, None, &json!({})),
             Err(DataClientError::Http { status: 503 })
         ),
         "never replay token exchange or other POSTs"
@@ -159,6 +162,14 @@ fn private_ca_is_trusted_only_when_explicitly_configured() {
         rustls::pki_types::PrivatePkcs8KeyDer::from(certificate.signing_key.serialize_der()).into(),
     )
     .expect("TLS configuration");
+    let untrusted = transport(Duration::from_secs(2), 0);
+    let trusted = HttpTransport::new(
+        Duration::from_secs(2),
+        1024,
+        Some(certificate.cert.pem().as_bytes()),
+        0,
+    )
+    .expect("custom CA");
     let listener = TcpListener::bind("127.0.0.1:0").expect("bind TLS");
     listener.set_nonblocking(true).expect("nonblocking TLS");
     let url = Url::parse(&format!(
@@ -204,18 +215,9 @@ fn private_ca_is_trusted_only_when_explicitly_configured() {
         }
     });
     assert!(
-        transport(Duration::from_secs(2), 0)
-            .get::<Value>(&url, None)
-            .is_err(),
+        untrusted.get::<Value>(&url, None).is_err(),
         "untrusted private certificate rejected"
     );
-    let trusted = HttpTransport::new(
-        Duration::from_secs(2),
-        1024,
-        Some(certificate.cert.pem().as_bytes()),
-        0,
-    )
-    .expect("custom CA");
     assert_eq!(
         trusted.get::<Value>(&url, None).expect("trusted TLS"),
         json!({}),
