@@ -37,6 +37,9 @@ use windows_sys::Win32::{
     },
 };
 
+#[cfg(test)]
+mod tests;
+
 pub type Server = NamedPipeServer;
 pub type Peer = OwnedHandle;
 
@@ -122,12 +125,14 @@ impl Listener {
     }
 
     fn instance(path: &Path, first: bool) -> io::Result<Server> {
-        // Authenticated users can send/receive data and read the pipe owner. They
-        // cannot create another pipe instance (FILE_APPEND_DATA shares that bit).
+        // Authenticated users can send/receive data and read the pipe owner.
+        // CreateFileW also requires FILE_READ_ATTRIBUTES (0x80), even with a
+        // narrow data/READ_CONTROL/SYNCHRONIZE request. Keep FILE_APPEND_DATA
+        // excluded because it also grants creation of another pipe instance.
         let owner = process_principal(std::process::id())
             .ok_or_else(|| io::Error::other("unknown routing service owner"))?;
         let sd = LocalAllocation::descriptor(&format!(
-            "O:{owner}D:P(A;;GA;;;SY)(A;;GA;;;BA)(A;;GA;;;OW)(A;;0x120003;;;AU)"
+            "O:{owner}D:P(A;;GA;;;SY)(A;;GA;;;BA)(A;;GA;;;OW)(A;;0x120083;;;AU)"
         ))?;
         let mut attributes = SECURITY_ATTRIBUTES {
             nLength: u32::try_from(size_of::<SECURITY_ATTRIBUTES>()).map_err(io::Error::other)?,
