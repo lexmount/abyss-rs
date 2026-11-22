@@ -6,6 +6,7 @@ import json
 import socketserver
 import tempfile
 from contextlib import contextmanager
+from functools import partial
 from pathlib import Path
 
 from blackbox_abyss_broker_transparent_upstream import framed_connection
@@ -119,6 +120,23 @@ def environment(directory):
             server.close()
 
 
+def send_turn(broker, request):
+    wire = json.dumps(request).encode()
+    with framed_connection(
+        broker,
+        "plain.invalid",
+        80,
+        application_id="com.openai.codex.helper",
+    ) as connection:
+        connection.sendall(
+            b"POST /backend-api/f/conversation HTTP/1.1\r\nHost: chatgpt.com\r\n"
+            b"Originator: codex_chatgpt_desktop\r\nContent-Type: application/json\r\n"
+            + f"Content-Length: {len(wire)}\r\nConnection: close\r\n\r\n".encode()
+            + wire
+        )
+        assert read_all(connection).startswith(b"HTTP/1.1 200")
+
+
 def replay(directory, broker, origin, turns, inspected=False):
     endpoint = json.loads((directory / "startup.json").read_text())["plugin_endpoint"]
     plugin = Plugin(endpoint, inspected)
@@ -126,24 +144,7 @@ def replay(directory, broker, origin, turns, inspected=False):
     session = turns[1][0]["conversation_id"]
     try:
         for index, (request, _, answer, answer_id) in enumerate(turns):
-
-            def send():
-                wire = json.dumps(request).encode()
-                with framed_connection(
-                    broker,
-                    "plain.invalid",
-                    80,
-                    application_id="com.openai.codex.helper",
-                ) as connection:
-                    connection.sendall(
-                        b"POST /backend-api/f/conversation HTTP/1.1\r\nHost: chatgpt.com\r\n"
-                        b"Originator: codex_chatgpt_desktop\r\nContent-Type: application/json\r\n"
-                        + f"Content-Length: {len(wire)}\r\nConnection: close\r\n\r\n".encode()
-                        + wire
-                    )
-                    assert read_all(connection).startswith(b"HTTP/1.1 200")
-
-            events = plugin.observe(send, 2)
+            events = plugin.observe(partial(send_turn, broker, request), 2)
             assert [e["side"] for e in events] == ["request", "response"]
             user = request["messages"][-1]
             expected = [
