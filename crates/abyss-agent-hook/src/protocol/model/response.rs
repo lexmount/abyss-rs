@@ -43,5 +43,7 @@ pub struct ResponseContent {
     pub usage: Option<TokenUsage>,
     pub model: Option<String>,
     pub response_id: Option<String>,
+    /// Conversation identity assigned by a provider during the first response.
+    pub session_id: Option<String>,
     pub event_types: Vec<String>,
 }

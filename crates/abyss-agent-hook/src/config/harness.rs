@@ -92,7 +92,7 @@ impl<'de> Deserialize<'de> for HarnessUsageConfig {
                 }
                 continue;
             }
-            if harness.matchers.is_empty() {
+            if harness.matchers.is_empty() && harness_id.as_str() != "chatgpt" {
                 return Err(D::Error::custom(format!(
                     "custom Harness `{harness_id}` requires at least one matcher"
                 )));

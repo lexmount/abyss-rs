@@ -1,5 +1,6 @@
 //! Built-in and configured Harness detection over generic request metadata.
 
+mod chatgpt;
 mod claude_code;
 mod claude_desktop;
 mod codex;
@@ -37,12 +38,7 @@ impl HarnessRegistry {
         exchange: &HttpExchange,
         config: &HarnessUsageConfig,
     ) -> Option<HarnessDetection> {
-        Self::detect(
-            &exchange.flow,
-            exchange.request.headers(),
-            exchange.request.uri().path(),
-            config,
-        )
+        Self::recognize_request(&exchange.flow, &exchange.request, config, true)
     }
 
     pub fn detect_websocket(
@@ -64,6 +60,26 @@ impl HarnessRegistry {
         config: &HarnessUsageConfig,
     ) -> Option<HarnessDetection> {
         Self::recognize(flow, headers, path, config, true)
+    }
+
+    pub(crate) fn recognize_request<B>(
+        flow: &FlowContext,
+        request: &http::Request<B>,
+        config: &HarnessUsageConfig,
+        apply_audit_policy: bool,
+    ) -> Option<HarnessDetection> {
+        if let Some(source) = chatgpt::detect(flow, request, config) {
+            // Chat and Codex share a helper. Disabling chat must not relabel its turns.
+            return (!apply_audit_policy || config.enabled_for_harness(source.harness_id.as_str()))
+                .then_some(source);
+        }
+        Self::recognize(
+            flow,
+            request.headers(),
+            request.uri().path(),
+            config,
+            apply_audit_policy,
+        )
     }
 
     /// Recognition can be reused independently of observation enablement.
@@ -334,6 +350,60 @@ mod tests {
                 .as_str(),
             "deepseek-harness"
         );
+    }
+
+    #[test]
+    fn desktop_chat_and_codex_share_a_helper_but_obey_independent_audit_policies() {
+        let flow = FlowContext::from_optional_addrs(
+            None,
+            None,
+            OriginalDestination::from(SocketAddr::from(([127, 0, 0, 1], 443))),
+            TransparentProtocol::PlainHttp,
+            Some(
+                SourceProcess::new(None, Some("codex".to_owned()), None)
+                    .with_application_id(Some("com.openai.codex.helper".to_owned())),
+            ),
+        );
+        let disabled: HarnessUsageConfig = serde_json::from_value(serde_json::json!({
+            "harnesses":{"chatgpt":{"enabled":false}}
+        }))
+        .unwrap();
+        for (method, url, expected) in [
+            (
+                "POST",
+                "https://chatgpt.com/backend-api/f/conversation",
+                "chatgpt",
+            ),
+            (
+                "POST",
+                "https://chatgpt.com/backend-api/codex/responses",
+                "codex",
+            ),
+            (
+                "GET",
+                "https://chatgpt.com/backend-api/f/conversation",
+                "codex",
+            ),
+            (
+                "POST",
+                "https://gateway.example/backend-api/f/conversation",
+                "codex",
+            ),
+        ] {
+            let request = http::Request::builder()
+                .method(method)
+                .uri(url)
+                .header("originator", "codex_cli_rs")
+                .body(())
+                .unwrap();
+            let recognized =
+                HarnessRegistry::recognize_request(&flow, &request, &disabled, false).unwrap();
+            assert_eq!(recognized.harness_id.as_str(), expected);
+            assert_eq!(
+                HarnessRegistry::recognize_request(&flow, &request, &disabled, true).is_some(),
+                expected == "codex"
+            );
+        }
     }
 
     #[test]

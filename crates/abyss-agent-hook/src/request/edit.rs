@@ -64,11 +64,12 @@ impl ModelLocation {
         if !payload.is_object() {
             return None;
         }
-        let protocol = ProtocolDetector::detect_request(request.head.uri().path(), Some(payload))?;
+        let protocol = ProtocolDetector::detect_request(request.flow, request.head, Some(payload))?;
         let supported = match request.transport {
             RequestTransport::Http => matches!(
                 protocol,
-                LlmProtocol::OpenAi(_) | LlmProtocol::Anthropic(AnthropicProtocol::Messages)
+                LlmProtocol::OpenAi(OpenAiProtocol::Responses | OpenAiProtocol::ChatCompletions)
+                    | LlmProtocol::Anthropic(AnthropicProtocol::Messages)
             ),
             _ => protocol == LlmProtocol::OpenAi(OpenAiProtocol::Responses),
         };

@@ -214,6 +214,9 @@ async fn http_prepared_requests_reuse_the_same_projection_and_emit_identical_eve
             LlmProtocol::OpenAi(OpenAiProtocol::Responses) => {
                 request_content::<ResponsesParser>(&request_body)
             }
+            LlmProtocol::OpenAi(OpenAiProtocol::ChatGptConversation) => {
+                request_content::<crate::protocol::openai::chatgpt::ChatGptParser>(&request_body)
+            }
             LlmProtocol::OpenAi(OpenAiProtocol::ChatCompletions) => {
                 request_content::<ChatCompletionsParser>(&request_body)
             }

@@ -1,6 +1,7 @@
 //! OpenAI-family protocol dispatch; each dialect owns its wire parser.
 
 pub mod chat_completions;
+pub mod chatgpt;
 pub mod responses;
 pub mod shared;
 
@@ -17,6 +18,7 @@ pub fn parse_openai_exchange(
         super::OpenAiProtocol::ChatCompletions => {
             chat_completions::parse_chat_completions_exchange(exchange)
         }
+        super::OpenAiProtocol::ChatGptConversation => chatgpt::parse_exchange(exchange),
         super::OpenAiProtocol::Responses => responses::parse_responses_exchange(exchange),
     }
 }

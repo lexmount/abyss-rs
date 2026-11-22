@@ -4,7 +4,9 @@ use super::{
     AnthropicProtocol, LlmProtocol, OpenAiProtocol,
     anthropic::{claude_web::ClaudeWebParser, messages::MessagesParser},
     model::request::RequestContent,
-    openai::{chat_completions::ChatCompletionsParser, responses::ResponsesParser},
+    openai::{
+        chat_completions::ChatCompletionsParser, chatgpt::ChatGptParser, responses::ResponsesParser,
+    },
     parser::ProtocolParser,
 };
 use serde_json::Value;
@@ -17,6 +19,9 @@ impl RequestParser {
         truncated: bool,
     ) -> RequestContent {
         match protocol {
+            LlmProtocol::OpenAi(OpenAiProtocol::ChatGptConversation) => {
+                ChatGptParser::parse_request(payload, truncated)
+            }
             LlmProtocol::OpenAi(OpenAiProtocol::Responses) => {
                 ResponsesParser::parse_request(payload, truncated)
             }
