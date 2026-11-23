@@ -1,4 +1,4 @@
-//! ChatGPT desktop mode attribution from the source application and its HTTP operation.
+//! `ChatGPT` desktop mode attribution from the source application and its HTTP operation.
 
 use abyss_mitm::{FlowContext, SourceProcess};
 use http::{Method, Request};

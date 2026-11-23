@@ -2,7 +2,7 @@
 
 use http::HeaderMap;
 
-pub(crate) use crate::http_metadata::{flow_server_name, header, request_host};
+pub use crate::http_metadata::{flow_server_name, header, request_host};
 
 /// Reads `OpenCode`'s session headers without treating them as client identity.
 pub fn opencode_session_id(headers: &HeaderMap) -> Option<&str> {

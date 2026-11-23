@@ -10,7 +10,7 @@ use serde::{Deserialize, Deserializer, Serialize, Serializer, de::Error as _};
 pub enum BuiltInHarness {
     /// OpenAI Codex CLI or app traffic.
     Codex,
-    /// ChatGPT desktop chat mode.
+    /// `ChatGPT` desktop chat mode.
     ChatGpt,
     /// Anthropic Claude Code traffic.
     ClaudeCode,
