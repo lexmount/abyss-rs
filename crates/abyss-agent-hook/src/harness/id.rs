@@ -10,6 +10,8 @@ use serde::{Deserialize, Deserializer, Serialize, Serializer, de::Error as _};
 pub enum BuiltInHarness {
     /// OpenAI Codex CLI or app traffic.
     Codex,
+    /// `ChatGPT` desktop chat mode.
+    ChatGpt,
     /// Anthropic Claude Code traffic.
     ClaudeCode,
     /// Anthropic Claude Desktop traffic.
@@ -32,6 +34,7 @@ impl BuiltInHarness {
     pub const fn id(self) -> &'static str {
         match self {
             Self::Codex => "codex",
+            Self::ChatGpt => "chatgpt",
             Self::ClaudeCode => "claude-code",
             Self::ClaudeDesktop => "claude-desktop",
             Self::DeepSeekHarness => "deepseek-harness",
@@ -60,6 +63,7 @@ impl HarnessId {
         matches!(
             self.as_str(),
             "codex"
+                | "chatgpt"
                 | "claude-code"
                 | "claude-desktop"
                 | "deepseek-harness"

@@ -56,6 +56,7 @@ impl ProtocolParser for ResponsesParser {
             || (input.capture_truncated && !complete_snapshot);
         let parsed = ResponsesResponse::assemble(values, incomplete);
         ResponseContent {
+            session_id: None,
             has_content: !parsed.is_empty(),
             conversation: parsed.conversation(),
             usage: best_usage(values),

@@ -42,6 +42,7 @@ impl AnthropicContentParser {
         let response = AnthropicResponse::assemble(values, input.is_incomplete());
         let conversation = response.conversation();
         ResponseContent {
+            session_id: None,
             has_content: !conversation.entries.is_empty(),
             conversation,
             usage: best_usage(values),

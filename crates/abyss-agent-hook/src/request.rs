@@ -44,7 +44,7 @@ impl AgentRequestParser {
             RequestTransport::Http => json,
             _ => json.map(|value| value.get("response").unwrap_or(value)),
         };
-        let protocol = ProtocolDetector::detect_request(request.head.uri().path(), payload);
+        let protocol = ProtocolDetector::detect_request(request.flow, request.head, payload);
         ParsedAgentRequest {
             projection: protocol.map(|protocol| {
                 (
@@ -178,33 +178,28 @@ impl AgentRequestParser {
         config: &HarnessUsageConfig,
         payload: Option<&serde_json::Value>,
     ) -> Option<RequestHarness> {
-        HarnessRegistry::recognize(
-            request.flow,
-            request.head.headers(),
-            request.head.uri().path(),
-            config,
-            false,
+        HarnessRegistry::recognize_request(request.flow, request.head, config, false).map(
+            |detection| {
+                let declaration = HarnessRegistry::declare(
+                    &detection.harness_id,
+                    &DeclarationSource {
+                        headers: matches!(request.transport, RequestTransport::Http)
+                            .then_some(request.head.headers()),
+                        connection_headers: (!matches!(request.transport, RequestTransport::Http))
+                            .then_some(request.head.headers()),
+                        client_metadata: payload.and_then(|value| value.get("client_metadata")),
+                    },
+                );
+                RequestHarness {
+                    id: detection.harness_id.as_str().to_owned(),
+                    version: detection.version.clone(),
+                    turn_id: declaration.turn_id,
+                    subagent_id: declaration.subagent_id,
+                    parent_subagent_id: declaration.parent_subagent_id,
+                    purpose: declaration.purpose,
+                }
+            },
         )
-        .map(|detection| {
-            let declaration = HarnessRegistry::declare(
-                &detection.harness_id,
-                &DeclarationSource {
-                    headers: matches!(request.transport, RequestTransport::Http)
-                        .then_some(request.head.headers()),
-                    connection_headers: (!matches!(request.transport, RequestTransport::Http))
-                        .then_some(request.head.headers()),
-                    client_metadata: payload.and_then(|value| value.get("client_metadata")),
-                },
-            );
-            RequestHarness {
-                id: detection.harness_id.as_str().to_owned(),
-                version: detection.version.clone(),
-                turn_id: declaration.turn_id,
-                subagent_id: declaration.subagent_id,
-                parent_subagent_id: declaration.parent_subagent_id,
-                purpose: declaration.purpose,
-            }
-        })
     }
 
     fn project(
@@ -226,6 +221,7 @@ impl AgentRequestParser {
             protocol: match protocol {
                 LlmProtocol::OpenAi(OpenAiProtocol::Responses) => "openai_responses",
                 LlmProtocol::OpenAi(OpenAiProtocol::ChatCompletions) => "openai_chat_completions",
+                LlmProtocol::OpenAi(OpenAiProtocol::ChatGptConversation) => "chatgpt_conversation",
                 LlmProtocol::Anthropic(AnthropicProtocol::Messages) => "anthropic_messages",
                 LlmProtocol::Anthropic(AnthropicProtocol::ClaudeWeb(_)) => "claude_web",
             }

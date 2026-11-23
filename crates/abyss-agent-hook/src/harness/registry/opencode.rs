@@ -1,23 +1,15 @@
 //! `OpenCode` identity and native request declarations, independent of its provider.
 //! Shared gateway session headers alone do not identify the calling Harness.
 
-use abyss_mitm::FlowContext;
-use http::HeaderMap;
-
 use crate::harness::{AgentDeclaration, BuiltInHarness, DeclarationSource, HarnessDetection};
 
-use super::{HarnessDetector, header};
+use super::{HarnessDetector, HarnessRequest, header};
 
 pub(super) struct OpenCodeDetector;
 
 impl HarnessDetector for OpenCodeDetector {
-    fn detect(
-        &self,
-        _flow: &FlowContext,
-        headers: &HeaderMap,
-        _path: &str,
-    ) -> Option<HarnessDetection> {
-        let version = Self::version(header(headers, "user-agent")?)?;
+    fn detect(&self, request: &HarnessRequest<'_>) -> Option<HarnessDetection> {
+        let version = Self::version(header(request.headers, "user-agent")?)?;
         Some(HarnessDetection {
             harness_id: BuiltInHarness::OpenCode.into(),
             version: Some(version.to_owned()),

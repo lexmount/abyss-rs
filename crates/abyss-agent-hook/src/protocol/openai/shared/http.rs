@@ -56,7 +56,9 @@ impl OpenAiHttpExchange {
 
         Some(ParsedOpenAiExchange {
             generates_output: None,
-            session_id: session_id(headers)
+            session_id: response
+                .session_id
+                .or_else(|| session_id(headers))
                 .unwrap_or_else(|| format!("flow-{}", &request_hash[..16])),
             request_hash,
             request_conversation,

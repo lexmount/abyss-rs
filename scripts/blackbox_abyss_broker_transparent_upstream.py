@@ -34,7 +34,7 @@ def exact(stream, length):
     return bytes(result)
 
 
-def framed_connection(broker, host, port, destination_ip=None):
+def framed_connection(broker, host, port, destination_ip=None, *, application_id=None):
     """Adapt a socket pair to the published framed-flow wire contract."""
     transport = socket.socket(socket.AF_UNIX)
     transport.settimeout(5)
@@ -59,6 +59,7 @@ def framed_connection(broker, host, port, destination_ip=None):
                 "platform": "macos",
                 "protocol": "tcp",
                 "source_process": "codex",
+                **({"source_application_id": application_id} if application_id else {}),
                 "destination_host": host,
                 "destination_ip": destination_ip,
                 "destination_port": port,

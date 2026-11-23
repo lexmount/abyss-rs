@@ -1,11 +1,8 @@
 //! Hermes identity and user-turn declarations; protocol parsers resolve sessions.
 
-use abyss_mitm::FlowContext;
-use http::HeaderMap;
-
 use crate::harness::{AgentDeclaration, BuiltInHarness, DeclarationSource, HarnessDetection};
 
-use super::{HarnessDetector, client_version, header};
+use super::{HarnessDetector, HarnessRequest, client_version, header};
 
 const SESSION_ID: &str = "x-hermes-session-id";
 const TURN_ID: &str = "x-hermes-turn-id";
@@ -17,20 +14,16 @@ const APPLICATION_ID: &str = "com.nousresearch.hermes.managed-python";
 pub(super) struct HermesDetector;
 
 impl HarnessDetector for HermesDetector {
-    fn detect(
-        &self,
-        flow: &FlowContext,
-        headers: &HeaderMap,
-        _path: &str,
-    ) -> Option<HarnessDetection> {
-        let user_agent = header(headers, "user-agent").unwrap_or_default();
+    fn detect(&self, request: &HarnessRequest<'_>) -> Option<HarnessDetection> {
+        let user_agent = header(request.headers, "user-agent").unwrap_or_default();
         let normalized = user_agent.to_ascii_lowercase();
-        let marked = header(headers, SESSION_ID).is_some()
+        let marked = header(request.headers, SESSION_ID).is_some()
             || normalized.starts_with("hermesagent/")
             || normalized.contains("(hermes agent)")
-            || header(headers, "originator")
+            || header(request.headers, "originator")
                 .is_some_and(|value| value.eq_ignore_ascii_case("hermes-agent"));
-        let application = flow
+        let application = request
+            .flow
             .source_process
             .as_ref()
             .and_then(|source| source.application_id.as_deref())

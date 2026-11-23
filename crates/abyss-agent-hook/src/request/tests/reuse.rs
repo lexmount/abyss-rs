@@ -22,6 +22,7 @@ use crate::{
         anthropic::{claude_web::ClaudeWebParser, messages::MessagesParser},
         openai::{
             chat_completions::ChatCompletionsParser,
+            chatgpt::ChatGptParser,
             parse_openai_websocket_message,
             responses::{
                 ResponsesParser,
@@ -213,6 +214,9 @@ async fn http_prepared_requests_reuse_the_same_projection_and_emit_identical_eve
         let observed = match protocol {
             LlmProtocol::OpenAi(OpenAiProtocol::Responses) => {
                 request_content::<ResponsesParser>(&request_body)
+            }
+            LlmProtocol::OpenAi(OpenAiProtocol::ChatGptConversation) => {
+                request_content::<ChatGptParser>(&request_body)
             }
             LlmProtocol::OpenAi(OpenAiProtocol::ChatCompletions) => {
                 request_content::<ChatCompletionsParser>(&request_body)

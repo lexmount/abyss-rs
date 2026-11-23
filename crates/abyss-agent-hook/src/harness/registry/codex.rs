@@ -3,16 +3,14 @@
 //! `x-codex-turn-metadata`, and the subagent thread in its thread headers.
 //! Backend routes select a protocol, never the identity of its caller.
 
-use abyss_mitm::FlowContext;
 use abyss_plugin_protocol::event::EventPurpose;
-use http::HeaderMap;
 use serde_json::Value;
 
 use crate::harness::{
     AgentDeclaration, BuiltInHarness, DeclarationSource, HarnessDetection, HarnessId,
 };
 
-use super::{HarnessDetector, client_version, header};
+use super::{HarnessDetector, HarnessRequest, client_version, header};
 
 /// Header and `client_metadata` key carrying Codex turn context as JSON.
 const TURN_METADATA: &str = "x-codex-turn-metadata";
@@ -75,20 +73,20 @@ fn string_field<'a>(value: &'a Value, key: &str) -> Option<&'a str> {
 pub(super) struct CodexDetector;
 
 impl HarnessDetector for CodexDetector {
-    fn detect(
-        &self,
-        flow: &FlowContext,
-        headers: &HeaderMap,
-        _path: &str,
-    ) -> Option<HarnessDetection> {
-        let user_agent = header(headers, "user-agent").unwrap_or_default();
-        let originator = header(headers, "originator").unwrap_or_default();
-        let process = flow
+    fn detect(&self, request: &HarnessRequest<'_>) -> Option<HarnessDetection> {
+        if super::chatgpt::is_conversation_request(request) {
+            return None;
+        }
+        let user_agent = header(request.headers, "user-agent").unwrap_or_default();
+        let originator = header(request.headers, "originator").unwrap_or_default();
+        let process = request
+            .flow
             .source_process
             .as_ref()
             .and_then(|process| process.name.as_deref())
             .is_some_and(|name| normalize(name) == "codex");
-        let marked = headers
+        let marked = request
+            .headers
             .keys()
             .any(|name| name.as_str().to_ascii_lowercase().starts_with("x-codex-"))
             || Self::is_codex_client(user_agent.split('/').next().unwrap_or_default())
@@ -134,12 +132,12 @@ mod tests {
 
     use abyss_mitm::{FlowContext, OriginalDestination, SourceProcess, TransparentProtocol};
     use abyss_plugin_protocol::event::EventPurpose;
-    use http::HeaderMap;
+    use http::{HeaderMap, Request};
     use serde_json::{Value, json};
 
     use crate::harness::{AgentDeclaration, DeclarationSource};
 
-    use super::{CodexDetector, HarnessDetector, declare};
+    use super::{CodexDetector, HarnessDetector, HarnessRequest, declare};
 
     #[test]
     fn detection_records_client_headers_and_process_instead_of_backend_path() {
@@ -160,10 +158,12 @@ mod tests {
             ("originator", "codex_cli_rs"),
             ("originator", "codex_exec"),
         ] {
-            let mut headers = HeaderMap::new();
-            headers.insert(name, value.parse().unwrap());
+            let request = Request::post("/v1/responses")
+                .header(name, value)
+                .body(())
+                .unwrap();
             let detection = CodexDetector
-                .detect(&flow, &headers, "/v1/responses")
+                .detect(&HarnessRequest::new(&flow, &request))
                 .unwrap_or_else(|| panic!("{name}: {value}"));
             assert_eq!(detection.harness_id.as_str(), "codex");
         }
@@ -173,8 +173,9 @@ mod tests {
             Some("/usr/local/bin/codex".to_owned()),
             None,
         ));
+        let request = Request::post("/v1/responses").body(()).unwrap();
         let detection = CodexDetector
-            .detect(&flow, &HeaderMap::new(), "/v1/responses")
+            .detect(&HarnessRequest::new(&flow, &request))
             .unwrap();
         assert_eq!(detection.harness_id.as_str(), "codex");
     }

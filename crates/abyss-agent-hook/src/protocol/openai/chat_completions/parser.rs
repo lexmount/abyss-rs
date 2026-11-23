@@ -40,6 +40,7 @@ impl ProtocolParser for ChatCompletionsParser {
         let values = input.values;
         let parsed = ChatResponse::assemble(values, input.is_incomplete());
         ResponseContent {
+            session_id: None,
             has_content: !parsed.is_empty(),
             conversation: parsed.conversation(),
             usage: best_usage(values),

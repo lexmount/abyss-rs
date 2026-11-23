@@ -14,6 +14,7 @@ pub enum LlmProtocol {
 pub enum OpenAiProtocol {
     Responses,
     ChatCompletions,
+    ChatGptConversation,
 }
 
 /// Anthropic-compatible public and private wire dialects.
@@ -35,12 +36,21 @@ pub struct ProtocolDetector;
 impl ProtocolDetector {
     pub fn detect_http(exchange: &HttpExchange) -> Option<LlmProtocol> {
         Self::detect_request(
-            exchange.request.uri().path(),
+            &exchange.flow,
+            &exchange.request,
             exchange.request.body().json(),
         )
     }
 
-    pub fn detect_request(path: &str, payload: Option<&serde_json::Value>) -> Option<LlmProtocol> {
+    pub fn detect_request<B>(
+        flow: &abyss_mitm::FlowContext,
+        request: &http::Request<B>,
+        payload: Option<&serde_json::Value>,
+    ) -> Option<LlmProtocol> {
+        let path = request.uri().path();
+        if super::openai::chatgpt::matches_request(flow, request) {
+            return Some(LlmProtocol::OpenAi(OpenAiProtocol::ChatGptConversation));
+        }
         if path.contains("/organizations/") && path.ends_with("/completion") {
             return Some(LlmProtocol::Anthropic(AnthropicProtocol::ClaudeWeb(
                 ClaudeWebProtocol::ConversationCompletion,
@@ -98,6 +108,21 @@ mod tests {
             ProtocolDetector::detect_http(&exchange),
             Some(LlmProtocol::Anthropic(AnthropicProtocol::Messages))
         ));
+    }
+
+    #[test]
+    fn chatgpt_conversation_protocol_requires_no_desktop_source() {
+        let mut exchange = exchange(
+            "https://chatgpt.com/backend-api/f/conversation",
+            br#"{"messages":[]}"#,
+        );
+        *exchange.request.method_mut() = http::Method::POST;
+        assert_eq!(
+            ProtocolDetector::detect_http(&exchange),
+            Some(LlmProtocol::OpenAi(
+                super::OpenAiProtocol::ChatGptConversation
+            ))
+        );
     }
 
     #[test]
