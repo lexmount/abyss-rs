@@ -25,9 +25,3 @@ pub(super) fn runtime_resolvers() -> Vec<Box<dyn RuntimeEntryPointResolver>> {
         Box::new(python::PythonEntryPoint),
     ]
 }
-
-/// Identifies shared Python interpreters even when their argv cannot be read.
-#[cfg(windows)]
-pub fn is_python_interpreter(executable: &str) -> bool {
-    python::PythonEntryPoint.recognizes(executable)
-}

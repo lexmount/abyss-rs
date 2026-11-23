@@ -41,9 +41,8 @@ pub use transparent::{
     REDACTED_HEADER_VALUE, RedirectTarget, RequestEditor, RequestForwardingControl,
     RequestForwardingResult, RequestTransport, RequestView, SourceProcess, TlsDecryptionAction,
     TlsDecryptionContext, TlsDecryptionDecision, TlsDecryptionPolicy, TlsDecryptionPolicyError,
-    TlsDecryptionRule, TlsErrorSide, TlsSourceScope, TrafficDirection, TrafficObserver,
-    TransparentFlowError, TransparentFlowOutcome, TransparentFlowSource,
-    TransparentPassthroughOutcome, TransparentPassthroughProtocol, TransparentProtocol,
-    UncontrolledForwarding, ValidatedTlsDecryptionPolicy, WebSocketDirection, WebSocketMessage,
-    is_sensitive_header,
+    TlsDecryptionRule, TlsErrorSide, TrafficDirection, TrafficObserver, TransparentFlowError,
+    TransparentFlowOutcome, TransparentFlowSource, TransparentPassthroughOutcome,
+    TransparentPassthroughProtocol, TransparentProtocol, UncontrolledForwarding,
+    ValidatedTlsDecryptionPolicy, WebSocketDirection, WebSocketMessage, is_sensitive_header,
 };

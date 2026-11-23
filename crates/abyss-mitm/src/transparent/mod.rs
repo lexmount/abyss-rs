@@ -52,7 +52,7 @@ pub use self::forwarding::{
 };
 pub use self::hook::{
     CapturedBody, FlowContext, HookError, HookFuture, HookResult, HttpExchange, MitmHook,
-    SourceProcess, TlsSourceScope, WebSocketDirection, WebSocketMessage,
+    SourceProcess, WebSocketDirection, WebSocketMessage,
 };
 pub use self::io::PrefixedDuplexStream;
 pub use self::io::{BoxedDuplexStream, DuplexStream, TrafficDirection, TrafficObserver};

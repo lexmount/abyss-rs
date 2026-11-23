@@ -218,22 +218,6 @@ impl FlowContext {
     }
 }
 
-/// Maximum TLS inspection scope allowed by a transparent ingress.
-///
-/// This restriction survives live policy updates and preserved pre-upgrade policy.
-#[derive(Debug, Clone, Copy, Default, serde::Serialize)]
-#[serde(rename_all = "snake_case")]
-#[non_exhaustive]
-pub enum TlsSourceScope {
-    /// Apply the configured policy without an additional source restriction.
-    #[default]
-    Policy,
-    /// Decryption requires a matching, nonempty `python_modules` selector.
-    PythonModule,
-    /// Source identity was unavailable; never decrypt this candidate connection.
-    Passthrough,
-}
-
 /// Source process metadata attached to a redirected flow.
 ///
 /// Platform adapters populate this when the operating system can attribute a
@@ -259,8 +243,6 @@ pub struct SourceProcess {
     pub entry_point: Option<String>,
     /// Validated Python `-m` entry, independent of interpreter installation paths.
     pub python_module: Option<super::PythonModule>,
-    /// Ingress restriction on TLS inspection, independent of operator rule ordering.
-    pub tls_scope: TlsSourceScope,
     /// Best-effort process working directory captured by the platform adapter.
     pub working_directory: Option<String>,
 }
@@ -282,7 +264,6 @@ impl SourceProcess {
             working_directory: None,
             entry_point: None,
             python_module: None,
-            tls_scope: TlsSourceScope::Policy,
         }
     }
 
@@ -311,13 +292,6 @@ impl SourceProcess {
     #[must_use]
     pub fn with_python_module(mut self, module: Option<super::PythonModule>) -> Self {
         self.python_module = module;
-        self
-    }
-
-    /// Restricts TLS inspection for a broadly redirected candidate process.
-    #[must_use]
-    pub const fn with_tls_scope(mut self, scope: TlsSourceScope) -> Self {
-        self.tls_scope = scope;
         self
     }
 

@@ -34,8 +34,7 @@ pub enum TlsDecryptionAction {
 /// an empty dimension is unconstrained. The first enabled matching rule selects
 /// the action. If source attribution required by a rule is unavailable, that
 /// rule does not match and evaluation continues. If no rule matches,
-/// `default_action` is used. The ingress's [`super::TlsSourceScope`] may restrict
-/// an intercept/redirect decision to passthrough, even for a matching rule.
+/// `default_action` is used.
 #[derive(Debug, Clone, Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct TlsDecryptionPolicy {
@@ -224,33 +223,6 @@ impl<'a> TlsDecryptionContext<'a> {
     }
 }
 
-impl TlsDecryptionContext<'_> {
-    fn restrict_action(
-        &self,
-        action: TlsDecryptionAction,
-        module_selected: bool,
-    ) -> TlsDecryptionAction {
-        use super::TlsSourceScope;
-        if !matches!(
-            action,
-            TlsDecryptionAction::Intercept | TlsDecryptionAction::Redirect
-        ) {
-            return action;
-        }
-        match self
-            .source_process
-            .map(|source| source.tls_scope)
-            .unwrap_or_default()
-        {
-            TlsSourceScope::Policy => action,
-            TlsSourceScope::PythonModule if module_selected => action,
-            TlsSourceScope::PythonModule | TlsSourceScope::Passthrough => {
-                TlsDecryptionAction::Passthrough
-            }
-        }
-    }
-}
-
 impl<'a> From<Option<&'a str>> for TlsDecryptionContext<'a> {
     fn from(destination_domain: Option<&'a str>) -> Self {
         Self::new(destination_domain, None)
@@ -361,7 +333,7 @@ impl TlsDecryptionPolicy {
         for rule in &self.rules {
             if rule.enabled && rule.matches(destination_domain.as_deref(), context.source_process) {
                 return decision_for_action(
-                    context.restrict_action(rule.action, !rule.python_modules.is_empty()),
+                    rule.action,
                     Some(rule.id.clone()),
                     rule.target.as_ref(),
                 );
@@ -373,7 +345,7 @@ impl TlsDecryptionPolicy {
         } else {
             self.default_action
         };
-        decision_for_action(context.restrict_action(action, false), None, None)
+        decision_for_action(action, None, None)
     }
 }
 

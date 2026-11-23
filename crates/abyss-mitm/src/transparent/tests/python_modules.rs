@@ -1,7 +1,7 @@
 //! Module selectors and real TLS regression coverage for shared Python interpreters.
 
 use super::*;
-use crate::{PythonModule, TlsDecryptionContext, TlsSourceScope};
+use crate::{PythonModule, TlsDecryptionContext};
 
 fn policy() -> TlsDecryptionPolicy {
     serde_json::from_value(serde_json::json!({
@@ -138,9 +138,9 @@ fn invalid_modules_are_rejected_without_weakening_absolute_script_selectors() {
 }
 
 #[tokio::test]
-async fn only_selected_module_uses_mitm_certificate_on_a_selected_model_host() {
-    // Ordinary clients trust ONLY the origin CA; the selected module trusts ONLY
-    // the MITM CA. Either an unintended decrypt or unintended bypass fails TLS.
+async fn tls_certificates_follow_configured_module_rules_and_defaults() {
+    // Each client trusts only the CA selected by policy. An unintended decrypt
+    // or bypass fails TLS, including when the policy explicitly decrypts Python.
     let origin_ca = test_ca();
     let host = "api.openai.com";
     for (module, policy, intercepted) in [
@@ -150,7 +150,7 @@ async fn only_selected_module_uses_mitm_certificate_on_a_selected_model_host() {
         (
             None,
             serde_json::from_value(serde_json::json!({"default_action":"intercept"})).unwrap(),
-            false,
+            true,
         ),
     ] {
         let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
@@ -178,7 +178,6 @@ async fn only_selected_module_uses_mitm_certificate_on_a_selected_model_host() {
         });
         let (client, server) = connected_pair().await;
         let source = SourceProcess::new(Some(42), Some("python.exe".to_owned()), None)
-            .with_tls_scope(TlsSourceScope::PythonModule)
             .with_python_module(module.map(|value| PythonModule::new(value.to_owned()).unwrap()));
         let flow = AcceptedTcpFlow::from_boxed_parts(
             Box::new(server),
@@ -221,58 +220,31 @@ async fn only_selected_module_uses_mitm_certificate_on_a_selected_model_host() {
 }
 
 #[test]
-fn candidate_scope_protects_preserved_or_reordered_policy_and_defaults() {
-    for action in ["intercept", "redirect"] {
-        let mut rule = serde_json::json!({"id":"legacy", "action":action, "destination_hosts":["api.openai.com"]});
-        if action == "redirect" {
+fn python_connections_obey_rule_order_and_all_configured_actions() {
+    for (action, expected) in [
+        ("intercept", TlsDecryptionAction::Intercept),
+        ("redirect", TlsDecryptionAction::Redirect),
+        ("block", TlsDecryptionAction::Block),
+        ("passthrough", TlsDecryptionAction::Passthrough),
+    ] {
+        let mut rule = serde_json::json!({"id":"operator-first", "action":action, "destination_hosts":["api.openai.com"]});
+        if expected == TlsDecryptionAction::Redirect {
             rule["target"] = serde_json::json!("other.test");
         }
-        let policy: TlsDecryptionPolicy = serde_json::from_value(serde_json::json!({
-            "default_action":"intercept", "missing_sni_action":"intercept", "rules":[rule]
-        }))
-        .unwrap();
+        let mut policy = policy();
+        policy
+            .rules
+            .insert(0, serde_json::from_value(rule).unwrap());
         policy.validate().unwrap();
         for module in [None, Some("hermes_cli.main"), Some("other.main")] {
-            for scope in [TlsSourceScope::PythonModule, TlsSourceScope::Passthrough] {
-                let source = SourceProcess::new(None, Some("python.exe".to_owned()), None)
-                    .with_tls_scope(scope)
-                    .with_python_module(
-                        module.map(|name| PythonModule::new(name.to_owned()).unwrap()),
-                    );
-                for host in [Some("api.openai.com"), Some("unselected.test"), None] {
-                    assert_eq!(
-                        policy
-                            .decide(TlsDecryptionContext::new(host, Some(&source)))
-                            .action(),
-                        TlsDecryptionAction::Passthrough
-                    );
-                }
-            }
+            let source = SourceProcess::new(None, Some("python.exe".to_owned()), None)
+                .with_python_module(module.map(|name| PythonModule::new(name.to_owned()).unwrap()));
+            let decision = policy.decide(TlsDecryptionContext::new(
+                Some("api.openai.com"),
+                Some(&source),
+            ));
+            assert_eq!(decision.action(), expected);
+            assert_eq!(decision.matched_rule_id(), Some("operator-first"));
         }
     }
-    let source = SourceProcess::new(None, Some("python.exe".to_owned()), None)
-        .with_tls_scope(TlsSourceScope::PythonModule)
-        .with_python_module(Some(
-            PythonModule::new("hermes_cli.main".to_owned()).unwrap(),
-        ));
-    assert_eq!(
-        policy()
-            .decide(TlsDecryptionContext::new(
-                Some("api.openai.com"),
-                Some(&source)
-            ))
-            .action(),
-        TlsDecryptionAction::Intercept
-    );
-    let mut blocked = policy();
-    blocked.rules[0].action = TlsDecryptionAction::Block;
-    assert_eq!(
-        blocked
-            .decide(TlsDecryptionContext::new(
-                Some("api.openai.com"),
-                Some(&source)
-            ))
-            .action(),
-        TlsDecryptionAction::Block
-    );
 }

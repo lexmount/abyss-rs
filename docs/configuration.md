@@ -436,17 +436,14 @@ it absent. Arguments after the module, environment variables and full command
 lines are never stored or logged. This is role attribution, not code authenticity
 or an import-resolution sandbox.
 
-Windows WFP marks recognized Python executables with `source_process.tls_scope =
-"python_module"`, even if argv cannot be read. For this scope, an intercept or
-redirect action requires a matching rule with a nonempty `python_modules`
-selector. A broad host rule or intercept default becomes passthrough; explicit
-block and passthrough still apply. Missing WFP application identity uses the
-`passthrough` scope and never decrypts. This per-flow restriction survives live
-policy edits and upgrades retaining an old runtime policy. Old policy without
-module rules safely passes Python until module rules are configured. macOS keeps
-its application-identity-based policy behavior; explicit proxies supply no module
-metadata. First-match order still applies: a broad rule placed before a module
-rule cannot be rescued by a later rule.
+Python uses the same ordered TLS policy as Node/Electron on both platforms.
+The first matching rule selects the action; otherwise the configured default
+applies. With the rules above, other modules and connections with unreadable argv
+match the Python passthrough rule before reaching broad destination rules. If
+source identity is unavailable, source-specific rules do not match and evaluation
+continues normally. Explicit proxies supply no module metadata. Rule order is
+part of the configuration: a broad intercept or redirect rule placed first takes
+precedence, and an intercept default remains an intercept default.
 
 Distribution installers can run `abyss-broker --check-runtime-policy PATH` to
 validate an existing policy with the exact packaged broker. This command loads no

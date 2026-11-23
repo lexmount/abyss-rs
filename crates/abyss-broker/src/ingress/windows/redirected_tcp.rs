@@ -4,7 +4,7 @@ use std::{net::SocketAddr, sync::Arc};
 
 use super::upstream::WfpSocketInitializer;
 use crate::network_config::NetworkRuntime;
-use abyss_mitm::{SourceProcess, TlsSourceScope};
+use abyss_mitm::SourceProcess;
 use tokio::net::{TcpListener, TcpStream};
 
 use crate::ingress::{
@@ -13,7 +13,6 @@ use crate::ingress::{
 };
 use crate::process_context::{
     ProcessContextResolver, SharedProcessContextResolver, default_process_context_resolver,
-    is_python_interpreter,
 };
 
 /// Windows redirected TCP endpoint requested at broker startup.
@@ -158,15 +157,8 @@ impl RedirectedTcpConnection {
             .as_deref()
             .and_then(Self::application_file_name)
             .map(str::to_owned);
-        let scope = match process_name.as_deref() {
-            Some(name) if is_python_interpreter(name) => TlsSourceScope::PythonModule,
-            Some(_) => TlsSourceScope::Policy,
-            None => TlsSourceScope::Passthrough,
-        };
         process_context_resolver.populate_entry(
-            SourceProcess::new(process_id, process_name, None)
-                .with_application_id(application_id)
-                .with_tls_scope(scope),
+            SourceProcess::new(process_id, process_name, None).with_application_id(application_id),
         )
     }
 
@@ -386,7 +378,7 @@ mod tests {
             policy
                 .decide(TlsDecryptionContext::new(None, Some(&unattributed)))
                 .action(),
-            TlsDecryptionAction::Passthrough
+            TlsDecryptionAction::Intercept
         );
         for name in ["python.exe", "PYTHONW.EXE", "python3.14.exe"] {
             let python = RedirectedTcpConnection::source_process(
@@ -401,7 +393,7 @@ mod tests {
                         Some(&python)
                     ))
                     .action(),
-                TlsDecryptionAction::Passthrough
+                TlsDecryptionAction::Intercept
             );
         }
     }

@@ -29,8 +29,6 @@ use cache::CachedProcessContextResolver;
 use entry_point::EntryPointResolver;
 use process_arguments::process_arguments_provider;
 pub use runtime::ProcessEntry;
-#[cfg(windows)]
-pub use runtime::is_python_interpreter;
 
 /// Resolves best-effort metadata for the process that opened a network flow.
 pub trait ProcessContextResolver: Send + Sync {
