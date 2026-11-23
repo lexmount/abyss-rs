@@ -171,13 +171,20 @@ impl<C: RequestForwardingControl> Http2Relay<'_, C> {
                 receive_response(respond, response, self.engine.timeouts.http1_response_head)
                     .await?;
             let (parts, body) = response.into_parts();
+            // Same framing rule as requests: a trailing empty DATA frame turns a
+            // HEADERS-only response, such as a 304 with Content-Length, malformed.
+            let end_of_stream = body.is_end_stream();
             let response_head = Response::from_parts(parts, ());
             let downstream = respond
-                .send_response(response_head.clone(), false)
+                .send_response(response_head.clone(), end_of_stream)
                 .map_err(error)?;
-            let capture = BodyCapture::new(self.engine.max_http1_body_bytes)
-                .relay_response(body, downstream, response_head.headers())
-                .await;
+            let capture = if end_of_stream {
+                BodyCapture::new(self.engine.max_http1_body_bytes).finish(response_head.headers())
+            } else {
+                BodyCapture::new(self.engine.max_http1_body_bytes)
+                    .relay_response(body, downstream, response_head.headers())
+                    .await
+            };
             let response_ended_at = SystemTime::now();
             Ok::<_, TransparentFlowError>((response_head.map(|()| capture), response_ended_at))
         };

@@ -340,6 +340,21 @@ async fn forwards_the_client_end_of_stream_framing() {
 }
 
 #[tokio::test]
+async fn forwards_headers_only_responses_without_an_empty_data_frame() {
+    let fixture = Fixture::start(crate::transparent::UncontrolledForwarding, 1024).await;
+    // An empty DATA frame after a 304 with Content-Length is a protocol error
+    // for the client, so this call fails unless the response ends on HEADERS.
+    let (status, body) = fixture.get("/not-modified", true).await;
+    assert_eq!(status, StatusCode::NOT_MODIFIED);
+    assert!(body.is_empty());
+    let captured = fixture.captured(1).await;
+    assert_eq!(captured[0].response.status(), StatusCode::NOT_MODIFIED);
+    assert!(captured[0].response.body().raw_bytes().is_empty());
+    assert!(!captured[0].response.body().raw_truncated());
+    fixture.close().await;
+}
+
+#[tokio::test]
 async fn inspected_bodiless_requests_end_on_headers_unless_a_body_is_added() {
     // The model route also moves this stream to its own origin connection.
     let unchanged = Fixture::start_routed(RouteModel, 1024, Routing::PerStream).await;
@@ -811,6 +826,16 @@ async fn serve_origin(
                 .push((head, bytes.clone(), trailers, ended_on_headers));
             if path == "/refused" {
                 respond.send_reset(h2::Reason::REFUSED_STREAM);
+                return;
+            }
+            if path == "/not-modified" {
+                // A 304 keeps the representation's length while ending on HEADERS.
+                let response = Response::builder()
+                    .status(StatusCode::NOT_MODIFIED)
+                    .header("content-length", "123")
+                    .body(())
+                    .unwrap();
+                respond.send_response(response, true).unwrap();
                 return;
             }
             if path == "/slow" {
