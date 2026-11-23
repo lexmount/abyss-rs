@@ -11,8 +11,8 @@ pub struct ParsedOpenAiExchange {
     /// WebSocket client generation mode. Only `response.create` with the boolean
     /// `generate: false` disables it; server frames and HTTP exchanges carry none.
     pub generates_output: Option<bool>,
-    /// Session/thread id used to group turns. A request-derived fallback is used
-    /// for HTTP when client headers do not expose one.
+    /// Session/thread ID used to group turns. HTTP uses the provider conversation
+    /// ID, then client session headers, then a request-derived fallback.
     pub session_id: String,
     /// Hash of method, host, path, and request body for fallback correlation.
     pub request_hash: String,

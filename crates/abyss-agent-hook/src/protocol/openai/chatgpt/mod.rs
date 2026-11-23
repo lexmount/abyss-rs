@@ -76,6 +76,9 @@ impl ProtocolParser for ChatGptParser {
 
 pub(super) fn parse_exchange(exchange: &HttpExchange) -> Option<ParsedOpenAiExchange> {
     parse_http_exchange::<ChatGptParser, _, _>(exchange, |exchange, request, mut response| {
+        // In desktop captures, the opening POST has no conversation_id in its body
+        // or non-sensitive headers. Its SSE response supplies the ID. Continuation
+        // POSTs repeat it in the body, so a partial stream can still identify the chat.
         if response.session_id.is_none() {
             response.session_id = exchange
                 .request

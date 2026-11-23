@@ -43,7 +43,8 @@ pub struct ResponseContent {
     pub usage: Option<TokenUsage>,
     pub model: Option<String>,
     pub response_id: Option<String>,
-    /// Conversation identity assigned by a provider during the first response.
+    /// Provider conversation ID passed to exchange assembly so the opening turn
+    /// can be grouped with later turns even when the ID first appears in the response.
     pub session_id: Option<String>,
     pub event_types: Vec<String>,
 }
