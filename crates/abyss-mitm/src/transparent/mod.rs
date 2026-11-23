@@ -22,7 +22,6 @@ mod io;
 mod passthrough;
 mod plain_http;
 mod protocol;
-mod python_module;
 mod redirect;
 mod relay;
 mod request_edit;
@@ -56,7 +55,6 @@ pub use self::hook::{
 };
 pub use self::io::PrefixedDuplexStream;
 pub use self::io::{BoxedDuplexStream, DuplexStream, TrafficDirection, TrafficObserver};
-pub use self::python_module::PythonModule;
 pub use self::redirect::RedirectTarget;
 pub use self::request_edit::{RequestEditor, RequestForwardingResult};
 pub use self::types::{
@@ -64,13 +62,14 @@ pub use self::types::{
     TransparentFlowError, TransparentFlowOutcome, TransparentFlowSource,
     TransparentPassthroughOutcome, TransparentPassthroughProtocol, TransparentProtocol,
 };
+pub use abyss_plugin_protocol::process::{ModuleRuntime, ProcessEntry};
 
 #[cfg(test)]
 mod tests {
     mod blocking;
     mod http2;
+    mod process_entries;
     mod proxy_chain;
-    mod python_modules;
     mod redirect;
     use std::{
         future,
@@ -178,7 +177,6 @@ mod tests {
                     application_ids: Vec::new(),
                     executable_paths: Vec::new(),
                     process_entry_points: Vec::new(),
-                    python_modules: Vec::new(),
                     destination_hosts: vec!["passthrough.example.test".to_owned()],
                 }],
             })
@@ -1262,7 +1260,6 @@ mod tests {
                     application_ids: vec!["com.openai.codex".to_owned()],
                     executable_paths: Vec::new(),
                     process_entry_points: Vec::new(),
-                    python_modules: Vec::new(),
                     destination_hosts: vec!["platform-fallback.example".to_owned()],
                 },
                 TlsDecryptionRule {
@@ -1274,7 +1271,6 @@ mod tests {
                     application_ids: vec!["com.openai.codex".to_owned()],
                     executable_paths: Vec::new(),
                     process_entry_points: Vec::new(),
-                    python_modules: Vec::new(),
                     destination_hosts: vec!["*.openai.com".to_owned()],
                 },
             ],

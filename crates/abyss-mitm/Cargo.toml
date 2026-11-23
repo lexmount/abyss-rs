@@ -12,6 +12,7 @@ categories = ["network-programming"]
 publish = ["crates-io"]
 
 [dependencies]
+abyss-plugin-protocol.workspace = true
 arc-swap = "1"
 base64 = "0.22"
 boringtun = "0.7.1"

@@ -1,18 +1,72 @@
 //! Module selectors and real TLS regression coverage for shared Python interpreters.
 
 use super::*;
-use crate::{PythonModule, TlsDecryptionContext};
+use crate::{ModuleRuntime, ProcessEntry, TlsDecryptionContext};
 
 fn policy() -> TlsDecryptionPolicy {
     serde_json::from_value(serde_json::json!({
         "default_action": "passthrough",
         "rules": [
             {"id":"hermes", "action":"intercept", "process_names":["python.exe", "pythonw.exe"],
-             "python_modules":["hermes_cli.main"], "destination_hosts":["api.openai.com"]},
+             "process_entry_points":[{"kind":"module", "runtime":"python", "name":"hermes_cli.main"}], "destination_hosts":["api.openai.com"]},
             {"id":"python-fallback", "action":"passthrough", "process_names":["python.exe", "pythonw.exe"]},
             {"id":"other-clients", "action":"intercept", "destination_hosts":["api.openai.com"]}
         ]
     })).unwrap()
+}
+
+#[test]
+fn one_entry_selector_matches_scripts_or_modules_and_rejects_old_shapes() {
+    let script = ProcessEntry::script(
+        std::env::temp_dir()
+            .join("daemon.js")
+            .to_str()
+            .unwrap()
+            .to_owned(),
+    );
+    let module = ProcessEntry::module(ModuleRuntime::Python, "agent.main".to_owned()).unwrap();
+    let policy: TlsDecryptionPolicy = serde_json::from_value(serde_json::json!({
+        "default_action":"passthrough",
+        "rules":[{"id":"entries", "action":"intercept", "process_entry_points":[script, module]}]
+    }))
+    .unwrap();
+    policy.validate().unwrap();
+    for (entry, expected) in [
+        (Some(script), TlsDecryptionAction::Intercept),
+        (Some(module), TlsDecryptionAction::Intercept),
+        (None, TlsDecryptionAction::Passthrough),
+        (
+            Some(ProcessEntry::module(ModuleRuntime::Python, "other.main".to_owned()).unwrap()),
+            TlsDecryptionAction::Passthrough,
+        ),
+    ] {
+        let source = SourceProcess::new(None, None, None).with_entry_point(entry);
+        assert_eq!(
+            policy
+                .decide(TlsDecryptionContext::new(None, Some(&source)))
+                .action(),
+            expected
+        );
+    }
+    for entry in [
+        serde_json::json!("/opt/daemon.js"),
+        serde_json::json!({"kind":"module", "name":"agent.main"}),
+        serde_json::json!({"kind":"module", "runtime":"unknown", "name":"agent.main"}),
+        serde_json::json!({"kind":"script", "path":"/opt/daemon.js", "name":"agent.main"}),
+    ] {
+        assert!(
+            serde_json::from_value::<TlsDecryptionPolicy>(serde_json::json!({
+                "rules":[{"id":"invalid", "action":"intercept", "process_entry_points":[entry]}]
+            }))
+            .is_err()
+        );
+    }
+    assert!(
+        serde_json::from_value::<TlsDecryptionPolicy>(serde_json::json!({
+            "rules":[{"id":"old", "action":"intercept", "python_modules":["agent.main"]}]
+        }))
+        .is_err()
+    );
 }
 
 #[test]
@@ -84,8 +138,10 @@ fn modules_are_exact_and_python_fallback_precedes_broad_host_rules() {
             Some("other-clients"),
         ),
     ] {
-        let source = SourceProcess::new(Some(42), Some(name.to_owned()), None)
-            .with_python_module(module.map(|value| PythonModule::new(value.to_owned()).unwrap()));
+        let source =
+            SourceProcess::new(Some(42), Some(name.to_owned()), None).with_entry_point(module.map(
+                |value| ProcessEntry::module(ModuleRuntime::Python, value.to_owned()).unwrap(),
+            ));
         let result = policy.decide(TlsDecryptionContext::new(host, Some(&source)));
         assert_eq!(
             (result.action(), result.matched_rule_id()),
@@ -111,24 +167,27 @@ fn invalid_modules_are_rejected_without_weakening_absolute_script_selectors() {
         "1module",
         "模块",
     ] {
-        let value = serde_json::json!({"rules":[{"id":"module", "action":"intercept", "python_modules":[name]}]});
+        let value = serde_json::json!({"rules":[{"id":"module", "action":"intercept", "process_entry_points":[{"kind":"module", "runtime":"python", "name":name}]}]});
         assert!(
-            serde_json::from_value::<TlsDecryptionPolicy>(value).is_err(),
+            serde_json::from_value::<TlsDecryptionPolicy>(value)
+                .unwrap()
+                .validate()
+                .is_err(),
             "{name}"
         );
     }
     let invalid: TlsDecryptionPolicy = serde_json::from_value(serde_json::json!({
-        "rules":[{"id":"script", "action":"intercept", "process_entry_points":["hermes_cli.main"]}]
+        "rules":[{"id":"script", "action":"intercept", "process_entry_points":[{"kind":"script", "path":"hermes_cli.main"}]}]
     }))
     .unwrap();
     assert!(invalid.validate().is_err());
     let policy = policy();
     let serialized = serde_json::to_value(&policy).unwrap();
     assert_eq!(
-        serialized["rules"][0]["python_modules"][0],
+        serialized["rules"][0]["process_entry_points"][0]["name"],
         "hermes_cli.main"
     );
-    assert!(serialized["rules"][1].get("python_modules").is_none());
+    assert!(serialized["rules"][1].get("process_entry_points").is_none());
     assert!(
         serde_json::from_value::<TlsDecryptionPolicy>(serialized)
             .unwrap()
@@ -178,7 +237,9 @@ async fn tls_certificates_follow_configured_module_rules_and_defaults() {
         });
         let (client, server) = connected_pair().await;
         let source = SourceProcess::new(Some(42), Some("python.exe".to_owned()), None)
-            .with_python_module(module.map(|value| PythonModule::new(value.to_owned()).unwrap()));
+            .with_entry_point(module.map(|value| {
+                ProcessEntry::module(ModuleRuntime::Python, value.to_owned()).unwrap()
+            }));
         let flow = AcceptedTcpFlow::from_boxed_parts(
             Box::new(server),
             None,
@@ -238,7 +299,9 @@ fn python_connections_obey_rule_order_and_all_configured_actions() {
         policy.validate().unwrap();
         for module in [None, Some("hermes_cli.main"), Some("other.main")] {
             let source = SourceProcess::new(None, Some("python.exe".to_owned()), None)
-                .with_python_module(module.map(|name| PythonModule::new(name.to_owned()).unwrap()));
+                .with_entry_point(module.map(|name| {
+                    ProcessEntry::module(ModuleRuntime::Python, name.to_owned()).unwrap()
+                }));
             let decision = policy.decide(TlsDecryptionContext::new(
                 Some("api.openai.com"),
                 Some(&source),

@@ -1012,11 +1012,11 @@ fn broker_mitm_config_updates_over_rest_without_restart() {
                     "id": "decrypt-openai",
                     "action": "intercept",
                     "process_names": ["codex"],
-                    "process_entry_points": [app_entry, cli_entry],
+                    "process_entry_points": [{"kind":"script", "path":app_entry}, {"kind":"script", "path":cli_entry}],
                     "application_ids": ["com.openai.codex"],
                     "destination_hosts": ["api.openai.com"]
                 },
-                {"id":"module", "action":"intercept", "python_modules":["hermes_cli.main"], "destination_hosts":["api.openai.com"]}
+                {"id":"module", "action":"intercept", "process_entry_points":[{"kind":"module", "runtime":"python", "name":"hermes_cli.main"}], "destination_hosts":["api.openai.com"]}
             ]
         }
     });
@@ -1055,11 +1055,11 @@ fn broker_mitm_config_updates_over_rest_without_restart() {
     let persisted: toml::Value =
         toml::from_str(&fs::read_to_string(broker.runtime_policy_path()).unwrap()).unwrap();
     assert_eq!(
-        persisted["mitm"]["tls_decryption"]["rules"][0]["process_entry_points"][0].as_str(),
+        persisted["mitm"]["tls_decryption"]["rules"][0]["process_entry_points"][0]["path"].as_str(),
         app_entry.to_str()
     );
     assert_eq!(
-        persisted["mitm"]["tls_decryption"]["rules"][0]["process_entry_points"][1].as_str(),
+        persisted["mitm"]["tls_decryption"]["rules"][0]["process_entry_points"][1]["path"].as_str(),
         cli_entry.to_str()
     );
     assert_python_module_config_roundtrip(
@@ -1072,7 +1072,8 @@ fn broker_mitm_config_updates_over_rest_without_restart() {
         "Contents/*.js",
     ] {
         let mut invalid_entry = requested.clone();
-        invalid_entry["tls_decryption"]["rules"][0]["process_entry_points"] = json!([entry]);
+        invalid_entry["tls_decryption"]["rules"][0]["process_entry_points"] =
+            json!([{"kind":"script", "path":entry}]);
         let response = client()
             .put(url(api_addr, "/v1/mitm/config"))
             .bearer_auth(&token)
@@ -2125,13 +2126,13 @@ fn runtime_policy_check_is_read_only_and_requires_an_existing_valid_file() {
         (None, false),
         (
             Some(
-                "schema_version = 1\n[[mitm.tls_decryption.rules]]\nid = 'module'\naction = 'intercept'\npython_modules = ['hermes_cli.main']\n",
+                "schema_version = 1\n[[mitm.tls_decryption.rules]]\nid = 'module'\naction = 'intercept'\nprocess_entry_points = [{ kind = 'module', runtime = 'python', name = 'hermes_cli.main' }]\n",
             ),
             true,
         ),
         (
             Some(
-                "schema_version = 1\n[[mitm.tls_decryption.rules]]\nid = 'module'\naction = 'intercept'\npython_modules = ['hermes.*']\n",
+                "schema_version = 1\n[[mitm.tls_decryption.rules]]\nid = 'module'\naction = 'intercept'\nprocess_entry_points = [{ kind = 'module', runtime = 'python', name = 'hermes.*' }]\n",
             ),
             false,
         ),
@@ -2171,18 +2172,19 @@ fn assert_python_module_config_roundtrip(
     persisted: &toml::Value,
 ) {
     assert_eq!(
-        read_back["tls_decryption"]["rules"][1]["python_modules"],
-        json!(["hermes_cli.main"]),
+        read_back["tls_decryption"]["rules"][1]["process_entry_points"],
+        json!([{"kind":"module", "runtime":"python", "name":"hermes_cli.main"}]),
         "REST must retain module selectors"
     );
     assert_eq!(
-        persisted["mitm"]["tls_decryption"]["rules"][1]["python_modules"][0].as_str(),
+        persisted["mitm"]["tls_decryption"]["rules"][1]["process_entry_points"][0]["name"].as_str(),
         Some("hermes_cli.main"),
         "TOML must retain module selectors"
     );
     for module in ["", "hermes.*", "hermes/main", "-m hermes_cli.main"] {
         let mut invalid = requested.clone();
-        invalid["tls_decryption"]["rules"][1]["python_modules"] = json!([module]);
+        invalid["tls_decryption"]["rules"][1]["process_entry_points"] =
+            json!([{"kind":"module", "runtime":"python", "name":module}]);
         let response = client()
             .put(url(api_addr, "/v1/mitm/config"))
             .bearer_auth(token)
@@ -2191,8 +2193,8 @@ fn assert_python_module_config_roundtrip(
             .unwrap();
         assert_eq!(
             response.status().as_u16(),
-            422,
-            "invalid module must fail deserialization"
+            400,
+            "invalid module must fail policy validation"
         );
         assert_eq!(
             &request_mitm_config(api_addr, token),

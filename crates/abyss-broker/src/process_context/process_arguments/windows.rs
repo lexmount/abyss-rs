@@ -94,8 +94,8 @@ mod tests {
             );
             let actual = resolver.entry_point(Some(child.0.id()));
             match (actual, expected) {
-                (Some(ProcessEntry::PythonModule(module)), Some(expected)) => {
-                    assert_eq!(module.as_str(), expected);
+                (Some(ProcessEntry::Module { name, .. }), Some(expected)) => {
+                    assert_eq!(name.as_str(), expected);
                 }
                 (None, None) => {}
                 other => panic!("unexpected native entry: {other:?}"),

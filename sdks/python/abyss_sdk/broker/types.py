@@ -2,6 +2,8 @@
 
 from typing import Any, Literal, Optional, TypedDict
 
+from ..process import ProcessEntry
+
 
 class HealthResponse(TypedDict):
     service: Literal["abyss-broker"]
@@ -43,8 +45,7 @@ class TlsDecryptionRule(_TlsDecryptionRuleRequired, total=False):
     process_names: list[str]
     application_ids: list[str]
     executable_paths: list[str]
-    process_entry_points: list[str]
-    python_modules: list[str]
+    process_entry_points: list[ProcessEntry]
 
 
 class TlsDecryptionPolicy(TypedDict):
@@ -68,7 +69,6 @@ class HarnessMatcherConfig(TypedDict, total=False):
     process_names: list[str]
     application_ids: list[str]
     executable_paths: list[str]
-    process_entry_points: list[str]
 
 
 class HarnessConfig(TypedDict, total=False):

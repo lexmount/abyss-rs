@@ -1,3 +1,6 @@
+import type { ProcessEntry } from "../process.js";
+export type { ProcessEntry } from "../process.js";
+
 /** Stable request and response types from the broker REST contract. */
 
 export interface HealthResponse {
@@ -39,9 +42,7 @@ export interface TlsDecryptionRule {
   process_names?: string[];
   application_ids?: string[];
   executable_paths?: string[];
-  process_entry_points?: string[];
-  /** Exact case-sensitive Python -m entry; missing metadata does not match. */
-  python_modules?: string[];
+  process_entry_points?: ProcessEntry[];
   destination_hosts: string[];
 }
 
@@ -66,7 +67,6 @@ export interface HarnessMatcherConfig {
   process_names?: string[];
   application_ids?: string[];
   executable_paths?: string[];
-  process_entry_points?: string[];
 }
 
 export interface HarnessConfig {

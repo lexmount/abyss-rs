@@ -34,11 +34,8 @@ pub use runtime::ProcessEntry;
 pub trait ProcessContextResolver: Send + Sync {
     /// Attaches only an identified entry; native argv never leaves the resolver.
     fn populate_entry(&self, source: abyss_mitm::SourceProcess) -> abyss_mitm::SourceProcess {
-        match self.entry_point(source.pid) {
-            Some(ProcessEntry::Script(path)) => source.with_entry_point(Some(path)),
-            Some(ProcessEntry::PythonModule(module)) => source.with_python_module(Some(module)),
-            None => source,
-        }
+        let entry = self.entry_point(source.pid);
+        source.with_entry_point(entry)
     }
 
     /// Returns the source process working directory when the platform exposes it.

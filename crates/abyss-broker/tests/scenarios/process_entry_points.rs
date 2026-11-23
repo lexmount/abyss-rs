@@ -46,7 +46,7 @@ fn real_entry_script_selects_opaque_tls_without_bypassing_sibling_processes() {
                 "rules":[{
                     "id":"background-entry", "action":"passthrough",
                     "application_ids":["com.example.agent"],
-                    "process_entry_points":[daemon_entry]
+                    "process_entry_points":[{"kind":"script", "path":daemon_entry}]
                 }]
             }
         }),
@@ -128,7 +128,8 @@ fn assert_flow_entry(
             .find(|flow| flow["source_process"]["pid"] == process.child.id())
         {
             assert_eq!(
-                flow["source_process"]["entry_point"], entry,
+                flow["source_process"]["entry_point"],
+                json!({"kind":"script", "path":entry}),
                 "native process arguments must produce the expected entry metadata"
             );
             if bypass {

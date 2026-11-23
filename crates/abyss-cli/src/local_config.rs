@@ -369,7 +369,6 @@ fn tls_rule(
         application_ids: Vec::new(),
         executable_paths: Vec::new(),
         process_entry_points: Vec::new(),
-        python_modules: Vec::new(),
         destination_hosts: destination_hosts
             .iter()
             .map(|host| (*host).to_owned())

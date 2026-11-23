@@ -2,6 +2,7 @@
 
 use std::collections::BTreeMap;
 
+pub use abyss_plugin_protocol::process::{ModuleRuntime, ProcessEntry};
 use serde::{Deserialize, Serialize};
 
 /// Successful broker liveness response.
@@ -140,9 +141,9 @@ pub struct TlsDecryptionRule {
     /// Exact absolute executable paths.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub executable_paths: Vec<String>,
-    /// Exact absolute process entry points.
+    /// Exact script or runtime-qualified module entries.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub process_entry_points: Vec<String>,
+    pub process_entry_points: Vec<ProcessEntry>,
     /// Exact hosts and leading-wildcard suffixes.
     pub destination_hosts: Vec<String>,
 }

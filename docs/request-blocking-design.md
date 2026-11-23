@@ -131,7 +131,7 @@ application_ids = ["com.example.restricted-client"]
 [[mitm.tls_decryption.rules]]
 id = "deny-runtime-entry"
 action = "block"
-process_entry_points = ["/opt/example-client/main.js"]
+process_entry_points = [{ kind = "script", path = "/opt/example-client/main.js" }]
 
 [[mitm.tls_decryption.rules]]
 id = "deny-executable"

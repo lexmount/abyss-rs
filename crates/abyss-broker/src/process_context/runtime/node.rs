@@ -22,7 +22,7 @@ impl RuntimeEntryPointResolver for NodeEntryPoint {
 
     fn resolve_entry(&self, arguments: &ProcessArguments) -> Option<ProcessEntry> {
         let target = Self::parse_command(arguments)?;
-        Self::execution_path(&arguments.executable, target).map(ProcessEntry::Script)
+        Self::execution_path(&arguments.executable, target).map(ProcessEntry::script)
     }
 }
 

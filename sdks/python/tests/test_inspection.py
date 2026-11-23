@@ -11,6 +11,24 @@ FIXTURES = Path(__file__).resolve().parents[3] / "specs/broker-plugin-protocol/v
 
 
 class InspectionTests(unittest.TestCase):
+    def test_source_entry_preserves_script_and_module_shapes(self) -> None:
+        for entry in [
+            {"kind": "script", "path": "/opt/agent.js"},
+            {"kind": "module", "runtime": "python", "name": "agent.main"},
+        ]:
+            value = json.loads((FIXTURES / "inspect-request.json").read_text())["context"]
+            value["source_process"] = {
+                "pid": 42,
+                "pid_version": None,
+                "name": None,
+                "executable_path": None,
+                "application_id": None,
+                "entry_point": entry,
+                "working_directory": None,
+            }
+            context = AgentRequestContext.from_dict(value)
+            self.assertEqual(context.source_process.entry_point, entry)
+
     def test_actions_match_wire_contract_without_context_snapshot(self) -> None:
         expected = json.loads((FIXTURES / "inspect-response-modify.json").read_text())["decision"]
         decision = RequestDecision.modify(

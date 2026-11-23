@@ -1,4 +1,5 @@
 /** Complete request context supplied before provider forwarding. */
+import type { ProcessEntry } from "../process.js";
 import type { Conversation, EventPurpose, ImageAttachment } from "../event.js";
 
 export type ModifyAction =
@@ -23,7 +24,7 @@ export interface RequestSourceProcess {
   readonly name: string | null;
   readonly executable_path: string | null;
   readonly application_id: string | null;
-  readonly entry_point: string | null;
+  readonly entry_point: ProcessEntry | null;
   readonly working_directory: string | null;
 }
 

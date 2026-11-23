@@ -3,7 +3,7 @@
 //! Only the interpreter's execution mode is inspected. Script/inline code and
 //! arguments after the module cannot identify a module, and nothing is imported.
 
-use abyss_mitm::PythonModule;
+use abyss_mitm::ModuleRuntime;
 
 use super::{ProcessEntry, RuntimeEntryPointResolver};
 use crate::process_context::process_arguments::ProcessArguments;
@@ -45,9 +45,7 @@ impl RuntimeEntryPointResolver for PythonEntryPoint {
                         } else {
                             remaining
                         };
-                        return PythonModule::new(module.to_owned())
-                            .ok()
-                            .map(ProcessEntry::PythonModule);
+                        return ProcessEntry::module(ModuleRuntime::Python, module.to_owned()).ok();
                     }
                     // These options consume a value, so it must never be scanned as a mode.
                     'W' | 'X' => {
@@ -77,8 +75,8 @@ mod tests {
             argv: argv.iter().map(|value| (*value).to_owned()).collect(),
         };
         match PythonEntryPoint.resolve_entry(&arguments)? {
-            ProcessEntry::PythonModule(module) => Some(module.as_str().to_owned()),
-            ProcessEntry::Script(_) => panic!("Python module parser returned a script"),
+            ProcessEntry::Module { name, .. } => Some(name),
+            _ => panic!("Python module parser returned a non-module entry"),
         }
     }
 

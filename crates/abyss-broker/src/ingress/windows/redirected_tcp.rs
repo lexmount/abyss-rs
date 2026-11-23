@@ -238,8 +238,7 @@ impl IngressConnection for RedirectedTcpConnection {
             source_application_id = ?source_process
                 .as_ref()
                 .and_then(|source| source.application_id.as_deref()),
-            source_entry_point = ?source_process.as_ref().and_then(|source| source.entry_point.as_deref()),
-            source_python_module = ?source_process.as_ref().and_then(|source| source.python_module.as_ref().map(abyss_mitm::PythonModule::as_str)),
+            source_entry_point = ?source_process.as_ref().and_then(|source| source.entry_point.as_ref()),
             "broker ingress accepted redirected TCP flow"
         );
         let flow = PlatformFlow::new(
@@ -321,7 +320,7 @@ mod tests {
         }
         fn entry_point(&self, pid: Option<u32>) -> Option<crate::process_context::ProcessEntry> {
             pid.and(self.0)
-                .map(|entry| crate::process_context::ProcessEntry::Script(entry.to_owned()))
+                .map(|entry| crate::process_context::ProcessEntry::script(entry.to_owned()))
         }
     }
 
@@ -351,7 +350,7 @@ mod tests {
         let cli = r"C:\WorkBuddy\cli\bin\codebuddy";
         let policy: TlsDecryptionPolicy = serde_json::from_value(serde_json::json!({
             "default_action": "intercept",
-            "rules": [{"id": "daemon", "action": "passthrough", "process_names": ["WorkBuddyAI.exe"], "process_entry_points": [daemon]}]
+            "rules": [{"id": "daemon", "action": "passthrough", "process_names": ["WorkBuddyAI.exe"], "process_entry_points": [{"kind":"script", "path":daemon}]}]
         })).unwrap();
         policy.validate().unwrap();
         for (pid, entry, expected) in [

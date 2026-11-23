@@ -92,7 +92,7 @@ mod tests {
             }));
             assert_eq!(
                 resolver.resolve(Some(42)),
-                expected.map(|entry| ProcessEntry::Script(entry.to_owned()))
+                expected.map(|entry| ProcessEntry::script(entry.to_owned()))
             );
             assert_eq!(calls.load(Ordering::Relaxed), 1);
         }
@@ -126,7 +126,7 @@ mod tests {
             }));
             assert_eq!(
                 resolver.resolve(Some(42)),
-                expected.map(|entry| ProcessEntry::Script(entry.to_owned()))
+                expected.map(|entry| ProcessEntry::script(entry.to_owned()))
             );
         }
     }
@@ -155,11 +155,11 @@ mod tests {
         assert_eq!(calls.load(Ordering::Relaxed), 0);
         assert_eq!(
             resolver.resolve(Some(42)),
-            Some(ProcessEntry::Script(DAEMON.to_owned()))
+            Some(ProcessEntry::script(DAEMON.to_owned()))
         );
         assert_eq!(
             resolver.resolve(Some(42)),
-            Some(ProcessEntry::Script(CLI.to_owned()))
+            Some(ProcessEntry::script(CLI.to_owned()))
         );
         assert_eq!(resolver.resolve(Some(42)), None);
         assert_eq!(calls.load(Ordering::Relaxed), 3);
@@ -175,7 +175,7 @@ mod tests {
             arguments
                 .argv
                 .get(2)
-                .map(|target| ProcessEntry::Script(format!("/opt/{target}")))
+                .map(|target| ProcessEntry::script(format!("/opt/{target}")))
         }
     }
 
@@ -190,7 +190,7 @@ mod tests {
         resolver.runtimes.push(Box::new(AdditionalRuntime));
         assert_eq!(
             resolver.resolve(Some(42)),
-            Some(ProcessEntry::Script("/opt/task".to_owned()))
+            Some(ProcessEntry::script("/opt/task".to_owned()))
         );
     }
 }

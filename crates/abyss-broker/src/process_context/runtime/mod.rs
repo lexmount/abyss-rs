@@ -5,14 +5,7 @@ mod path;
 mod python;
 
 use super::process_arguments::ProcessArguments;
-use abyss_mitm::PythonModule;
-
-/// An execution entry is either an absolute script or a validated Python module.
-#[derive(Debug, PartialEq)]
-pub enum ProcessEntry {
-    Script(String),
-    PythonModule(PythonModule),
-}
+pub use abyss_mitm::ProcessEntry;
 
 pub(super) trait RuntimeEntryPointResolver: Send + Sync {
     fn recognizes(&self, executable: &str) -> bool;
