@@ -42,11 +42,6 @@ impl<'a> HarnessRequest<'a> {
 /// Product-owned Harness recognition over generic flow and request metadata.
 pub(super) trait HarnessDetector {
     fn detect(&self, request: &HarnessRequest<'_>) -> Option<HarnessDetection>;
-
-    /// An exclusive match owns the request even when its observation policy is off.
-    fn is_exclusive(&self) -> bool {
-        false
-    }
 }
 
 /// Stateless detector registry evaluated against the current policy snapshot.
@@ -89,16 +84,10 @@ impl HarnessRegistry {
         let enabled = |detection: &HarnessDetection| {
             !apply_audit_policy || config.enabled_for_harness(detection.harness_id.as_str())
         };
-        let mut detections = Vec::new();
-        for detector in detectors {
-            let Some(detection) = detector.detect(&request) else {
-                continue;
-            };
-            if detector.is_exclusive() {
-                return enabled(&detection).then_some(detection);
-            }
-            detections.push(detection);
-        }
+        let mut detections: Vec<_> = detectors
+            .iter()
+            .filter_map(|detector| detector.detect(&request))
+            .collect();
 
         // Hermes can send Codex/Claude compatibility fingerprints.
         // Apply their explicit identity before policy filtering so disabling
@@ -361,6 +350,11 @@ mod tests {
             ),
             (
                 "POST",
+                "https://chat.openai.com/backend-api/conversation/?test=1",
+                "chatgpt",
+            ),
+            (
+                "POST",
                 "https://chatgpt.com/backend-api/codex/responses",
                 "codex",
             ),
@@ -394,9 +388,9 @@ mod tests {
                     HarnessRegistry::recognize_request(&flow, &request, &config, false).unwrap();
                 assert_eq!(recognized.harness_id.as_str(), expected);
                 let observed = HarnessRegistry::recognize_request(&flow, &request, &config, true);
-                let expected_observed = match expected {
-                    "chatgpt" => chat.then_some("chatgpt"),
-                    _ if codex => Some("codex"),
+                let expected_observed = match (expected, chat, codex) {
+                    ("chatgpt", true, _) => Some("chatgpt"),
+                    ("codex", _, true) => Some("codex"),
                     _ => Some("custom-desktop"),
                 };
                 assert_eq!(
@@ -411,6 +405,7 @@ mod tests {
     #[test]
     fn desktop_chat_source_is_independent_of_the_conversation_wire_format() {
         let request = Request::post("https://chatgpt.com/backend-api/f/conversation")
+            .header("originator", "codex_cli_rs")
             .body(())
             .unwrap();
         let config = HarnessUsageConfig::default();

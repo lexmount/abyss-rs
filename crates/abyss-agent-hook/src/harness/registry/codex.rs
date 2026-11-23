@@ -74,6 +74,9 @@ pub(super) struct CodexDetector;
 
 impl HarnessDetector for CodexDetector {
     fn detect(&self, request: &HarnessRequest<'_>) -> Option<HarnessDetection> {
+        if super::chatgpt::is_conversation_request(request) {
+            return None;
+        }
         let user_agent = header(request.headers, "user-agent").unwrap_or_default();
         let originator = header(request.headers, "originator").unwrap_or_default();
         let process = request
