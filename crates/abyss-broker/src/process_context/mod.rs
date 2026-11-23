@@ -28,9 +28,21 @@ use std::{path::PathBuf, sync::Arc};
 use cache::CachedProcessContextResolver;
 use entry_point::EntryPointResolver;
 use process_arguments::process_arguments_provider;
+pub use runtime::ProcessEntry;
+#[cfg(windows)]
+pub use runtime::is_python_interpreter;
 
 /// Resolves best-effort metadata for the process that opened a network flow.
 pub trait ProcessContextResolver: Send + Sync {
+    /// Attaches only an identified entry; native argv never leaves the resolver.
+    fn populate_entry(&self, source: abyss_mitm::SourceProcess) -> abyss_mitm::SourceProcess {
+        match self.entry_point(source.pid) {
+            Some(ProcessEntry::Script(path)) => source.with_entry_point(Some(path)),
+            Some(ProcessEntry::PythonModule(module)) => source.with_python_module(Some(module)),
+            None => source,
+        }
+    }
+
     /// Returns the source process working directory when the platform exposes it.
     #[cfg_attr(
         all(windows, not(test)),
@@ -39,7 +51,7 @@ pub trait ProcessContextResolver: Send + Sync {
     fn working_directory(&self, pid: Option<u32>, pid_version: Option<u32>) -> Option<PathBuf>;
 
     /// Returns a normalized runtime entry point when it can be identified reliably.
-    fn entry_point(&self, _pid: Option<u32>) -> Option<String> {
+    fn entry_point(&self, _pid: Option<u32>) -> Option<ProcessEntry> {
         None
     }
 }
@@ -80,7 +92,7 @@ impl ProcessContextResolver for EntryPointResolver {
         None
     }
 
-    fn entry_point(&self, pid: Option<u32>) -> Option<String> {
+    fn entry_point(&self, pid: Option<u32>) -> Option<ProcessEntry> {
         self.resolve(pid)
     }
 }

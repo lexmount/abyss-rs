@@ -1,23 +1,33 @@
-//! Runtime-specific command interpretation after the platform has supplied argv.
-//!
-//! Recognition and command parsing belong to each runtime. Only identified paths
-//! are emitted; module names, inline code and arbitrary arguments are not paths.
+//! Runtime-specific interpretation of startup argv, without retaining application arguments.
 
 mod node;
 mod path;
+mod python;
 
 use super::process_arguments::ProcessArguments;
+use abyss_mitm::PythonModule;
+
+/// An execution entry is either an absolute script or a validated Python module.
+#[derive(Debug, PartialEq)]
+pub enum ProcessEntry {
+    Script(String),
+    PythonModule(PythonModule),
+}
 
 pub(super) trait RuntimeEntryPointResolver: Send + Sync {
     fn recognizes(&self, executable: &str) -> bool;
-
-    /// Returns the launch target, excluding runtime options and script arguments.
-    fn parse_command<'a>(&self, arguments: &'a ProcessArguments) -> Option<&'a str>;
-
-    /// Resolves a launch target to the path representation used by TLS rules.
-    fn execution_path(&self, executable: &str, target: &str) -> Option<String>;
+    fn resolve_entry(&self, arguments: &ProcessArguments) -> Option<ProcessEntry>;
 }
 
 pub(super) fn runtime_resolvers() -> Vec<Box<dyn RuntimeEntryPointResolver>> {
-    vec![Box::new(node::NodeEntryPoint)]
+    vec![
+        Box::new(node::NodeEntryPoint),
+        Box::new(python::PythonEntryPoint),
+    ]
+}
+
+/// Identifies shared Python interpreters even when their argv cannot be read.
+#[cfg(windows)]
+pub fn is_python_interpreter(executable: &str) -> bool {
+    python::PythonEntryPoint.recognizes(executable)
 }

@@ -387,6 +387,13 @@ components:
           items:
             type: string
             minLength: 1
+        python_modules:
+          description: Exact case-sensitive Python -m entries; missing metadata does not match. Application arguments are never retained.
+          type: array
+          items:
+            type: string
+            maxLength: 255
+            pattern: '^[A-Za-z_][A-Za-z0-9_]*(\.[A-Za-z_][A-Za-z0-9_]*)*$'
         destination_hosts:
           type: array
           items:

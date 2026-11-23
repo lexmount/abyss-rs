@@ -61,6 +61,23 @@ fn main() -> ExitCode {
             return ExitCode::FAILURE;
         }
     };
+    if let Some(path) = cli.check_runtime_policy.as_deref() {
+        // Validation is read-only and must not fall back to defaults for a typo.
+        if let Err(error) = std::fs::metadata(path) {
+            eprintln!(
+                "abyss-broker: cannot read policy {}: {error}",
+                path.display()
+            );
+            return ExitCode::FAILURE;
+        }
+        return match runtime.block_on(RuntimePolicies::load(path)) {
+            Ok(_) => ExitCode::SUCCESS,
+            Err(error) => {
+                eprintln!("abyss-broker: {error}");
+                ExitCode::FAILURE
+            }
+        };
+    }
     let broker_config =
         match runtime.block_on(BrokerConfig::load(cli.config.as_deref(), platform.as_ref())) {
             Ok(config) => config,

@@ -44,6 +44,7 @@ class TlsDecryptionRule(_TlsDecryptionRuleRequired, total=False):
     application_ids: list[str]
     executable_paths: list[str]
     process_entry_points: list[str]
+    python_modules: list[str]
 
 
 class TlsDecryptionPolicy(TypedDict):

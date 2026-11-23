@@ -31,6 +31,10 @@ pub struct Cli {
     )]
     pub config: Option<PathBuf>,
 
+    #[arg(long, value_name = "POLICY_FILE", value_hint = ValueHint::FilePath,
+        help = "Validate an existing runtime policy and exit without starting services or loading CA material.")]
+    pub check_runtime_policy: Option<PathBuf>,
+
     #[arg(
         long,
         value_name = "TOKEN_FILE",

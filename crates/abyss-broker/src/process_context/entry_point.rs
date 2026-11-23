@@ -1,11 +1,11 @@
 //! Shared pipeline: read startup arguments, select a runtime, parse and resolve its entry.
 //!
 //! Platform readers and runtime parsers are injected as trait objects. Full argv
-//! stays transient; only an identified execution path leaves this pipeline.
+//! stays transient; only an identified script path or module leaves this pipeline.
 
 use super::{
     process_arguments::ProcessArgumentsProvider,
-    runtime::{RuntimeEntryPointResolver, runtime_resolvers},
+    runtime::{ProcessEntry, RuntimeEntryPointResolver, runtime_resolvers},
 };
 
 pub(super) struct EntryPointResolver {
@@ -21,15 +21,14 @@ impl EntryPointResolver {
         }
     }
 
-    pub(super) fn resolve(&self, pid: Option<u32>) -> Option<String> {
+    pub(super) fn resolve(&self, pid: Option<u32>) -> Option<ProcessEntry> {
         // Always refresh: a PID can be reused or execute another program.
         let arguments = self.arguments.read(pid?).ok()?;
         let runtime = self
             .runtimes
             .iter()
             .find(|runtime| runtime.recognizes(&arguments.executable))?;
-        let target = runtime.parse_command(&arguments)?;
-        runtime.execution_path(&arguments.executable, target)
+        runtime.resolve_entry(&arguments)
     }
 }
 
@@ -43,7 +42,9 @@ mod tests {
         },
     };
 
-    use super::{EntryPointResolver, ProcessArgumentsProvider, RuntimeEntryPointResolver};
+    use super::{
+        EntryPointResolver, ProcessArgumentsProvider, ProcessEntry, RuntimeEntryPointResolver,
+    };
     use crate::process_context::process_arguments::ProcessArguments;
 
     #[cfg(not(windows))]
@@ -89,7 +90,10 @@ mod tests {
                 argv,
                 calls: calls.clone(),
             }));
-            assert_eq!(resolver.resolve(Some(42)).as_deref(), expected);
+            assert_eq!(
+                resolver.resolve(Some(42)),
+                expected.map(|entry| ProcessEntry::Script(entry.to_owned()))
+            );
             assert_eq!(calls.load(Ordering::Relaxed), 1);
         }
     }
@@ -120,7 +124,10 @@ mod tests {
                 argv,
                 calls: Arc::new(AtomicUsize::new(0)),
             }));
-            assert_eq!(resolver.resolve(Some(42)).as_deref(), expected);
+            assert_eq!(
+                resolver.resolve(Some(42)),
+                expected.map(|entry| ProcessEntry::Script(entry.to_owned()))
+            );
         }
     }
 
@@ -146,8 +153,14 @@ mod tests {
         let resolver = EntryPointResolver::new(Box::new(ChangingArguments(calls.clone())));
         assert_eq!(resolver.resolve(None), None);
         assert_eq!(calls.load(Ordering::Relaxed), 0);
-        assert_eq!(resolver.resolve(Some(42)).as_deref(), Some(DAEMON));
-        assert_eq!(resolver.resolve(Some(42)).as_deref(), Some(CLI));
+        assert_eq!(
+            resolver.resolve(Some(42)),
+            Some(ProcessEntry::Script(DAEMON.to_owned()))
+        );
+        assert_eq!(
+            resolver.resolve(Some(42)),
+            Some(ProcessEntry::Script(CLI.to_owned()))
+        );
         assert_eq!(resolver.resolve(Some(42)), None);
         assert_eq!(calls.load(Ordering::Relaxed), 3);
     }
@@ -158,11 +171,11 @@ mod tests {
         fn recognizes(&self, executable: &str) -> bool {
             executable == "/opt/another-runtime"
         }
-        fn parse_command<'a>(&self, arguments: &'a ProcessArguments) -> Option<&'a str> {
-            arguments.argv.get(2).map(String::as_str)
-        }
-        fn execution_path(&self, _executable: &str, target: &str) -> Option<String> {
-            Some(format!("/opt/{target}"))
+        fn resolve_entry(&self, arguments: &ProcessArguments) -> Option<ProcessEntry> {
+            arguments
+                .argv
+                .get(2)
+                .map(|target| ProcessEntry::Script(format!("/opt/{target}")))
         }
     }
 
@@ -175,6 +188,9 @@ mod tests {
         }));
         assert_eq!(resolver.resolve(Some(42)), None);
         resolver.runtimes.push(Box::new(AdditionalRuntime));
-        assert_eq!(resolver.resolve(Some(42)).as_deref(), Some("/opt/task"));
+        assert_eq!(
+            resolver.resolve(Some(42)),
+            Some(ProcessEntry::Script("/opt/task".to_owned()))
+        );
     }
 }

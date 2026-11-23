@@ -34,7 +34,8 @@ pub enum TlsDecryptionAction {
 /// an empty dimension is unconstrained. The first enabled matching rule selects
 /// the action. If source attribution required by a rule is unavailable, that
 /// rule does not match and evaluation continues. If no rule matches,
-/// `default_action` is used.
+/// `default_action` is used. The ingress's [`super::TlsSourceScope`] may restrict
+/// an intercept/redirect decision to passthrough, even for a matching rule.
 #[derive(Debug, Clone, Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct TlsDecryptionPolicy {
@@ -88,6 +89,9 @@ pub struct TlsDecryptionRule {
     /// Application installation paths are retained. Missing metadata never matches.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub process_entry_points: Vec<String>,
+    /// Exact, case-sensitive Python module entries. Missing metadata never matches.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub python_modules: Vec<super::PythonModule>,
     /// Exact absolute executable paths. Missing process attribution never matches.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub executable_paths: Vec<String>,
@@ -148,7 +152,7 @@ pub enum TlsDecryptionPolicyError {
     EmptyRuleId,
     /// A rule did not constrain any source or destination dimension.
     #[error(
-        "TLS decryption rule `{rule_id}` requires destination_hosts, process_names, application_ids, process_entry_points, or executable_paths"
+        "TLS decryption rule `{rule_id}` requires destination_hosts, process_names, application_ids, process_entry_points, python_modules, or executable_paths"
     )]
     EmptySelectors {
         /// Rule id that failed validation.
@@ -220,6 +224,33 @@ impl<'a> TlsDecryptionContext<'a> {
     }
 }
 
+impl TlsDecryptionContext<'_> {
+    fn restrict_action(
+        &self,
+        action: TlsDecryptionAction,
+        module_selected: bool,
+    ) -> TlsDecryptionAction {
+        use super::TlsSourceScope;
+        if !matches!(
+            action,
+            TlsDecryptionAction::Intercept | TlsDecryptionAction::Redirect
+        ) {
+            return action;
+        }
+        match self
+            .source_process
+            .map(|source| source.tls_scope)
+            .unwrap_or_default()
+        {
+            TlsSourceScope::Policy => action,
+            TlsSourceScope::PythonModule if module_selected => action,
+            TlsSourceScope::PythonModule | TlsSourceScope::Passthrough => {
+                TlsDecryptionAction::Passthrough
+            }
+        }
+    }
+}
+
 impl<'a> From<Option<&'a str>> for TlsDecryptionContext<'a> {
     fn from(destination_domain: Option<&'a str>) -> Self {
         Self::new(destination_domain, None)
@@ -260,6 +291,7 @@ impl TlsDecryptionPolicy {
             if rule.process_names.is_empty()
                 && rule.application_ids.is_empty()
                 && rule.process_entry_points.is_empty()
+                && rule.python_modules.is_empty()
                 && rule.executable_paths.is_empty()
                 && rule.destination_hosts.is_empty()
             {
@@ -329,7 +361,7 @@ impl TlsDecryptionPolicy {
         for rule in &self.rules {
             if rule.enabled && rule.matches(destination_domain.as_deref(), context.source_process) {
                 return decision_for_action(
-                    rule.action,
+                    context.restrict_action(rule.action, !rule.python_modules.is_empty()),
                     Some(rule.id.clone()),
                     rule.target.as_ref(),
                 );
@@ -341,7 +373,7 @@ impl TlsDecryptionPolicy {
         } else {
             self.default_action
         };
-        decision_for_action(action, None, None)
+        decision_for_action(context.restrict_action(action, false), None, None)
     }
 }
 
@@ -380,7 +412,11 @@ impl TlsDecryptionRule {
         ) && entry_point_selector_matches(
             &self.process_entry_points,
             source_process.and_then(|source| source.entry_point.as_deref()),
-        ) && destination_selector_matches(&self.destination_hosts, destination_domain)
+        ) && (self.python_modules.is_empty()
+            || source_process
+                .and_then(|source| source.python_module.as_ref())
+                .is_some_and(|module| self.python_modules.contains(module)))
+            && destination_selector_matches(&self.destination_hosts, destination_domain)
     }
 }
 
@@ -601,6 +637,7 @@ mod tests {
                     application_ids: Vec::new(),
                     executable_paths: Vec::new(),
                     process_entry_points: Vec::new(),
+                    python_modules: Vec::new(),
                     destination_hosts: vec!["openai.com".to_owned(), "*.openai.com".to_owned()],
                 },
                 TlsDecryptionRule {
@@ -612,6 +649,7 @@ mod tests {
                     application_ids: Vec::new(),
                     executable_paths: Vec::new(),
                     process_entry_points: Vec::new(),
+                    python_modules: Vec::new(),
                     destination_hosts: vec!["api.openai.com".to_owned()],
                 },
             ],
@@ -639,6 +677,7 @@ mod tests {
                 application_ids: Vec::new(),
                 executable_paths: Vec::new(),
                 process_entry_points: Vec::new(),
+                python_modules: Vec::new(),
                 destination_hosts: vec!["*.example.test".to_owned()],
             }],
         };
@@ -688,6 +727,7 @@ mod tests {
                 ],
                 executable_paths: Vec::new(),
                 process_entry_points: Vec::new(),
+                python_modules: Vec::new(),
                 destination_hosts: vec!["openai.com".to_owned(), "*.openai.com".to_owned()],
             }],
         };
@@ -729,6 +769,7 @@ mod tests {
                 application_ids: vec!["com.openai.codex".to_owned()],
                 executable_paths: Vec::new(),
                 process_entry_points: Vec::new(),
+                python_modules: Vec::new(),
                 destination_hosts: Vec::new(),
             }],
         };
@@ -766,6 +807,7 @@ mod tests {
                 application_ids: vec![r"c:\program files\openai\codex.exe".to_owned()],
                 executable_paths: Vec::new(),
                 process_entry_points: Vec::new(),
+                python_modules: Vec::new(),
                 destination_hosts: Vec::new(),
             }],
         };
@@ -796,6 +838,7 @@ mod tests {
                 application_ids: Vec::new(),
                 executable_paths: Vec::new(),
                 process_entry_points: Vec::new(),
+                python_modules: Vec::new(),
                 destination_hosts: Vec::new(),
             }],
         };
@@ -823,6 +866,7 @@ mod tests {
                 application_ids: Vec::new(),
                 executable_paths: Vec::new(),
                 process_entry_points: Vec::new(),
+                python_modules: Vec::new(),
                 destination_hosts: Vec::new(),
             }],
         };
@@ -891,6 +935,7 @@ mod tests {
             application_ids: Vec::new(),
             executable_paths: Vec::new(),
             process_entry_points: Vec::new(),
+            python_modules: Vec::new(),
             destination_hosts: Vec::new(),
         }
     }

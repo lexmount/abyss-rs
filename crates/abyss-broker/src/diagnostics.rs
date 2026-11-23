@@ -212,6 +212,8 @@ struct SourceProcessSnapshot {
     /// Best-effort working directory captured for the source process.
     working_directory: Option<String>,
     entry_point: Option<String>,
+    python_module: Option<String>,
+    tls_scope: abyss_mitm::TlsSourceScope,
     bundle_id: Option<String>,
     label: String,
 }
@@ -752,6 +754,8 @@ impl SourceProcessSnapshot {
                 executable_path: None,
                 working_directory: None,
                 entry_point: None,
+                python_module: None,
+                tls_scope: abyss_mitm::TlsSourceScope::Policy,
                 bundle_id: None,
                 label: UNKNOWN_KEY.to_owned(),
             };
@@ -763,6 +767,11 @@ impl SourceProcessSnapshot {
             executable_path: source.executable_path.clone(),
             working_directory: source.working_directory.clone(),
             entry_point: source.entry_point.clone(),
+            tls_scope: source.tls_scope,
+            python_module: source
+                .python_module
+                .as_ref()
+                .map(|module| module.as_str().to_owned()),
             bundle_id: source.application_id.clone(),
             label,
         }

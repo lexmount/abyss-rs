@@ -40,6 +40,8 @@ export interface TlsDecryptionRule {
   application_ids?: string[];
   executable_paths?: string[];
   process_entry_points?: string[];
+  /** Exact case-sensitive Python -m entry; missing metadata does not match. */
+  python_modules?: string[];
   destination_hosts: string[];
 }
 

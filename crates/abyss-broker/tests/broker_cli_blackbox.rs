@@ -1015,7 +1015,8 @@ fn broker_mitm_config_updates_over_rest_without_restart() {
                     "process_entry_points": [app_entry, cli_entry],
                     "application_ids": ["com.openai.codex"],
                     "destination_hosts": ["api.openai.com"]
-                }
+                },
+                {"id":"module", "action":"intercept", "python_modules":["hermes_cli.main"], "destination_hosts":["api.openai.com"]}
             ]
         }
     });
@@ -1060,6 +1061,9 @@ fn broker_mitm_config_updates_over_rest_without_restart() {
     assert_eq!(
         persisted["mitm"]["tls_decryption"]["rules"][0]["process_entry_points"][1].as_str(),
         cli_entry.to_str()
+    );
+    assert_python_module_config_roundtrip(
+        &broker, api_addr, &token, &requested, &read_back, &persisted,
     );
     for entry in [
         "",
@@ -2109,4 +2113,94 @@ enum IngressSource {
     ExplicitHttp,
     MacosNetworkExtension,
     WindowsWfp,
+}
+
+#[test]
+fn runtime_policy_check_is_read_only_and_requires_an_existing_valid_file() {
+    let root = runtime_root_path(reserve_api_loopback_addr());
+    fs::create_dir_all(&root).unwrap();
+    let policy = root.join("policy.toml");
+    let home = root.join("absent-home");
+    for (contents, success) in [
+        (None, false),
+        (
+            Some(
+                "schema_version = 1\n[[mitm.tls_decryption.rules]]\nid = 'module'\naction = 'intercept'\npython_modules = ['hermes_cli.main']\n",
+            ),
+            true,
+        ),
+        (
+            Some(
+                "schema_version = 1\n[[mitm.tls_decryption.rules]]\nid = 'module'\naction = 'intercept'\npython_modules = ['hermes.*']\n",
+            ),
+            false,
+        ),
+    ] {
+        if let Some(contents) = contents {
+            fs::write(&policy, contents).unwrap();
+        }
+        let output = Command::new(broker_binary())
+            .arg("--check-runtime-policy")
+            .arg(&policy)
+            .env("ABYSS_HOME", &home)
+            .output()
+            .unwrap();
+        assert_eq!(
+            output.status.success(),
+            success,
+            "{}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        assert!(
+            !home.exists(),
+            "validation must not initialize broker state, logs, auth or CA"
+        );
+        if let Some(contents) = contents {
+            assert_eq!(fs::read_to_string(&policy).unwrap(), contents);
+        }
+    }
+    fs::remove_dir_all(root).unwrap();
+}
+
+fn assert_python_module_config_roundtrip(
+    broker: &BrokerProcess,
+    api_addr: SocketAddr,
+    token: &str,
+    requested: &Value,
+    read_back: &Value,
+    persisted: &toml::Value,
+) {
+    assert_eq!(
+        read_back["tls_decryption"]["rules"][1]["python_modules"],
+        json!(["hermes_cli.main"]),
+        "REST must retain module selectors"
+    );
+    assert_eq!(
+        persisted["mitm"]["tls_decryption"]["rules"][1]["python_modules"][0].as_str(),
+        Some("hermes_cli.main"),
+        "TOML must retain module selectors"
+    );
+    for module in ["", "hermes.*", "hermes/main", "-m hermes_cli.main"] {
+        let mut invalid = requested.clone();
+        invalid["tls_decryption"]["rules"][1]["python_modules"] = json!([module]);
+        let response = client()
+            .put(url(api_addr, "/v1/mitm/config"))
+            .bearer_auth(token)
+            .json(&invalid)
+            .send()
+            .unwrap();
+        assert_eq!(
+            response.status().as_u16(),
+            422,
+            "invalid module must fail deserialization"
+        );
+        assert_eq!(
+            &request_mitm_config(api_addr, token),
+            read_back,
+            "invalid updates must not publish"
+        );
+        let after: toml::Value =
+            toml::from_str(&fs::read_to_string(broker.runtime_policy_path()).unwrap()).unwrap();
+        assert_eq!(&after, persisted, "invalid updates must not persist");
+    }
 }

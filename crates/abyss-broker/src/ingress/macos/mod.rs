@@ -505,15 +505,19 @@ impl<'a> SourceProcessBuilder<'a> {
             .and_then(|name| name.to_str())
             .map(str::to_owned);
         Some(
-            abyss_mitm::SourceProcess::new(self.payload.source_pid, name, executable_path)
-                .with_pid_version(self.payload.source_pid_version)
-                .with_application_id(self.payload.source_application_id.clone())
-                .with_entry_point(process_context_resolver.entry_point(self.payload.source_pid))
-                .with_working_directory(
-                    process_context_resolver
-                        .working_directory(self.payload.source_pid, self.payload.source_pid_version)
-                        .map(|path| path.to_string_lossy().into_owned()),
-                ),
+            process_context_resolver.populate_entry(
+                abyss_mitm::SourceProcess::new(self.payload.source_pid, name, executable_path)
+                    .with_pid_version(self.payload.source_pid_version)
+                    .with_application_id(self.payload.source_application_id.clone())
+                    .with_working_directory(
+                        process_context_resolver
+                            .working_directory(
+                                self.payload.source_pid,
+                                self.payload.source_pid_version,
+                            )
+                            .map(|path| path.to_string_lossy().into_owned()),
+                    ),
+            ),
         )
     }
 }

@@ -399,3 +399,56 @@ domains are resolved by SOCKS5. The existing timeout and absolute credentials
 file settings apply, while `ca_file` is HTTPS-only. See the
 [broker configuration examples](../crates/abyss-broker/README.md#forward-through-another-explicit-proxy)
 and [SOCKS5 design](socks5.md) for authentication and rollout details.
+
+
+### Python module entries on shared interpreters
+
+`mitm.tls_decryption.rules[].python_modules` selects exact, case-sensitive dotted
+ASCII module names (up to 255 bytes), independently of an interpreter's install
+path. Values use OR; all populated selector dimensions use AND. For example:
+
+```toml
+[[mitm.tls_decryption.rules]]
+id = "decrypt-python-agent"
+action = "intercept"
+process_names = ["python.exe", "pythonw.exe"]
+python_modules = ["example_agent.main"]
+destination_hosts = ["api.example.com"]
+
+[[mitm.tls_decryption.rules]]
+id = "passthrough-python"
+action = "passthrough"
+process_names = ["python.exe", "pythonw.exe"]
+```
+
+Place these rules before broad destination rules. The module selector does not
+change `process_entry_points`: that field still requires an absolute script path.
+REST GET/PUT, TOML persistence, OpenAPI and both SDKs expose `python_modules`.
+Invalid module names are rejected during deserialization (REST HTTP 422).
+
+Windows WFP and macOS ingress use the same native argv provider and runtime
+resolver pipeline as Node/Electron. Recognized Python interpreter names include
+`python`, `pythonw`, optional numeric versions and `.exe`. `py.exe` launchers and
+arbitrary renamed executables are not treated as Python. Only interpreter `-m`
+execution mode yields `source_process.python_module`. Inline code (`-c`), scripts,
+stdin, unknown flags, invalid module names, and unreadable/exited processes leave
+it absent. Arguments after the module, environment variables and full command
+lines are never stored or logged. This is role attribution, not code authenticity
+or an import-resolution sandbox.
+
+Windows WFP marks recognized Python executables with `source_process.tls_scope =
+"python_module"`, even if argv cannot be read. For this scope, an intercept or
+redirect action requires a matching rule with a nonempty `python_modules`
+selector. A broad host rule or intercept default becomes passthrough; explicit
+block and passthrough still apply. Missing WFP application identity uses the
+`passthrough` scope and never decrypts. This per-flow restriction survives live
+policy edits and upgrades retaining an old runtime policy. Old policy without
+module rules safely passes Python until module rules are configured. macOS keeps
+its application-identity-based policy behavior; explicit proxies supply no module
+metadata. First-match order still applies: a broad rule placed before a module
+rule cannot be rescued by a later rule.
+
+Distribution installers can run `abyss-broker --check-runtime-policy PATH` to
+validate an existing policy with the exact packaged broker. This command loads no
+CA, opens no listeners, creates no runtime state, and exits nonzero for missing or
+invalid files. It is suitable for rejecting packages with incompatible schemas.
