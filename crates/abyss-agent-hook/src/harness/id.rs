@@ -10,7 +10,7 @@ use serde::{Deserialize, Deserializer, Serialize, Serializer, de::Error as _};
 pub enum BuiltInHarness {
     /// OpenAI Codex CLI or app traffic.
     Codex,
-    /// Desktop chat mode, also configurable using legacy process matchers.
+    /// ChatGPT desktop chat mode.
     ChatGpt,
     /// Anthropic Claude Code traffic.
     ClaudeCode,
@@ -57,13 +57,13 @@ impl HarnessId {
         &self.0
     }
 
-    /// Returns whether this identifier disallows custom matchers. The existing
-    /// `chatgpt` configuration accepts product-defined process names.
+    /// Returns whether this identifier is reserved for a built-in detector.
     #[must_use]
     pub(crate) fn is_reserved(&self) -> bool {
         matches!(
             self.as_str(),
             "codex"
+                | "chatgpt"
                 | "claude-code"
                 | "claude-desktop"
                 | "deepseek-harness"

@@ -111,6 +111,21 @@ mod tests {
     }
 
     #[test]
+    fn chatgpt_conversation_protocol_requires_no_desktop_source() {
+        let mut exchange = exchange(
+            "https://chatgpt.com/backend-api/f/conversation",
+            br#"{"messages":[]}"#,
+        );
+        *exchange.request.method_mut() = http::Method::POST;
+        assert_eq!(
+            ProtocolDetector::detect_http(&exchange),
+            Some(LlmProtocol::OpenAi(
+                super::OpenAiProtocol::ChatGptConversation
+            ))
+        );
+    }
+
+    #[test]
     fn compatible_chat_completions_route_keeps_the_openai_family() {
         let exchange = exchange(
             "/gateway/chat/completions",

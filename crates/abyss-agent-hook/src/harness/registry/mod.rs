@@ -13,7 +13,7 @@ mod workbuddy;
 use abyss_mitm::{FlowContext, HttpExchange, WebSocketMessage};
 use http::HeaderMap;
 
-use crate::config::HarnessUsageConfig;
+use crate::{config::HarnessUsageConfig, http_metadata::header};
 
 use super::{
     AgentDeclaration, BuiltInHarness, DeclarationSource, HarnessDetection, HarnessId,
@@ -68,7 +68,7 @@ impl HarnessRegistry {
         config: &HarnessUsageConfig,
         apply_audit_policy: bool,
     ) -> Option<HarnessDetection> {
-        if let Some(source) = chatgpt::detect(flow, request, config) {
+        if let Some(source) = chatgpt::detect(flow, request) {
             // Chat and Codex share a helper. Disabling chat must not relabel its turns.
             return (!apply_audit_policy || config.enabled_for_harness(source.harness_id.as_str()))
                 .then_some(source);
@@ -157,15 +157,6 @@ impl HarnessRegistry {
             _ => AgentDeclaration::default(),
         }
     }
-}
-
-fn header<'a>(headers: &'a HeaderMap, name: &str) -> Option<&'a str> {
-    headers
-        .get(name)?
-        .to_str()
-        .ok()
-        .map(str::trim)
-        .filter(|value| !value.is_empty())
 }
 
 fn client_version(user_agent: &str, prefixes: &[&str]) -> Option<String> {
@@ -403,6 +394,25 @@ mod tests {
                 HarnessRegistry::recognize_request(&flow, &request, &disabled, true).is_some(),
                 expected == "codex"
             );
+        }
+    }
+
+    #[test]
+    fn desktop_chat_source_is_independent_of_the_conversation_wire_format() {
+        let request = Request::post("https://chatgpt.com/backend-api/f/conversation")
+            .body(())
+            .unwrap();
+        let config = HarnessUsageConfig::default();
+        for (name, expected) in [("CHATGPT.EXE", Some("chatgpt")), ("chrome.exe", None)] {
+            let flow = FlowContext::from_optional_addrs(
+                None,
+                None,
+                OriginalDestination::from(SocketAddr::from(([127, 0, 0, 1], 443))),
+                TransparentProtocol::PlainHttp,
+                Some(SourceProcess::new(None, Some(name.to_owned()), None)),
+            );
+            let detection = HarnessRegistry::recognize_request(&flow, &request, &config, true);
+            assert_eq!(detection.as_ref().map(|d| d.harness_id.as_str()), expected);
         }
     }
 

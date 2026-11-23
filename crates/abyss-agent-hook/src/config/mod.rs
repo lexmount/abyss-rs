@@ -402,6 +402,7 @@ mod tests {
     #[test]
     fn built_in_harness_cannot_be_redefined_with_custom_matchers() {
         for harness in [
+            "chatgpt",
             "codex",
             "deepseek-harness",
             "hermes",

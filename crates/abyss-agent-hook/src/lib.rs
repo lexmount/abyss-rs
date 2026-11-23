@@ -14,6 +14,7 @@ mod delivery;
 pub(crate) mod event;
 pub(crate) mod harness;
 mod hook;
+mod http_metadata;
 pub(crate) mod protocol;
 pub(crate) mod provider;
 mod request;
