@@ -260,9 +260,8 @@ in the array use OR, while populated selector dimensions use AND. A single rule
 can select both script and module entries.
 
 REST GET/PUT, TOML persistence, diagnostics, plugin request metadata and all SDKs
-use this object shape. Plain path strings and the former `python_modules` field
-are rejected; no compatibility conversion is performed. A configured selector
-does not discover a source process or read its arguments. Linux explicit proxy
+use this object shape. A configured selector does not discover a source process
+or read its arguments. Linux explicit proxy
 ingress supplies no entry metadata, so populated entry selectors do not match it.
 
 For example, place a background-service bypass before broader gateway intercept
@@ -441,8 +440,3 @@ source identity is unavailable, source-specific rules do not match and evaluatio
 continues normally. Explicit proxies supply no module metadata. Rule order is
 part of the configuration: a broad intercept or redirect rule placed first takes
 precedence, and an intercept default remains an intercept default.
-
-Distribution installers can run `abyss-broker --check-runtime-policy PATH` to
-validate an existing policy with the exact packaged broker. This command loads no
-CA, opens no listeners, creates no runtime state, and exits nonzero for missing or
-invalid files. It is suitable for rejecting packages with incompatible schemas.

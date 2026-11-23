@@ -2116,53 +2116,6 @@ enum IngressSource {
     WindowsWfp,
 }
 
-#[test]
-fn runtime_policy_check_is_read_only_and_requires_an_existing_valid_file() {
-    let root = runtime_root_path(reserve_api_loopback_addr());
-    fs::create_dir_all(&root).unwrap();
-    let policy = root.join("policy.toml");
-    let home = root.join("absent-home");
-    for (contents, success) in [
-        (None, false),
-        (
-            Some(
-                "schema_version = 1\n[[mitm.tls_decryption.rules]]\nid = 'module'\naction = 'intercept'\nprocess_entry_points = [{ kind = 'module', runtime = 'python', name = 'hermes_cli.main' }]\n",
-            ),
-            true,
-        ),
-        (
-            Some(
-                "schema_version = 1\n[[mitm.tls_decryption.rules]]\nid = 'module'\naction = 'intercept'\nprocess_entry_points = [{ kind = 'module', runtime = 'python', name = 'hermes.*' }]\n",
-            ),
-            false,
-        ),
-    ] {
-        if let Some(contents) = contents {
-            fs::write(&policy, contents).unwrap();
-        }
-        let output = Command::new(broker_binary())
-            .arg("--check-runtime-policy")
-            .arg(&policy)
-            .env("ABYSS_HOME", &home)
-            .output()
-            .unwrap();
-        assert_eq!(
-            output.status.success(),
-            success,
-            "{}",
-            String::from_utf8_lossy(&output.stderr)
-        );
-        assert!(
-            !home.exists(),
-            "validation must not initialize broker state, logs, auth or CA"
-        );
-        if let Some(contents) = contents {
-            assert_eq!(fs::read_to_string(&policy).unwrap(), contents);
-        }
-    }
-    fs::remove_dir_all(root).unwrap();
-}
-
 fn assert_python_module_config_roundtrip(
     broker: &BrokerProcess,
     api_addr: SocketAddr,

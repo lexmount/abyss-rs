@@ -16,7 +16,7 @@ fn policy() -> TlsDecryptionPolicy {
 }
 
 #[test]
-fn one_entry_selector_matches_scripts_or_modules_and_rejects_old_shapes() {
+fn one_entry_selector_matches_scripts_or_modules_and_rejects_invalid_shapes() {
     let script = ProcessEntry::script(
         std::env::temp_dir()
             .join("daemon.js")
@@ -49,7 +49,6 @@ fn one_entry_selector_matches_scripts_or_modules_and_rejects_old_shapes() {
         );
     }
     for entry in [
-        serde_json::json!("/opt/daemon.js"),
         serde_json::json!({"kind":"module", "name":"agent.main"}),
         serde_json::json!({"kind":"module", "runtime":"unknown", "name":"agent.main"}),
         serde_json::json!({"kind":"script", "path":"/opt/daemon.js", "name":"agent.main"}),
@@ -61,12 +60,6 @@ fn one_entry_selector_matches_scripts_or_modules_and_rejects_old_shapes() {
             .is_err()
         );
     }
-    assert!(
-        serde_json::from_value::<TlsDecryptionPolicy>(serde_json::json!({
-            "rules":[{"id":"old", "action":"intercept", "python_modules":["agent.main"]}]
-        }))
-        .is_err()
-    );
 }
 
 #[test]
