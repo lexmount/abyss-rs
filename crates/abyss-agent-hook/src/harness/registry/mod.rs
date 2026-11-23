@@ -11,7 +11,7 @@ mod opencode;
 mod workbuddy;
 
 use abyss_mitm::{FlowContext, HttpExchange, WebSocketMessage};
-use http::HeaderMap;
+use http::{HeaderMap, Method, Request, Uri};
 
 use crate::{config::HarnessUsageConfig, http_metadata::header};
 
@@ -20,14 +20,33 @@ use super::{
     matcher::HarnessMatcher,
 };
 
+/// Borrowed transport metadata available to HTTP and WebSocket detectors.
+pub(super) struct HarnessRequest<'a> {
+    flow: &'a FlowContext,
+    method: &'a Method,
+    uri: &'a Uri,
+    headers: &'a HeaderMap,
+}
+
+impl<'a> HarnessRequest<'a> {
+    fn new<B>(flow: &'a FlowContext, request: &'a Request<B>) -> Self {
+        Self {
+            flow,
+            method: request.method(),
+            uri: request.uri(),
+            headers: request.headers(),
+        }
+    }
+}
+
 /// Product-owned Harness recognition over generic flow and request metadata.
 pub(super) trait HarnessDetector {
-    fn detect(
-        &self,
-        flow: &FlowContext,
-        headers: &HeaderMap,
-        path: &str,
-    ) -> Option<HarnessDetection>;
+    fn detect(&self, request: &HarnessRequest<'_>) -> Option<HarnessDetection>;
+
+    /// An exclusive match owns the request even when its observation policy is off.
+    fn is_exclusive(&self) -> bool {
+        false
+    }
 }
 
 /// Stateless detector registry evaluated against the current policy snapshot.
@@ -45,52 +64,19 @@ impl HarnessRegistry {
         message: &WebSocketMessage,
         config: &HarnessUsageConfig,
     ) -> Option<HarnessDetection> {
-        Self::detect(
-            &message.flow,
-            message.upgrade_request.headers(),
-            message.upgrade_request.uri().path(),
-            config,
-        )
-    }
-
-    fn detect(
-        flow: &FlowContext,
-        headers: &HeaderMap,
-        path: &str,
-        config: &HarnessUsageConfig,
-    ) -> Option<HarnessDetection> {
-        Self::recognize(flow, headers, path, config, true)
-    }
-
-    pub(crate) fn recognize_request<B>(
-        flow: &FlowContext,
-        request: &http::Request<B>,
-        config: &HarnessUsageConfig,
-        apply_audit_policy: bool,
-    ) -> Option<HarnessDetection> {
-        if let Some(source) = chatgpt::detect(flow, request) {
-            // Chat and Codex share a helper. Disabling chat must not relabel its turns.
-            return (!apply_audit_policy || config.enabled_for_harness(source.harness_id.as_str()))
-                .then_some(source);
-        }
-        Self::recognize(
-            flow,
-            request.headers(),
-            request.uri().path(),
-            config,
-            apply_audit_policy,
-        )
+        Self::recognize_request(&message.flow, &message.upgrade_request, config, true)
     }
 
     /// Recognition can be reused independently of observation enablement.
-    pub(crate) fn recognize(
+    pub(crate) fn recognize_request<B>(
         flow: &FlowContext,
-        headers: &HeaderMap,
-        path: &str,
+        request: &Request<B>,
         config: &HarnessUsageConfig,
         apply_audit_policy: bool,
     ) -> Option<HarnessDetection> {
-        let detectors: [&dyn HarnessDetector; 8] = [
+        let request = HarnessRequest::new(flow, request);
+        let detectors: [&dyn HarnessDetector; 9] = [
+            &chatgpt::ChatGptDetector,
             &codex::CodexDetector,
             &claude_desktop::ClaudeDesktopDetector,
             &claude_code::ClaudeCodeDetector,
@@ -100,10 +86,19 @@ impl HarnessRegistry {
             &workbuddy::WorkBuddyDetector,
             &opencode::OpenCodeDetector,
         ];
-        let mut detections = detectors
-            .into_iter()
-            .filter_map(|detector| detector.detect(flow, headers, path))
-            .collect::<Vec<_>>();
+        let enabled = |detection: &HarnessDetection| {
+            !apply_audit_policy || config.enabled_for_harness(detection.harness_id.as_str())
+        };
+        let mut detections = Vec::new();
+        for detector in detectors {
+            let Some(detection) = detector.detect(&request) else {
+                continue;
+            };
+            if detector.is_exclusive() {
+                return enabled(&detection).then_some(detection);
+            }
+            detections.push(detection);
+        }
 
         // Hermes can send Codex/Claude compatibility fingerprints.
         // Apply their explicit identity before policy filtering so disabling
@@ -116,10 +111,7 @@ impl HarnessRegistry {
                 !matches!(detection.harness_id.as_str(), "codex" | "claude-code")
             });
         }
-        if apply_audit_policy {
-            detections
-                .retain(|detection| config.enabled_for_harness(detection.harness_id.as_str()));
-        }
+        detections.retain(enabled);
 
         for (harness_id, harness) in &config.harnesses {
             if harness_id.is_reserved() || (apply_audit_policy && !harness.enabled.unwrap_or(true))
@@ -179,7 +171,7 @@ mod tests {
         CapturedBody, FlowContext, HttpExchange, OriginalDestination, SourceProcess,
         TransparentProtocol, WebSocketDirection, WebSocketMessage,
     };
-    use http::{HeaderMap, Request, Response};
+    use http::{Request, Response};
 
     use crate::config::HarnessUsageConfig;
 
@@ -301,11 +293,13 @@ mod tests {
             (Some("DEEPSEEK-HARNESS/0.2.0-rc.2"), false),
             (None, false),
         ] {
-            let mut headers = HeaderMap::new();
+            let mut request = Request::post("/responses").body(()).unwrap();
             if let Some(value) = user_agent {
-                headers.insert("user-agent", value.parse().unwrap());
+                request
+                    .headers_mut()
+                    .insert("user-agent", value.parse().unwrap());
             }
-            let detected = HarnessRegistry::detect(&flow, &headers, "/responses", &config);
+            let detected = HarnessRegistry::recognize_request(&flow, &request, &config, true);
             assert_eq!(detected.is_some(), expected, "{user_agent:?}");
             if let Some(detected) = detected {
                 assert_eq!(detected.harness_id.as_str(), "deepseek-harness");
@@ -313,18 +307,22 @@ mod tests {
             }
         }
 
-        let mut headers = HeaderMap::new();
-        headers.insert("user-agent", "deepseek-harness/0.2.0-rc.2".parse().unwrap());
+        let mut request = Request::post("/responses").body(()).unwrap();
+        request
+            .headers_mut()
+            .insert("user-agent", "deepseek-harness/0.2.0-rc.2".parse().unwrap());
         let disabled = serde_json::from_value::<HarnessUsageConfig>(serde_json::json!({
             "harnesses": {"deepseek-harness": {"enabled": false}}
         }))
         .unwrap();
-        assert!(HarnessRegistry::detect(&flow, &headers, "/responses", &disabled).is_none());
+        assert!(HarnessRegistry::recognize_request(&flow, &request, &disabled, true).is_none());
 
         // Codex is the first matching detector, even with another client's marker.
-        headers.insert("x-codex-turn-metadata", "{}".parse().unwrap());
+        request
+            .headers_mut()
+            .insert("x-codex-turn-metadata", "{}".parse().unwrap());
         assert_eq!(
-            HarnessRegistry::detect(&flow, &headers, "/responses", &config)
+            HarnessRegistry::recognize_request(&flow, &request, &config, true)
                 .unwrap()
                 .harness_id
                 .as_str(),
@@ -335,7 +333,7 @@ mod tests {
         }))
         .unwrap();
         assert_eq!(
-            HarnessRegistry::detect(&flow, &headers, "/responses", &disabled)
+            HarnessRegistry::recognize_request(&flow, &request, &disabled, true)
                 .unwrap()
                 .harness_id
                 .as_str(),
@@ -355,10 +353,6 @@ mod tests {
                     .with_application_id(Some("com.openai.codex.helper".to_owned())),
             ),
         );
-        let disabled: HarnessUsageConfig = serde_json::from_value(serde_json::json!({
-            "harnesses":{"chatgpt":{"enabled":false}}
-        }))
-        .unwrap();
         for (method, url, expected) in [
             (
                 "POST",
@@ -387,13 +381,30 @@ mod tests {
                 .header("originator", "codex_cli_rs")
                 .body(())
                 .unwrap();
-            let recognized =
-                HarnessRegistry::recognize_request(&flow, &request, &disabled, false).unwrap();
-            assert_eq!(recognized.harness_id.as_str(), expected);
-            assert_eq!(
-                HarnessRegistry::recognize_request(&flow, &request, &disabled, true).is_some(),
-                expected == "codex"
-            );
+            for (chat, codex) in [(true, true), (false, true), (true, false), (false, false)] {
+                let config = serde_json::from_value(serde_json::json!({
+                    "harnesses": {
+                        "chatgpt": { "enabled": chat },
+                        "codex": { "enabled": codex },
+                        "custom-desktop": { "matchers": [{ "process_names": ["codex"] }] }
+                    }
+                }))
+                .unwrap();
+                let recognized =
+                    HarnessRegistry::recognize_request(&flow, &request, &config, false).unwrap();
+                assert_eq!(recognized.harness_id.as_str(), expected);
+                let observed = HarnessRegistry::recognize_request(&flow, &request, &config, true);
+                let expected_observed = match expected {
+                    "chatgpt" => chat.then_some("chatgpt"),
+                    _ if codex => Some("codex"),
+                    _ => Some("custom-desktop"),
+                };
+                assert_eq!(
+                    observed.as_ref().map(|d| d.harness_id.as_str()),
+                    expected_observed,
+                    "{method} {url} with chat={chat} and codex={codex}"
+                );
+            }
         }
     }
 
@@ -441,14 +452,14 @@ mod tests {
                 }
             }))
             .unwrap();
-            let headers = HeaderMap::new();
-            let detection = HarnessRegistry::detect(&flow, &headers, "/v1/messages", &config);
+            let request = Request::post("/v1/messages").body(()).unwrap();
+            let detection = HarnessRegistry::recognize_request(&flow, &request, &config, true);
             assert_eq!(
                 detection.as_ref().map(|item| item.harness_id.as_str()),
                 Some(if enabled { "a-client" } else { "z-client" })
             );
             assert_eq!(
-                HarnessRegistry::recognize(&flow, &headers, "/v1/messages", &config, false)
+                HarnessRegistry::recognize_request(&flow, &request, &config, false)
                     .unwrap()
                     .harness_id
                     .as_str(),
@@ -468,11 +479,15 @@ mod tests {
         );
 
         assert!(
-            HarnessRegistry::detect(
+            HarnessRegistry::recognize_request(
                 &flow,
-                &HeaderMap::new(),
-                "/api/organizations/org-id/chat_conversations/conversation-id/completion",
+                &Request::post(
+                    "/api/organizations/org-id/chat_conversations/conversation-id/completion"
+                )
+                .body(())
+                .unwrap(),
                 &HarnessUsageConfig::default(),
+                true,
             )
             .is_none()
         );
@@ -494,17 +509,18 @@ mod tests {
             }
         }))
         .unwrap();
-        let mut headers = HeaderMap::new();
-        headers.insert("user-agent", "claude/1.0.0".parse().unwrap());
+        let mut request = Request::post("/v1/messages").body(()).unwrap();
+        request
+            .headers_mut()
+            .insert("user-agent", "claude/1.0.0".parse().unwrap());
         for (name, expected) in [
             ("Claude Helper", "claude-desktop"),
             ("claude", "claude-code"),
         ] {
             flow.source_process = Some(SourceProcess::new(None, Some(name.to_owned()), None));
-            assert!(HarnessRegistry::detect(&flow, &headers, "/v1/messages", &config).is_none());
+            assert!(HarnessRegistry::recognize_request(&flow, &request, &config, true).is_none());
             let detected =
-                HarnessRegistry::recognize(&flow, &headers, "/v1/messages", &config, false)
-                    .unwrap();
+                HarnessRegistry::recognize_request(&flow, &request, &config, false).unwrap();
             assert_eq!(detected.harness_id.as_str(), expected);
         }
     }

@@ -2,15 +2,13 @@
 //! and what Claude Code declares in its `x-claude-code-*` headers: the
 //! request class, and the subagent and user prompt a request works for.
 
-use abyss_mitm::FlowContext;
 use abyss_plugin_protocol::event::EventPurpose;
-use http::HeaderMap;
 
 use crate::harness::{
     AgentDeclaration, BuiltInHarness, DeclarationSource, HarnessDetection, HarnessId,
 };
 
-use super::{HarnessDetector, client_version, header};
+use super::{HarnessDetector, HarnessRequest, client_version, header};
 
 /// Kind of request: `main`, `subagent`, `compaction`, `auxiliary`, and others.
 const REQUEST_CLASS: &str = "x-claude-code-request-class";
@@ -43,16 +41,12 @@ pub(super) fn declare(source: &DeclarationSource<'_>) -> AgentDeclaration {
 pub(super) struct ClaudeCodeDetector;
 
 impl HarnessDetector for ClaudeCodeDetector {
-    fn detect(
-        &self,
-        flow: &FlowContext,
-        headers: &HeaderMap,
-        path: &str,
-    ) -> Option<HarnessDetection> {
+    fn detect(&self, request: &HarnessRequest<'_>) -> Option<HarnessDetection> {
+        let path = request.uri.path();
         if path.contains("/organizations/") && path.ends_with("/completion") {
             return None;
         }
-        let process = flow.source_process.as_ref().is_some_and(|source| {
+        let process = request.flow.source_process.as_ref().is_some_and(|source| {
             source
                 .name
                 .as_deref()
@@ -60,8 +54,8 @@ impl HarnessDetector for ClaudeCodeDetector {
                 .chain(source.executable_path.as_deref())
                 .any(is_claude_code_process)
         });
-        let user_agent = header(headers, "user-agent").unwrap_or_default();
-        let originator = header(headers, "originator").unwrap_or_default();
+        let user_agent = header(request.headers, "user-agent").unwrap_or_default();
+        let originator = header(request.headers, "originator").unwrap_or_default();
         let combined = format!("{path} {user_agent} {originator}").to_ascii_lowercase();
         let marked = [
             "claude-code",
