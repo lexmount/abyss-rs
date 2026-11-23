@@ -242,6 +242,15 @@ impl<'a> Http2Request<'a> {
 }
 
 impl RetainedRequest {
+    /// Nothing remains to send after the request head.
+    pub(super) const fn is_empty(&self) -> bool {
+        self.bytes.is_empty() && self.trailers.is_none()
+    }
+
+    pub(super) fn into_capture(self) -> CapturedBody {
+        self.capture
+    }
+
     pub(super) async fn send(
         self,
         mut destination: h2::SendStream<Bytes>,
