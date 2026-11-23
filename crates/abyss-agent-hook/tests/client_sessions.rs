@@ -35,6 +35,8 @@ struct Scenario {
 
 #[path = "client_sessions/claude.rs"]
 mod claude;
+#[path = "client_sessions/hermes.rs"]
+mod hermes;
 
 #[tokio::test]
 async fn opencode_native_sessions_and_declared_turns_survive_protocol_changes() {

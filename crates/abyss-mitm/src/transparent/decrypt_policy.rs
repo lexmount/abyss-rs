@@ -83,11 +83,11 @@ pub struct TlsDecryptionRule {
     /// A populated selector does not match when application identity is absent.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub application_ids: Vec<String>,
-    /// Exact normalized absolute process entry points; no glob or suffix matching.
+    /// Exact script or runtime-qualified module entries; no glob or suffix matching.
     ///
     /// Application installation paths are retained. Missing metadata never matches.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub process_entry_points: Vec<String>,
+    pub process_entry_points: Vec<super::ProcessEntry>,
     /// Exact absolute executable paths. Missing process attribution never matches.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub executable_paths: Vec<String>,
@@ -166,13 +166,15 @@ pub enum TlsDecryptionPolicyError {
         /// Rule id that failed validation.
         rule_id: String,
     },
-    /// An entry point was not an absolute path on this platform.
-    #[error("TLS decryption rule `{rule_id}` contains invalid process entry point `{entry_point}`")]
+    /// An entry has an invalid native script path or runtime module name.
+    #[error(
+        "TLS decryption rule `{rule_id}` contains invalid process entry point `{entry_point:?}`"
+    )]
     InvalidProcessEntryPoint {
         /// Rule containing the invalid selector.
         rule_id: String,
         /// Entry point that failed validation.
-        entry_point: String,
+        entry_point: super::ProcessEntry,
     },
     /// An executable selector was not an absolute path on this platform.
     #[error("TLS decryption rule `{rule_id}` contains invalid executable path `{path}`")]
@@ -282,7 +284,7 @@ impl TlsDecryptionPolicy {
                 });
             }
             for entry_point in &rule.process_entry_points {
-                if !Path::new(entry_point).is_absolute() {
+                if !process_entry_is_valid(entry_point) {
                     return Err(TlsDecryptionPolicyError::InvalidProcessEntryPoint {
                         rule_id: rule.id.clone(),
                         entry_point: entry_point.clone(),
@@ -377,9 +379,9 @@ impl TlsDecryptionRule {
         ) && entry_point_selector_matches(
             &self.executable_paths,
             source_process.and_then(|source| source.executable_path.as_deref()),
-        ) && entry_point_selector_matches(
+        ) && process_entry_selector_matches(
             &self.process_entry_points,
-            source_process.and_then(|source| source.entry_point.as_deref()),
+            source_process.and_then(|source| source.entry_point.as_ref()),
         ) && destination_selector_matches(&self.destination_hosts, destination_domain)
     }
 }
@@ -480,6 +482,30 @@ fn selector_matches(selectors: &[String], candidate: Option<&str>) -> bool {
             selectors
                 .iter()
                 .any(|value| selector_value_matches(value, candidate))
+        })
+}
+
+fn process_entry_is_valid(entry: &super::ProcessEntry) -> bool {
+    match entry {
+        super::ProcessEntry::Script { path } => Path::new(path).is_absolute(),
+        super::ProcessEntry::Module { runtime, name } => runtime.accepts_module_name(name),
+        _ => false,
+    }
+}
+
+fn process_entry_selector_matches(
+    selectors: &[super::ProcessEntry],
+    candidate: Option<&super::ProcessEntry>,
+) -> bool {
+    selectors.is_empty()
+        || candidate.is_some_and(|candidate| {
+            selectors.iter().any(|entry| match (entry, candidate) {
+                (
+                    super::ProcessEntry::Script { path: left },
+                    super::ProcessEntry::Script { path: right },
+                ) => Path::new(left) == Path::new(right),
+                _ => entry == candidate,
+            })
         })
 }
 
@@ -900,12 +926,14 @@ mod tests {
             .with_application_id(application_id.map(str::to_owned))
     }
 
-    fn entry_path(relative: &str) -> String {
-        std::env::temp_dir()
-            .join(relative)
-            .to_str()
-            .unwrap()
-            .to_owned()
+    fn entry_path(relative: &str) -> super::super::ProcessEntry {
+        super::super::ProcessEntry::script(
+            std::env::temp_dir()
+                .join(relative)
+                .to_str()
+                .unwrap()
+                .to_owned(),
+        )
     }
 
     #[test]
@@ -1017,12 +1045,12 @@ mod tests {
             policy.validate().unwrap();
             assert_eq!(
                 serde_json::to_value(policy).unwrap()["rules"][0]["process_entry_points"][0],
-                entry
+                serde_json::to_value(entry).unwrap()
             );
         }
         for entry in ["", " ", "daemon.js", "Contents/Resources/daemon.js"] {
             let policy: TlsDecryptionPolicy = serde_json::from_value(serde_json::json!({
-                "rules":[{"id":"entry", "action":"passthrough", "process_entry_points":[entry]}]
+                "rules":[{"id":"entry", "action":"passthrough", "process_entry_points":[{"kind":"script", "path":entry}]}]
             }))
             .unwrap();
             assert!(

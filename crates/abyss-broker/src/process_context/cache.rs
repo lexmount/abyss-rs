@@ -83,7 +83,7 @@ where
             .clone()
     }
 
-    fn entry_point(&self, pid: Option<u32>) -> Option<String> {
+    fn entry_point(&self, pid: Option<u32>) -> Option<super::ProcessEntry> {
         // A PID may be reused, so entry-point policy must not use a cached script.
         self.entry_points.resolve(pid)
     }

@@ -31,3 +31,5 @@ export type {
   ModifyAction,
   RequestHandler,
 } from "./inspection.js";
+
+export type { ProcessEntry } from "../process.js";

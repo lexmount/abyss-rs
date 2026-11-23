@@ -211,7 +211,7 @@ struct SourceProcessSnapshot {
     executable_path: Option<String>,
     /// Best-effort working directory captured for the source process.
     working_directory: Option<String>,
-    entry_point: Option<String>,
+    entry_point: Option<abyss_mitm::ProcessEntry>,
     bundle_id: Option<String>,
     label: String,
 }

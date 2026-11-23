@@ -36,6 +36,19 @@ for (const decision of [
         "utf8",
       ),
     );
+    const entry =
+      decision.action === "allow"
+        ? { kind: "script", path: "/opt/agent.js" }
+        : { kind: "module", runtime: "python", name: "agent.main" };
+    request.context.source_process = {
+      pid: 42,
+      pid_version: null,
+      name: null,
+      executable_path: null,
+      application_id: null,
+      entry_point: entry,
+      working_directory: null,
+    };
     let resolveSession, rejectSession;
     const session = new Promise((resolve, reject) => {
       resolveSession = resolve;
@@ -72,6 +85,7 @@ for (const decision of [
         endpoint,
         agentEvents: false,
         onAgentRequest(context) {
+          assert.deepEqual(context.source_process.entry_point, entry);
           assert.equal(context.agent.model, "gpt-test");
           context.agent.model = "local-only";
           return decision;

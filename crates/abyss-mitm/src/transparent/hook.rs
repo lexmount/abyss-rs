@@ -239,8 +239,8 @@ pub struct SourceProcess {
     /// macOS adapters supply the source bundle or signing identifier. Windows
     /// adapters supply the native application identifier.
     pub application_id: Option<String>,
-    /// Normalized absolute runtime entry script, when positively identified by the adapter.
-    pub entry_point: Option<String>,
+    /// Script or runtime-qualified module entry identified by the adapter.
+    pub entry_point: Option<super::ProcessEntry>,
     /// Best-effort process working directory captured by the platform adapter.
     pub working_directory: Option<String>,
 }
@@ -278,9 +278,9 @@ impl SourceProcess {
         self
     }
 
-    /// Attaches a normalized entry script without retaining command-line arguments.
+    /// Attaches an execution entry without retaining command-line arguments.
     #[must_use]
-    pub fn with_entry_point(mut self, entry_point: Option<String>) -> Self {
+    pub fn with_entry_point(mut self, entry_point: Option<super::ProcessEntry>) -> Self {
         self.entry_point = entry_point;
         self
     }

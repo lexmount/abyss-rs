@@ -55,6 +55,58 @@ mod tests {
     }
 
     #[test]
+    fn native_python_module_resolution_uses_the_same_pipeline_as_node() {
+        use crate::process_context::{ProcessEntry, default_process_context_resolver};
+        // Python is optional for Rust-only development hosts; the Windows CI and
+        // product black-box hosts supply it. Resolve the actual interpreter image.
+        let Ok(output) = Command::new("python")
+            .args(["-c", "import sys; print(sys.executable)"])
+            .output()
+        else {
+            return;
+        };
+        assert!(output.status.success());
+        let executable = String::from_utf8(output.stdout).unwrap().trim().to_owned();
+        let resolver = default_process_context_resolver();
+        for (args, expected) in [
+            (
+                vec!["-m", "http.server", "0", "--bind", "127.0.0.1"],
+                Some("http.server"),
+            ),
+            (
+                vec![
+                    "-c",
+                    "import sys; sys.stdin.read()",
+                    "-m",
+                    "hermes_cli.main",
+                ],
+                None,
+            ),
+        ] {
+            let mut child = ChildProcess(
+                Command::new(&executable)
+                    .args(args)
+                    .stdin(Stdio::piped())
+                    .stdout(Stdio::null())
+                    .stderr(Stdio::null())
+                    .spawn()
+                    .unwrap(),
+            );
+            let actual = resolver.entry_point(Some(child.0.id()));
+            match (actual, expected) {
+                (Some(ProcessEntry::Module { name, .. }), Some(expected)) => {
+                    assert_eq!(name.as_str(), expected);
+                }
+                (None, None) => {}
+                other => panic!("unexpected native entry: {other:?}"),
+            }
+            child.0.kill().unwrap();
+            child.0.wait().unwrap();
+            assert!(resolver.entry_point(Some(child.0.id())).is_none());
+        }
+    }
+
+    #[test]
     fn native_reader_reads_another_process_and_drops_exited_processes() {
         let executable = PathBuf::from(std::env::var_os("SystemRoot").unwrap())
             .join("System32/WindowsPowerShell/v1.0/powershell.exe");

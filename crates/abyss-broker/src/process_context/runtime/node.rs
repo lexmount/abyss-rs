@@ -1,6 +1,6 @@
 //! Node/Electron runtime identities and command syntax for direct script launches.
 
-use super::{RuntimeEntryPointResolver, path::ScriptPath};
+use super::{ProcessEntry, RuntimeEntryPointResolver, path::ScriptPath};
 use crate::process_context::process_arguments::ProcessArguments;
 
 pub(super) struct NodeEntryPoint;
@@ -20,7 +20,14 @@ impl RuntimeEntryPointResolver for NodeEntryPoint {
         })
     }
 
-    fn parse_command<'a>(&self, arguments: &'a ProcessArguments) -> Option<&'a str> {
+    fn resolve_entry(&self, arguments: &ProcessArguments) -> Option<ProcessEntry> {
+        let target = Self::parse_command(arguments)?;
+        Self::execution_path(&arguments.executable, target).map(ProcessEntry::script)
+    }
+}
+
+impl NodeEntryPoint {
+    fn parse_command(arguments: &ProcessArguments) -> Option<&str> {
         let mut arguments = arguments.argv.iter().skip(1).map(String::as_str);
         loop {
             match arguments.next()? {
@@ -46,7 +53,7 @@ impl RuntimeEntryPointResolver for NodeEntryPoint {
         }
     }
 
-    fn execution_path(&self, executable: &str, target: &str) -> Option<String> {
+    fn execution_path(executable: &str, target: &str) -> Option<String> {
         ScriptPath::resolve(executable, target)
     }
 }
@@ -129,7 +136,7 @@ mod tests {
                 executable: r"C:\WorkBuddy\WorkBuddyAI.exe".to_owned(),
                 argv: argv.into_iter().map(str::to_owned).collect(),
             };
-            assert_eq!(NodeEntryPoint.parse_command(&arguments), expected);
+            assert_eq!(NodeEntryPoint::parse_command(&arguments), expected);
         }
     }
 
@@ -151,7 +158,7 @@ mod tests {
             .to_vec(),
         };
         assert_eq!(
-            NodeEntryPoint.parse_command(&command),
+            NodeEntryPoint::parse_command(&command),
             Some("/opt/daemon.js")
         );
     }
@@ -181,7 +188,10 @@ mod tests {
                 executable: "/usr/bin/node".to_owned(),
                 argv: args.iter().map(|arg| (*arg).to_owned()).collect(),
             };
-            assert!(NodeEntryPoint.parse_command(&command).is_none(), "{args:?}");
+            assert!(
+                NodeEntryPoint::parse_command(&command).is_none(),
+                "{args:?}"
+            );
         }
     }
 }

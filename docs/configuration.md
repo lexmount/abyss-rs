@@ -252,21 +252,17 @@ project.
 
 ### TLS rules for processes sharing one executable
 
-`mitm.tls_decryption.rules[].process_entry_points` matches normalized absolute
-runtime entry scripts exactly. Like other selectors, values within the array use OR;
-entry points, application IDs, process names, and destination hosts combine with
-AND. The first enabled matching rule wins. Omitted or empty entry-point arrays
-preserve existing behavior. Unavailable metadata does not match a populated
-entry-point selector; evaluation continues to subsequent rules and defaults.
+`mitm.tls_decryption.rules[].process_entry_points` contains tagged execution
+entries. Script entries use `{ kind = "script", path = "/opt/agent/daemon.js" }`;
+module entries use `{ kind = "module", runtime = "python", name = "agent.main" }`.
+Both use the same `source_process.entry_point` metadata and rule matcher. Entries
+in the array use OR, while populated selector dimensions use AND. A single rule
+can select both script and module entries.
 
-This configuration field, its validation, persistence, and exact matching are
-shared across Linux, macOS, and Windows. The `GET /v1/mitm/config` and
-`PUT /v1/mitm/config` APIs require absolute paths such as
-`/opt/agent/daemon.js`. Matching requires the flow to
-provide `source_process.entry_point`; configuring the selector does not discover
-the source process or read its arguments. Linux explicit proxy ingress does not
-populate this metadata, so a populated entry-point selector does not match those
-flows.
+REST GET/PUT, TOML persistence, diagnostics, plugin request metadata and all SDKs
+use this object shape. A configured selector does not discover a source process
+or read its arguments. Linux explicit proxy
+ingress supplies no entry metadata, so populated entry selectors do not match it.
 
 For example, place a background-service bypass before broader gateway intercept
 rules, while the sibling CLI continues to use those intercept rules:
@@ -277,7 +273,7 @@ id = "passthrough-agent-background-service"
 enabled = true
 action = "passthrough"
 application_ids = ["com.example.agent"]
-process_entry_points = ["/Applications/Example.app/Contents/Resources/app.asar/main/daemon.js"]
+process_entry_points = [{ kind = "script", path = "/Applications/Example.app/Contents/Resources/app.asar/main/daemon.js" }]
 destination_hosts = []
 ```
 
@@ -290,7 +286,7 @@ entries from native process arguments and retain the full absolute script path,
 including any `.app` directory. Windows packaged `WorkBuddy.exe` and
 `WorkBuddyAI.exe` runtimes use the same direct-script parser. If the application
 moves, update the configured path accordingly.
-Selectors must be absolute paths according to the broker's operating system.
+Script paths must be absolute according to the broker's operating system.
 Validation and matching use Rust's `std::path`: Unix uses rooted paths, while
 Windows also requires a drive or UNC prefix. Paths are compared by their components,
 so repeated separators and `.` are normalized. No filesystem access, symlink
@@ -333,13 +329,13 @@ before the CLI rule and any broader intercept rules:
 id = "workbuddy-daemon"
 action = "passthrough"
 process_names = ["WorkBuddyAI.exe"]
-process_entry_points = ['C:\Apps\WorkBuddy\resources\app.asar\main\daemon-app-server-entry.js']
+process_entry_points = [{ kind = "script", path = 'C:\Apps\WorkBuddy\resources\app.asar\main\daemon-app-server-entry.js' }]
 
 [[mitm.tls_decryption.rules]]
 id = "workbuddy-cli"
 action = "intercept"
 process_names = ["WorkBuddyAI.exe"]
-process_entry_points = ['C:\Apps\WorkBuddy\resources\app.asar.unpacked\cli\bin\codebuddy']
+process_entry_points = [{ kind = "script", path = 'C:\Apps\WorkBuddy\resources\app.asar.unpacked\cli\bin\codebuddy' }]
 ```
 
 The Host adapter must first redirect the candidate executable's connections to
@@ -399,3 +395,48 @@ domains are resolved by SOCKS5. The existing timeout and absolute credentials
 file settings apply, while `ca_file` is HTTPS-only. See the
 [broker configuration examples](../crates/abyss-broker/README.md#forward-through-another-explicit-proxy)
 and [SOCKS5 design](socks5.md) for authentication and rollout details.
+
+
+### Python module entries on shared interpreters
+
+`process_entry_points` entries with `kind = "module"` and `runtime = "python"`
+select exact, case-sensitive dotted ASCII module names (up to 255 bytes),
+independently of the interpreter install path. For example:
+
+```toml
+[[mitm.tls_decryption.rules]]
+id = "decrypt-python-agent"
+action = "intercept"
+process_names = ["python.exe", "pythonw.exe"]
+process_entry_points = [{ kind = "module", runtime = "python", name = "example_agent.main" }]
+destination_hosts = ["api.example.com"]
+
+[[mitm.tls_decryption.rules]]
+id = "passthrough-python"
+action = "passthrough"
+process_names = ["python.exe", "pythonw.exe"]
+```
+
+Place these rules before broad destination rules. Script and module selectors
+share the same validation path. Invalid paths or module names are rejected during
+policy validation (REST HTTP 400); malformed entry shapes are rejected during
+deserialization (HTTP 422).
+
+Windows WFP and macOS ingress use the same native argv provider and runtime
+resolver pipeline as Node/Electron. Recognized Python interpreter names include
+`python`, `pythonw`, optional numeric versions and `.exe`. `py.exe` launchers and
+arbitrary renamed executables are not treated as Python. Only interpreter `-m`
+execution mode yields a module in `source_process.entry_point`. Inline code (`-c`), scripts,
+stdin, unknown flags, invalid module names, and unreadable/exited processes leave
+it absent. Arguments after the module, environment variables and full command
+lines are never stored or logged. This is role attribution, not code authenticity
+or an import-resolution sandbox.
+
+Python uses the same ordered TLS policy as Node/Electron on both platforms.
+The first matching rule selects the action; otherwise the configured default
+applies. With the rules above, other modules and connections with unreadable argv
+match the Python passthrough rule before reaching broad destination rules. If
+source identity is unavailable, source-specific rules do not match and evaluation
+continues normally. Explicit proxies supply no module metadata. Rule order is
+part of the configuration: a broad intercept or redirect rule placed first takes
+precedence, and an intercept default remains an intercept default.

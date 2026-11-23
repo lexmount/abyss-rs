@@ -38,8 +38,8 @@ try {
     $policy = @{ tls_decryption = @{
         default_action = 'passthrough'; missing_sni_action = 'passthrough'
         rules = @(
-            @{id='test-workbuddy-daemon'; enabled=$true; action='passthrough'; process_names=@($runtimeName); process_entry_points=@($daemon)},
-            @{id='test-workbuddy-cli'; enabled=$true; action='intercept'; process_names=@($runtimeName); process_entry_points=@($cli)}
+            @{id='test-workbuddy-daemon'; enabled=$true; action='passthrough'; process_names=@($runtimeName); process_entry_points=@(@{kind='script';path=$daemon})},
+            @{id='test-workbuddy-cli'; enabled=$true; action='intercept'; process_names=@($runtimeName); process_entry_points=@(@{kind='script';path=$cli})}
         )
     }}
     # Even a failed response may follow a committed update; always restore after sending.
@@ -86,7 +86,7 @@ try {
         } while ($null -eq $flow -and [DateTime]::UtcNow -lt $deadline)
         if ($null -eq $flow) { throw 'No WFP diagnostic flow for the probe PID.' }
         $expectedDecision = if ($case.intercepted) { 'intercepted' } else { 'passthrough' }
-        if ($flow.ingress.source -ne 'windows_wfp' -or $flow.source_process.entry_point -cne $case.entry -or $flow.decision -ne $expectedDecision) {
+        if ($flow.ingress.source -ne 'windows_wfp' -or $flow.source_process.entry_point.kind -ne 'script' -or $flow.source_process.entry_point.path -cne $case.entry -or $flow.decision -ne $expectedDecision) {
             throw ('Unexpected WFP attribution: ' + ($flow | ConvertTo-Json -Depth 10 -Compress))
         }
         $results.Add([pscustomobject]@{role=$case.role; pid=$probe.pid; entry=$case.entry; decision=$flow.decision; configuredRule=$case.rule; authorized=$probe.authorized; signedByBroker=$probe.signedByBroker; issuer=$probe.issuer; status=$probe.status})

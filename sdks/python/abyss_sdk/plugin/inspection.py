@@ -11,6 +11,7 @@ from ..event import (
     _attachment,
     _conversation,
 )
+from ..process import ProcessEntry
 
 
 @dataclass(frozen=True)
@@ -94,7 +95,7 @@ class RequestSourceProcess:
     name: Optional[str]
     executable_path: Optional[str]
     application_id: Optional[str]
-    entry_point: Optional[str]
+    entry_point: Optional[ProcessEntry]
     working_directory: Optional[str]
 
 

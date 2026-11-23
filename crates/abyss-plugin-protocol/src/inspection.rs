@@ -63,8 +63,8 @@ pub struct RequestSourceProcess {
     pub executable_path: Option<String>,
     /// Platform application identity.
     pub application_id: Option<String>,
-    /// Runtime entry script path.
-    pub entry_point: Option<String>,
+    /// Script or runtime-qualified module entry.
+    pub entry_point: Option<crate::process::ProcessEntry>,
     /// Working directory.
     pub working_directory: Option<String>,
 }

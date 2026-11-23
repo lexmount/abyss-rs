@@ -213,9 +213,13 @@
           ]
         },
         "entry_point": {
-          "type": [
-            "string",
-            "null"
+          "anyOf": [
+            {
+              "$ref": "#/$defs/ProcessEntry"
+            },
+            {
+              "type": "null"
+            }
           ]
         },
         "working_directory": {
@@ -317,6 +321,51 @@
           ]
         }
       }
+    },
+    "ProcessEntry": {
+      "oneOf": [
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "kind",
+            "path"
+          ],
+          "properties": {
+            "kind": {
+              "const": "script"
+            },
+            "path": {
+              "type": "string",
+              "minLength": 1
+            }
+          }
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "kind",
+            "runtime",
+            "name"
+          ],
+          "properties": {
+            "kind": {
+              "const": "module"
+            },
+            "runtime": {
+              "enum": [
+                "python"
+              ]
+            },
+            "name": {
+              "type": "string",
+              "maxLength": 255,
+              "pattern": "^[A-Za-z_][A-Za-z0-9_]*(\\.[A-Za-z_][A-Za-z0-9_]*)*$"
+            }
+          }
+        }
+      ]
     }
   }
 }

@@ -62,11 +62,13 @@ pub use self::types::{
     TransparentFlowError, TransparentFlowOutcome, TransparentFlowSource,
     TransparentPassthroughOutcome, TransparentPassthroughProtocol, TransparentProtocol,
 };
+pub use abyss_plugin_protocol::process::{ModuleRuntime, ProcessEntry};
 
 #[cfg(test)]
 mod tests {
     mod blocking;
     mod http2;
+    mod process_entries;
     mod proxy_chain;
     mod redirect;
     use std::{

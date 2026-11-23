@@ -1,5 +1,7 @@
 //! Hermes identity and user-turn declarations; protocol parsers resolve sessions.
 
+use abyss_mitm::{ModuleRuntime, ProcessEntry};
+
 use crate::harness::{AgentDeclaration, BuiltInHarness, DeclarationSource, HarnessDetection};
 
 use super::{HarnessDetector, HarnessRequest, client_version, header};
@@ -22,13 +24,17 @@ impl HarnessDetector for HermesDetector {
             || normalized.contains("(hermes agent)")
             || header(request.headers, "originator")
                 .is_some_and(|value| value.eq_ignore_ascii_case("hermes-agent"));
-        let application = request
-            .flow
-            .source_process
-            .as_ref()
-            .and_then(|source| source.application_id.as_deref())
-            == Some(APPLICATION_ID);
-        if !application && !marked {
+        let source = request.flow.source_process.as_ref();
+        let application =
+            source.and_then(|source| source.application_id.as_deref()) == Some(APPLICATION_ID);
+        let module = matches!(
+            source.and_then(|source| source.entry_point.as_ref()),
+            Some(ProcessEntry::Module {
+                runtime: ModuleRuntime::Python,
+                name,
+            }) if name == "hermes_cli.main"
+        );
+        if !application && !module && !marked {
             return None;
         }
         Some(HarnessDetection {

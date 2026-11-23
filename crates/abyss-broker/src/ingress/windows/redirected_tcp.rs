@@ -145,23 +145,21 @@ impl RedirectedTcpConnection {
         let source_process =
             Self::source_process(process_id, application_id, process_context_resolver);
 
-        Ok((original_destination, source_process))
+        Ok((original_destination, Some(source_process)))
     }
 
     fn source_process(
         process_id: Option<u32>,
         application_id: Option<String>,
         process_context_resolver: &dyn ProcessContextResolver,
-    ) -> Option<SourceProcess> {
+    ) -> SourceProcess {
         let process_name = application_id
             .as_deref()
             .and_then(Self::application_file_name)
             .map(str::to_owned);
-        (process_id.is_some() || application_id.is_some()).then(|| {
-            SourceProcess::new(process_id, process_name, None)
-                .with_application_id(application_id)
-                .with_entry_point(process_context_resolver.entry_point(process_id))
-        })
+        process_context_resolver.populate_entry(
+            SourceProcess::new(process_id, process_name, None).with_application_id(application_id),
+        )
     }
 
     fn application_file_name(application_id: &str) -> Option<&str> {
@@ -240,7 +238,7 @@ impl IngressConnection for RedirectedTcpConnection {
             source_application_id = ?source_process
                 .as_ref()
                 .and_then(|source| source.application_id.as_deref()),
-            source_entry_point = ?source_process.as_ref().and_then(|source| source.entry_point.as_deref()),
+            source_entry_point = ?source_process.as_ref().and_then(|source| source.entry_point.as_ref()),
             "broker ingress accepted redirected TCP flow"
         );
         let flow = PlatformFlow::new(
@@ -320,8 +318,9 @@ mod tests {
         ) -> Option<PathBuf> {
             None
         }
-        fn entry_point(&self, pid: Option<u32>) -> Option<String> {
-            pid.and(self.0).map(str::to_owned)
+        fn entry_point(&self, pid: Option<u32>) -> Option<crate::process_context::ProcessEntry> {
+            pid.and(self.0)
+                .map(|entry| crate::process_context::ProcessEntry::script(entry.to_owned()))
         }
     }
 
@@ -333,8 +332,7 @@ mod tests {
             Some(17_042),
             Some(application_id.to_owned()),
             &FixedProcessContext(None),
-        )
-        .expect("platform source metadata should produce a source process");
+        );
 
         assert_eq!(source_process.pid, Some(17_042));
         assert_eq!(source_process.name.as_deref(), Some("codex.exe"));
@@ -352,7 +350,7 @@ mod tests {
         let cli = r"C:\WorkBuddy\cli\bin\codebuddy";
         let policy: TlsDecryptionPolicy = serde_json::from_value(serde_json::json!({
             "default_action": "intercept",
-            "rules": [{"id": "daemon", "action": "passthrough", "process_names": ["WorkBuddyAI.exe"], "process_entry_points": [daemon]}]
+            "rules": [{"id": "daemon", "action": "passthrough", "process_names": ["WorkBuddyAI.exe"], "process_entry_points": [{"kind":"script", "path":daemon}]}]
         })).unwrap();
         policy.validate().unwrap();
         for (pid, entry, expected) in [
@@ -365,8 +363,7 @@ mod tests {
                 pid,
                 Some(r"\device\harddiskvolume4\workbuddy\workbuddyai.exe".to_owned()),
                 &FixedProcessContext(entry),
-            )
-            .unwrap();
+            );
             assert_eq!(
                 policy
                     .decide(TlsDecryptionContext::new(None, Some(&source)))
@@ -374,10 +371,30 @@ mod tests {
                 expected
             );
         }
-        assert!(
-            RedirectedTcpConnection::source_process(None, None, &FixedProcessContext(Some(daemon)))
-                .is_none()
+        let unattributed =
+            RedirectedTcpConnection::source_process(None, None, &FixedProcessContext(Some(daemon)));
+        assert_eq!(
+            policy
+                .decide(TlsDecryptionContext::new(None, Some(&unattributed)))
+                .action(),
+            TlsDecryptionAction::Intercept
         );
+        for name in ["python.exe", "PYTHONW.EXE", "python3.14.exe"] {
+            let python = RedirectedTcpConnection::source_process(
+                Some(42),
+                Some(format!(r"\device\volume\{name}")),
+                &FixedProcessContext(None),
+            );
+            assert_eq!(
+                policy
+                    .decide(TlsDecryptionContext::new(
+                        Some("api.openai.com"),
+                        Some(&python)
+                    ))
+                    .action(),
+                TlsDecryptionAction::Intercept
+            );
+        }
     }
 
     #[tokio::test]

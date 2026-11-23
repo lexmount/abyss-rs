@@ -131,6 +131,7 @@ dependencies = [
 name = "abyss-mitm"
 version = "1.8.1"
 dependencies = [
+ "abyss-plugin-protocol",
  "arc-swap",
  "base64",
  "boringtun",
