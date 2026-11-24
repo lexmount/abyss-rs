@@ -28,21 +28,6 @@ pub(super) struct HarnessRequest<'a> {
     headers: &'a HeaderMap,
 }
 
-/// Signing identifiers that each name exactly one built-in Harness. The
-/// platform verifies them against the developer's signature, so they identify
-/// the program however it was installed or launched.
-const SIGNED_APPLICATIONS: [(&str, BuiltInHarness); 3] = [
-    (
-        "com.anthropic.claudefordesktop",
-        BuiltInHarness::ClaudeDesktop,
-    ),
-    (
-        "com.anthropic.claudefordesktop.helper",
-        BuiltInHarness::ClaudeDesktop,
-    ),
-    ("com.anthropic.claude-code", BuiltInHarness::ClaudeCode),
-];
-
 impl<'a> HarnessRequest<'a> {
     fn new<B>(flow: &'a FlowContext, request: &'a Request<B>) -> Self {
         Self {
@@ -51,26 +36,6 @@ impl<'a> HarnessRequest<'a> {
             uri: request.uri(),
             headers: request.headers(),
         }
-    }
-
-    /// Built-in Harness the source process's signing identifier names.
-    fn signed_harness(&self) -> Option<BuiltInHarness> {
-        let application_id = self
-            .flow
-            .source_process
-            .as_ref()?
-            .application_id
-            .as_deref()?;
-        SIGNED_APPLICATIONS
-            .iter()
-            .find(|(id, _)| *id == application_id)
-            .map(|(_, harness)| *harness)
-    }
-
-    /// Whether the source process's signing identifier names `harness`.
-    fn signed_as(&self, harness: BuiltInHarness) -> bool {
-        self.signed_harness()
-            .is_some_and(|signed| signed.id() == harness.id())
     }
 }
 
@@ -123,12 +88,6 @@ impl HarnessRegistry {
             .iter()
             .filter_map(|detector| detector.detect(&request))
             .collect();
-
-        // A signing identifier settles the client before request markers,
-        // detector order, or policy, so disabling it cannot relabel its traffic.
-        if let Some(signed) = request.signed_harness() {
-            detections.retain(|detection| detection.harness_id.as_str() == signed.id());
-        }
 
         // Hermes can send Codex/Claude compatibility fingerprints.
         // Apply their explicit identity before policy filtering so disabling
@@ -558,31 +517,6 @@ mod tests {
             let detected =
                 HarnessRegistry::recognize_request(&flow, &request, &config, false).unwrap();
             assert_eq!(detected.harness_id.as_str(), expected);
-        }
-    }
-
-    #[test]
-    fn claude_signing_identifiers_identify_without_other_markers() {
-        let config = HarnessUsageConfig::default();
-        let request = Request::post("/v1/messages").body(()).unwrap();
-        for (application_id, expected) in [
-            ("com.anthropic.claudefordesktop", "claude-desktop"),
-            ("com.anthropic.claudefordesktop.helper", "claude-desktop"),
-            ("com.anthropic.claude-code", "claude-code"),
-        ] {
-            let flow = FlowContext::from_optional_addrs(
-                None,
-                None,
-                OriginalDestination::from(SocketAddr::from(([127, 0, 0, 1], 443))),
-                TransparentProtocol::PlainHttp,
-                Some(
-                    SourceProcess::new(None, None, None)
-                        .with_application_id(Some(application_id.to_owned())),
-                ),
-            );
-            let detected =
-                HarnessRegistry::recognize_request(&flow, &request, &config, true).unwrap();
-            assert_eq!(detected.harness_id.as_str(), expected, "{application_id}");
         }
     }
 }

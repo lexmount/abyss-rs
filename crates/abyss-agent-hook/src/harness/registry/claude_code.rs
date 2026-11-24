@@ -46,15 +46,14 @@ impl HarnessDetector for ClaudeCodeDetector {
         if path.contains("/organizations/") && path.ends_with("/completion") {
             return None;
         }
-        let process = request.signed_as(BuiltInHarness::ClaudeCode)
-            || request.flow.source_process.as_ref().is_some_and(|source| {
-                source
-                    .name
-                    .as_deref()
-                    .into_iter()
-                    .chain(source.executable_path.as_deref())
-                    .any(is_claude_code_process)
-            });
+        let process = request.flow.source_process.as_ref().is_some_and(|source| {
+            source
+                .name
+                .as_deref()
+                .into_iter()
+                .chain(source.executable_path.as_deref())
+                .any(is_claude_code_process)
+        });
         let user_agent = header(request.headers, "user-agent").unwrap_or_default();
         let originator = header(request.headers, "originator").unwrap_or_default();
         let combined = format!("{path} {user_agent} {originator}").to_ascii_lowercase();
