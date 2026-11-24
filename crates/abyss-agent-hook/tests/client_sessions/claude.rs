@@ -66,10 +66,7 @@ async fn cowork_desktop_sources_emit_events_despite_code_fingerprints() {
 
 #[tokio::test]
 async fn cowork_desktop_headers_identify_proxy_requests_without_process_metadata() {
-    for marker in [
-        ("anthropic-client-platform", "desktop_app"),
-        ("anthropic-client-app", "com.anthropic.claudefordesktop"),
-    ] {
+    for marker in [("anthropic-client-app", "com.anthropic.claudefordesktop")] {
         let scenario = Scenario::new(json!({}));
         scenario
             .http(
@@ -90,14 +87,18 @@ async fn cowork_desktop_headers_identify_proxy_requests_without_process_metadata
 }
 
 #[tokio::test]
-async fn desktop_bundled_claude_code_uses_first_matching_harness() {
+async fn desktop_bundled_claude_code_is_claude_code() {
     for app in ["Claude", "Claude-3p"] {
         for application_id in [None, Some("com.anthropic.claude-code")] {
             let scenario = Scenario::new(json!({}));
             scenario
                 .http_from_source(
                     &[
-                        ("user-agent", "claude-code/2.1.321"),
+                        (
+                            "user-agent",
+                            "claude-cli/2.1.321 (external, claude-desktop)",
+                        ),
+                        ("anthropic-client-platform", "desktop_app"),
                         ("x-claude-code-session-id", "code-session"),
                         ("x-claude-code-prompt-id", "code-turn"),
                     ],
@@ -109,10 +110,9 @@ async fn desktop_bundled_claude_code_uses_first_matching_harness() {
             let events = scenario.sink.0.lock();
             assert_eq!(events.len(), 2, "{app} {application_id:?}");
             for event in events.iter() {
-                // The existing Desktop path matcher precedes the Code detector.
-                assert_eq!(event.agent.name, "claude-desktop");
+                assert_eq!(event.agent.name, "claude-code");
                 assert_eq!(event.session_id, "code-session");
-                assert!(event.turn_id.is_none());
+                assert_eq!(event.turn_id.as_deref(), Some("code-turn"));
             }
         }
     }
@@ -125,7 +125,7 @@ async fn claude_first_enabled_match_follows_existing_policy_filtering() {
         .map(|source| ("claude-desktop", source))
         .collect::<Vec<_>>();
     sources.push((
-        "claude-desktop",
+        "claude-code",
         bundled_code_source("Claude", Some("com.anthropic.claude-code")),
     ));
     sources.push((
@@ -143,7 +143,7 @@ async fn claude_first_enabled_match_follows_existing_policy_filtering() {
                 }}}));
                 scenario
                     .http_from_source(
-                        &[("user-agent", "claude/1.0.0")],
+                        &[("user-agent", "claude-cli/2.1.321 (external, cli)")],
                         "/v1/messages",
                         "reply",
                         Some(source.clone()),
@@ -184,7 +184,7 @@ async fn cowork_uses_desktop_content_policy_instead_of_code_policy() {
     scenario
         .http(
             &[
-                ("anthropic-client-platform", "desktop_app"),
+                ("anthropic-client-app", "com.anthropic.claudefordesktop"),
                 ("user-agent", "claude-code/2.1.321"),
             ],
             "/v1/messages",
@@ -209,19 +209,22 @@ async fn cowork_uses_desktop_content_policy_instead_of_code_policy() {
 }
 
 #[tokio::test]
-async fn standalone_claude_code_keeps_legacy_detection_without_desktop_identity() {
+async fn standalone_claude_code_is_identified_without_desktop_identity() {
     for source in [
         None,
-        Some(SourceProcess::new(
-            None,
-            Some("claude".to_owned()),
-            Some("/Users/test/.local/share/claude/versions/2.1.314".to_owned()),
-        )),
+        Some(
+            SourceProcess::new(
+                None,
+                Some("2.1.314".to_owned()),
+                Some("/Users/test/.local/share/claude/versions/2.1.314".to_owned()),
+            )
+            .with_application_id(Some("com.anthropic.claude-code".to_owned())),
+        ),
     ] {
         let scenario = Scenario::new(json!({}));
         scenario
             .http_from_source(
-                &[("user-agent", "claude/2.1.314")],
+                &[("user-agent", "claude-cli/2.1.314 (external, sdk-cli)")],
                 "/v1/messages",
                 "code-reply",
                 source,
