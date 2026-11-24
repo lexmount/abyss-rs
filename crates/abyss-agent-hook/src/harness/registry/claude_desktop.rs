@@ -8,15 +8,15 @@ pub(super) struct ClaudeDesktopDetector;
 
 impl HarnessDetector for ClaudeDesktopDetector {
     fn detect(&self, request: &HarnessRequest<'_>) -> Option<HarnessDetection> {
-        let source = request.flow.source_process.as_ref().is_some_and(|source| {
-            source.application_id.as_deref() == Some("com.anthropic.claudefordesktop.helper")
-                || source
+        let source = request.signed_as(BuiltInHarness::ClaudeDesktop)
+            || request.flow.source_process.as_ref().is_some_and(|source| {
+                source
                     .name
                     .as_deref()
                     .into_iter()
                     .chain(source.executable_path.as_deref())
                     .any(is_desktop_process)
-        });
+            });
         let marked = header(request.headers, "anthropic-client-platform") == Some("desktop_app")
             || header(request.headers, "anthropic-client-app")
                 == Some("com.anthropic.claudefordesktop");
