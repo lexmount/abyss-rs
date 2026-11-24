@@ -1,5 +1,6 @@
 //! Anthropic-family public and private protocol parsing.
 
+pub mod claude_code_session;
 pub mod claude_web;
 pub mod messages;
 pub mod shared;

@@ -227,6 +227,9 @@ async fn http_prepared_requests_reuse_the_same_projection_and_emit_identical_eve
             LlmProtocol::Anthropic(AnthropicProtocol::ClaudeWeb(_)) => {
                 request_content::<ClaudeWebParser>(&request_body)
             }
+            LlmProtocol::Anthropic(AnthropicProtocol::ClaudeCodeSession) => {
+                unreachable!("session streams have no request projection")
+            }
         };
         assert!(
             std::ptr::eq(projected.as_ref(), observed.as_ref()),

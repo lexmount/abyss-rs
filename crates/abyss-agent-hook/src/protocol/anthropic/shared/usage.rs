@@ -20,7 +20,7 @@ pub fn best_usage(values: &[Value]) -> Option<TokenUsage> {
 /// latest reported value of each field, including zero, and retain omitted ones.
 /// Partition compatible input totals only after all partial updates are merged.
 #[derive(Default)]
-struct UsageCounters {
+pub(in crate::protocol::anthropic) struct UsageCounters {
     input: Option<i64>,
     output: Option<i64>,
     native_cache_read: Option<i64>,
@@ -31,6 +31,13 @@ struct UsageCounters {
 }
 
 impl UsageCounters {
+    /// Merges fields from a selected usage object without walking nested events.
+    pub(in crate::protocol::anthropic) fn merge_fields(&mut self, value: &Value) {
+        if let Some(object) = value.as_object() {
+            self.apply(object);
+        }
+    }
+
     fn visit(&mut self, value: &Value, depth: usize) {
         if depth == 0 {
             return;
@@ -69,7 +76,7 @@ impl UsageCounters {
             .or(self.reasoning);
     }
 
-    fn into_usage(self) -> TokenUsage {
+    pub(in crate::protocol::anthropic) fn into_usage(self) -> TokenUsage {
         // Native Messages keeps cache counters outside input_tokens, whereas
         // compatible OpenAI-style details are included in the input total.
         let detail_cache_read = if self.native_cache_read.is_none() {

@@ -1,8 +1,13 @@
 //! Single coordinator for Harness detection, protocol parsing, and delivery.
 
+mod claude_code_session;
+
 use std::sync::Arc;
 
-use abyss_mitm::{FlowContext, HookError, HookFuture, HttpExchange, MitmHook, WebSocketMessage};
+use abyss_mitm::{
+    FlowContext, HookError, HookFuture, HttpExchange, HttpResponseObserver, MitmHook,
+    WebSocketMessage,
+};
 use abyss_plugin_protocol::event::LlmProvider;
 use http::{HeaderMap, header::HOST};
 
@@ -30,7 +35,7 @@ where
 {
     config: Arc<HarnessUsageHookConfig>,
     runtime_config: HooksRuntimeConfig,
-    delivery: EventDelivery<S>,
+    delivery: Arc<EventDelivery<S>>,
     claude_web_context: ClaudeWebContext,
     openai_websocket: OpenAiWebSocketAccumulator,
 }
@@ -49,7 +54,7 @@ where
         Self {
             config: Arc::new(config),
             runtime_config,
-            delivery: EventDelivery::new(sink),
+            delivery: Arc::new(EventDelivery::new(sink)),
             claude_web_context: ClaudeWebContext::default(),
             openai_websocket: OpenAiWebSocketAccumulator::default(),
         }
@@ -125,6 +130,8 @@ where
                     &passthrough(),
                 )
             }),
+            // Code session calls are observed only while the response is streaming.
+            LlmProtocol::Anthropic(AnthropicProtocol::ClaudeCodeSession) => None,
         }
         .unwrap_or_default()
     }
@@ -211,7 +218,7 @@ where
 
 impl<S> MitmHook for HarnessUsageHook<S>
 where
-    S: AgentEventSink,
+    S: AgentEventSink + 'static,
 {
     fn enabled(&self) -> bool {
         self.runtime_config.snapshot().harness_usage.enabled
@@ -219,6 +226,20 @@ where
 
     fn matches(&self, _flow: &FlowContext) -> bool {
         self.enabled()
+    }
+
+    fn observe_http_response(
+        &self,
+        flow: &FlowContext,
+        request: &http::Request<()>,
+        response: &http::Response<()>,
+    ) -> Option<Box<dyn HttpResponseObserver>> {
+        match ProtocolDetector::detect_request(flow, request, None)? {
+            LlmProtocol::Anthropic(AnthropicProtocol::ClaudeCodeSession) => {
+                self.observe_claude_code_session(flow, request, response)
+            }
+            _ => None,
+        }
     }
 
     fn on_http_exchange<'a>(&'a self, exchange: &'a HttpExchange) -> HookFuture<'a> {

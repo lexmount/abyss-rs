@@ -1,6 +1,6 @@
 //! Provider-neutral response body decoding: JSON or Server-Sent Events framing.
 
-use abyss_mitm::CapturedBody;
+use abyss_mitm::{CapturedBody, DEFAULT_MAX_HTTP1_BODY_BYTES};
 use serde_json::Value;
 
 use crate::protocol::model::response::ResponseInput;
@@ -161,5 +161,116 @@ mod tests {
                 assert!(!input.assembly_overflowed);
             }
         }
+    }
+}
+
+/// Incremental SSE framing for a live observer. Only blank-line terminated
+/// events are returned. The caller drops this state when the stream ends.
+#[derive(Default)]
+pub struct SseStream {
+    line: Vec<u8>,
+    data: Vec<u8>,
+    started: bool,
+    skip_lf: bool,
+    stopped: bool,
+}
+
+impl SseStream {
+    pub fn next_event(&mut self, input: &mut &[u8]) -> Option<String> {
+        while !self.stopped && !input.is_empty() {
+            if std::mem::take(&mut self.skip_lf)
+                && let Some(rest) = input.strip_prefix(b"\n")
+            {
+                *input = rest;
+                continue;
+            }
+            let line_end = input.iter().position(|byte| matches!(byte, b'\r' | b'\n'));
+            let (piece, rest) = input.split_at(line_end.unwrap_or(input.len()));
+            if self
+                .data
+                .len()
+                .saturating_add(self.line.len())
+                .saturating_add(piece.len())
+                > DEFAULT_MAX_HTTP1_BODY_BYTES
+            {
+                *self = Self {
+                    stopped: true,
+                    ..Self::default()
+                };
+                tracing::debug!("HTTP event stream exceeded the SSE framing limit");
+                return None;
+            }
+            self.line.extend_from_slice(piece);
+            *input = rest;
+            if let Some((&separator, remainder)) = input.split_first() {
+                self.skip_lf = separator == b'\r';
+                *input = remainder;
+                if let Some(data) = self.finish_line() {
+                    return Some(data);
+                }
+            }
+        }
+        None
+    }
+
+    fn finish_line(&mut self) -> Option<String> {
+        let mut line = self.line.as_slice();
+        if !std::mem::replace(&mut self.started, true) {
+            line = line.strip_prefix(b"\xef\xbb\xbf").unwrap_or(line);
+        }
+        if line.is_empty() {
+            self.line.clear();
+            self.data.pop()?;
+            return Some(
+                String::from_utf8(std::mem::take(&mut self.data))
+                    .unwrap_or_else(|error| String::from_utf8_lossy(error.as_bytes()).into_owned()),
+            );
+        }
+        if let Some(value) = line
+            .strip_prefix(b"data:")
+            .or_else(|| (line == b"data").then_some(&[]))
+        {
+            self.data
+                .extend_from_slice(value.strip_prefix(b" ").unwrap_or(value));
+            self.data.push(b'\n');
+        }
+        self.line.clear();
+        None
+    }
+}
+
+#[cfg(test)]
+mod incremental_tests {
+    use super::{DEFAULT_MAX_HTTP1_BODY_BYTES, SseStream};
+
+    #[test]
+    fn frames_data_across_split_lines_delimiters_and_utf8() {
+        let mut stream = SseStream::default();
+        let bytes = b"\xef\xbb\xbf:keepalive\r\nevent: ignored\rdata: one\r\ndata: t\xc3\xa9\n\r\ndata: buffered\n";
+        let events: Vec<_> = bytes
+            .chunks(1)
+            .filter_map(|mut chunk| stream.next_event(&mut chunk))
+            .collect();
+        assert_eq!(events, ["one\nté"]);
+        assert_eq!(
+            stream.next_event(&mut &b"\n"[..]).as_deref(),
+            Some("buffered")
+        );
+    }
+
+    #[test]
+    fn oversized_event_stops_observation_and_releases_buffers() {
+        let mut stream = SseStream::default();
+        let prefix = [
+            b"data: ".as_slice(),
+            &vec![b'a'; DEFAULT_MAX_HTTP1_BODY_BYTES.div_ceil(2)],
+            b"\n",
+        ]
+        .concat();
+        assert!(stream.next_event(&mut prefix.as_slice()).is_none());
+        assert!(stream.next_event(&mut prefix.as_slice()).is_none());
+        assert!(stream.stopped);
+        assert!(stream.data.is_empty() && stream.line.is_empty());
+        assert!(stream.next_event(&mut &b"data: ignored\n\n"[..]).is_none());
     }
 }
