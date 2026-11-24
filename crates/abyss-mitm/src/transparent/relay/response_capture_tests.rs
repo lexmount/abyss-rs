@@ -1,26 +1,31 @@
-//! Verify complete HTTP observations survive late client disconnects without
-//! hiding transport errors or treating incomplete responses as complete.
+//! Verify live HTTP/1 observation and complete capture across relay outcomes.
 
 use std::{
     collections::VecDeque,
-    io,
+    io::{self, Write as _},
     pin::Pin,
     sync::{
         Arc,
         atomic::{AtomicBool, Ordering},
     },
     task::{Context, Poll},
-    time::Duration,
+    time::{Duration, SystemTime},
 };
 
+use bytes::Bytes;
+use flate2::{Compression, write::GzEncoder};
 use futures_util::task::AtomicWaker;
+use http::{Request, Response};
 use tokio::{
-    io::{AsyncRead, AsyncWrite, ReadBuf},
+    io::{AsyncRead, AsyncReadExt as _, AsyncWrite, AsyncWriteExt as _, ReadBuf, duplex},
     sync::{Notify, mpsc},
 };
 
 use super::{DecodedClientFlow, HookDispatcher, MitmTimeouts, tests::test_flow};
-use crate::{FlowOperation, HookFuture, HttpExchange, MitmHook, TransparentFlowError};
+use crate::{
+    FlowContext, FlowOperation, HookFuture, HttpExchange, HttpResponseObserver, MitmHook,
+    TransparentFlowError,
+};
 
 const HEAD: &[u8] = b"HTTP/1.1 200 OK\r\nTransfer-Encoding: chunked\r\n\r\n";
 const PAYLOAD: &[u8] = b"data: [DONE]\n\n";
@@ -30,6 +35,30 @@ struct Observer(mpsc::UnboundedSender<HttpExchange>);
 impl MitmHook for Observer {
     fn on_http_exchange<'a>(&'a self, exchange: &'a HttpExchange) -> HookFuture<'a> {
         self.0.send(exchange.clone()).unwrap();
+        Box::pin(std::future::ready(Ok(())))
+    }
+}
+
+struct LiveObserver(mpsc::UnboundedSender<Bytes>);
+
+impl MitmHook for LiveObserver {
+    fn observe_http_response(
+        &self,
+        _flow: &FlowContext,
+        _request: &Request<()>,
+        _response: &Response<()>,
+    ) -> Option<Box<dyn HttpResponseObserver>> {
+        Some(Box::new(Self(self.0.clone())))
+    }
+}
+
+impl HttpResponseObserver for LiveObserver {
+    fn on_http_response_chunk<'a>(
+        &'a mut self,
+        _at: SystemTime,
+        chunk: &'a [u8],
+    ) -> HookFuture<'a> {
+        self.0.send(Bytes::copy_from_slice(chunk)).unwrap();
         Box::pin(std::future::ready(Ok(())))
     }
 }
@@ -231,6 +260,57 @@ async fn incomplete_capture_is_not_submitted() {
     }
 }
 
+#[tokio::test]
+async fn observes_decoded_gzip_before_http1_terminal_chunk() {
+    let mut gzip = GzEncoder::new(Vec::new(), Compression::fast());
+    gzip.write_all(PAYLOAD).unwrap();
+    let gzip = gzip.finish().unwrap();
+    let head = b"HTTP/1.1 200 OK\r\nTransfer-Encoding: chunked\r\nContent-Encoding: gzip\r\n\r\n";
+    let size = format!("{:x}\r\n", gzip.len());
+    let prefix = [head.as_slice(), size.as_bytes(), &gzip, b"\r\n"].concat();
+    let terminal = b"0\r\n\r\n";
+
+    let (mut client, relay_client) = duplex(1024);
+    let (mut origin, relay_origin) = duplex(1024);
+    let (sender, mut observed) = mpsc::unbounded_channel();
+    let hooks = HookDispatcher::default();
+    hooks.push(LiveObserver(sender));
+    client
+        .write_all(b"GET /events HTTP/1.1\r\nHost: gateway.example\r\n\r\n")
+        .await
+        .unwrap();
+    let timeouts = MitmTimeouts::default();
+    let flow = DecodedClientFlow::from_http1(relay_client, test_flow(), timeouts.clone())
+        .await
+        .unwrap();
+    let relay = Box::pin(flow.relay_to(
+        relay_origin,
+        &hooks,
+        timeouts,
+        1024,
+        &crate::UncontrolledForwarding,
+    ));
+    let exchange = async {
+        origin.write_all(&prefix).await.unwrap();
+        let mut decoded = Vec::new();
+        while decoded.len() < PAYLOAD.len() {
+            decoded.extend_from_slice(&observed.recv().await.unwrap());
+        }
+        assert_eq!(decoded, PAYLOAD);
+
+        origin.write_all(terminal).await.unwrap();
+        let mut wire = Vec::new();
+        client.read_to_end(&mut wire).await.unwrap();
+        assert_eq!(wire, [prefix.as_slice(), terminal].concat());
+    };
+    let (result, ()) = tokio::time::timeout(Duration::from_secs(5), async {
+        tokio::join!(relay, exchange)
+    })
+    .await
+    .unwrap();
+    result.unwrap();
+}
+
 async fn start_relay(
     client: Stream,
     response_reads: Vec<Vec<u8>>,
@@ -418,6 +498,7 @@ async fn failed_final_write_counts_only_accepted_wire_bytes() {
             b"e\r\ndata: [DONE]\n\n\r\n0\r\n\r\n",
             limit,
             super::BodyDirection::Response,
+            None,
         ))
         .await
         .unwrap();
@@ -442,6 +523,7 @@ async fn request_forwarding_failure_still_returns_the_original_error() {
         b"e\r\ndata: [DONE]\n\n\r\n0\r\n\r\n",
         1024,
         super::BodyDirection::Request,
+        None,
     ))
     .await;
     assert!(matches!(result, Err(TransparentFlowError::Io {

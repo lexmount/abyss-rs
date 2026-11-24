@@ -5,6 +5,7 @@
 
 mod brotli;
 mod reader;
+mod stream;
 #[cfg(test)]
 mod tests;
 
@@ -22,6 +23,7 @@ use http::{
 use self::brotli::BrotliReader;
 use super::{BodyDecodingStatus, CapturedBody, HttpExchange, engine::DEFAULT_MAX_HTTP1_BODY_BYTES};
 use reader::{BudgetReader, ZlibReader};
+pub(super) use stream::StreamDecoder;
 
 const MAX_CODINGS: usize = 4;
 const DECODE_TIME_BUDGET: Duration = Duration::from_secs(2);

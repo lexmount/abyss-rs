@@ -6,7 +6,9 @@ use bytes::Bytes;
 use h2::{RecvStream, SendStream};
 use http::HeaderMap;
 
-use super::super::{CapturedBody, content_encoding::ContentDecoder};
+use super::super::{
+    CapturedBody, content_encoding::ContentDecoder, response_observation::ResponseObservation,
+};
 
 /// Retains only a prefix while all DATA and trailing headers continue on the wire.
 pub(super) struct BodyCapture {
@@ -47,7 +49,7 @@ impl BodyCapture {
         mut destination: SendStream<Bytes>,
         headers: &HeaderMap,
     ) -> Result<CapturedBody, h2::Error> {
-        self.forward(&mut source, &mut destination).await?;
+        self.forward(&mut source, &mut destination, None).await?;
         Ok(self.finish(headers))
     }
 
@@ -59,8 +61,12 @@ impl BodyCapture {
         mut source: RecvStream,
         mut destination: SendStream<Bytes>,
         headers: &HeaderMap,
+        observation: Option<ResponseObservation>,
     ) -> CapturedBody {
-        if let Err(error) = self.forward(&mut source, &mut destination).await {
+        if let Err(error) = self
+            .forward(&mut source, &mut destination, observation)
+            .await
+        {
             self.truncated |= !source.is_end_stream();
             tracing::debug!(%error, captured_bytes = self.bytes.len(), incomplete = self.truncated, "HTTP/2 response forwarding ended early");
             destination.send_reset(error.reason().unwrap_or(h2::Reason::CANCEL));
@@ -74,6 +80,7 @@ impl BodyCapture {
         &mut self,
         source: &mut RecvStream,
         destination: &mut SendStream<Bytes>,
+        mut observation: Option<ResponseObservation>,
     ) -> Result<(), h2::Error> {
         while let Some(chunk) = poll_fn(|cx| {
             if let Poll::Ready(reset) = destination.poll_reset(cx) {
@@ -88,6 +95,7 @@ impl BodyCapture {
             let chunk = chunk?;
             let length = chunk.len();
             self.append(&chunk);
+            ResponseObservation::push_if_active(&mut observation, &chunk);
             send_data(destination, chunk).await?;
             // Release receive capacity only after downstream has accepted the bytes.
             // Otherwise a slow receiver could accumulate an unbounded relay queue.

@@ -22,9 +22,12 @@ use tokio::sync::mpsc;
 
 pub use super::body::CapturedBody;
 use super::content_encoding::ContentDecoder;
-use super::{FlowId, FlowIngress, OriginalDestination, TransparentFlowSource, TransparentProtocol};
+use super::{
+    FlowId, FlowIngress, HttpResponseObserver, OriginalDestination, TransparentFlowSource,
+    TransparentProtocol, response_observation::ResponseObservation,
+};
 
-const DEFAULT_HOOK_QUEUE_CAPACITY: usize = 1024;
+pub(super) const DEFAULT_HOOK_QUEUE_CAPACITY: usize = 1024;
 
 /// Future returned by MITM hook callbacks.
 ///
@@ -434,6 +437,18 @@ pub trait MitmHook: Send + Sync {
         Box::pin(future::ready(Ok(())))
     }
 
+    /// Optionally opens an observer for the decoded body of one HTTP response.
+    /// This factory runs after the flow-level gates, on the forwarding path.
+    /// The resulting observer runs independently from complete-exchange hooks.
+    fn observe_http_response(
+        &self,
+        _flow: &FlowContext,
+        _request: &Request<()>,
+        _response: &Response<()>,
+    ) -> Option<Box<dyn HttpResponseObserver>> {
+        None
+    }
+
     /// Observes one decoded WebSocket message after a successful HTTP 101.
     ///
     /// The callback is observe-only. Hooks that need request/response semantics
@@ -492,6 +507,35 @@ impl HookDispatcher {
     #[tracing::instrument(level = "trace", skip_all)]
     pub(super) fn submit_websocket_message(&self, message: WebSocketMessage) -> HookDispatchStatus {
         self.submit_event(HookEvent::WebSocketMessage(Box::new(message)))
+    }
+
+    pub(super) fn observe_http_response(
+        &self,
+        flow: &FlowContext,
+        request: &Request<()>,
+        response: &Response<()>,
+        max_body_bytes: usize,
+    ) -> Option<ResponseObservation> {
+        let observers = self
+            .chain
+            .snapshot()
+            .into_iter()
+            .enumerate()
+            .filter(|(_, hook)| hook.enabled() && hook.matches(flow))
+            .filter_map(|(index, hook)| {
+                hook.observe_http_response(flow, request, response)
+                    .map(|observer| (index, observer))
+            })
+            .collect::<Vec<_>>();
+        if observers.is_empty() {
+            return None;
+        }
+        Some(ResponseObservation::start(
+            flow.flow_id.clone(),
+            response.headers().clone(),
+            observers,
+            max_body_bytes,
+        ))
     }
 
     #[tracing::instrument(level = "trace", skip_all)]
