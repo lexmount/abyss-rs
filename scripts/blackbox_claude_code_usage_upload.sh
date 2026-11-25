@@ -87,7 +87,7 @@ STARTUP_ATTEMPTS="${ABYSS_CLAUDE_CODE_E2E_STARTUP_ATTEMPTS:-180}"
 EVENT_ATTEMPTS="${ABYSS_CLAUDE_CODE_E2E_EVENT_ATTEMPTS:-60}"
 CURL_TIMEOUT_SECONDS="${ABYSS_CLAUDE_CODE_E2E_CURL_TIMEOUT_SECONDS:-10}"
 CLAUDE_CODE_BASE_HOST=""
-EXPECTED_LLM_PROVIDER="anthropic"
+EXPECTED_LLM_PROVIDER=""
 
 BROKER_PID=""
 DELIVERY_PID=""
@@ -285,11 +285,11 @@ print(parsed.hostname.rstrip(".").lower())
 PY
   )" || fail "invalid Claude Code base URL"
 
-  # Provider resolution preserves this Anthropic-compatible gateway's host
-  # instead of labeling it as the first-party Anthropic service.
-  if [[ "${CLAUDE_CODE_BASE_HOST}" == "www.dmxapi.cn" ]]; then
-    EXPECTED_LLM_PROVIDER="${CLAUDE_CODE_BASE_HOST}"
-  fi
+  case "${CLAUDE_CODE_BASE_HOST}" in
+    anthropic.com|*.anthropic.com|claude.ai|*.claude.ai) EXPECTED_LLM_PROVIDER="anthropic" ;;
+    openai.com|*.openai.com|chatgpt.com|*.chatgpt.com) EXPECTED_LLM_PROVIDER="openai" ;;
+    *) EXPECTED_LLM_PROVIDER="${CLAUDE_CODE_BASE_HOST}" ;;
+  esac
 }
 
 write_ca() {
@@ -416,7 +416,7 @@ path = "${CA_DIR}"
 mode = "explicit"
 listen_addr = "127.0.0.1:${ABYSS_CLAUDE_CODE_E2E_PROXY_PORT:-0}"
 EOF
-  cat >"${RUNTIME_POLICY}" <<'EOF'
+  cat >"${RUNTIME_POLICY}" <<EOF
 schema_version = 1
 
 [mitm.tls_decryption]
@@ -426,7 +426,7 @@ missing_sni_action = "passthrough"
 [[mitm.tls_decryption.rules]]
 id = "decrypt-anthropic-claude-code"
 action = "intercept"
-destination_hosts = ["anthropic.com", "*.anthropic.com", "claude.ai", "*.claude.ai", "dmxapi.cn", "*.dmxapi.cn"]
+destination_hosts = $(jq -cn --arg host "${CLAUDE_CODE_BASE_HOST}" '[$host]')
 
 [hooks.harness_usage]
 enabled = true
@@ -539,8 +539,8 @@ verify_broker_runtime_policy() {
     --max-time "${CURL_TIMEOUT_SECONDS}" \
     -H "Authorization: Bearer ${broker_token}" \
     "${BROKER_BASE_URL}/v1/mitm/config" \
-    | jq -e \
-      '.tls_decryption.rules | any(.id == "decrypt-anthropic-claude-code" and .action == "intercept")' \
+    | jq -e --arg host "${CLAUDE_CODE_BASE_HOST}" \
+      '.tls_decryption.rules | any(.id == "decrypt-anthropic-claude-code" and .action == "intercept" and .destination_hosts == [$host])' \
       >/dev/null \
     || fail "broker did not load the Claude Code MITM runtime policy"
   curl -fsS \

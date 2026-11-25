@@ -54,15 +54,15 @@ jobs:
               "$FORK" "$SKIP" "$GITHUB_ACTOR" "$GITHUB_SHA" >> "$GITHUB_STEP_SUMMARY"
             exit 0
           fi
-          # Temporary CI pause across every harness; remove the GLM filter to restore.
+          # Exclude the DMX-backed credential across harnesses. GLM is temporarily paused.
           matrix=$(python3 -m scripts.agent_matrix_ci plan \
             --harness "$HARNESS" --provider "$PROVIDER" --protocol "$PROTOCOL" --model "$MODEL" \
-            | jq -c '{include: [.include[] | select(.provider != "glm")]}')
-          echo 'GLM matrix tests are temporarily disabled.' >> "$GITHUB_STEP_SUMMARY"
+            | jq -c '{include: [.include[] | select(.secret != "CLAUDE_CODE_API_KEY" and .provider != "glm")]}')
+          echo 'CI excludes cases using the DMX key. GLM tests are temporarily paused.' >> "$GITHUB_STEP_SUMMARY"
           echo "matrix=$matrix" >> "$GITHUB_OUTPUT"
           if [[ "$matrix" == '{"include":[]}' ]]; then
             echo 'enabled=false' >> "$GITHUB_OUTPUT"
-            echo 'Matrix SKIPPED: the selected provider is temporarily disabled.' >> "$GITHUB_STEP_SUMMARY"
+            echo 'Matrix SKIPPED: all selected cases use the DMX key or the paused GLM provider.' >> "$GITHUB_STEP_SUMMARY"
             exit 0
           fi
           echo 'enabled=true' >> "$GITHUB_OUTPUT"
@@ -128,7 +128,6 @@ jobs:
       - name: Run real headless client through Abyss
         env:
           ABYSS_MATRIX_API_KEY: ${{ secrets[matrix.secret] }}
-          CLAUDE_CODE_BASE_URL: ${{ matrix.provider == 'anthropic' && secrets.CLAUDE_CODE_BASE_URL || '' }}
           MATRIX_CASE: ${{ matrix.id }}
           ABYSS_AGENT_E2E_RUNTIME_ROOT: ${{ runner.temp }}/abyss-matrix-${{ github.run_id }}-${{ github.run_attempt }}-${{ matrix.id }}
         run: python3 -m scripts.agent_matrix_ci run --case "$MATRIX_CASE"

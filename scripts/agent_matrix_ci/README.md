@@ -8,21 +8,20 @@ delivery plugin into a fresh, digest-pinned Backend and PostgreSQL. They share
 | Workflow | Current CI cells |
 | --- | ---: |
 | [Codex Model Matrix](../../.github/workflows/codex-model-matrix.yml) | 6 |
-| [Claude Code Model Matrix](../../.github/workflows/claude-code-model-matrix.yml) | 5 |
-| [DSH Model Matrix](../../.github/workflows/dsh-model-matrix.yml) | 16 |
-| [Hermes Model Matrix](../../.github/workflows/hermes-model-matrix.yml) | 16 |
+| [Claude Code Model Matrix](../../.github/workflows/claude-code-model-matrix.yml) | 4 |
+| [DSH Model Matrix](../../.github/workflows/dsh-model-matrix.yml) | 15 |
+| [Hermes Model Matrix](../../.github/workflows/hermes-model-matrix.yml) | 15 |
 
 Each group has its own run, per-cell checks, artifacts and required aggregation.
 Select the harness's workflow in Actions to inspect or rerun only that group.
 All four call [the shared execution workflow](../../.github/workflows/agent-model-matrix.yml)
 so client installation, assertions and credential handling stay consistent.
 
-**GLM is temporarily disabled in CI across all four harnesses.** The shared
-workflow removes its eight cells before scheduling and aggregation, leaving
-43 default CI cells. A manual dispatch selecting only GLM records an explicit
-skip. The local catalog and GLM integrations remain available for diagnostics.
-To restore CI coverage, remove the GLM `jq` filter and temporary notice from
-the shared workflow, and update the counts here.
+The shared workflow excludes every cell that uses the DMX relay credential
+(`CLAUDE_CODE_API_KEY`). This removes the Anthropic Messages cell from Claude
+Code, DSH, and Hermes. The temporary GLM pause excludes another eight cells,
+leaving **40 default CI cells**. A manual dispatch selecting only excluded
+cells records a skip before scheduling and aggregation.
 
 Automatic PR runs are limited to changes under `crates/abyss-broker/`,
 `crates/abyss-agent-hook/`, and `crates/abyss-mitm/`. A matching PR targeting
@@ -40,7 +39,7 @@ evaluate the entire PR diff, not just its latest commit.
 All matrix cells share `abyss-e2e-provider-<provider>` concurrency groups across
 harnesses, protocols, models, PRs and manual runs. The existing Codex black-box
 and randomized E2E jobs share the `openai` group; Claude Code black-box shares
-the `anthropic` group. Different providers can still run in parallel. There is
+the `deepseek` group. Different providers can still run in parallel. There is
 no additional per-harness limit: waiting on one provider must not consume a
 harness's slots and delay unrelated providers. These groups use the catalog
 provider name even when an endpoint is overridden.
@@ -65,7 +64,7 @@ harness/provider/protocol routes**. Each model in a route is tested separately.
 | Kimi | `kimi-k3` | Responses | Messages | All three protocols |
 | Qwen | `qwen3.8-flash` | Responses | Messages | All three protocols |
 
-Before the temporary CI exclusion, there are 7 Codex, 6 Claude Code, 19 DSH, and
+The local catalog includes 7 Codex, 6 Claude Code, 19 DSH, and
 19 Hermes cells. Desktop, TUI and Web UI
 clients are excluded. This tests the actual clients, not hand-written API
 requests bearing spoofed harness headers. Incompatible direct combinations are
@@ -83,25 +82,16 @@ Actions → Secrets). API key values are raw keys, without `Bearer `:
 | Secret | Credential |
 | --- | --- |
 | `CODEX_API_KEY` | OpenAI API key; also used by the existing randomized Codex CI |
-| `CLAUDE_CODE_API_KEY` | Anthropic API key, or the Messages gateway key when overriding its endpoint |
-| `CLAUDE_CODE_BASE_URL` | Optional Anthropic Messages API root; reuses the existing Claude Code relay configuration |
-| `ABYSS_E2E_DEEPSEEK_API_KEY` | DeepSeek API key |
+| `ABYSS_E2E_DEEPSEEK_API_KEY` | DeepSeek API key shared with Claude Code Black-box |
 | `ABYSS_E2E_GLM_API_KEY` | GLM general API key for `open.bigmodel.cn` |
 | `ABYSS_E2E_KIMI_API_KEY` | Moonshot API key for `api.moonshot.cn` |
 | `ABYSS_E2E_QWEN_API_KEY` | General Beijing-region Model Studio key for `dashscope.aliyuncs.com` |
 
-`CODEX_API_KEY`, `CLAUDE_CODE_API_KEY`, and `CLAUDE_CODE_BASE_URL` reuse the
-existing black-box workflows' Secrets. No additional OpenAI or Anthropic key
-Secrets are needed. The relay URL applies to Claude Code, DSH, and Hermes
-Anthropic cells. It is read only at run time and takes precedence over the
-Anthropic `ABYSS_E2E_ENDPOINTS` override; when empty, the configured public
-endpoint (or `https://api.anthropic.com` by default) is used. Planning and
-aggregation do not receive this Secret. The uploaded case retains the public
-plan identity, records `endpoint_source: CLAUDE_CODE_BASE_URL`, and redacts the
-runtime relay URL/hostname. Provider assertions use the actual relay hostname.
+Claude Code Black-box runs `deepseek-flash` against the DeepSeek Messages
+endpoint at `https://api.deepseek.com/anthropic`.
 
-Each cell receives **only its selected provider's secret**, only in the run
-step (plus the relay URL for Anthropic cells). The API key is passed to the
+Each cell receives **only its selected provider's secret** in the run
+step. The API key is passed to the
 client environment, never command-line arguments,
 client configuration files, or workflow outputs. Uploads contain sanitized
 comparison evidence only; raw service logs and CA/private configuration stay
@@ -195,10 +185,9 @@ login. Local legacy Codex runs without the key environment retain login support.
 
 All four workflows run on matching same-repository PRs and manual dispatch.
 Select the harness's workflow, then optionally filter provider, protocol or
-exact model; unmatched filters fail, while GLM-only selections explicitly skip
-during the temporary pause. `fail-fast: false` preserves remaining results. The
-repository-wide limit is one job per provider. With GLM paused, at most five
-live provider jobs can execute simultaneously.
+exact model. Unmatched filters fail. A selection containing only DMX-key or GLM
+cells skips. `fail-fast: false` preserves remaining results. The repository-wide
+limit is one job per provider, with four active providers in the default matrix.
 Each group's final aggregation requires an artifact and PASS from **every planned cell**;
 missing artifacts, failed clients, 429s, unavailable models, and mismatches all
 fail. The `skip-agent-e2e` label records a deliberate whole-matrix skip. Matching
@@ -250,6 +239,10 @@ key in `ABYSS_MATRIX_API_KEY`, and run:
 ```bash
 python3 -m scripts.agent_matrix_ci run --case '<planned-id>'
 ```
+
+Local Anthropic cells accept an optional `CLAUDE_CODE_BASE_URL` at run time.
+It takes precedence over `ABYSS_E2E_ENDPOINTS`. The result retains the planned
+case identity and redacts the private relay URL and hostname.
 
 `ABYSS_AGENT_E2E_RUNTIME_ROOT` can select a fresh directory. Existing directories
 are rejected. Each cell owns distinct ports, processes, Docker resources and

@@ -689,9 +689,8 @@ class MatrixCliBlackboxTests(unittest.TestCase):
         workflow = (ROOT / ".github/workflows/agent-model-matrix.yml").read_text()
         self.assertIn("fail-fast: false", workflow)
         self.assertIn("secrets[matrix.secret]", workflow)
-        self.assertIn(
-            "matrix.provider == 'anthropic' && secrets.CLAUDE_CODE_BASE_URL", workflow
-        )
+        self.assertIn('.secret != "CLAUDE_CODE_API_KEY"', workflow)
+        self.assertNotIn("CLAUDE_CODE_BASE_URL", workflow)
         self.assertIn("if: needs.plan.outputs.enabled == 'true'", workflow)
         self.assertNotIn("pull_request_target", workflow)
         self.assertNotIn("login", workflow)
