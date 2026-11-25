@@ -508,11 +508,14 @@ mod tests {
         request
             .headers_mut()
             .insert("user-agent", "claude/1.0.0".parse().unwrap());
-        for (name, expected) in [
-            ("Claude Helper", "claude-desktop"),
-            ("claude", "claude-code"),
+        for (application_id, expected) in [
+            ("com.anthropic.claudefordesktop.helper", "claude-desktop"),
+            ("com.anthropic.claude-code", "claude-code"),
         ] {
-            flow.source_process = Some(SourceProcess::new(None, Some(name.to_owned()), None));
+            flow.source_process = Some(
+                SourceProcess::new(None, None, None)
+                    .with_application_id(Some(application_id.to_owned())),
+            );
             assert!(HarnessRegistry::recognize_request(&flow, &request, &config, true).is_none());
             let detected =
                 HarnessRegistry::recognize_request(&flow, &request, &config, false).unwrap();

@@ -4,23 +4,26 @@ use crate::harness::{BuiltInHarness, HarnessDetection, HarnessId};
 
 use super::{HarnessDetector, HarnessRequest, client_version, header};
 
+// The main app and its helpers. Install paths and the host platform
+// header also cover the Claude Code that Desktop bundles and launches.
+const APPLICATION_IDS: &[&str] = &[
+    "com.anthropic.claudefordesktop",
+    "com.anthropic.claudefordesktop.helper",
+];
+
 pub(super) struct ClaudeDesktopDetector;
 
 impl HarnessDetector for ClaudeDesktopDetector {
     fn detect(&self, request: &HarnessRequest<'_>) -> Option<HarnessDetection> {
-        let source = request.flow.source_process.as_ref().is_some_and(|source| {
-            source.application_id.as_deref() == Some("com.anthropic.claudefordesktop.helper")
-                || source
-                    .name
-                    .as_deref()
-                    .into_iter()
-                    .chain(source.executable_path.as_deref())
-                    .any(is_desktop_process)
-        });
-        let marked = header(request.headers, "anthropic-client-platform") == Some("desktop_app")
-            || header(request.headers, "anthropic-client-app")
-                == Some("com.anthropic.claudefordesktop");
-        if !source && !marked {
+        let application = request
+            .flow
+            .source_process
+            .as_ref()
+            .and_then(|source| source.application_id.as_deref())
+            .is_some_and(|id| APPLICATION_IDS.contains(&id));
+        let marked = header(request.headers, "anthropic-client-app")
+            == Some("com.anthropic.claudefordesktop");
+        if !application && !marked {
             return None;
         }
         Some(HarnessDetection {
@@ -29,9 +32,4 @@ impl HarnessDetector for ClaudeDesktopDetector {
                 .and_then(|user_agent| client_version(user_agent, &["claude/"])),
         })
     }
-}
-
-fn is_desktop_process(value: &str) -> bool {
-    let value = value.trim().to_ascii_lowercase();
-    value == "claude helper" || value.contains("/claude.app/")
 }

@@ -709,9 +709,16 @@ mod tests {
         let sink = Arc::new(RecordingSink::default());
         let hook = hook(Arc::clone(&sink));
 
-        hook.on_http_exchange(&anthropic_exchange("acme-agent"))
-            .await
-            .unwrap();
+        hook.on_http_exchange(&anthropic_exchange_with_headers(
+            "acme-agent",
+            &[],
+            &serde_json::json!({
+                "model": "claude-test",
+                "messages": [{"role": "user", "content": "hello"}]
+            }),
+        ))
+        .await
+        .unwrap();
 
         let events = sink.events.lock().unwrap();
         assert_eq!(events.len(), 2);

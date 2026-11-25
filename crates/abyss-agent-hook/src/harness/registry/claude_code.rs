@@ -18,6 +18,9 @@ const AGENT_ID: &str = "x-claude-code-agent-id";
 const PARENT_AGENT_ID: &str = "x-claude-code-parent-agent-id";
 /// User prompt the request ultimately works for.
 const PROMPT_ID: &str = "x-claude-code-prompt-id";
+/// Signing identifier of every Claude Code build, standalone or bundled.
+/// Process names are not identity: self-updated builds run as their version.
+const APPLICATION_ID: &str = "com.anthropic.claude-code";
 /// Reads the request class, subagent, and prompt Claude Code declares in its
 /// headers.
 pub(super) fn declare(source: &DeclarationSource<'_>) -> AgentDeclaration {
@@ -42,31 +45,25 @@ pub(super) struct ClaudeCodeDetector;
 
 impl HarnessDetector for ClaudeCodeDetector {
     fn detect(&self, request: &HarnessRequest<'_>) -> Option<HarnessDetection> {
-        let path = request.uri.path();
-        if path.contains("/organizations/") && path.ends_with("/completion") {
-            return None;
-        }
-        let process = request.flow.source_process.as_ref().is_some_and(|source| {
-            source
-                .name
-                .as_deref()
-                .into_iter()
-                .chain(source.executable_path.as_deref())
-                .any(is_claude_code_process)
-        });
+        let application = request
+            .flow
+            .source_process
+            .as_ref()
+            .and_then(|source| source.application_id.as_deref())
+            == Some(APPLICATION_ID);
         let user_agent = header(request.headers, "user-agent").unwrap_or_default();
-        let originator = header(request.headers, "originator").unwrap_or_default();
-        let combined = format!("{path} {user_agent} {originator}").to_ascii_lowercase();
-        let marked = [
-            "claude-code",
-            "claude_code",
-            "claude-cli",
-            "claude/",
-            "/api/claude_",
-        ]
-        .iter()
-        .any(|marker| combined.contains(marker));
-        if !process && !marked {
+        // Desktop also sends `claude-cli/cowork-feedback`, so the product
+        // token must carry a version.
+        let product = user_agent
+            .split_whitespace()
+            .next()
+            .and_then(|product| product.strip_prefix("claude-cli/"))
+            .is_some_and(|version| version.starts_with(|c: char| c.is_ascii_digit()));
+        let marked = request
+            .headers
+            .keys()
+            .any(|name| name.as_str().starts_with("x-claude-code-"));
+        if !application && !product && !marked {
             return None;
         }
         Some(HarnessDetection {
@@ -83,16 +80,6 @@ impl HarnessDetector for ClaudeCodeDetector {
             ),
         })
     }
-}
-
-fn is_claude_code_process(value: &str) -> bool {
-    let value = value.trim().to_ascii_lowercase();
-    value == "claude"
-        || value == "claude.exe"
-        || value.contains("claude-code")
-        || value.contains("claude_code")
-        || value.ends_with("\\claude.exe")
-        || value.ends_with("/claude")
 }
 
 #[cfg(test)]
