@@ -21,7 +21,7 @@ jobs:
     name: Real Claude Code context upload
     runs-on: ubuntu-latest
     concurrency:
-      group: abyss-e2e-provider-anthropic
+      group: abyss-e2e-provider-deepseek
       queue: max
       cancel-in-progress: false
     steps:
@@ -43,18 +43,12 @@ jobs:
           npm install --global @anthropic-ai/claude-code@2.1.209
           claude --version
 
-      - name: Require Claude Code credentials
-        env:
-          CLAUDE_CODE_API_KEY: ${{ secrets.CLAUDE_CODE_API_KEY || secrets.ANTHROPIC_API_KEY }}
-          CLAUDE_CODE_BASE_URL: ${{ secrets.CLAUDE_CODE_BASE_URL || 'https://api.anthropic.com' }}
-        run: |
-          test -n "${CLAUDE_CODE_API_KEY}" || { echo 'CLAUDE_CODE_API_KEY or ANTHROPIC_API_KEY Actions secret is required.' >&2; exit 1; }
-          test -n "${CLAUDE_CODE_BASE_URL}" || { echo 'CLAUDE_CODE_BASE_URL Actions secret is required.' >&2; exit 1; }
-
       - name: Run Claude Code usage upload black-box
         timeout-minutes: 15
         env:
-          CLAUDE_CODE_API_KEY: ${{ secrets.CLAUDE_CODE_API_KEY || secrets.ANTHROPIC_API_KEY }}
-          CLAUDE_CODE_BASE_URL: ${{ secrets.CLAUDE_CODE_BASE_URL || 'https://api.anthropic.com' }}
-          CLAUDE_CODE_MODEL: ${{ secrets.CLAUDE_CODE_MODEL || 'claude-sonnet-4-6' }}
-        run: exec scripts/blackbox_claude_code_usage_upload.sh
+          CLAUDE_CODE_API_KEY: ${{ secrets.ABYSS_E2E_DEEPSEEK_API_KEY }}
+          CLAUDE_CODE_BASE_URL: https://api.deepseek.com/anthropic
+          CLAUDE_CODE_MODEL: deepseek-flash
+        run: |
+          : "${CLAUDE_CODE_API_KEY:?ABYSS_E2E_DEEPSEEK_API_KEY Actions secret is required}"
+          exec scripts/blackbox_claude_code_usage_upload.sh
