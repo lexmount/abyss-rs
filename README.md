@@ -118,42 +118,9 @@ Choose the reference for your integration language:
 
 ## Architecture
 
-```mermaid
----
-config:
-  layout: dagre
-  flowchart:
-    curve: basis
----
-flowchart LR
-    Agent[AI agents, IDEs, CLIs, and SDKs]
-    Provider[AI providers]
-    EventAPI[Agent event API]
-
-    subgraph Endpoint[Abyss endpoint runtime]
-        CLI[abyss CLI]
-        Ingress[abyss-broker ingress]
-        MITM[abyss-mitm<br/>TLS and HTTP relay]
-        Hook[abyss-agent-hook<br/>protocol parsing]
-        Protocol[abyss-plugin-protocol<br/>normalized AgentEvent]
-        Delivery[abyss-delivery-plugin]
-        State[(Policy, CA, diagnostics,<br/>and durable local state)]
-
-        CLI -->|lifecycle, auth, and policy| Ingress
-        CLI -->|delivery credentials| Delivery
-        Ingress <--> MITM
-        MITM --> Hook
-        Hook --> Protocol
-        Protocol --> Delivery
-        Ingress <--> State
-        MITM <--> State
-        Delivery <--> State
-    end
-
-    Agent <-->|HTTP, HTTPS, and WebSocket| Ingress
-    MITM <-->|upstream traffic| Provider
-    Delivery -->|authenticated event upload| EventAPI
-```
+<p align="center">
+  <img src="docs/assets/abyss-architecture.svg" alt="Abyss endpoint runtime architecture: AI agents reach providers through abyss-broker, which parses traffic and publishes events to plugins." />
+</p>
 
 ## License
 

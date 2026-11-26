@@ -94,39 +94,6 @@ Broker 负责提供实时事件流，插件负责远端认证、持久化与重�
 
 ## 架构
 
-```mermaid
----
-config:
-  layout: dagre
-  flowchart:
-    curve: basis
----
-flowchart LR
-    Agent[AI Agent、IDE、CLI 和 SDK]
-    Provider[模型服务商]
-    EventAPI[Agent 事件 API]
-
-    subgraph Endpoint[Abyss 端侧运行时]
-        CLI[abyss CLI]
-        Ingress[abyss-broker<br/>流量接入]
-        MITM[abyss-mitm<br/>TLS 与 HTTP 转发]
-        Hook[abyss-agent-hook<br/>协议解析]
-        Protocol[abyss-plugin-protocol<br/>标准化 AgentEvent]
-        Delivery[abyss-delivery-plugin]
-        State[(策略、CA、诊断信息<br/>与持久化本地状态)]
-
-        CLI -->|生命周期、认证与策略| Ingress
-        CLI -->|事件上传凭据| Delivery
-        Ingress <--> MITM
-        MITM --> Hook
-        Hook --> Protocol
-        Protocol --> Delivery
-        Ingress <--> State
-        MITM <--> State
-        Delivery <--> State
-    end
-
-    Agent <-->|HTTP、HTTPS 和 WebSocket| Ingress
-    MITM <-->|上游流量| Provider
-    Delivery -->|携带认证信息上传事件| EventAPI
-```
+<p align="center">
+  <img src="docs/assets/abyss-architecture.svg" alt="Abyss 端侧运行时架构：AI Agent 经 abyss-broker 访问模型服务商，broker 解析流量并把事件发布给插件。" />
+</p>

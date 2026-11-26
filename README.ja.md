@@ -94,39 +94,6 @@ Broker はリアルタイムのイベントストリームを提供し、送信�
 
 ## アーキテクチャ
 
-```mermaid
----
-config:
-  layout: dagre
-  flowchart:
-    curve: basis
----
-flowchart LR
-    Agent[AI エージェント・IDE・CLI・SDK]
-    Provider[モデルプロバイダー]
-    EventAPI[エージェントイベント API]
-
-    subgraph Endpoint[アビス のローカルランタイム]
-        CLI[abyss CLI]
-        Ingress[abyss-broker<br/>トラフィックの受け入れ]
-        MITM[abyss-mitm<br/>TLS・HTTP の中継]
-        Hook[abyss-agent-hook<br/>プロトコル解析]
-        Protocol[abyss-plugin-protocol<br/>共通形式の AgentEvent]
-        Delivery[abyss-delivery-plugin]
-        State[(ポリシー・CA・診断情報<br/>永続化されたローカル状態)]
-
-        CLI -->|起動・停止、認証、ポリシー| Ingress
-        CLI -->|送信用の認証情報| Delivery
-        Ingress <--> MITM
-        MITM --> Hook
-        Hook --> Protocol
-        Protocol --> Delivery
-        Ingress <--> State
-        MITM <--> State
-        Delivery <--> State
-    end
-
-    Agent <-->|HTTP・HTTPS・WebSocket| Ingress
-    MITM <-->|上流との通信| Provider
-    Delivery -->|認証付きイベント送信| EventAPI
-```
+<p align="center">
+  <img src="docs/assets/abyss-architecture.svg" alt="Abyss のローカルランタイム構成：AI エージェントは abyss-broker を経由してモデルプロバイダーに接続し、broker が通信を解析してイベントをプラグインに配信します。" />
+</p>
