@@ -5,7 +5,7 @@
 //! WebSocket message streams, applies optional request decisions, and submits
 //! observation events only for messages allowed to proceed.
 
-use std::io::ErrorKind;
+use std::{io::ErrorKind, time::SystemTime};
 
 use futures_util::{SinkExt as _, StreamExt as _};
 use http::{Request, Response};
@@ -385,6 +385,7 @@ fn hook_message_from_websocket(
             sequence,
             text: Some(text.to_string()),
             binary: None,
+            at: SystemTime::now(),
         }),
         Message::Binary(bytes) => Some(WebSocketMessage {
             captured_body: None,
@@ -395,6 +396,7 @@ fn hook_message_from_websocket(
             sequence,
             text: None,
             binary: Some(bytes.clone()),
+            at: SystemTime::now(),
         }),
         Message::Ping(_) | Message::Pong(_) | Message::Close(_) | Message::Frame(_) => None,
     }
