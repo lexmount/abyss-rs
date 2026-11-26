@@ -5,6 +5,7 @@ pub use discovery::{ListedModel, ModelListRequest};
 
 use std::collections::{BTreeMap, BTreeSet};
 
+use abyss_sdk::plugin::AccountProxy;
 use serde::{Deserialize, Serialize};
 
 #[derive(Clone, Deserialize, Serialize, Default)]
@@ -16,7 +17,7 @@ pub struct Catalog {
 #[derive(Clone, Deserialize, Serialize)]
 struct Provider {
     base_url: Option<String>,
-    credentials: BTreeMap<String, Credential>,
+    credentials: BTreeMap<String, AssignedCredential>,
     #[serde(default, skip_serializing_if = "<[String]>::is_empty")]
     models: Box<[String]>,
 }
@@ -26,13 +27,23 @@ struct Provider {
 enum CredentialKind {
     ApiKey,
     Account,
+    Oauth,
 }
 
 #[derive(Clone, Deserialize, Serialize)]
 #[serde(tag = "kind", rename_all = "snake_case")]
 enum ServiceCredential {
-    ApiKey { api_key: String },
-    Account { login: String, secret: String },
+    ApiKey {
+        api_key: String,
+    },
+    Account {
+        login: String,
+        secret: String,
+    },
+    Oauth {
+        account_id: String,
+        access_token: String,
+    },
 }
 
 #[derive(Clone, Deserialize, Serialize)]
@@ -46,12 +57,21 @@ enum Credential {
     Service(ServiceCredential),
 }
 
+#[derive(Clone, Deserialize, Serialize)]
+struct AssignedCredential {
+    #[serde(flatten)]
+    value: Credential,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    proxy: Option<AccountProxy>,
+}
+
 impl Credential {
     const fn kind(&self) -> CredentialKind {
         match self {
             Self::ExplicitHeaders { kind, .. } => *kind,
             Self::Service(ServiceCredential::ApiKey { .. }) => CredentialKind::ApiKey,
             Self::Service(ServiceCredential::Account { .. }) => CredentialKind::Account,
+            Self::Service(ServiceCredential::Oauth { .. }) => CredentialKind::Oauth,
         }
     }
 
@@ -59,6 +79,15 @@ impl Credential {
         match self {
             Self::Service(ServiceCredential::ApiKey { api_key }) if !api_key.trim().is_empty() => {
                 Some(api_key)
+            }
+            Self::Service(ServiceCredential::Oauth {
+                account_id,
+                access_token,
+            }) if !account_id.trim().is_empty()
+                && !access_token.is_empty()
+                && access_token.bytes().all(|b| b.is_ascii_graphic()) =>
+            {
+                Some(access_token)
             }
             Self::ExplicitHeaders { headers, .. } if headers.len() == 1 => {
                 let (name, value) = headers.first_key_value()?;
@@ -126,11 +155,14 @@ impl Provider {
                 if !identifier(id) {
                     return Err("Invalid credential ID.");
                 }
+                if let Some(proxy) = &value.proxy {
+                    proxy.validate()?;
+                }
                 Ok((
                     id.as_str(),
                     CredentialInfo {
-                        kind: value.kind(),
-                        configured: value.authentication().is_some(),
+                        kind: value.value.kind(),
+                        configured: value.value.authentication().is_some(),
                     },
                 ))
             })
@@ -203,6 +235,8 @@ pub struct Selection {
 pub struct SelectedRoute<'a> {
     pub base_url: &'a str,
     pub authentication: &'a str,
+    pub bearer: bool,
+    pub proxy: Option<&'a AccountProxy>,
     pub model: &'a str,
 }
 
@@ -211,7 +245,7 @@ impl Catalog {
         &self,
         provider_id: &str,
         credential_id: &str,
-    ) -> Result<(&Provider, &Credential), &'static str> {
+    ) -> Result<(&Provider, &AssignedCredential), &'static str> {
         let provider = self
             .providers
             .get(provider_id)
@@ -238,6 +272,7 @@ impl Catalog {
         let (provider, credential) =
             self.provider_credential(&selection.provider, &selection.credential)?;
         let authentication = credential
+            .value
             .authentication()
             .ok_or("This credential cannot authenticate model requests.")?;
         if selection.model.trim().is_empty() {
@@ -248,6 +283,11 @@ impl Catalog {
                 .endpoint(&selection.provider)?
                 .ok_or("Provider endpoint unavailable.")?,
             authentication,
+            bearer: matches!(
+                credential.value,
+                Credential::Service(ServiceCredential::Oauth { .. })
+            ),
+            proxy: credential.proxy.as_ref(),
             model: &selection.model,
         })
     }

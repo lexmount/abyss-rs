@@ -7,6 +7,28 @@ use serde::{Deserialize, Deserializer, Serialize, Serializer, de};
 #[derive(Clone)]
 pub(super) struct Redirected;
 
+/// Transport decision scoped to one HTTP request or upgrade.
+#[derive(Clone)]
+pub(super) struct ExchangeRoute {
+    pub(super) host: RedirectTarget,
+    pub(super) proxy: Option<crate::outbound::UpstreamProxy>,
+}
+
+impl ExchangeRoute {
+    /// Retain only credential-free diagnostics in captured request heads.
+    pub(super) fn take(head: &mut Request<()>) -> Option<Self> {
+        let route = head.extensions_mut().remove::<Self>()?;
+        if let Some(hop) = route
+            .proxy
+            .as_ref()
+            .and_then(|proxy| proxy.account_hop.as_ref())
+        {
+            head.extensions_mut().insert(hop.clone());
+        }
+        Some(route)
+    }
+}
+
 /// A replacement domain. The original protocol, port, path and query are retained.
 #[derive(Debug, Clone, PartialEq)]
 pub struct RedirectTarget {

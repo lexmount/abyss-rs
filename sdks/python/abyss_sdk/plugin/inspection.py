@@ -2,7 +2,7 @@
 
 from collections.abc import Iterable, Mapping
 from dataclasses import dataclass, field
-from typing import Any, Callable, Literal, Optional
+from typing import Any, Callable, Literal, Optional, Union
 
 from ..event import (
     Conversation,
@@ -20,17 +20,27 @@ class ModifyAction:
 
     op: Literal[
         "set_upstream_host",
+        "set_account_proxy",
+        "set_bearer_token",
         "set_request_path",
         "set_auth_token",
         "remove_auth_token",
         "set_model",
         "remove_model",
     ]
-    value: Optional[str] = field(default=None, repr=False)
+    value: Union[str, dict[str, Any], None] = field(default=None, repr=False)
 
     @classmethod
     def set_upstream_host(cls, host: str) -> "ModifyAction":
         return cls("set_upstream_host", host)
+
+    @classmethod
+    def set_account_proxy(cls, settings: Mapping[str, Any]) -> "ModifyAction":
+        return cls("set_account_proxy", dict(settings))
+
+    @classmethod
+    def set_bearer_token(cls, token: str) -> "ModifyAction":
+        return cls("set_bearer_token", token)
 
     @classmethod
     def set_request_path(cls, path: str) -> "ModifyAction":
@@ -53,7 +63,7 @@ class ModifyAction:
         return cls("remove_model")
 
     def to_dict(self) -> dict[str, Any]:
-        if self.op in ("set_upstream_host", "set_request_path", "set_auth_token", "set_model"):
+        if self.op not in ("remove_auth_token", "remove_model"):
             return {"op": self.op, "value": self.value}
         return {"op": self.op}
 

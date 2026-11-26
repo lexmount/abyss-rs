@@ -146,3 +146,37 @@ fn selections_survive_restarts_and_follow_the_catalog_contents() {
         assert_eq!(restarted.request("PUT", "/selection", &selection).0, 200);
     }
 }
+
+#[test]
+fn selected_account_delivers_its_own_proxy_and_redacts_both_secrets() {
+    let dir = tempdir().unwrap();
+    let worker = support::Worker::start(&dir.path().join("profile.json"));
+    let mut input = catalog();
+    let credentials = &mut input["providers"]["relay"]["credentials"];
+    for (id, port) in [("one", 1081_u16), ("two", 1082_u16)] {
+        credentials[id] = json!({
+            "kind":"oauth", "account_id":id, "access_token":format!("token-{id}"),
+            "proxy":{"protocol":"socks5","host":"127.0.0.1","port":port,"username":id,"password":"proxy-secret"}
+        });
+    }
+    let (status, state) = worker.request("PUT", "/catalog", &input);
+    assert_eq!(status, 200);
+    assert!(!state.to_string().contains("proxy-secret"));
+    assert!(!state.to_string().contains("token-"));
+    for (id, port) in [("one", 1081_u16), ("two", 1082_u16)] {
+        let choice = json!({"harness":"codex","selection":{"provider":"relay","credential":id,"model":"model-a"}});
+        assert_eq!(worker.request("PUT", "/selection", &choice).0, 200);
+        let decision = worker.inspect("explicit_proxy", Some(std::process::id()));
+        let actions = decision["decision"]["actions"].as_array().unwrap();
+        assert!(
+            actions
+                .iter()
+                .any(|a| a["op"] == "set_account_proxy" && a["value"]["port"] == port)
+        );
+        assert!(
+            actions
+                .iter()
+                .any(|a| a["op"] == "set_bearer_token" && a["value"] == format!("token-{id}"))
+        );
+    }
+}

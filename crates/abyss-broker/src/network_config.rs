@@ -11,20 +11,13 @@ use std::sync::Arc;
 
 use abyss_mitm::outbound::{UpstreamProxy, UpstreamProxyConfig, UpstreamProxyFactory};
 use parking_lot::RwLock;
-use serde::{Deserialize, Serialize};
 
 use crate::error::BrokerError;
 
 #[cfg(test)]
 mod tests;
 
-/// Editable outbound route. No upstream means direct routing.
-#[derive(Debug, Clone, Default, Deserialize, PartialEq, Serialize)]
-#[serde(deny_unknown_fields)]
-pub struct NetworkConfig {
-    /// Optional next hop using the shared upstream protocol configuration.
-    pub upstream: Option<UpstreamProxyConfig>,
-}
+pub use abyss_mitm::outbound::NetworkConfig;
 
 /// Validated policy retained for the complete lifetime of one connection.
 pub struct NetworkSnapshot {

@@ -3,6 +3,8 @@
 use serde::{Deserialize, Serialize, Serializer, ser::SerializeStruct as _};
 use serde_json::Value;
 
+pub use crate::account_proxy::{AccountProxy, AccountProxyProtocol};
+
 use crate::event::{Conversation, EventPurpose, ImageAttachment, LlmProvider};
 
 /// Capabilities selected by a plugin for this connection.
@@ -49,7 +51,7 @@ pub enum RequestMessageType {
     Binary,
 }
 
-/// Source metadata supplied by the ingress; explicit proxy clients have none.
+/// OS-attributed source metadata, including identifiable loopback explicit-proxy clients.
 #[derive(Debug, Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct RequestSourceProcess {
@@ -192,6 +194,10 @@ pub struct InspectResponse {
 pub enum ModifyAction {
     /// Select the next hostname for this HTTP request using its existing network route.
     SetUpstreamHost(String),
+    /// Replace the original credential carrier with OAuth bearer authentication.
+    SetBearerToken(String),
+    /// Use a private next hop for this HTTP exchange.
+    SetAccountProxy(AccountProxy),
     /// Replace the HTTP path, preserving the authority and query.
     SetRequestPath(String),
     /// Set the credential selected by the target's authentication binding.
@@ -214,6 +220,8 @@ impl<'de> Deserialize<'de> for ModifyAction {
         )]
         enum WireAction {
             SetUpstreamHost { value: String },
+            SetBearerToken { value: String },
+            SetAccountProxy { value: AccountProxy },
             SetRequestPath { value: String },
             SetAuthToken { value: String },
             RemoveAuthToken {},
@@ -221,6 +229,8 @@ impl<'de> Deserialize<'de> for ModifyAction {
             RemoveModel {},
         }
         Ok(match WireAction::deserialize(deserializer)? {
+            WireAction::SetAccountProxy { value } => Self::SetAccountProxy(value),
+            WireAction::SetBearerToken { value } => Self::SetBearerToken(value),
             WireAction::SetUpstreamHost { value } => Self::SetUpstreamHost(value),
             WireAction::SetRequestPath { value } => Self::SetRequestPath(value),
             WireAction::SetAuthToken { value } => Self::SetAuthToken(value),
@@ -234,6 +244,8 @@ impl<'de> Deserialize<'de> for ModifyAction {
 impl std::fmt::Debug for ModifyAction {
     fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         formatter.write_str(match self {
+            Self::SetAccountProxy(_) => "SetAccountProxy(<redacted>)",
+            Self::SetBearerToken(_) => "SetBearerToken(<redacted>)",
             Self::SetUpstreamHost(_) => "SetUpstreamHost(<redacted>)",
             Self::SetRequestPath(_) => "SetRequestPath(<redacted>)",
             Self::SetAuthToken(_) => "SetAuthToken(<redacted>)",

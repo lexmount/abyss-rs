@@ -10,7 +10,8 @@ use h2::{RecvStream, client::SendRequest, server::SendResponse};
 use http::{Request, Response};
 
 use super::super::{
-    HttpExchange, LocalRejection, RedirectTarget, RequestForwardingControl, TransparentFlowError,
+    HttpExchange, LocalRejection, RequestForwardingControl, TransparentFlowError,
+    redirect::ExchangeRoute,
 };
 use super::{
     Http2Relay, UpstreamDriver,
@@ -61,7 +62,7 @@ impl<C: RequestForwardingControl> Http2Relay<'_, C> {
 
     async fn request_connection(
         &self,
-        route: &RedirectTarget,
+        route: &ExchangeRoute,
         written: Arc<AtomicU64>,
     ) -> Result<(SendRequest<Bytes>, UpstreamDriver), TransparentFlowError> {
         let (stream, alpn) = self
@@ -122,8 +123,8 @@ impl<C: RequestForwardingControl> Http2Relay<'_, C> {
         let mut drivers = tokio::task::JoinSet::new();
         // Inspection can reroute this stream while sibling streams on the same
         // client connection continue using the shared upstream sender.
-        let upstream = if let Some(route) = head.extensions().get::<RedirectTarget>() {
-            let (sender, driver) = self.request_connection(route, written).await?;
+        let upstream = if let Some(route) = ExchangeRoute::take(&mut head) {
+            let (sender, driver) = self.request_connection(&route, written).await?;
             // This provider connection belongs to one stream. Dropping the stream also stops its driver.
             drivers.spawn(driver);
             sender

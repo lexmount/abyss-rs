@@ -27,8 +27,25 @@ pub struct UpstreamProxy {
     handshake: ProxyHandshake,
     connect_timeout: Duration,
     handshake_timeout: Duration,
+    pub(crate) account_hop: Option<AccountProxyHop>,
     socket_initializer: Option<Arc<dyn ProxySocketInitializer>>,
     excluded_endpoints: Vec<SocketAddr>,
+}
+
+/// Credential-free next hop for one model exchange, independent of sibling HTTP/2 streams.
+#[derive(Clone)]
+pub struct AccountProxyHop {
+    /// Configured proxy authority.
+    pub endpoint: String,
+    peer: Arc<std::sync::OnceLock<SocketAddr>>,
+}
+
+impl AccountProxyHop {
+    /// Actual peer after a successful handshake.
+    #[must_use]
+    pub fn peer(&self) -> Option<SocketAddr> {
+        self.peer.get().copied()
+    }
 }
 
 /// A target tunnel plus its actual next-hop transport peer.
@@ -59,15 +76,22 @@ impl UpstreamProxyFactory {
         config: &UpstreamProxyConfig,
     ) -> Result<UpstreamProxy, UpstreamProxyConfigError> {
         config.validate()?;
+        self.prepare_with_credentials(config, config.load_credentials()?.as_ref())
+    }
+
+    fn prepare_with_credentials(
+        &self,
+        config: &UpstreamProxyConfig,
+        credentials: Option<&super::config::ProxyCredentials>,
+    ) -> Result<UpstreamProxy, UpstreamProxyConfigError> {
         let endpoint = config.target()?;
         let transport = ProxyTransport::new(config, &endpoint)?;
-        let credentials = config.load_credentials()?;
         let handshake = match config.protocol {
             UpstreamProxyProtocol::HttpConnect => {
-                ProxyHandshake::Http(HttpConnectHandshake::new(credentials.as_ref()))
+                ProxyHandshake::Http(HttpConnectHandshake::new(credentials))
             }
             UpstreamProxyProtocol::Socks5 => {
-                ProxyHandshake::Socks5(Socks5Handshake::new(credentials.as_ref())?)
+                ProxyHandshake::Socks5(Socks5Handshake::new(credentials)?)
             }
             UpstreamProxyProtocol::Wireguard => {
                 ProxyHandshake::Wireguard(self.wireguard.load(config)?)
@@ -79,6 +103,7 @@ impl UpstreamProxyFactory {
             handshake,
             connect_timeout: config.connect_timeout(),
             handshake_timeout: config.handshake_timeout(),
+            account_hop: None,
             socket_initializer: None,
             excluded_endpoints: Vec::new(),
         })
@@ -95,6 +120,59 @@ impl UpstreamProxy {
     /// Returns an error when the endpoint, timeouts, CA bundle or credentials are invalid.
     pub fn new(config: &UpstreamProxyConfig) -> Result<Self, UpstreamProxyConfigError> {
         UpstreamProxyFactory::default().prepare(config)
+    }
+
+    /// Prepares an account assignment received over the private inspection channel.
+    ///
+    /// # Errors
+    /// Rejects malformed inline settings without reading any local files.
+    pub fn for_account(
+        account: &abyss_plugin_protocol::account_proxy::AccountProxy,
+    ) -> Result<Self, UpstreamProxyConfigError> {
+        use abyss_plugin_protocol::account_proxy::AccountProxyProtocol;
+        account.validate().map_err(UpstreamProxyConfigError)?;
+        let config = UpstreamProxyConfig {
+            protocol: match account.protocol {
+                AccountProxyProtocol::Socks5 => UpstreamProxyProtocol::Socks5,
+                AccountProxyProtocol::Http | AccountProxyProtocol::Https => {
+                    UpstreamProxyProtocol::HttpConnect
+                }
+                _ => {
+                    return Err(UpstreamProxyConfigError(
+                        "unsupported account proxy protocol",
+                    ));
+                }
+            },
+            endpoint: account.endpoint(),
+            ca_file: None,
+            credentials_file: None,
+            wireguard_file: None,
+            connect_timeout_ms: 10_000,
+            handshake_timeout_ms: 10_000,
+        };
+        let credentials = account
+            .username
+            .as_ref()
+            .zip(account.password.as_ref())
+            .map(|(username, password)| super::config::ProxyCredentials {
+                username: username.clone(),
+                password: password.clone(),
+            });
+        let mut proxy = UpstreamProxyFactory::default()
+            .prepare_with_credentials(&config, credentials.as_ref())?;
+        proxy.account_hop = Some(AccountProxyHop {
+            endpoint: proxy.endpoint().authority(),
+            peer: Arc::default(),
+        });
+        Ok(proxy)
+    }
+
+    pub(crate) fn with_flow_constraints(mut self, original: &Self) -> Self {
+        self.socket_initializer
+            .clone_from(&original.socket_initializer);
+        self.excluded_endpoints
+            .clone_from(&original.excluded_endpoints);
+        self
     }
 
     /// Associates this flow's platform state with every next-hop socket before TCP connect.
@@ -204,6 +282,9 @@ impl UpstreamProxy {
                 stage: ProxyConnectStage::Handshake,
                 timeout: self.handshake_timeout,
             })??;
+        if let Some(hop) = &self.account_hop {
+            let _peer = hop.peer.set(proxy_peer);
+        }
         Ok(ConnectedTunnel {
             stream: PrefixedDuplexStream::new(prefix.into_boxed_slice(), stream).boxed(),
             proxy_peer,

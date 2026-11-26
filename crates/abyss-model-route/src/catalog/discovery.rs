@@ -83,7 +83,7 @@ impl Catalog {
         }
         let (provider, credential) =
             self.provider_credential(&selection.provider, &selection.credential)?;
-        if credential.authentication().is_none() {
+        if credential.value.authentication().is_none() {
             return Err("Credential unavailable.");
         }
         if !provider.models.is_empty() {
@@ -100,15 +100,27 @@ impl Catalog {
             .endpoint(&selection.provider)?
             .ok_or("Provider endpoint unavailable.")?;
         let url = endpoint(base)?;
-        let client = Client::builder()
+        let mut builder = Client::builder()
             .timeout(Duration::from_secs(8))
-            .redirect(Policy::none())
+            .redirect(Policy::none());
+        if let Some(settings) = &credential.proxy {
+            settings.validate()?;
+            let endpoint = settings.endpoint().replacen("socks5://", "socks5h://", 1);
+            let mut proxy = reqwest::Proxy::all(endpoint).map_err(|_| "Invalid account proxy.")?;
+            if let Some((user, password)) =
+                settings.username.as_ref().zip(settings.password.as_ref())
+            {
+                proxy = proxy.basic_auth(user, password);
+            }
+            builder = builder.no_proxy().proxy(proxy);
+        }
+        let client = builder
             .build()
             .map_err(|_| "Cannot initialize model list client.")?;
         fetch(
             &client,
             &url,
-            credential,
+            &credential.value,
             selection.provider == "anthropic" || url.path().contains("/anthropic/"),
         )
         .await
@@ -139,6 +151,9 @@ async fn fetch(
                 } else {
                     request.bearer_auth(api_key)
                 }
+            }
+            Credential::Service(ServiceCredential::Oauth { access_token, .. }) => {
+                request.bearer_auth(access_token)
             }
             Credential::ExplicitHeaders { headers, .. }
                 if credential.authentication().is_some() =>

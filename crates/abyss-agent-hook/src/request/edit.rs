@@ -15,6 +15,9 @@ pub enum RequestActionError {
     /// The next host is invalid or the connection has already upgraded.
     #[error("Invalid upstream host action")]
     InvalidUpstreamHost,
+    /// Invalid account proxy assignment.
+    #[error("Invalid account proxy action")]
+    InvalidProxy,
     /// The path is malformed or the HTTP handshake is already complete.
     #[error("Invalid HTTP request path action")]
     InvalidPath,
@@ -121,7 +124,7 @@ impl RequestActions {
     /// # Errors
     /// Returns a value-free error for unavailable or malformed actions.
     pub fn apply(
-        &self,
+        &mut self,
         request: &mut RequestEditor<'_>,
         actions: Box<[ModifyAction]>,
     ) -> Result<(), RequestActionError> {
@@ -131,6 +134,19 @@ impl RequestActions {
                 ModifyAction::SetUpstreamHost(host) => request
                     .set_upstream_host(&host)
                     .map_err(|_| RequestActionError::InvalidUpstreamHost)?,
+                ModifyAction::SetAccountProxy(proxy) => request
+                    .set_account_proxy(&proxy)
+                    .map_err(|_| RequestActionError::InvalidProxy)?,
+                ModifyAction::SetBearerToken(token) => {
+                    let old = self.writable_auth()?;
+                    let value = AuthBinding::Bearer
+                        .encode(&token)
+                        .map_err(|_| RequestActionError::InvalidToken)?;
+                    let headers = request.headers_mut();
+                    headers.remove(old.header());
+                    headers.insert(AuthBinding::Bearer.header(), value);
+                    self.auth = Some(AuthBinding::Bearer);
+                }
                 ModifyAction::SetRequestPath(path) => request
                     .set_request_path(&path)
                     .map_err(|_| RequestActionError::InvalidPath)?,

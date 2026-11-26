@@ -618,6 +618,27 @@ pub struct NetworkObservation {
 }
 
 impl NetworkObservation {
+    fn proxy_hop(
+        ingress: &FlowIngress,
+        outcome: &TransparentFlowOutcome,
+    ) -> (Option<String>, Option<String>) {
+        if let TransparentFlowOutcome::Intercepted(http) = outcome
+            && let Some(hop) = http
+                .first_request
+                .extensions()
+                .get::<abyss_mitm::outbound::AccountProxyHop>()
+        {
+            return (
+                Some(hop.endpoint.clone()),
+                hop.peer().map(|peer| peer.to_string()),
+            );
+        }
+        (
+            ingress.proxy_endpoint().map(str::to_owned),
+            ingress.upstream_proxy().map(|peer| peer.to_string()),
+        )
+    }
+
     /// Builds an observation from a completed MITM outcome.
     #[must_use]
     pub fn from_outcome(
@@ -674,6 +695,7 @@ impl NetworkObservation {
                 Some("unsupported transparent flow outcome".to_owned()),
             ),
         };
+        let (proxy_endpoint, proxy_peer) = Self::proxy_hop(ingress, outcome);
         let (request_method, request_path) = match outcome {
             TransparentFlowOutcome::Intercepted(outcome) => (
                 Some(outcome.first_request.method().to_string()),
@@ -691,8 +713,8 @@ impl NetworkObservation {
             target_authority: ingress
                 .proxy_target()
                 .map(abyss_mitm::TargetAuthority::authority),
-            proxy_endpoint: ingress.proxy_endpoint().map(str::to_owned),
-            proxy_peer: ingress.upstream_proxy().map(|address| address.to_string()),
+            proxy_endpoint,
+            proxy_peer,
             proxy_status: None,
             source_pid: source_process.and_then(|source| source.pid),
             source_process_name: source_process

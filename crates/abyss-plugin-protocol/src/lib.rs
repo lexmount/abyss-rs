@@ -3,6 +3,7 @@
 //! This crate contains payload types and protocol constants only. Broker
 //! runtime behavior and SDK client behavior remain in their owning crates.
 
+pub mod account_proxy;
 pub mod event;
 pub mod inspection;
 pub mod message;

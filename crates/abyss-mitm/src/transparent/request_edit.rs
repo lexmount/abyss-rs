@@ -80,7 +80,15 @@ impl<'a> RequestEditor<'a> {
             .map_err(|_| "invalid request authority")?;
         // The rewritten authority goes on the wire. The relay reads this extension
         // after inspection to choose the connection for this request.
-        head.extensions_mut().insert(target);
+        let proxy = head
+            .extensions_mut()
+            .remove::<super::redirect::ExchangeRoute>()
+            .and_then(|route| route.proxy);
+        head.extensions_mut()
+            .insert(super::redirect::ExchangeRoute {
+                host: target,
+                proxy,
+            });
         // Rebuild cross-origin headers from wire-protocol fields. A later token action
         // can install the selected provider credential using the original carrier.
         let upgrading = super::utils::is_websocket_upgrade_request(head);
@@ -114,6 +122,42 @@ impl<'a> RequestEditor<'a> {
         // Reframe the decoded payload, excluding trailers tied to the old authority.
         let bytes = self.view().body.bytes_ref().clone();
         self.replace_body(bytes);
+        Ok(())
+    }
+
+    /// Select the account proxy even when the API hostname stays the same.
+    ///
+    /// # Errors
+    /// Rejects invalid routes and changes to an established WebSocket.
+    pub fn set_account_proxy(
+        &mut self,
+        account: &abyss_plugin_protocol::account_proxy::AccountProxy,
+    ) -> Result<(), &'static str> {
+        if !matches!(self.original.transport, RequestTransport::Http) {
+            return Err("cannot change proxy after WebSocket upgrade");
+        }
+        let proxy = crate::outbound::UpstreamProxy::for_account(account)
+            .map_err(|_| "invalid account proxy")?;
+        let head = self.head.get_or_insert_with(|| self.original.head.clone());
+        let authority = head
+            .uri()
+            .authority()
+            .cloned()
+            .or_else(|| {
+                head.headers()
+                    .get(header::HOST)?
+                    .to_str()
+                    .ok()?
+                    .parse()
+                    .ok()
+            })
+            .ok_or("missing request authority")?;
+        let host = super::RedirectTarget::parse(authority.host())?;
+        head.extensions_mut()
+            .insert(super::redirect::ExchangeRoute {
+                host,
+                proxy: Some(proxy),
+            });
         Ok(())
     }
 

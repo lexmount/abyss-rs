@@ -21,6 +21,14 @@ pub enum UpstreamProxyProtocol {
     Wireguard,
 }
 
+/// Editable outbound route. No upstream means direct routing.
+#[derive(Debug, Clone, Default, Deserialize, PartialEq, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct NetworkConfig {
+    /// Optional next hop using the shared upstream protocol configuration.
+    pub upstream: Option<UpstreamProxyConfig>,
+}
+
 /// Static next-hop settings shared by the broker and its configuration editors.
 #[derive(Debug, Clone, Deserialize, PartialEq, Serialize)]
 #[serde(deny_unknown_fields)]

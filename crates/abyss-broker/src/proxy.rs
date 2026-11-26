@@ -4,6 +4,7 @@
 //! retains only one task control handle and its common status snapshot, keeping
 //! dynamic dispatch out of the connection path.
 
+mod explicit_peer;
 mod lifecycle;
 mod request_control;
 

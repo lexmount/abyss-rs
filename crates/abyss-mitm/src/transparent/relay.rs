@@ -202,7 +202,7 @@ where
         U: AsyncRead + AsyncWrite + Unpin + Send,
         C: RequestForwardingControl,
         O: std::future::Future<Output = Result<U, TransparentFlowError>>,
-        F: FnOnce(super::RedirectTarget) -> Fut,
+        F: FnOnce(super::redirect::ExchangeRoute) -> Fut,
         Fut: std::future::Future<Output = Result<U, TransparentFlowError>>,
     {
         let mut relay = RequestRelay::new(
@@ -212,11 +212,7 @@ where
             max_body_bytes,
         )?;
         relay.prepare(&mut self.stream, control).await?;
-        let route = relay
-            .request
-            .extensions()
-            .get::<super::RedirectTarget>()
-            .cloned();
+        let route = super::redirect::ExchangeRoute::take(relay.request);
         // Poll the deferred default connection only when selected. A request
         // routed elsewhere can then succeed even if the default host is unreachable.
         let connection = match route {

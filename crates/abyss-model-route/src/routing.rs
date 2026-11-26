@@ -122,8 +122,15 @@ impl Routes {
         let mut actions = vec![
             ModifyAction::SetUpstreamHost(host.to_owned()),
             ModifyAction::SetRequestPath(format!("{prefix}{version}/{operation}")),
-            ModifyAction::SetAuthToken(route.authentication.to_owned()),
+            if route.bearer {
+                ModifyAction::SetBearerToken(route.authentication.to_owned())
+            } else {
+                ModifyAction::SetAuthToken(route.authentication.to_owned())
+            },
         ];
+        if let Some(proxy) = route.proxy {
+            actions.push(ModifyAction::SetAccountProxy(proxy.clone()));
+        }
         if context.model_writable {
             actions.push(ModifyAction::SetModel(route.model.to_owned()));
         }
