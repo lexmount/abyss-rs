@@ -26,7 +26,9 @@ impl MitmHook for Capture {
     }
 }
 
-type ObservedRequests = Arc<Mutex<Vec<(Request<()>, Vec<u8>, Option<HeaderMap>)>>>;
+/// Origin view of each request: head, body, trailers, and whether the request
+/// ended on its HEADERS frame.
+type ObservedRequests = Arc<Mutex<Vec<(Request<()>, Vec<u8>, Option<HeaderMap>, bool)>>>;
 
 #[derive(Clone, Copy)]
 enum Routing {
@@ -158,6 +160,41 @@ impl Fixture {
         (status, bytes, body.trailers().await.unwrap())
     }
 
+    /// Sends a bodiless GET, ending it on HEADERS or on a separate empty DATA frame.
+    async fn get(&self, path: &str, end_on_headers: bool) -> (StatusCode, Vec<u8>) {
+        let mut sender = self.sender.clone().ready().await.unwrap();
+        let request = Request::builder()
+            .version(Version::HTTP_2)
+            .uri(format!("https://{}{path}", self.authority))
+            .body(())
+            .unwrap();
+        let (response, mut upload) = sender.send_request(request, end_on_headers).unwrap();
+        if !end_on_headers {
+            upload.send_data(Bytes::new(), true).unwrap();
+        }
+        let response = response.await.unwrap();
+        let status = response.status();
+        let mut body = response.into_body();
+        let mut bytes = Vec::new();
+        while let Some(chunk) = body.data().await {
+            let chunk = chunk.unwrap();
+            bytes.extend_from_slice(&chunk);
+            body.flow_control().release_capacity(chunk.len()).unwrap();
+        }
+        body.trailers().await.unwrap();
+        (status, bytes)
+    }
+
+    /// Whether the origin saw the request for `path` end on its HEADERS frame.
+    fn origin_ended_on_headers(&self, path: &str) -> bool {
+        self.requests
+            .lock()
+            .iter()
+            .find(|(request, _, _, _)| request.uri().path() == path)
+            .unwrap()
+            .3
+    }
+
     async fn captured(&self, count: usize) -> Vec<HttpExchange> {
         timeout(Duration::from_secs(2), async {
             loop {
@@ -230,9 +267,9 @@ async fn multiplexes_streams_and_preserves_large_bodies_and_trailers() {
     let requests = fixture.requests.lock().clone();
     assert_eq!(requests.len(), 2);
     assert!(
-        requests
-            .iter()
-            .all(|(_, _, trailers)| trailers.as_ref().unwrap()["x-request-trailer"] == "complete"),
+        requests.iter().all(
+            |(_, _, trailers, _)| trailers.as_ref().unwrap()["x-request-trailer"] == "complete"
+        ),
         "request trailers must reach origin"
     );
     fixture.close().await;
@@ -266,7 +303,7 @@ async fn forwards_authority_once_while_retaining_host_for_observers() {
         assert_eq!(exchange.request.headers()["host"], fixture.authority);
     }
     let requests = fixture.requests.lock().clone();
-    for (request, _, _) in requests {
+    for (request, _, _, _) in requests {
         assert_eq!(
             request.uri().authority().unwrap().as_str(),
             fixture.authority
@@ -277,6 +314,69 @@ async fn forwards_authority_once_while_retaining_host_for_observers() {
         );
     }
     fixture.close().await;
+}
+
+#[tokio::test]
+async fn forwards_the_client_end_of_stream_framing() {
+    let fixture = Fixture::start(crate::transparent::UncontrolledForwarding, 1024).await;
+    assert_eq!(fixture.get("/headers-only", true).await.0, StatusCode::OK);
+    assert_eq!(fixture.get("/empty-data", false).await.0, StatusCode::OK);
+    assert!(
+        fixture.origin_ended_on_headers("/headers-only"),
+        "a bodiless GET must not gain an empty DATA frame on the way to origin"
+    );
+    assert!(
+        !fixture.origin_ended_on_headers("/empty-data"),
+        "a client's own empty DATA frame is forwarded as sent"
+    );
+    let captured = fixture.captured(2).await;
+    let bodiless = captured
+        .iter()
+        .find(|exchange| exchange.request.uri().path() == "/headers-only")
+        .unwrap();
+    assert!(bodiless.request.body().raw_bytes().is_empty());
+    assert!(!bodiless.request.body().raw_truncated());
+    fixture.close().await;
+}
+
+#[tokio::test]
+async fn forwards_headers_only_responses_without_an_empty_data_frame() {
+    let fixture = Fixture::start(crate::transparent::UncontrolledForwarding, 1024).await;
+    // An empty DATA frame after a 304 with Content-Length is a protocol error
+    // for the client, so this call fails unless the response ends on HEADERS.
+    let (status, body) = fixture.get("/not-modified", true).await;
+    assert_eq!(status, StatusCode::NOT_MODIFIED);
+    assert!(body.is_empty());
+    let captured = fixture.captured(1).await;
+    assert_eq!(captured[0].response.status(), StatusCode::NOT_MODIFIED);
+    assert!(captured[0].response.body().raw_bytes().is_empty());
+    assert!(!captured[0].response.body().raw_truncated());
+    fixture.close().await;
+}
+
+#[tokio::test]
+async fn inspected_bodiless_requests_end_on_headers_unless_a_body_is_added() {
+    // The model route also moves this stream to its own origin connection.
+    let unchanged = Fixture::start_routed(RouteModel, 1024, Routing::PerStream).await;
+    assert_eq!(
+        unchanged.get("/backend-api/codex/responses", true).await.0,
+        StatusCode::OK
+    );
+    assert!(
+        unchanged.origin_ended_on_headers("/compatible-mode/v1/responses"),
+        "inspection without a body edit keeps the bodiless framing"
+    );
+    unchanged.captured(1).await;
+    unchanged.close().await;
+
+    let edited = Fixture::start(Inspect, 1024).await;
+    assert_eq!(edited.get("/headers-only", true).await.1, b"edited");
+    assert!(
+        !edited.origin_ended_on_headers("/headers-only"),
+        "a body added by inspection must still reach origin"
+    );
+    edited.captured(1).await;
+    edited.close().await;
 }
 
 struct Inspect;
@@ -345,7 +445,7 @@ async fn model_and_catalog_streams_share_client_tls_but_use_distinct_verified_or
     assert_eq!(catalog.1, b"catalog");
     let requests = fixture.requests.lock().clone();
     assert_eq!(requests.len(), 2);
-    for (request, body, trailers) in requests {
+    for (request, body, trailers, _) in requests {
         if body == b"model" {
             assert_eq!(request.uri().host(), Some("localhost"));
             assert_eq!(
@@ -711,6 +811,7 @@ async fn serve_origin(
         let observed = observed.clone();
         workers.spawn(async move {
             let (parts, mut body) = request.into_parts();
+            let ended_on_headers = body.is_end_stream();
             let head = Request::from_parts(parts, ());
             let mut bytes = Vec::new();
             while let Some(chunk) = body.data().await {
@@ -720,9 +821,21 @@ async fn serve_origin(
             }
             let trailers = body.trailers().await.unwrap();
             let path = head.uri().path().to_owned();
-            observed.lock().push((head, bytes.clone(), trailers));
+            observed
+                .lock()
+                .push((head, bytes.clone(), trailers, ended_on_headers));
             if path == "/refused" {
                 respond.send_reset(h2::Reason::REFUSED_STREAM);
+                return;
+            }
+            if path == "/not-modified" {
+                // A 304 keeps the representation's length while ending on HEADERS.
+                let response = Response::builder()
+                    .status(StatusCode::NOT_MODIFIED)
+                    .header("content-length", "123")
+                    .body(())
+                    .unwrap();
+                respond.send_response(response, true).unwrap();
                 return;
             }
             if path == "/slow" {

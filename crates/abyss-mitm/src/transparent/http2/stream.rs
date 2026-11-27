@@ -95,6 +95,10 @@ impl<C: RequestForwardingControl> Http2Relay<'_, C> {
         written: Arc<AtomicU64>,
     ) -> Result<HttpExchange, TransparentFlowError> {
         let (parts, body) = request.into_parts();
+        // A request the client ended on HEADERS must reach the origin the same
+        // way: a trailing empty DATA frame turns a bodiless GET into one with a
+        // body, which some origins reject.
+        let ended_on_headers = body.is_end_stream();
         let mut head = Request::from_parts(parts, ());
         let validator = Http2Request::new(&self.context, self.engine.max_http1_body_bytes);
         validator.validate(&mut head)?;
@@ -138,10 +142,22 @@ impl<C: RequestForwardingControl> Http2Relay<'_, C> {
         // :authority even when the values match.
         let mut wire_head = head.clone();
         wire_head.headers_mut().remove(http::header::HOST);
-        let (response, request_stream) = upstream.send_request(wire_head, false).map_err(error)?;
+        // Inspection may replace a bodiless request's body, which must still be sent.
+        let end_of_stream = ended_on_headers
+            && match &body {
+                RequestBody::Streaming(_) => true,
+                RequestBody::Retained(retained) => retained.is_empty(),
+            };
+        let (response, request_stream) = upstream
+            .send_request(wire_head, end_of_stream)
+            .map_err(error)?;
         let upload = async {
             let capture = match body {
+                RequestBody::Retained(retained) if end_of_stream => Ok(retained.into_capture()),
                 RequestBody::Retained(retained) => retained.send(request_stream).await,
+                RequestBody::Streaming(_) if end_of_stream => {
+                    Ok(BodyCapture::new(self.engine.max_http1_body_bytes).finish(head.headers()))
+                }
                 RequestBody::Streaming(body) => BodyCapture::new(self.engine.max_http1_body_bytes)
                     .relay(body, request_stream, head.headers())
                     .await
@@ -155,13 +171,20 @@ impl<C: RequestForwardingControl> Http2Relay<'_, C> {
                 receive_response(respond, response, self.engine.timeouts.http1_response_head)
                     .await?;
             let (parts, body) = response.into_parts();
+            // Same framing rule as requests: a trailing empty DATA frame turns a
+            // HEADERS-only response, such as a 304 with Content-Length, malformed.
+            let end_of_stream = body.is_end_stream();
             let response_head = Response::from_parts(parts, ());
             let downstream = respond
-                .send_response(response_head.clone(), false)
+                .send_response(response_head.clone(), end_of_stream)
                 .map_err(error)?;
-            let capture = BodyCapture::new(self.engine.max_http1_body_bytes)
-                .relay_response(body, downstream, response_head.headers())
-                .await;
+            let capture = if end_of_stream {
+                BodyCapture::new(self.engine.max_http1_body_bytes).finish(response_head.headers())
+            } else {
+                BodyCapture::new(self.engine.max_http1_body_bytes)
+                    .relay_response(body, downstream, response_head.headers())
+                    .await
+            };
             let response_ended_at = SystemTime::now();
             Ok::<_, TransparentFlowError>((response_head.map(|()| capture), response_ended_at))
         };
