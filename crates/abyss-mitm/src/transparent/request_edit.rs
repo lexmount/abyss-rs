@@ -125,19 +125,17 @@ impl<'a> RequestEditor<'a> {
         Ok(())
     }
 
-    /// Select the account proxy even when the API hostname stays the same.
+    /// Route this HTTP exchange through the supplied upstream proxy.
     ///
     /// # Errors
     /// Rejects invalid routes and changes to an established WebSocket.
-    pub fn set_account_proxy(
+    pub fn set_upstream_proxy(
         &mut self,
-        account: &abyss_plugin_protocol::account_proxy::AccountProxy,
+        proxy: crate::outbound::UpstreamProxy,
     ) -> Result<(), &'static str> {
         if !matches!(self.original.transport, RequestTransport::Http) {
             return Err("cannot change proxy after WebSocket upgrade");
         }
-        let proxy = crate::outbound::UpstreamProxy::for_account(account)
-            .map_err(|_| "invalid account proxy")?;
         let head = self.head.get_or_insert_with(|| self.original.head.clone());
         let authority = head
             .uri()
@@ -153,10 +151,11 @@ impl<'a> RequestEditor<'a> {
             })
             .ok_or("missing request authority")?;
         let host = super::RedirectTarget::parse(authority.host())?;
+        let hop = super::RequestProxyHop::new(&proxy);
         head.extensions_mut()
             .insert(super::redirect::ExchangeRoute {
                 host,
-                proxy: Some(proxy),
+                proxy: Some((proxy, hop)),
             });
         Ok(())
     }

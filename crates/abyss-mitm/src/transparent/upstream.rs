@@ -64,14 +64,16 @@ impl RequestConnector {
         let target = crate::TargetAuthority::from_host_port(host.host(), port)
             .map_err(|_| invalid("invalid request upstream host"))?;
         let connection = match (&self.next_hop, &route.proxy) {
-            (NextHop::Direct(listener), Some(proxy)) => UpstreamConnection::Proxied {
+            (NextHop::Direct(listener), Some((proxy, hop))) => UpstreamConnection::Proxied {
+                request_hop: Some(hop.clone()),
                 target,
                 proxy: listener.map_or_else(
                     || proxy.clone(),
                     |addr| proxy.clone().excluding_endpoint(addr),
                 ),
             },
-            (NextHop::Proxy(original), Some(proxy)) => UpstreamConnection::Proxied {
+            (NextHop::Proxy(original), Some((proxy, hop))) => UpstreamConnection::Proxied {
+                request_hop: Some(hop.clone()),
                 target,
                 proxy: proxy.clone().with_flow_constraints(original),
             },
@@ -82,6 +84,7 @@ impl RequestConnector {
             // Pass the new hostname through the same proxy so it handles DNS
             // and connects to the selected provider on the original target port.
             (NextHop::Proxy(proxy), None) => UpstreamConnection::Proxied {
+                request_hop: None,
                 target,
                 proxy: proxy.clone(),
             },
@@ -223,7 +226,11 @@ pub(super) async fn connect_upstream_with_observer(
             );
             return Ok(observe_upstream(stream, observer));
         }
-        UpstreamConnection::Proxied { proxy, target } => {
+        UpstreamConnection::Proxied {
+            proxy,
+            target,
+            request_hop,
+        } => {
             let tunnel = proxy.connect_tunnel(&target, &[]).await.map_err(|source| {
                 TransparentFlowError::UpstreamProxy {
                     target: target.clone(),
@@ -231,9 +238,9 @@ pub(super) async fn connect_upstream_with_observer(
                     source,
                 }
             })?;
-            if proxy.account_hop.is_none()
-                && let Some(observer) = &observer
-            {
+            if let Some(hop) = request_hop {
+                hop.record_peer(tunnel.proxy_peer);
+            } else if let Some(observer) = &observer {
                 observer.record_proxy_peer(tunnel.proxy_peer);
             }
             tracing::info!(%target, proxy_peer = %tunnel.proxy_peer, "MITM connected configured upstream tunnel");

@@ -22,7 +22,7 @@ mod tests;
 pub use config::{
     NetworkConfig, UpstreamProxyConfig, UpstreamProxyConfigError, UpstreamProxyProtocol,
 };
-pub use connector::{AccountProxyHop, ConnectedTunnel, UpstreamProxy, UpstreamProxyFactory};
+pub use connector::{ConnectedTunnel, UpstreamProxy, UpstreamProxyFactory};
 /// Compatibility name for the shared next-hop connector.
 pub type HttpConnectProxy = UpstreamProxy;
 pub use listener::ListenerEndpoint;

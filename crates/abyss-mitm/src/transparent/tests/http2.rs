@@ -33,7 +33,7 @@ enum Routing {
     Original,
     DomainRedirect,
     PerStream,
-    AccountProxies,
+    PerRequestProxies,
 }
 
 struct Fixture {
@@ -83,7 +83,7 @@ impl Fixture {
         if matches!(routing, Routing::PerStream) {
             origins.push(origin_config_for_name(&ca, "localhost").await);
         }
-        if matches!(routing, Routing::AccountProxies) {
+        if matches!(routing, Routing::PerRequestProxies) {
             origins.extend([origins[0].clone(), origins[0].clone()]);
         }
         let origin = spawn_origin(listener, origins, observed);
@@ -832,12 +832,12 @@ async fn preserves_the_origin_reset_reason_for_retryable_streams() {
     fixture.close().await;
 }
 
-struct AccountRoutes {
+struct ProxyPerPath {
     first: u16,
     second: u16,
 }
 
-impl RequestForwardingControl for AccountRoutes {
+impl RequestForwardingControl for ProxyPerPath {
     type Plan = ();
     fn plan(&self) -> Option<()> {
         Some(())
@@ -852,18 +852,19 @@ impl RequestForwardingControl for AccountRoutes {
         } else {
             self.second
         };
-        let proxy = serde_json::from_value(serde_json::json!({
-            "protocol":"http", "host":"127.0.0.1","port":port,"username":"alice","password":"abc",
-        }))
+        let proxy = crate::outbound::UpstreamProxy::from_endpoint(
+            format!("http://127.0.0.1:{port}"),
+            Some(("alice".into(), "abc".into())),
+        )
         .unwrap();
         let mut editor = RequestEditor::new(request);
-        editor.set_account_proxy(&proxy).unwrap();
+        editor.set_upstream_proxy(proxy).unwrap();
         future::ready(Ok(editor.finish(())))
     }
 }
 
 #[tokio::test]
-async fn same_host_model_streams_use_and_record_their_own_authenticated_proxies() {
+async fn same_host_streams_use_and_record_their_own_authenticated_proxies() {
     use tokio::io::AsyncWriteExt as _;
     async fn proxy() -> (u16, tokio::task::JoinHandle<()>) {
         let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
@@ -889,9 +890,9 @@ async fn same_host_model_streams_use_and_record_their_own_authenticated_proxies(
     timeout(Duration::from_secs(10), async {
         let ((first, first_task), (second, second_task)) = tokio::join!(proxy(), proxy());
         let fixture = Fixture::start_routed(
-            AccountRoutes { first, second },
+            ProxyPerPath { first, second },
             1024,
-            Routing::AccountProxies,
+            Routing::PerRequestProxies,
         )
         .await;
         let (a, b) = tokio::join!(
@@ -907,7 +908,7 @@ async fn same_host_model_streams_use_and_record_their_own_authenticated_proxies(
             let hop = exchange
                 .request
                 .extensions()
-                .get::<crate::outbound::AccountProxyHop>()
+                .get::<crate::RequestProxyHop>()
                 .unwrap();
             let port = if exchange.request.uri().path() == "/one" {
                 first

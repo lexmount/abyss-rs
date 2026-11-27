@@ -79,6 +79,11 @@ fn credentials_use_utf8_byte_limits_and_are_loaded_at_configuration_time() {
         )
         .unwrap();
         assert_eq!(UpstreamProxy::new(&config).is_ok(), valid);
+        assert_eq!(
+            UpstreamProxy::from_endpoint(config.endpoint.clone(), Some((username, password)))
+                .is_ok(),
+            valid
+        );
     }
     std::fs::write(&file, b"not-json-secret").unwrap();
     assert!(

@@ -5,7 +5,7 @@ import type { Conversation, EventPurpose, ImageAttachment } from "../event.js";
 export type ModifyAction =
   | { readonly op: "set_upstream_host"; readonly value: string }
   | {
-      readonly op: "set_account_proxy";
+      readonly op: "set_upstream_proxy";
       readonly value: {
         readonly protocol: "http" | "https" | "socks5";
         readonly host: string;

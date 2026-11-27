@@ -61,7 +61,7 @@ The v1 reply contains exactly one tagged `decision`:
 - `{"action":"block","reason":"safe explanation"}` rejects the request.
 - `{"action":"modify","actions":[...]}` applies explicit semantic actions.
 
-The `set_account_proxy` action sets the next hop for this HTTP request or WebSocket upgrade. Its value contains `protocol` (`http`, `https` or `socks5`), `host`, `port` and optionally both `username` and `password`.
+The `set_upstream_proxy` action sets the next hop for this HTTP request or WebSocket upgrade. Its value contains `protocol` (`http`, `https` or `socks5`), `host`, `port` and optionally both `username` and `password`.
 
 The `set_auth_token` action takes a raw token in `value` and an optional `scheme`. Omitting `scheme` or setting it to `"existing"` uses the detected credential header. For example, an incoming `x-api-key` stays an `x-api-key`. With `"scheme":"bearer"`, the broker removes the previous credential header and writes `Authorization: Bearer <value>`. Later actions use this binding. The action requires a writable credential and carries the token on the private inspection channel.
 

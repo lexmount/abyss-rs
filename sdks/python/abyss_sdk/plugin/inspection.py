@@ -20,7 +20,7 @@ class ModifyAction:
 
     op: Literal[
         "set_upstream_host",
-        "set_account_proxy",
+        "set_upstream_proxy",
         "set_request_path",
         "set_auth_token",
         "remove_auth_token",
@@ -35,8 +35,8 @@ class ModifyAction:
         return cls("set_upstream_host", host)
 
     @classmethod
-    def set_account_proxy(cls, settings: Mapping[str, Any]) -> "ModifyAction":
-        return cls("set_account_proxy", dict(settings))
+    def set_upstream_proxy(cls, settings: Mapping[str, Any]) -> "ModifyAction":
+        return cls("set_upstream_proxy", dict(settings))
 
     @classmethod
     def set_request_path(cls, path: str) -> "ModifyAction":

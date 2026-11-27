@@ -181,7 +181,7 @@ fn selected_account_delivers_its_own_proxy_and_redacts_both_secrets() {
         assert!(
             actions
                 .iter()
-                .any(|a| a["op"] == "set_account_proxy" && a["value"]["port"] == port)
+                .any(|a| a["op"] == "set_upstream_proxy" && a["value"]["port"] == port)
         );
         assert!(actions.iter().any(|a| a["op"] == "set_auth_token"
             && a["scheme"] == "bearer"

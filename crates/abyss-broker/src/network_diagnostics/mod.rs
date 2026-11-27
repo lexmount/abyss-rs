@@ -626,7 +626,7 @@ impl NetworkObservation {
             && let Some(hop) = http
                 .first_request
                 .extensions()
-                .get::<abyss_mitm::outbound::AccountProxyHop>()
+                .get::<abyss_mitm::RequestProxyHop>()
         {
             return (
                 Some(hop.endpoint.clone()),

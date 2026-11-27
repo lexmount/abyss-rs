@@ -128,7 +128,7 @@ impl Routes {
             },
         ];
         if let Some(proxy) = route.proxy {
-            actions.push(ModifyAction::SetAccountProxy(proxy.clone()));
+            actions.push(ModifyAction::SetUpstreamProxy(proxy.clone()));
         }
         if context.model_writable {
             actions.push(ModifyAction::SetModel(route.model.to_owned()));

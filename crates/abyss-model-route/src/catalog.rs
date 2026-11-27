@@ -5,7 +5,7 @@ pub use discovery::{ListedModel, ModelListRequest};
 
 use std::collections::{BTreeMap, BTreeSet};
 
-use abyss_sdk::plugin::{AccountProxy, AuthTokenScheme};
+use abyss_sdk::plugin::{AuthTokenScheme, ProxySettings};
 use serde::{Deserialize, Serialize};
 
 #[derive(Clone, Deserialize, Serialize, Default)]
@@ -52,7 +52,7 @@ struct AssignedCredential {
     #[serde(flatten)]
     value: Credential,
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    proxy: Option<AccountProxy>,
+    proxy: Option<ProxySettings>,
 }
 
 impl Credential {
@@ -227,7 +227,7 @@ pub struct SelectedRoute<'a> {
     pub base_url: &'a str,
     pub authentication: &'a str,
     pub auth_scheme: AuthTokenScheme,
-    pub proxy: Option<&'a AccountProxy>,
+    pub proxy: Option<&'a ProxySettings>,
     pub model: &'a str,
 }
 

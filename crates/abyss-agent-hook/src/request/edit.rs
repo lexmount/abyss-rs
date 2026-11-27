@@ -15,8 +15,8 @@ pub enum RequestActionError {
     /// The next host is invalid or the connection has already upgraded.
     #[error("Invalid upstream host action")]
     InvalidUpstreamHost,
-    /// Invalid account proxy assignment.
-    #[error("Invalid account proxy action")]
+    /// Invalid upstream proxy assignment.
+    #[error("Invalid upstream proxy action")]
     InvalidProxy,
     /// The path is malformed or the HTTP handshake is already complete.
     #[error("Invalid HTTP request path action")]
@@ -134,9 +134,19 @@ impl RequestActions {
                 ModifyAction::SetUpstreamHost(host) => request
                     .set_upstream_host(&host)
                     .map_err(|_| RequestActionError::InvalidUpstreamHost)?,
-                ModifyAction::SetAccountProxy(proxy) => request
-                    .set_account_proxy(&proxy)
-                    .map_err(|_| RequestActionError::InvalidProxy)?,
+                ModifyAction::SetUpstreamProxy(settings) => {
+                    settings
+                        .validate()
+                        .map_err(|_| RequestActionError::InvalidProxy)?;
+                    let proxy = abyss_mitm::outbound::UpstreamProxy::from_endpoint(
+                        settings.endpoint(),
+                        settings.username.zip(settings.password),
+                    )
+                    .map_err(|_| RequestActionError::InvalidProxy)?;
+                    request
+                        .set_upstream_proxy(proxy)
+                        .map_err(|_| RequestActionError::InvalidProxy)?;
+                }
                 ModifyAction::SetRequestPath(path) => request
                     .set_request_path(&path)
                     .map_err(|_| RequestActionError::InvalidPath)?,

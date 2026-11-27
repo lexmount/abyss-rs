@@ -55,7 +55,7 @@ pub use self::hook::{
 };
 pub use self::io::PrefixedDuplexStream;
 pub use self::io::{BoxedDuplexStream, DuplexStream, TrafficDirection, TrafficObserver};
-pub use self::redirect::RedirectTarget;
+pub use self::redirect::{RedirectTarget, RequestProxyHop};
 pub use self::request_edit::{RequestEditor, RequestForwardingResult};
 pub use self::types::{
     FlowIngress, FlowOperation, InterceptedHttpOutcome, OriginalDestination, TlsErrorSide,

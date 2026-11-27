@@ -27,25 +27,8 @@ pub struct UpstreamProxy {
     handshake: ProxyHandshake,
     connect_timeout: Duration,
     handshake_timeout: Duration,
-    pub(crate) account_hop: Option<AccountProxyHop>,
     socket_initializer: Option<Arc<dyn ProxySocketInitializer>>,
     excluded_endpoints: Vec<SocketAddr>,
-}
-
-/// Credential-free next hop for one model exchange, independent of sibling HTTP/2 streams.
-#[derive(Clone)]
-pub struct AccountProxyHop {
-    /// Configured proxy authority.
-    pub endpoint: String,
-    peer: Arc<std::sync::OnceLock<SocketAddr>>,
-}
-
-impl AccountProxyHop {
-    /// Actual peer after a successful handshake.
-    #[must_use]
-    pub fn peer(&self) -> Option<SocketAddr> {
-        self.peer.get().copied()
-    }
 }
 
 /// A target tunnel plus its actual next-hop transport peer.
@@ -84,6 +67,9 @@ impl UpstreamProxyFactory {
         config: &UpstreamProxyConfig,
         credentials: Option<&super::config::ProxyCredentials>,
     ) -> Result<UpstreamProxy, UpstreamProxyConfigError> {
+        if let Some(credentials) = credentials {
+            credentials.validate(config.protocol)?;
+        }
         let endpoint = config.target()?;
         let transport = ProxyTransport::new(config, &endpoint)?;
         let handshake = match config.protocol {
@@ -103,7 +89,6 @@ impl UpstreamProxyFactory {
             handshake,
             connect_timeout: config.connect_timeout(),
             handshake_timeout: config.handshake_timeout(),
-            account_hop: None,
             socket_initializer: None,
             excluded_endpoints: Vec::new(),
         })
@@ -122,49 +107,32 @@ impl UpstreamProxy {
         UpstreamProxyFactory::default().prepare(config)
     }
 
-    /// Prepares an account assignment received over the private inspection channel.
+    /// Creates an HTTP, HTTPS or SOCKS5 next hop with optional inline proxy credentials.
     ///
     /// # Errors
-    /// Rejects malformed inline settings without reading any local files.
-    pub fn for_account(
-        account: &abyss_plugin_protocol::account_proxy::AccountProxy,
+    /// Rejects invalid URLs or credentials. No configuration files are read.
+    pub fn from_endpoint(
+        endpoint: String,
+        credentials: Option<(String, String)>,
     ) -> Result<Self, UpstreamProxyConfigError> {
-        use abyss_plugin_protocol::account_proxy::AccountProxyProtocol;
-        account.validate().map_err(UpstreamProxyConfigError)?;
+        let protocol = match endpoint.split_once("://").map(|(scheme, _)| scheme) {
+            Some("http" | "https") => UpstreamProxyProtocol::HttpConnect,
+            Some("socks5") => UpstreamProxyProtocol::Socks5,
+            _ => return Err(UpstreamProxyConfigError("unsupported proxy URL scheme")),
+        };
         let config = UpstreamProxyConfig {
-            protocol: match account.protocol {
-                AccountProxyProtocol::Socks5 => UpstreamProxyProtocol::Socks5,
-                AccountProxyProtocol::Http | AccountProxyProtocol::Https => {
-                    UpstreamProxyProtocol::HttpConnect
-                }
-                _ => {
-                    return Err(UpstreamProxyConfigError(
-                        "unsupported account proxy protocol",
-                    ));
-                }
-            },
-            endpoint: account.endpoint(),
+            protocol,
+            endpoint,
             ca_file: None,
             credentials_file: None,
             wireguard_file: None,
-            connect_timeout_ms: 10_000,
-            handshake_timeout_ms: 10_000,
+            connect_timeout_ms: super::config::default_timeout_ms(),
+            handshake_timeout_ms: super::config::default_timeout_ms(),
         };
-        let credentials = account
-            .username
-            .as_ref()
-            .zip(account.password.as_ref())
-            .map(|(username, password)| super::config::ProxyCredentials {
-                username: username.clone(),
-                password: password.clone(),
-            });
-        let mut proxy = UpstreamProxyFactory::default()
-            .prepare_with_credentials(&config, credentials.as_ref())?;
-        proxy.account_hop = Some(AccountProxyHop {
-            endpoint: proxy.endpoint().authority(),
-            peer: Arc::default(),
-        });
-        Ok(proxy)
+        config.validate()?;
+        let credentials = credentials
+            .map(|(username, password)| super::config::ProxyCredentials { username, password });
+        UpstreamProxyFactory::default().prepare_with_credentials(&config, credentials.as_ref())
     }
 
     pub(crate) fn with_flow_constraints(mut self, original: &Self) -> Self {
@@ -282,9 +250,6 @@ impl UpstreamProxy {
                 stage: ProxyConnectStage::Handshake,
                 timeout: self.handshake_timeout,
             })??;
-        if let Some(hop) = &self.account_hop {
-            let _peer = hop.peer.set(proxy_peer);
-        }
         Ok(ConnectedTunnel {
             stream: PrefixedDuplexStream::new(prefix.into_boxed_slice(), stream).boxed(),
             proxy_peer,

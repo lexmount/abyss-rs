@@ -3,11 +3,11 @@
 //! This crate contains payload types and protocol constants only. Broker
 //! runtime behavior and SDK client behavior remain in their owning crates.
 
-pub mod account_proxy;
 pub mod event;
 pub mod inspection;
 pub mod message;
 pub mod process;
+pub mod upstream_proxy;
 
 /// Maximum UTF-8 JSON payload accepted in one version 1 frame.
 pub const MAX_JSON_FRAME_BYTES: u32 = 64 * 1024 * 1024;

@@ -318,7 +318,7 @@
                         ],
                         "properties": {
                           "op": {
-                            "const": "set_account_proxy"
+                            "const": "set_upstream_proxy"
                           },
                           "value": {
                             "type": "object",

@@ -69,7 +69,10 @@ pub(super) struct ProxyCredentials {
 }
 
 impl ProxyCredentials {
-    fn validate(&self, protocol: UpstreamProxyProtocol) -> Result<(), UpstreamProxyConfigError> {
+    pub(super) fn validate(
+        &self,
+        protocol: UpstreamProxyProtocol,
+    ) -> Result<(), UpstreamProxyConfigError> {
         if protocol == UpstreamProxyProtocol::Socks5 {
             if !(1..=255).contains(&self.username.len())
                 || !(1..=255).contains(&self.password.len())
@@ -140,7 +143,7 @@ impl UpstreamProxyConfig {
         Ok(())
     }
 
-    /// Loads and validates credentials when preparing a route snapshot.
+    /// Loads credentials when preparing a route snapshot.
     /// Serialized configuration retains only the path, never these secret values.
     pub(super) fn load_credentials(
         &self,
@@ -150,14 +153,11 @@ impl UpstreamProxyConfig {
             .map(|path| {
                 let bytes = std::fs::read(path)
                     .map_err(|_| UpstreamProxyConfigError("cannot read proxy credentials file"))?;
-                let credentials: ProxyCredentials =
-                    serde_json::from_slice(&bytes).map_err(|_| {
-                        UpstreamProxyConfigError(
-                            "proxy credentials must be a JSON username/password object",
-                        )
-                    })?;
-                credentials.validate(self.protocol)?;
-                Ok(credentials)
+                serde_json::from_slice(&bytes).map_err(|_| {
+                    UpstreamProxyConfigError(
+                        "proxy credentials must be a JSON username/password object",
+                    )
+                })
             })
             .transpose()
     }
@@ -214,6 +214,6 @@ impl UpstreamProxyConfig {
     }
 }
 
-const fn default_timeout_ms() -> u64 {
+pub(super) const fn default_timeout_ms() -> u64 {
     10_000
 }

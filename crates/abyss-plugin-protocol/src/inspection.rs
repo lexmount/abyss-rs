@@ -3,7 +3,7 @@
 use serde::{Deserialize, Serialize, Serializer, ser::SerializeStruct as _};
 use serde_json::Value;
 
-pub use crate::account_proxy::{AccountProxy, AccountProxyProtocol};
+pub use crate::upstream_proxy::{ProxyProtocol, ProxySettings};
 
 use crate::event::{Conversation, EventPurpose, ImageAttachment, LlmProvider};
 
@@ -220,7 +220,7 @@ pub enum ModifyAction {
     SetUpstreamHost(String),
     /// Use a private next hop for this HTTP exchange.
     #[serde(serialize_with = "serialize_action_value")]
-    SetAccountProxy(AccountProxy),
+    SetUpstreamProxy(ProxySettings),
     /// Replace the HTTP path, preserving the authority and query.
     #[serde(serialize_with = "serialize_action_value")]
     SetRequestPath(String),
@@ -253,8 +253,8 @@ impl<'de> Deserialize<'de> for ModifyAction {
             SetUpstreamHost {
                 value: String,
             },
-            SetAccountProxy {
-                value: AccountProxy,
+            SetUpstreamProxy {
+                value: ProxySettings,
             },
             SetRequestPath {
                 value: String,
@@ -271,7 +271,7 @@ impl<'de> Deserialize<'de> for ModifyAction {
             RemoveModel {},
         }
         Ok(match WireAction::deserialize(deserializer)? {
-            WireAction::SetAccountProxy { value } => Self::SetAccountProxy(value),
+            WireAction::SetUpstreamProxy { value } => Self::SetUpstreamProxy(value),
             WireAction::SetUpstreamHost { value } => Self::SetUpstreamHost(value),
             WireAction::SetRequestPath { value } => Self::SetRequestPath(value),
             WireAction::SetAuthToken { value, scheme } => Self::SetAuthToken { value, scheme },
@@ -285,7 +285,7 @@ impl<'de> Deserialize<'de> for ModifyAction {
 impl std::fmt::Debug for ModifyAction {
     fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         formatter.write_str(match self {
-            Self::SetAccountProxy(_) => "SetAccountProxy(<redacted>)",
+            Self::SetUpstreamProxy(_) => "SetUpstreamProxy(<redacted>)",
             Self::SetUpstreamHost(_) => "SetUpstreamHost(<redacted>)",
             Self::SetRequestPath(_) => "SetRequestPath(<redacted>)",
             Self::SetAuthToken { .. } => "SetAuthToken(<redacted>)",
