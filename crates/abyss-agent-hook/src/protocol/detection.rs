@@ -1,6 +1,7 @@
 //! Deterministic HTTP route and wire-schema protocol selection.
 
-use abyss_mitm::{HttpExchange, WebSocketMessage};
+use abyss_mitm::{FlowContext, HttpExchange, WebSocketMessage};
+use http::Request;
 
 /// Supported wire protocols, grouped independently from Harness identity.
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -22,6 +23,7 @@ pub enum OpenAiProtocol {
 pub enum AnthropicProtocol {
     Messages,
     ClaudeWeb(ClaudeWebProtocol),
+    ClaudeCodeSession,
 }
 
 /// Claude Web private protocol operations that carry model interactions.
@@ -43,13 +45,16 @@ impl ProtocolDetector {
     }
 
     pub fn detect_request<B>(
-        flow: &abyss_mitm::FlowContext,
-        request: &http::Request<B>,
+        flow: &FlowContext,
+        request: &Request<B>,
         payload: Option<&serde_json::Value>,
     ) -> Option<LlmProtocol> {
         let path = request.uri().path();
         if super::openai::chatgpt::matches_request(flow, request) {
             return Some(LlmProtocol::OpenAi(OpenAiProtocol::ChatGptConversation));
+        }
+        if super::anthropic::claude_code_session::matches_request(flow, request) {
+            return Some(LlmProtocol::Anthropic(AnthropicProtocol::ClaudeCodeSession));
         }
         if path.contains("/organizations/") && path.ends_with("/completion") {
             return Some(LlmProtocol::Anthropic(AnthropicProtocol::ClaudeWeb(
@@ -123,6 +128,26 @@ mod tests {
                 super::OpenAiProtocol::ChatGptConversation
             ))
         );
+    }
+
+    #[test]
+    fn claude_code_session_route_takes_precedence_over_the_body() {
+        for (host, protocol) in [
+            (
+                "claude.ai",
+                LlmProtocol::Anthropic(AnthropicProtocol::ClaudeCodeSession),
+            ),
+            (
+                "gateway.example",
+                LlmProtocol::OpenAi(super::OpenAiProtocol::Responses),
+            ),
+        ] {
+            let exchange = exchange(
+                &format!("https://{host}/v1/code/sessions/cse_test/events/stream"),
+                br#"{"input":[]}"#,
+            );
+            assert_eq!(ProtocolDetector::detect_http(&exchange), Some(protocol));
+        }
     }
 
     #[test]

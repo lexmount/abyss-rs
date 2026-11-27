@@ -6,11 +6,15 @@ use std::{
 };
 
 use bytes::Bytes;
-use h2::{RecvStream, client::SendRequest, server::SendResponse};
+use h2::{
+    RecvStream,
+    client::{ResponseFuture, SendRequest},
+    server::SendResponse,
+};
 use http::{Request, Response};
 
 use super::super::{
-    HttpExchange, LocalRejection, RequestForwardingControl, TransparentFlowError,
+    CapturedBody, HttpExchange, LocalRejection, RequestForwardingControl, TransparentFlowError,
     redirect::ExchangeRoute,
 };
 use super::{
@@ -166,28 +170,7 @@ impl<C: RequestForwardingControl> Http2Relay<'_, C> {
             let request_sent_at = SystemTime::now();
             Ok((capture, request_sent_at))
         };
-        let download = async {
-            let response =
-                receive_response(respond, response, self.engine.timeouts.http1_response_head)
-                    .await?;
-            let (parts, body) = response.into_parts();
-            // Same framing rule as requests: a trailing empty DATA frame turns a
-            // HEADERS-only response, such as a 304 with Content-Length, malformed.
-            let end_of_stream = body.is_end_stream();
-            let response_head = Response::from_parts(parts, ());
-            let downstream = respond
-                .send_response(response_head.clone(), end_of_stream)
-                .map_err(error)?;
-            let capture = if end_of_stream {
-                BodyCapture::new(self.engine.max_http1_body_bytes).finish(response_head.headers())
-            } else {
-                BodyCapture::new(self.engine.max_http1_body_bytes)
-                    .relay_response(body, downstream, response_head.headers())
-                    .await
-            };
-            let response_ended_at = SystemTime::now();
-            Ok::<_, TransparentFlowError>((response_head.map(|()| capture), response_ended_at))
-        };
+        let download = self.download(respond, response, &head);
         // Upload and download progress independently: early responses and streaming
         // APIs must not wait for the entire request body to finish uploading.
         let ((capture, request_sent_at), (response, response_ended_at)) =
@@ -207,6 +190,39 @@ impl<C: RequestForwardingControl> Http2Relay<'_, C> {
         );
         self.engine.hooks.submit(exchange.clone());
         Ok(exchange)
+    }
+
+    async fn download(
+        &self,
+        respond: &mut SendResponse<Bytes>,
+        response: ResponseFuture,
+        request: &Request<()>,
+    ) -> Result<(Response<CapturedBody>, SystemTime), TransparentFlowError> {
+        let response =
+            receive_response(respond, response, self.engine.timeouts.http1_response_head).await?;
+        let (parts, body) = response.into_parts();
+        // Same framing rule as requests: a trailing empty DATA frame turns a
+        // HEADERS-only response, such as a 304 with Content-Length, malformed.
+        let end_of_stream = body.is_end_stream();
+        let response_head = Response::from_parts(parts, ());
+        let downstream = respond
+            .send_response(response_head.clone(), end_of_stream)
+            .map_err(error)?;
+        let capture = if end_of_stream {
+            BodyCapture::new(self.engine.max_http1_body_bytes).finish(response_head.headers())
+        } else {
+            let observation = self.engine.hooks.observe_http_response(
+                &self.context,
+                request,
+                &response_head,
+                self.engine.max_http1_body_bytes,
+            );
+            BodyCapture::new(self.engine.max_http1_body_bytes)
+                .relay_response(body, downstream, response_head.headers(), observation)
+                .await
+        };
+        let response_ended_at = SystemTime::now();
+        Ok((response_head.map(|()| capture), response_ended_at))
     }
 }
 
@@ -237,7 +253,7 @@ async fn reject(
 /// Drive informational headers and resets while waiting for the final response.
 async fn receive_response(
     respond: &mut SendResponse<Bytes>,
-    mut response: h2::client::ResponseFuture,
+    mut response: ResponseFuture,
     timeout: std::time::Duration,
 ) -> Result<Response<RecvStream>, TransparentFlowError> {
     use std::{

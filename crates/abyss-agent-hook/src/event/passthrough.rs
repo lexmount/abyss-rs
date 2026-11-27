@@ -42,6 +42,14 @@ impl ExchangePassthrough {
         request_at: SystemTime,
         response_at: SystemTime,
     ) -> Self {
+        let mut captured = Self::from_headers(target, request, response);
+        captured.set_times(request_at, response_at);
+        captured
+    }
+
+    /// Copies the captured path and headers before the wire times are available.
+    #[must_use]
+    pub fn from_headers(target: &Uri, request: &HeaderMap, response: &HeaderMap) -> Self {
         Self {
             path: target
                 .path_and_query()
@@ -49,11 +57,16 @@ impl ExchangePassthrough {
                 .to_owned(),
             request: Self::passthrough(request),
             response: Self::passthrough(response),
-            request_at: Timestamp::try_from(request_at)
-                .expect("request capture time must fit in a Jiff timestamp"),
-            response_at: Timestamp::try_from(response_at)
-                .expect("response capture time must fit in a Jiff timestamp"),
+            ..Self::default()
         }
+    }
+
+    /// Sets the wire times: the request event's and the response event's `observed_at`.
+    pub fn set_times(&mut self, request_at: SystemTime, response_at: SystemTime) {
+        self.request_at = Timestamp::try_from(request_at)
+            .expect("request capture time must fit in a Jiff timestamp");
+        self.response_at = Timestamp::try_from(response_at)
+            .expect("response capture time must fit in a Jiff timestamp");
     }
 
     fn passthrough(headers: &HeaderMap) -> Vec<HttpHeader> {

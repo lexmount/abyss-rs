@@ -25,6 +25,7 @@ mod protocol;
 mod redirect;
 mod relay;
 mod request_edit;
+mod response_observation;
 mod tls;
 mod tls_flow;
 mod tls_http;
@@ -44,7 +45,7 @@ pub use self::display::{
     CapturedBodyPlaintextDisplay, HttpHeadersDisplay, HttpRequestHeadDisplay,
     HttpResponseHeadDisplay, REDACTED_HEADER_VALUE, is_sensitive_header,
 };
-pub use self::engine::{MitmEngine, MitmTimeouts};
+pub use self::engine::{DEFAULT_MAX_HTTP1_BODY_BYTES, MitmEngine, MitmTimeouts};
 pub use self::flow_id::FlowId;
 pub use self::forwarding::{
     LocalRejection, RequestForwardingControl, RequestTransport, RequestView, UncontrolledForwarding,
@@ -57,6 +58,7 @@ pub use self::io::PrefixedDuplexStream;
 pub use self::io::{BoxedDuplexStream, DuplexStream, TrafficDirection, TrafficObserver};
 pub use self::redirect::{RedirectTarget, RequestProxyHop};
 pub use self::request_edit::{RequestEditor, RequestForwardingResult};
+pub use self::response_observation::HttpResponseObserver;
 pub use self::types::{
     FlowIngress, FlowOperation, InterceptedHttpOutcome, OriginalDestination, TlsErrorSide,
     TransparentFlowError, TransparentFlowOutcome, TransparentFlowSource,

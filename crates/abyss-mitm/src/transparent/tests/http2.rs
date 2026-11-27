@@ -1,30 +1,24 @@
 //! Real TCP/TLS HTTP/2 coverage through the complete MITM engine.
 
+mod observation;
+
 use bytes::Bytes;
 use h2::client::SendRequest;
-use http::{HeaderMap, Request, Response, StatusCode, Version};
+use http::{HeaderMap, Request, Response, StatusCode, Version, request::Builder};
 use parking_lot::Mutex;
 use std::{future, sync::Arc, time::Duration};
-use tokio::{net::TcpListener, time::timeout};
+use tokio::{net::TcpListener, sync::Notify, time::timeout};
 use tokio_rustls::{TlsAcceptor, TlsConnector, rustls::pki_types::ServerName};
 
+use self::observation::Capture;
 use super::{connected_pair, test_ca, test_client_config_trusting, test_mitm_engine_trusting};
 use crate::{
     tls::MitmTlsAuthority,
     transparent::{
-        AcceptedTcpFlow, HookFuture, HttpExchange, LocalRejection, MitmHook, OriginalDestination,
-        RequestEditor, RequestForwardingControl, RequestForwardingResult, RequestView,
+        AcceptedTcpFlow, HttpExchange, LocalRejection, OriginalDestination, RequestEditor,
+        RequestForwardingControl, RequestForwardingResult, RequestView,
     },
 };
-
-#[derive(Clone, Default)]
-struct Capture(Arc<Mutex<Vec<HttpExchange>>>);
-impl MitmHook for Capture {
-    fn on_http_exchange<'a>(&'a self, exchange: &'a HttpExchange) -> HookFuture<'a> {
-        self.0.lock().push(exchange.clone());
-        Box::pin(future::ready(Ok(())))
-    }
-}
 
 /// Origin view of each request: head, body, trailers, and whether the request
 /// ended on its HEADERS frame.
@@ -49,6 +43,7 @@ struct Fixture {
         >,
     >,
     capture: Capture,
+    finish_gzip: Arc<Notify>,
     requests: ObservedRequests,
     authority: String,
 }
@@ -65,6 +60,15 @@ impl Fixture {
         control: C,
         capture_limit: usize,
         routing: Routing,
+    ) -> Self {
+        Self::start_with_capture(control, capture_limit, routing, Capture::default()).await
+    }
+
+    async fn start_with_capture<C: RequestForwardingControl + 'static>(
+        control: C,
+        capture_limit: usize,
+        routing: Routing,
+        capture: Capture,
     ) -> Self {
         let ca = test_ca();
         let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
@@ -88,8 +92,8 @@ impl Fixture {
         if matches!(routing, Routing::PerRequestProxies) {
             origins.extend([origins[0].clone(), origins[0].clone()]);
         }
-        let origin = spawn_origin(listener, origins, observed);
-        let capture = Capture::default();
+        let finish_gzip = Arc::new(Notify::new());
+        let origin = spawn_origin(listener, origins, observed, finish_gzip.clone());
         let engine = test_mitm_engine_trusting(&ca)
             .with_tls_decryption_policy(crate::transparent::TlsDecryptionPolicy {
                 default_action: crate::transparent::TlsDecryptionAction::Intercept,
@@ -127,19 +131,21 @@ impl Fixture {
             origin,
             relay,
             capture,
+            finish_gzip,
             requests,
             authority,
         }
     }
 
-    async fn call(&self, path: &str, bytes: Bytes) -> (StatusCode, Vec<u8>, Option<HeaderMap>) {
-        let mut sender = self.sender.clone().ready().await.unwrap();
-        let request = Request::builder()
-            .method("POST")
+    fn request(&self, path: &str) -> Builder {
+        Request::builder()
             .version(Version::HTTP_2)
             .uri(format!("https://{}{path}", self.authority))
-            .body(())
-            .unwrap();
+    }
+
+    async fn call(&self, path: &str, bytes: Bytes) -> (StatusCode, Vec<u8>, Option<HeaderMap>) {
+        let mut sender = self.sender.clone().ready().await.unwrap();
+        let request = self.request(path).method("POST").body(()).unwrap();
         let (response, mut upload) = sender.send_request(request, false).unwrap();
         crate::transparent::http2::body::send_data(&mut upload, bytes)
             .await
@@ -152,22 +158,14 @@ impl Fixture {
         let status = response.status();
         let mut body = response.into_body();
         let mut bytes = Vec::new();
-        while let Some(chunk) = body.data().await {
-            let chunk = chunk.unwrap();
-            bytes.extend_from_slice(&chunk);
-            body.flow_control().release_capacity(chunk.len()).unwrap();
-        }
+        read_body(&mut body, &mut bytes).await;
         (status, bytes, body.trailers().await.unwrap())
     }
 
     /// Sends a bodiless GET, ending it on HEADERS or on a separate empty DATA frame.
     async fn get(&self, path: &str, end_on_headers: bool) -> (StatusCode, Vec<u8>) {
         let mut sender = self.sender.clone().ready().await.unwrap();
-        let request = Request::builder()
-            .version(Version::HTTP_2)
-            .uri(format!("https://{}{path}", self.authority))
-            .body(())
-            .unwrap();
+        let request = self.request(path).body(()).unwrap();
         let (response, mut upload) = sender.send_request(request, end_on_headers).unwrap();
         if !end_on_headers {
             upload.send_data(Bytes::new(), true).unwrap();
@@ -176,11 +174,7 @@ impl Fixture {
         let status = response.status();
         let mut body = response.into_body();
         let mut bytes = Vec::new();
-        while let Some(chunk) = body.data().await {
-            let chunk = chunk.unwrap();
-            bytes.extend_from_slice(&chunk);
-            body.flow_control().release_capacity(chunk.len()).unwrap();
-        }
+        read_body(&mut body, &mut bytes).await;
         body.trailers().await.unwrap();
         (status, bytes)
     }
@@ -198,7 +192,7 @@ impl Fixture {
     async fn captured(&self, count: usize) -> Vec<HttpExchange> {
         timeout(Duration::from_secs(2), async {
             loop {
-                let captured = self.capture.0.lock().clone();
+                let captured = self.capture.exchanges.lock().clone();
                 if captured.len() >= count {
                     return captured;
                 }
@@ -223,6 +217,19 @@ impl Fixture {
             .unwrap()
             .unwrap();
     }
+}
+
+async fn read_body(body: &mut h2::RecvStream, bytes: &mut Vec<u8>) {
+    while let Some(chunk) = body.data().await {
+        let chunk = chunk.unwrap();
+        bytes.extend_from_slice(&chunk);
+        body.flow_control().release_capacity(chunk.len()).unwrap();
+    }
+}
+
+#[tokio::test]
+async fn observes_decoded_gzip_body_before_http2_end_stream() {
+    observation::check_live_gzip_observation().await;
 }
 
 #[tokio::test]
@@ -781,12 +788,18 @@ fn spawn_origin(
     listener: TcpListener,
     configs: Vec<tokio_rustls::rustls::ServerConfig>,
     observed: ObservedRequests,
+    finish_gzip: Arc<Notify>,
 ) -> tokio::task::JoinHandle<()> {
     tokio::spawn(async move {
         let mut connections = tokio::task::JoinSet::new();
         for config in configs {
             let (tcp, _) = listener.accept().await.unwrap();
-            connections.spawn(serve_origin(tcp, config, observed.clone()));
+            connections.spawn(serve_origin(
+                tcp,
+                config,
+                observed.clone(),
+                finish_gzip.clone(),
+            ));
         }
         while let Some(result) = connections.join_next().await {
             result.unwrap();
@@ -798,6 +811,7 @@ async fn serve_origin(
     tcp: tokio::net::TcpStream,
     config: tokio_rustls::rustls::ServerConfig,
     observed: ObservedRequests,
+    finish_gzip: Arc<Notify>,
 ) {
     let tls = TlsAcceptor::from(Arc::new(config))
         .accept(tcp)
@@ -809,6 +823,7 @@ async fn serve_origin(
     while let Some(incoming) = connection.accept().await {
         let (request, mut respond) = incoming.unwrap();
         let observed = observed.clone();
+        let finish_gzip = finish_gzip.clone();
         workers.spawn(async move {
             let (parts, mut body) = request.into_parts();
             let ended_on_headers = body.is_end_stream();
@@ -857,6 +872,10 @@ async fn serve_origin(
                             .unwrap(),
                     )
                     .unwrap();
+            }
+            if path == observation::GZIP_PATH {
+                observation::serve_gzip(respond, &finish_gzip).await;
+                return;
             }
             let response = Response::builder()
                 .version(Version::HTTP_2)

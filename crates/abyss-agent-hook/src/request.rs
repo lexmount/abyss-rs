@@ -46,15 +46,9 @@ impl AgentRequestParser {
         };
         let protocol = ProtocolDetector::detect_request(request.flow, request.head, payload);
         ParsedAgentRequest {
-            projection: protocol.map(|protocol| {
-                (
-                    protocol,
-                    Arc::new(RequestParser::parse(
-                        protocol,
-                        payload,
-                        request.body.truncated(),
-                    )),
-                )
+            projection: protocol.and_then(|protocol| {
+                RequestParser::parse(protocol, payload, request.body.truncated())
+                    .map(|content| (protocol, Arc::new(content)))
             }),
         }
     }
@@ -224,6 +218,9 @@ impl AgentRequestParser {
                 LlmProtocol::OpenAi(OpenAiProtocol::ChatGptConversation) => "chatgpt_conversation",
                 LlmProtocol::Anthropic(AnthropicProtocol::Messages) => "anthropic_messages",
                 LlmProtocol::Anthropic(AnthropicProtocol::ClaudeWeb(_)) => "claude_web",
+                LlmProtocol::Anthropic(AnthropicProtocol::ClaudeCodeSession) => {
+                    "claude_code_session"
+                }
             }
             .to_owned(),
             provider: ProviderResolver::resolve(host, protocol),

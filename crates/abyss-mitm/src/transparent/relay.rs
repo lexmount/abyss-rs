@@ -40,6 +40,7 @@ use super::{
     TransparentFlowError, TransparentProtocol,
     content_encoding::ContentDecoder,
     hook::HookDispatcher,
+    response_observation::ResponseObservation,
     utils::{
         content_length, has_expect_continue, http_request_head_without_relay_headers, is_chunked,
         is_websocket_upgrade_request, status_has_no_body, websocket_request_head_bytes,
@@ -282,6 +283,8 @@ where
             head,
             head_buffer,
         } = response;
+        let observation =
+            hooks.observe_http_response(&self.context, &self.first_request, &head, max_body_bytes);
         let mut response_capture = Box::pin(forward_response(
             &mut stream,
             &mut self.stream,
@@ -289,6 +292,7 @@ where
             &head,
             &head_buffer,
             max_body_bytes,
+            observation,
         ))
         .await?;
         // For macOS transparent flows this client stream is backed by
@@ -888,6 +892,7 @@ impl<'a> RequestRelay<'a> {
                 self.buffered_body,
                 self.max_body_bytes,
                 BodyDirection::Request,
+                None,
             ))
             .await
         }
@@ -949,6 +954,7 @@ impl<'a> RequestRelay<'a> {
             self.buffered_body,
             self.max_body_bytes,
             BodyDirection::Request,
+            None,
         );
         let captured = tokio::time::timeout(INSPECTION_BODY_TIMEOUT, read)
             .await
@@ -992,6 +998,7 @@ async fn forward_response<R, W>(
     response: &Response<()>,
     head_buffer: &Http1HeadBuffer,
     max_body_bytes: usize,
+    observation: Option<ResponseObservation>,
 ) -> Result<MessageCapture, TransparentFlowError>
 where
     R: AsyncRead + Unpin,
@@ -1017,6 +1024,7 @@ where
         head_buffer.buffered_body(),
         max_body_bytes,
         BodyDirection::Response,
+        observation,
     ))
     .await?;
     Ok(MessageCapture {
@@ -1114,6 +1122,7 @@ async fn forward_body<R, W>(
     buffered_body: &[u8],
     max_body_bytes: usize,
     direction: BodyDirection,
+    observation: Option<ResponseObservation>,
 ) -> Result<BodyCapture, TransparentFlowError>
 where
     R: AsyncRead + Unpin,
@@ -1131,6 +1140,7 @@ where
                 length,
                 max_body_bytes,
                 direction,
+                observation,
             ))
             .await
         }
@@ -1141,6 +1151,7 @@ where
                 buffered_body,
                 max_body_bytes,
                 direction,
+                observation,
             ))
             .await
         }
@@ -1151,6 +1162,7 @@ where
                 buffered_body,
                 max_body_bytes,
                 direction,
+                observation,
             ))
             .await
         }
@@ -1204,6 +1216,7 @@ async fn forward_content_length_body<R, W>(
     length: usize,
     max_body_bytes: usize,
     direction: BodyDirection,
+    mut observation: Option<ResponseObservation>,
 ) -> Result<BodyCapture, TransparentFlowError>
 where
     R: AsyncRead + Unpin,
@@ -1231,6 +1244,7 @@ where
     let mut bytes = buffered_body;
     loop {
         append_body_for_capture(&mut body, &mut capture_body, bytes, max_body_bytes);
+        ResponseObservation::push_if_active(&mut observation, bytes);
         remaining = remaining
             .checked_sub(bytes.len())
             .ok_or(TransparentFlowError::ByteCountOverflow)?;
@@ -1285,6 +1299,7 @@ async fn forward_chunked_body<R, W>(
     buffered_body: &[u8],
     max_body_bytes: usize,
     direction: BodyDirection,
+    observation: Option<ResponseObservation>,
 ) -> Result<BodyCapture, TransparentFlowError>
 where
     R: AsyncRead + Unpin,
@@ -1294,7 +1309,7 @@ where
     // limit. The network side always receives the raw chunked wire bytes,
     // including size lines, CRLF delimiters, trailers, and the terminating
     // zero-sized chunk.
-    let mut chunked = ChunkedBodyCapture::new(direction);
+    let mut chunked = ChunkedBodyCapture::new(direction, observation);
     let mut buffer = [0_u8; RELAY_CHUNK_BYTES];
 
     if !buffered_body.is_empty() {
@@ -1352,6 +1367,7 @@ struct ChunkedBodyCapture {
     capture_body: bool,
     forwarded_bytes: u64,
     direction: BodyDirection,
+    observation: Option<ResponseObservation>,
 }
 
 #[derive(Clone, Copy)]
@@ -1363,7 +1379,7 @@ enum ChunkedParseState {
 }
 
 impl ChunkedBodyCapture {
-    const fn new(direction: BodyDirection) -> Self {
+    const fn new(direction: BodyDirection, observation: Option<ResponseObservation>) -> Self {
         Self {
             state: ChunkedParseState::Size,
             pending: Vec::new(),
@@ -1371,6 +1387,7 @@ impl ChunkedBodyCapture {
             capture_body: true,
             forwarded_bytes: 0,
             direction,
+            observation,
         }
     }
 
@@ -1448,6 +1465,10 @@ impl ChunkedBodyCapture {
                         &mut self.capture_body,
                         &self.pending[..payload_len],
                         max_body_bytes,
+                    );
+                    ResponseObservation::push_if_active(
+                        &mut self.observation,
+                        &self.pending[..payload_len],
                     );
                     self.pending.drain(..payload_len);
                     let remaining = remaining
@@ -1536,6 +1557,7 @@ async fn forward_until_eof_body<R, W>(
     buffered_body: &[u8],
     max_body_bytes: usize,
     direction: BodyDirection,
+    mut observation: Option<ResponseObservation>,
 ) -> Result<BodyCapture, TransparentFlowError>
 where
     R: AsyncRead + Unpin,
@@ -1553,6 +1575,7 @@ where
     let mut forwarded_bytes = usize_to_u64(buffered_body.len())?;
     append_body_for_capture(&mut body, &mut capture_body, buffered_body, max_body_bytes);
     if !buffered_body.is_empty() {
+        ResponseObservation::push_if_active(&mut observation, buffered_body);
         writer
             .write_all(buffered_body)
             .await
@@ -1579,6 +1602,7 @@ where
                 agent_write_error: None,
             });
         }
+        ResponseObservation::push_if_active(&mut observation, &buffer[..read_len]);
         writer
             .write_all(&buffer[..read_len])
             .await
@@ -1820,6 +1844,7 @@ mod tests {
             b"4\r\nping\r\n0\r\n\r\nGET /bypass HTTP/1.1\r\nHost: other.example\r\n\r\n",
             1024,
             BodyDirection::Request,
+            None,
         ))
         .await;
         let error = match result {
@@ -1842,7 +1867,7 @@ mod tests {
 
     #[test]
     fn chunked_body_bounds_fragmented_size_extensions() {
-        let mut chunked = ChunkedBodyCapture::new(BodyDirection::Request);
+        let mut chunked = ChunkedBodyCapture::new(BodyDirection::Request, None);
         let mut size_line = Vec::from(&b"1;extension="[..]);
         size_line.resize(MAX_HTTP1_HEADER_BYTES.saturating_add(1), b'a');
 
@@ -1859,7 +1884,7 @@ mod tests {
             }
         ));
 
-        let mut chunked = ChunkedBodyCapture::new(BodyDirection::Request);
+        let mut chunked = ChunkedBodyCapture::new(BodyDirection::Request, None);
         let mut complete_size_line = Vec::from(&b"1;extension="[..]);
         complete_size_line.resize(MAX_HTTP1_HEADER_BYTES, b'a');
         complete_size_line.extend_from_slice(b"\r\n");

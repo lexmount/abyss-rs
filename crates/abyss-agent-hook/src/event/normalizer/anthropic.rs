@@ -4,7 +4,10 @@ use abyss_plugin_protocol::event::LlmProvider;
 
 use crate::{
     harness::HarnessDetection,
-    protocol::anthropic::{ParsedAnthropicMessagesExchange, ParsedClaudeWebExchange},
+    protocol::anthropic::{
+        ParsedAnthropicMessagesExchange, ParsedClaudeWebExchange,
+        claude_code_session::ParsedClaudeCodeCall,
+    },
 };
 
 use super::{Continuation, NormalizableExchange, ParsedEventParts};
@@ -78,6 +81,39 @@ impl NormalizableExchange for ParsedClaudeWebExchange {
             request_images: self.request_images.clone(),
             usage: self.usage.clone(),
             allow_request_without_response: true,
+        }
+    }
+}
+
+impl NormalizableExchange for ParsedClaudeCodeCall {
+    fn session_id(&self) -> &str {
+        &self.session_id
+    }
+
+    fn continuation(&self) -> Continuation<'_> {
+        Continuation {
+            response_id: Some(&self.message_id),
+            previous_response_id: None,
+        }
+    }
+
+    fn event_parts(
+        &self,
+        detection: &HarnessDetection,
+        provider: &LlmProvider,
+    ) -> ParsedEventParts<'_> {
+        ParsedEventParts {
+            harness_name: detection.harness_id.to_string(),
+            harness_version: detection.version.clone(),
+            llm_provider: provider.wire_name().to_owned(),
+            llm_model: self.model.clone(),
+            session_id: self.session_id.clone(),
+            response_identity: self.message_id.clone(),
+            request_conversation: &self.request_conversation,
+            response_conversation: &self.response_conversation,
+            request_images: self.request_images.clone(),
+            usage: self.usage.clone(),
+            allow_request_without_response: false,
         }
     }
 }

@@ -17,8 +17,8 @@ impl RequestParser {
         protocol: LlmProtocol,
         payload: Option<&Value>,
         truncated: bool,
-    ) -> RequestContent {
-        match protocol {
+    ) -> Option<RequestContent> {
+        Some(match protocol {
             LlmProtocol::OpenAi(OpenAiProtocol::ChatGptConversation) => {
                 ChatGptParser::parse_request(payload, truncated)
             }
@@ -34,6 +34,7 @@ impl RequestParser {
             LlmProtocol::Anthropic(AnthropicProtocol::ClaudeWeb(_)) => {
                 ClaudeWebParser::parse_request(payload, truncated)
             }
-        }
+            LlmProtocol::Anthropic(AnthropicProtocol::ClaudeCodeSession) => return None,
+        })
     }
 }
