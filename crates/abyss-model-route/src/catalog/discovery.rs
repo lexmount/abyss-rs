@@ -83,10 +83,11 @@ impl Catalog {
         }
         let (provider, credential) =
             self.provider_credential(&selection.provider, &selection.credential)?;
-        if credential.value.authentication().is_none() {
-            return Err("Credential unavailable.");
-        }
         if !provider.models.is_empty() {
+            credential
+                .value
+                .authentication(&selection.provider)
+                .ok_or("Credential unavailable.")?;
             return Ok(provider
                 .models
                 .iter()
@@ -117,13 +118,7 @@ impl Catalog {
         let client = builder
             .build()
             .map_err(|_| "Cannot initialize model list client.")?;
-        fetch(
-            &client,
-            &url,
-            &credential.value,
-            selection.provider == "anthropic" || url.path().contains("/anthropic/"),
-        )
-        .await
+        fetch(&client, &url, &credential.value, &selection.provider).await
     }
 }
 
@@ -131,8 +126,12 @@ async fn fetch(
     client: &Client,
     url: &Url,
     credential: &Credential,
-    anthropic: bool,
+    provider_id: &str,
 ) -> Result<Vec<ListedModel>, &'static str> {
+    let token = credential
+        .authentication(provider_id)
+        .ok_or("Credential unavailable.")?;
+    let anthropic = provider_id == "anthropic" || url.path().contains("/anthropic/");
     let mut models = Vec::new();
     let mut seen = BTreeSet::new();
     let mut cursors = BTreeSet::new();
@@ -143,27 +142,20 @@ async fn fetch(
             request = request.header("anthropic-version", "2023-06-01");
         }
         request = match credential {
-            Credential::Service(ServiceCredential::ApiKey { api_key })
-                if !api_key.trim().is_empty() =>
-            {
+            Credential::Service(ServiceCredential::ApiKey { .. }) => {
                 if url.host_str() == Some("api.anthropic.com") {
-                    request.header("x-api-key", api_key)
+                    request.header("x-api-key", token)
                 } else {
-                    request.bearer_auth(api_key)
+                    request.bearer_auth(token)
                 }
             }
-            Credential::Service(ServiceCredential::Oauth { access_token, .. }) => {
-                request.bearer_auth(access_token)
-            }
-            Credential::ExplicitHeaders { headers, .. }
-                if credential.authentication().is_some() =>
-            {
+            Credential::Service(ServiceCredential::Account { .. }) => request.bearer_auth(token),
+            Credential::ExplicitHeaders { headers, .. } => {
                 for (name, value) in headers {
                     request = request.header(name, value);
                 }
                 request
             }
-            _ => return Err("Credential unavailable."),
         };
         if let Some(after) = cursor.as_ref() {
             request = request.query(&[("after_id", after)]);
@@ -251,7 +243,7 @@ mod tests {
             .build()
             .unwrap();
         assert_eq!(
-            serde_json::to_value(fetch(&client, &url, &auth, true).await.unwrap()).unwrap(),
+            serde_json::to_value(fetch(&client, &url, &auth, "anthropic").await.unwrap()).unwrap(),
             serde_json::json!([
                 {"id":"zulu", "created":1_767_225_600_i64},
                 {"id":"alpha", "created":1_769_904_000_i64},

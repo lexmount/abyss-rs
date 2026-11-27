@@ -27,23 +27,13 @@ struct Provider {
 enum CredentialKind {
     ApiKey,
     Account,
-    Oauth,
 }
 
 #[derive(Clone, Deserialize, Serialize)]
 #[serde(tag = "kind", rename_all = "snake_case")]
 enum ServiceCredential {
-    ApiKey {
-        api_key: String,
-    },
-    Account {
-        login: String,
-        secret: String,
-    },
-    Oauth {
-        account_id: String,
-        access_token: String,
-    },
+    ApiKey { api_key: String },
+    Account { login: String, secret: String },
 }
 
 #[derive(Clone, Deserialize, Serialize)]
@@ -71,23 +61,24 @@ impl Credential {
             Self::ExplicitHeaders { kind, .. } => *kind,
             Self::Service(ServiceCredential::ApiKey { .. }) => CredentialKind::ApiKey,
             Self::Service(ServiceCredential::Account { .. }) => CredentialKind::Account,
-            Self::Service(ServiceCredential::Oauth { .. }) => CredentialKind::Oauth,
         }
     }
 
-    fn authentication(&self) -> Option<&str> {
+    fn authentication(&self, provider_id: &str) -> Option<&str> {
         match self {
             Self::Service(ServiceCredential::ApiKey { api_key }) if !api_key.trim().is_empty() => {
                 Some(api_key)
             }
-            Self::Service(ServiceCredential::Oauth {
-                account_id,
-                access_token,
-            }) if !account_id.trim().is_empty()
-                && !access_token.is_empty()
-                && access_token.bytes().all(|b| b.is_ascii_graphic()) =>
+            Self::Service(ServiceCredential::Account { login, secret })
+                if provider_id == "anthropic"
+                    && !login.trim().is_empty()
+                    && secret
+                        .strip_prefix("sk-ant-oat01-")
+                        .is_some_and(|token| !token.is_empty())
+                    && (1..=8192).contains(&secret.len())
+                    && secret.bytes().all(|b| b.is_ascii_graphic()) =>
             {
-                Some(access_token)
+                Some(secret)
             }
             Self::ExplicitHeaders { headers, .. } if headers.len() == 1 => {
                 let (name, value) = headers.first_key_value()?;
@@ -141,8 +132,8 @@ fn valid_model_id(id: &str) -> bool {
 }
 
 impl Provider {
-    fn describe(&self, id: &str) -> Result<Option<ProviderInfo<'_>>, &'static str> {
-        let Some(base_url) = self.endpoint(id)? else {
+    fn describe(&self, provider_id: &str) -> Result<Option<ProviderInfo<'_>>, &'static str> {
+        let Some(base_url) = self.endpoint(provider_id)? else {
             return Ok(None);
         };
         if self.models.iter().any(|m| !valid_model_id(m)) {
@@ -162,7 +153,7 @@ impl Provider {
                     id.as_str(),
                     CredentialInfo {
                         kind: value.value.kind(),
-                        configured: value.value.authentication().is_some(),
+                        configured: value.value.authentication(provider_id).is_some(),
                     },
                 ))
             })
@@ -273,7 +264,7 @@ impl Catalog {
             self.provider_credential(&selection.provider, &selection.credential)?;
         let authentication = credential
             .value
-            .authentication()
+            .authentication(&selection.provider)
             .ok_or("This credential cannot authenticate model requests.")?;
         if selection.model.trim().is_empty() {
             return Err("Enter a model name.");
@@ -285,7 +276,7 @@ impl Catalog {
             authentication,
             bearer: matches!(
                 credential.value,
-                Credential::Service(ServiceCredential::Oauth { .. })
+                Credential::Service(ServiceCredential::Account { .. })
             ),
             proxy: credential.proxy.as_ref(),
             model: &selection.model,

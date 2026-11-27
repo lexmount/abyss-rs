@@ -40,7 +40,7 @@ The worker serializes updates, writes a private temporary file, flushes it, atom
 
 A credential may include `proxy`, with `protocol` (`http`, `https` or `socks5`), `host`, `port` and optional paired `username` and `password`. A selected HTTP model request or WebSocket upgrade uses this hop even when the provider hostname stays the same. An unavailable selected proxy fails that exchange. Credentials without a proxy retain the broker route. Other client traffic and initial protocol negotiation use the broker network configuration. Configure its upstream as well when the entire client must use a proxy. Remote model discovery also uses the selected credential's proxy.
 
-The `oauth` credential carries an `account_id` and a current `access_token`. Import a fresh access token when it expires. Account passwords retain their existing meaning. Management status excludes account and proxy secrets.
+For a Claude subscription, import `{"kind":"account","login":"<claude-account-id>","secret":"<current-access-token>"}` under the `anthropic` provider. The adapter recognizes Claude subscription access tokens beginning with `sk-ant-oat01-`. Model discovery and inference use the token as a bearer credential. Import a fresh token when it expires. Management status excludes account and proxy secrets.
 
 The worker's protocol tests cover REST requests, restart recovery and a selected inference request with the durable file removed. The CLI black box covers local and HTTP imports, SSO origin checks and commands issued while only the running worker is available. The desktop consumer documents installer integration in its [companion design](https://github.com/lexmount/AbyssApp/blob/task/optimize-model-route/docs/optimize-model-route.md).
 
