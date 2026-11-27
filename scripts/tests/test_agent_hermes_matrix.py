@@ -263,6 +263,28 @@ class HermesVerificationTests(unittest.TestCase):
         self.assertEqual(report["status"], "pass", report["failed_checks"])
         self.assertEqual(report["usage"]["native"]["input_tokens"], 30)
 
+    def test_responses_proof_split_at_message_boundary(self):
+        self.case = MatrixCatalog().cases(
+            harness="hermes", provider="openai", model=self.case.model, protocol="responses"
+        )[0]
+        response = self.events[-1]["conversation"]
+        response["entries"] = [
+            {"role": "assistant", "item_id": "a", "text": "no"},
+            {"role": "reasoning", "text": "internal"},
+            {"role": "assistant", "item_id": "b", "text": "n"},
+            {"role": "assistant", "item_id": "b", "text": "ce marker"},
+        ]
+        self.native.final_text = self.native.turns[-1]["text"] = "no\nnce marker"
+        self.assertEqual(self.verify()["failed_checks"], [])
+
+        self.native.final_text = self.native.turns[-1]["text"] = "non\nce marker"
+        failures = self.verify()["failed_checks"]
+        self.assertIn("three_native_user_turns", failures)
+        self.assertIn("native_final_answer", failures)
+
+        response["entries"][0]["role"] = "reasoning"
+        self.assertIn("three_captured_user_turns", self.verify()["failed_checks"])
+
     def test_merged_turns_and_history_only_answers_fail(self):
         for mutate in ("merge", "missing_answer", "wrong_session", "usage"):
             events = copy.deepcopy(self.events)

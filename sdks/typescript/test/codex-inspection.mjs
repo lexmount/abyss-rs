@@ -31,7 +31,7 @@ const close = await new BrokerPlugin({
         harness: context.harness?.id,
         host: context.destination_host,
         server_name: context.server_name,
-        source_process_absent: context.source_process === null,
+        source_pid: context.source_process?.pid ?? null,
         parsing_status: context.parsing_status,
         model: context.agent?.model,
         protocol: context.agent?.protocol,

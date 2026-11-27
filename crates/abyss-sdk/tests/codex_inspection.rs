@@ -45,7 +45,7 @@ impl Evidence {
                 "kind": "inspection", "case": case, "request_id": context.request_id,
                 "harness": context.harness.as_ref().map(|harness| &harness.id),
                 "host": context.destination_host, "server_name": context.server_name,
-                "source_process_absent": context.source_process.is_none(),
+                "source_pid": context.source_process.as_ref().and_then(|process| process.pid),
                 "parsing_status": context.parsing_status,
                 "model": agent.and_then(|agent| agent.model.as_ref()),
                 "protocol": agent.map(|agent| &agent.protocol),

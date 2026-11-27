@@ -98,7 +98,7 @@ class RequestDecision:
 
 @dataclass(frozen=True)
 class RequestSourceProcess:
-    """Available OS metadata; explicit proxy clients have no source process."""
+    """OS metadata for the source process. Identifiable loopback clients supply a PID."""
 
     pid: Optional[int]
     pid_version: Optional[int]

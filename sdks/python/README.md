@@ -24,7 +24,8 @@ plugin connection. See the [request inspection example](examples/request_inspect
 inspector configuration is needed. Event observation is an independent capability.
 Use the complete decoded body/JSON and parsing status as well as the normalized
 Agent projection when implementing a policy; unknown protocols still reach the
-handler. Credential headers are omitted and explicit proxy process fields are absent.
+handler. Credential headers are omitted. For a recognized harness using the loopback
+proxy, the broker includes the client PID when the OS identifies the socket owner.
 Return a safe block reason that does not contain the rejected content.
 
 Plugins run in registration order, and each sees earlier accepted modifications.
