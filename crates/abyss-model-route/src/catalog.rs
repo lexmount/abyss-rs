@@ -5,7 +5,7 @@ pub use discovery::{ListedModel, ModelListRequest};
 
 use std::collections::{BTreeMap, BTreeSet};
 
-use abyss_sdk::plugin::AccountProxy;
+use abyss_sdk::plugin::{AccountProxy, AuthTokenScheme};
 use serde::{Deserialize, Serialize};
 
 #[derive(Clone, Deserialize, Serialize, Default)]
@@ -226,7 +226,7 @@ pub struct Selection {
 pub struct SelectedRoute<'a> {
     pub base_url: &'a str,
     pub authentication: &'a str,
-    pub bearer: bool,
+    pub auth_scheme: AuthTokenScheme,
     pub proxy: Option<&'a AccountProxy>,
     pub model: &'a str,
 }
@@ -274,10 +274,10 @@ impl Catalog {
                 .endpoint(&selection.provider)?
                 .ok_or("Provider endpoint unavailable.")?,
             authentication,
-            bearer: matches!(
-                credential.value,
-                Credential::Service(ServiceCredential::Account { .. })
-            ),
+            auth_scheme: match credential.value {
+                Credential::Service(ServiceCredential::Account { .. }) => AuthTokenScheme::Bearer,
+                _ => AuthTokenScheme::Existing,
+            },
             proxy: credential.proxy.as_ref(),
             model: &selection.model,
         })

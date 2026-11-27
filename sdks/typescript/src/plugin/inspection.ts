@@ -14,9 +14,12 @@ export type ModifyAction =
         readonly password?: string;
       };
     }
-  | { readonly op: "set_bearer_token"; readonly value: string }
   | { readonly op: "set_request_path"; readonly value: string }
-  | { readonly op: "set_auth_token"; readonly value: string }
+  | {
+      readonly op: "set_auth_token";
+      readonly value: string;
+      readonly scheme?: "existing" | "bearer";
+    }
   | { readonly op: "remove_auth_token" }
   | { readonly op: "set_model"; readonly value: string }
   | { readonly op: "remove_model" };

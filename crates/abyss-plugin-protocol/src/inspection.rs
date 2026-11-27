@@ -182,29 +182,60 @@ pub struct InspectResponse {
     pub decision: RequestDecision,
 }
 
+/// HTTP credential scheme used when replacing a model-service token.
+#[derive(Default, PartialEq, Eq, Deserialize, Serialize)]
+#[serde(rename_all = "snake_case")]
+#[non_exhaustive]
+pub enum AuthTokenScheme {
+    /// Keep the request's detected authentication header and scheme.
+    #[default]
+    Existing,
+    /// Use the Authorization header with the Bearer scheme.
+    Bearer,
+}
+
+impl AuthTokenScheme {
+    const fn is_existing(&self) -> bool {
+        matches!(self, Self::Existing)
+    }
+}
+
+// Single-value actions keep the public {"op": ..., "value": ...} wire shape.
+fn serialize_action_value<T: Serialize, S: Serializer>(
+    value: &T,
+    serializer: S,
+) -> Result<S::Ok, S::Error> {
+    let mut action = serializer.serialize_struct("ActionValue", 1)?;
+    action.serialize_field("value", value)?;
+    action.end()
+}
+
 /// Semantic edits supported by the broker; values are never included in Debug.
 #[derive(Serialize, PartialEq, Eq)]
-#[serde(
-    tag = "op",
-    content = "value",
-    rename_all = "snake_case",
-    deny_unknown_fields
-)]
+#[serde(tag = "op", rename_all = "snake_case")]
 #[non_exhaustive]
 pub enum ModifyAction {
     /// Select the next hostname for this HTTP request using its existing network route.
+    #[serde(serialize_with = "serialize_action_value")]
     SetUpstreamHost(String),
-    /// Replace the original credential carrier with OAuth bearer authentication.
-    SetBearerToken(String),
     /// Use a private next hop for this HTTP exchange.
+    #[serde(serialize_with = "serialize_action_value")]
     SetAccountProxy(AccountProxy),
     /// Replace the HTTP path, preserving the authority and query.
+    #[serde(serialize_with = "serialize_action_value")]
     SetRequestPath(String),
-    /// Set the credential selected by the target's authentication binding.
-    SetAuthToken(String),
+    /// Replace the writable credential using the selected scheme.
+    SetAuthToken {
+        /// Raw credential, without a scheme prefix.
+        value: String,
+        /// Omit the scheme on the wire to retain the detected binding.
+        #[serde(skip_serializing_if = "AuthTokenScheme::is_existing")]
+        scheme: AuthTokenScheme,
+    },
     /// Remove the selected credential.
     RemoveAuthToken,
     /// Set the requested model without changing the target or protocol.
+    #[serde(serialize_with = "serialize_action_value")]
     SetModel(String),
     /// Remove the model member, including an explicit null.
     RemoveModel,
@@ -219,21 +250,31 @@ impl<'de> Deserialize<'de> for ModifyAction {
             reason = "serde unit variants ignore extra fields; empty struct variants enforce the wire schema"
         )]
         enum WireAction {
-            SetUpstreamHost { value: String },
-            SetBearerToken { value: String },
-            SetAccountProxy { value: AccountProxy },
-            SetRequestPath { value: String },
-            SetAuthToken { value: String },
+            SetUpstreamHost {
+                value: String,
+            },
+            SetAccountProxy {
+                value: AccountProxy,
+            },
+            SetRequestPath {
+                value: String,
+            },
+            SetAuthToken {
+                value: String,
+                #[serde(default)]
+                scheme: AuthTokenScheme,
+            },
             RemoveAuthToken {},
-            SetModel { value: String },
+            SetModel {
+                value: String,
+            },
             RemoveModel {},
         }
         Ok(match WireAction::deserialize(deserializer)? {
             WireAction::SetAccountProxy { value } => Self::SetAccountProxy(value),
-            WireAction::SetBearerToken { value } => Self::SetBearerToken(value),
             WireAction::SetUpstreamHost { value } => Self::SetUpstreamHost(value),
             WireAction::SetRequestPath { value } => Self::SetRequestPath(value),
-            WireAction::SetAuthToken { value } => Self::SetAuthToken(value),
+            WireAction::SetAuthToken { value, scheme } => Self::SetAuthToken { value, scheme },
             WireAction::RemoveAuthToken {} => Self::RemoveAuthToken,
             WireAction::SetModel { value } => Self::SetModel(value),
             WireAction::RemoveModel {} => Self::RemoveModel,
@@ -245,10 +286,9 @@ impl std::fmt::Debug for ModifyAction {
     fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         formatter.write_str(match self {
             Self::SetAccountProxy(_) => "SetAccountProxy(<redacted>)",
-            Self::SetBearerToken(_) => "SetBearerToken(<redacted>)",
             Self::SetUpstreamHost(_) => "SetUpstreamHost(<redacted>)",
             Self::SetRequestPath(_) => "SetRequestPath(<redacted>)",
-            Self::SetAuthToken(_) => "SetAuthToken(<redacted>)",
+            Self::SetAuthToken { .. } => "SetAuthToken(<redacted>)",
             Self::RemoveAuthToken => "RemoveAuthToken",
             Self::SetModel(_) => "SetModel(<redacted>)",
             Self::RemoveModel => "RemoveModel",
@@ -330,6 +370,7 @@ mod tests {
             json!({"action":"allow"}),
             json!({"action":"block","reason":"policy"}),
             json!({"action":"modify","actions":[]}),
+            json!({"action":"modify","actions":[{"op":"set_auth_token","value":"private-token","scheme":"bearer"}]}),
             json!({"action":"modify","actions":[{"op":"set_auth_token","value":"private-token"},{"op":"remove_auth_token"},{"op":"set_model","value":"new"},{"op":"remove_model"}]}),
         ] {
             let decision: RequestDecision = serde_json::from_value(value.clone()).unwrap();
@@ -341,6 +382,8 @@ mod tests {
             json!({"action":"block"}),
             json!({"action":"modify","actions":[{"op":"set_auth_token"}]}),
             json!({"action":"modify","actions":[{"op":"set_auth_token","value":null}]}),
+            json!({"action":"modify","actions":[{"op":"set_auth_token","value":"test","scheme":"unknown"}]}),
+            json!({"action":"modify","actions":[{"op":"set_model","value":"test","scheme":"bearer"}]}),
             json!({"action":"modify","actions":[{"op":"remove_model","value":"bad"}]}),
             json!({"action":"modify","actions":[{"op":"remove_model","value":null}]}),
             json!({"action":"modify","actions":[{"op":"replace_body","value":"bad"}]}),

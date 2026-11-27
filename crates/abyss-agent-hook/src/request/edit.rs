@@ -2,7 +2,7 @@
 //! Explicit transport edits and protocol write-backs are applied in plugin order.
 
 use abyss_mitm::{RequestEditor, RequestTransport, RequestView};
-use abyss_plugin_protocol::inspection::{AgentRequestContext, ModifyAction};
+use abyss_plugin_protocol::inspection::{AgentRequestContext, AuthTokenScheme, ModifyAction};
 use serde_json::Value;
 
 use super::auth::AuthBinding;
@@ -137,25 +137,23 @@ impl RequestActions {
                 ModifyAction::SetAccountProxy(proxy) => request
                     .set_account_proxy(&proxy)
                     .map_err(|_| RequestActionError::InvalidProxy)?,
-                ModifyAction::SetBearerToken(token) => {
-                    let old = self.writable_auth()?;
-                    let value = AuthBinding::Bearer
-                        .encode(&token)
-                        .map_err(|_| RequestActionError::InvalidToken)?;
-                    let headers = request.headers_mut();
-                    headers.remove(old.header());
-                    headers.insert(AuthBinding::Bearer.header(), value);
-                    self.auth = Some(AuthBinding::Bearer);
-                }
                 ModifyAction::SetRequestPath(path) => request
                     .set_request_path(&path)
                     .map_err(|_| RequestActionError::InvalidPath)?,
-                ModifyAction::SetAuthToken(token) => {
-                    let binding = self.writable_auth()?;
-                    let value = binding
-                        .encode(&token)
+                ModifyAction::SetAuthToken { value, scheme } => {
+                    let old = self.writable_auth()?;
+                    let binding = match scheme {
+                        AuthTokenScheme::Existing => old,
+                        AuthTokenScheme::Bearer => AuthBinding::Bearer,
+                        _ => return Err(RequestActionError::UnsupportedAction),
+                    };
+                    let encoded = binding
+                        .encode(&value)
                         .map_err(|_| RequestActionError::InvalidToken)?;
-                    request.headers_mut().insert(binding.header(), value);
+                    let headers = request.headers_mut();
+                    headers.remove(old.header());
+                    headers.insert(binding.header(), encoded);
+                    self.auth = Some(binding);
                 }
                 ModifyAction::RemoveAuthToken => {
                     let binding = self.writable_auth()?;

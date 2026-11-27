@@ -21,7 +21,6 @@ class ModifyAction:
     op: Literal[
         "set_upstream_host",
         "set_account_proxy",
-        "set_bearer_token",
         "set_request_path",
         "set_auth_token",
         "remove_auth_token",
@@ -29,6 +28,7 @@ class ModifyAction:
         "remove_model",
     ]
     value: Union[str, dict[str, Any], None] = field(default=None, repr=False)
+    scheme: Literal["existing", "bearer"] = "existing"
 
     @classmethod
     def set_upstream_host(cls, host: str) -> "ModifyAction":
@@ -39,16 +39,14 @@ class ModifyAction:
         return cls("set_account_proxy", dict(settings))
 
     @classmethod
-    def set_bearer_token(cls, token: str) -> "ModifyAction":
-        return cls("set_bearer_token", token)
-
-    @classmethod
     def set_request_path(cls, path: str) -> "ModifyAction":
         return cls("set_request_path", path)
 
     @classmethod
-    def set_auth_token(cls, token: str) -> "ModifyAction":
-        return cls("set_auth_token", token)
+    def set_auth_token(
+        cls, token: str, *, scheme: Literal["existing", "bearer"] = "existing"
+    ) -> "ModifyAction":
+        return cls("set_auth_token", token, scheme)
 
     @classmethod
     def remove_auth_token(cls) -> "ModifyAction":
@@ -63,6 +61,8 @@ class ModifyAction:
         return cls("remove_model")
 
     def to_dict(self) -> dict[str, Any]:
+        if self.op == "set_auth_token" and self.scheme != "existing":
+            return {"op": self.op, "value": self.value, "scheme": self.scheme}
         if self.op not in ("remove_auth_token", "remove_model"):
             return {"op": self.op, "value": self.value}
         return {"op": self.op}

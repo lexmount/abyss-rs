@@ -1,7 +1,7 @@
 //! Semantic writes preserve provider documents and selected credential carriers.
 
 use abyss_mitm::{RequestEditor, RequestTransport};
-use abyss_plugin_protocol::inspection::ModifyAction;
+use abyss_plugin_protocol::inspection::{AuthTokenScheme, ModifyAction};
 use serde_json::json;
 
 use super::*;
@@ -57,7 +57,10 @@ fn ordered_actions_preserve_unknown_fields_and_remove_null_models() {
                     ModifyAction::SetModel("first".into()),
                     ModifyAction::RemoveModel,
                     ModifyAction::SetModel("last".into()),
-                    ModifyAction::SetAuthToken("secret".into()),
+                    ModifyAction::SetAuthToken {
+                        value: "secret".into(),
+                        scheme: AuthTokenScheme::Existing,
+                    },
                 ]),
             )
             .unwrap();
@@ -123,7 +126,10 @@ fn authentication_binding_uses_carrier_or_known_host_without_guessing_from_proto
         let mut actions = RequestActions::new(&request.view());
         let result = actions.apply(
             &mut request,
-            Box::new([ModifyAction::SetAuthToken("allocated".into())]),
+            Box::new([ModifyAction::SetAuthToken {
+                value: "allocated".into(),
+                scheme: AuthTokenScheme::Existing,
+            }]),
         );
         assert_eq!(result.is_ok(), writable, "{host} {header:?}");
         if writable {
@@ -157,7 +163,10 @@ fn authentication_binding_uses_carrier_or_known_host_without_guessing_from_proto
             actions
                 .apply(
                     &mut request,
-                    Box::new([ModifyAction::SetAuthToken("again".into())]),
+                    Box::new([ModifyAction::SetAuthToken {
+                        value: "again".into(),
+                        scheme: AuthTokenScheme::Existing,
+                    }]),
                 )
                 .unwrap();
             assert!(
@@ -190,7 +199,10 @@ fn websocket_edits_preserve_envelope_and_cannot_change_connection_token() {
     assert!(matches!(
         actions.apply(
             &mut request,
-            Box::new([ModifyAction::SetAuthToken("private".into())])
+            Box::new([ModifyAction::SetAuthToken {
+                value: "private".into(),
+                scheme: AuthTokenScheme::Existing
+            }])
         ),
         Err(RequestActionError::AuthenticationUnavailable)
     ));
@@ -204,7 +216,10 @@ fn invalid_tokens_have_value_free_errors() {
     let error = actions
         .apply(
             &mut request,
-            Box::new([ModifyAction::SetAuthToken("private\r\ninjected".into())]),
+            Box::new([ModifyAction::SetAuthToken {
+                value: "private\r\ninjected".into(),
+                scheme: AuthTokenScheme::Existing,
+            }]),
         )
         .unwrap_err();
     assert!(!error.to_string().contains("private"));
@@ -345,7 +360,10 @@ fn account_bearer_replaces_original_api_key_and_becomes_the_writable_binding() {
     actions
         .apply(
             &mut request,
-            Box::new([ModifyAction::SetBearerToken("assigned-fixture".into())]),
+            Box::new([ModifyAction::SetAuthToken {
+                value: "assigned-fixture".into(),
+                scheme: AuthTokenScheme::Bearer,
+            }]),
         )
         .unwrap();
     assert_eq!(
@@ -356,7 +374,10 @@ fn account_bearer_replaces_original_api_key_and_becomes_the_writable_binding() {
     actions
         .apply(
             &mut request,
-            Box::new([ModifyAction::SetAuthToken("rotated-fixture".into())]),
+            Box::new([ModifyAction::SetAuthToken {
+                value: "rotated-fixture".into(),
+                scheme: AuthTokenScheme::Existing,
+            }]),
         )
         .unwrap();
     assert_eq!(

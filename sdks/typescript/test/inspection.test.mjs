@@ -15,6 +15,7 @@ for (const decision of [
     action: "modify",
     actions: [
       { op: "set_auth_token", value: "allocated" },
+      { op: "set_auth_token", value: "subscription", scheme: "bearer" },
       { op: "remove_auth_token" },
       { op: "set_model", value: "new" },
       { op: "remove_model" },

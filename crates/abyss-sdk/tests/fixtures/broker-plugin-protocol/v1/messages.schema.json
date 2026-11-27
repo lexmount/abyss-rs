@@ -260,6 +260,12 @@
                           },
                           "value": {
                             "type": "string"
+                          },
+                          "scheme": {
+                            "enum": [
+                              "existing",
+                              "bearer"
+                            ]
                           }
                         }
                       },
@@ -300,22 +306,6 @@
                         "properties": {
                           "op": {
                             "const": "remove_model"
-                          }
-                        }
-                      },
-                      {
-                        "type": "object",
-                        "additionalProperties": false,
-                        "required": [
-                          "op",
-                          "value"
-                        ],
-                        "properties": {
-                          "op": {
-                            "const": "set_bearer_token"
-                          },
-                          "value": {
-                            "type": "string"
                           }
                         }
                       },

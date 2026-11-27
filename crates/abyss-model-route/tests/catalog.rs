@@ -183,9 +183,8 @@ fn selected_account_delivers_its_own_proxy_and_redacts_both_secrets() {
                 .iter()
                 .any(|a| a["op"] == "set_account_proxy" && a["value"]["port"] == port)
         );
-        assert!(
-            actions.iter().any(|a| a["op"] == "set_bearer_token"
-                && a["value"] == format!("sk-ant-oat01-fixture-{id}"))
-        );
+        assert!(actions.iter().any(|a| a["op"] == "set_auth_token"
+            && a["scheme"] == "bearer"
+            && a["value"] == format!("sk-ant-oat01-fixture-{id}")));
     }
 }

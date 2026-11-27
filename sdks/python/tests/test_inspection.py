@@ -34,6 +34,7 @@ class InspectionTests(unittest.TestCase):
         decision = RequestDecision.modify(
             [
                 ModifyAction.set_auth_token("fixture-token"),
+                ModifyAction.set_auth_token("fixture-token", scheme="bearer"),
                 ModifyAction.remove_auth_token(),
                 ModifyAction.set_model("example-model"),
                 ModifyAction.remove_model(),
