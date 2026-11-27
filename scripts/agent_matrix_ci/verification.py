@@ -3,7 +3,9 @@
 from __future__ import annotations
 
 import json
-from collections import Counter
+from collections import Counter, defaultdict
+from collections.abc import Iterator
+from itertools import groupby
 
 from scripts.agent_e2e_ci.usage import UsageAccounting
 
@@ -29,9 +31,25 @@ class MatrixVerifier:
         checks["client_completed"] = (
             exit_code == 0 and not timed_out and native.completed and not native.errors
         )
-        checks["native_final_answer"] = (
-            marker in native.final_text and nonce in native.final_text
-        )
+        # Only response events prove an answer. A request can replay earlier replies.
+        answers_by_turn = defaultdict(set)
+        hermes_responses = case.harness == "hermes" and case.protocol == "responses"
+        for event in events:
+            if event.get("event_type") != "response":
+                continue
+            turn = (event.get("location") or {}).get("turn")
+            for wire_text, display_text in MatrixVerifier._assistant_replies(
+                event, hermes_responses
+            ):
+                if marker in wire_text and nonce in wire_text:
+                    answers_by_turn[turn].add(display_text)
+
+        def native_answer(text: str, turn: int) -> bool:
+            return (marker in text and nonce in text) or text in answers_by_turn.get(
+                turn, ()
+            )
+
+        checks["native_final_answer"] = native_answer(native.final_text, len(native.turns))
         checks["native_tool_result"] = any(
             nonce in output for output in native.tool_outputs
         )
@@ -99,9 +117,7 @@ class MatrixVerifier:
             entry.get("role") == "tool_result" and nonce in entry.get("text", "")
             for entry in entries
         )
-        checks["captured_final_answer"] = any(
-            MatrixVerifier._answers(event, marker, nonce) for event in events
-        )
+        checks["captured_final_answer"] = bool(answers_by_turn)
         checks["complete_conversation"] = bool(events) and all(
             (e.get("conversation") or {}).get("completeness")
             == "complete"
@@ -135,22 +151,15 @@ class MatrixVerifier:
             checks["three_native_user_turns"] = len(native.turns) == 3 and all(
                 turn["completed"]
                 and turn["session_id"] == native.session_id
-                and marker in turn["text"]
-                and nonce in turn["text"]
-                for turn in native.turns
+                and native_answer(turn["text"], index)
+                for index, turn in enumerate(native.turns, 1)
             )
             checks["resumed_memory_without_tools"] = len(native.turns) == 3 and all(
                 turn["tool_results"] == 0 for turn in native.turns[1:]
             )
             turns = [(e.get("location") or {}).get("turn") for e in events]
-            checks["three_captured_user_turns"] = set(turns) == {1, 2, 3} and all(
-                any(
-                    event.get("event_type") == "response"
-                    and turn == index
-                    and MatrixVerifier._answers(event, marker, nonce)
-                    for event, turn in zip(events, turns)
-                )
-                for index in (1, 2, 3)
+            checks["three_captured_user_turns"] = (
+                set(turns) == set(answers_by_turn) == {1, 2, 3}
             )
         checks["healthy_services"] = healthy
         checks["empty_delivery_spool"] = spool_empty
@@ -187,14 +196,28 @@ class MatrixVerifier:
         }
 
     @staticmethod
-    def _answers(event: dict, marker: str, nonce: str) -> bool:
-        """Whether one assistant entry of the event carries both proofs."""
-        return any(
-            entry.get("role") == "assistant"
-            and marker in entry.get("text", "")
-            and nonce in entry.get("text", "")
+    def _assistant_replies(
+        event: dict, hermes_responses: bool
+    ) -> Iterator[tuple[str, str]]:
+        """Yield wire text and its native display form within a single response."""
+        entries = [
+            entry
             for entry in (event.get("conversation") or {}).get("entries", [])
-        )
+            if entry.get("role") == "assistant"
+        ]
+        if hermes_responses:
+            # Hermes concatenates text parts within one Responses message, then
+            # strips each message and inserts a newline between message items.
+            messages = [
+                "".join(entry.get("text", "") for entry in parts)
+                for _, parts in groupby(entries, key=lambda entry: entry.get("item_id"))
+            ]
+            display_text = "\n".join(msg.strip() for msg in messages if msg.strip())
+            yield "".join(messages), display_text
+        else:
+            for entry in entries:
+                text = entry.get("text", "")
+                yield text, text
 
 
 class SecretRedactor:

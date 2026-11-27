@@ -39,7 +39,7 @@ class Evidence:
                     "harness": context.harness.id if context.harness else None,
                     "host": context.destination_host,
                     "server_name": context.server_name,
-                    "source_process_absent": context.source_process is None,
+                    "source_pid": context.source_process.pid if context.source_process else None,
                     "parsing_status": context.parsing_status,
                     "model": agent.model if agent else None,
                     "protocol": agent.protocol if agent else None,

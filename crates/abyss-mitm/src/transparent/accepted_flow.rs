@@ -29,6 +29,7 @@ pub(super) enum UpstreamConnection {
     Proxied {
         proxy: crate::outbound::UpstreamProxy,
         target: crate::TargetAuthority,
+        request_hop: Option<super::RequestProxyHop>,
     },
 }
 
@@ -71,7 +72,13 @@ impl UpstreamConnection {
             }
         })?;
         Ok(match self {
-            Self::Proxied { proxy, .. } => Self::Proxied { proxy, target },
+            Self::Proxied {
+                proxy, request_hop, ..
+            } => Self::Proxied {
+                proxy,
+                target,
+                request_hop,
+            },
             Self::Direct {
                 excluded_listener, ..
             } => Self::Direct {
@@ -91,7 +98,12 @@ impl UpstreamConnection {
         self,
         server_name: Option<&str>,
     ) -> Result<Self, TransparentFlowError> {
-        if let Self::Proxied { proxy, target } = self {
+        if let Self::Proxied {
+            proxy,
+            target,
+            request_hop,
+        } = self
+        {
             let target = match server_name {
                 Some(name) if target.host().as_ip_addr().is_some() => {
                     crate::TargetAuthority::from_host_port(name, target.port()).map_err(|_| {
@@ -106,7 +118,11 @@ impl UpstreamConnection {
                 }
                 _ => target,
             };
-            Ok(Self::Proxied { proxy, target })
+            Ok(Self::Proxied {
+                proxy,
+                target,
+                request_hop,
+            })
         } else {
             Ok(self)
         }
@@ -136,7 +152,11 @@ impl AcceptedTcpFlow {
         proxy: crate::outbound::UpstreamProxy,
         target: crate::TargetAuthority,
     ) -> Self {
-        self.upstream = UpstreamConnection::Proxied { proxy, target };
+        self.upstream = UpstreamConnection::Proxied {
+            proxy,
+            target,
+            request_hop: None,
+        };
         self
     }
 

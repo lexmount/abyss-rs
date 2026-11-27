@@ -95,7 +95,7 @@ class CodexSdkEvidenceTests(unittest.TestCase):
             "agent_has_marker": True,
             "json_has_marker": True,
             "credential_headers_absent": True,
-            "source_process_absent": True,
+            "source_pid": 42,
             "allow": False,
         }
         self.assertEqual(validate_context([call], "block", "test-model"), 1)
@@ -104,6 +104,9 @@ class CodexSdkEvidenceTests(unittest.TestCase):
             ("parsing_status", "unknown_protocol"),
             ("credential_headers_absent", False),
             ("server_name", None),
+            ("source_pid", None),
+            ("source_pid", 0),
+            ("source_pid", True),
             ("allow", True),
         ):
             with self.subTest(field=field), self.assertRaises(AssertionError):

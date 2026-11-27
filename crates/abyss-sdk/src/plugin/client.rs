@@ -475,12 +475,15 @@ mod tests {
 
     #[cfg(unix)]
     fn handler_decisions() -> [crate::plugin::RequestDecision; 3] {
-        use crate::plugin::{ModifyAction, RequestDecision};
+        use crate::plugin::{AuthTokenScheme, ModifyAction, RequestDecision};
         [
             RequestDecision::Allow,
             RequestDecision::Block("test policy".to_owned()),
             RequestDecision::Modify(Box::new([
-                ModifyAction::SetAuthToken("allocated".to_owned()),
+                ModifyAction::SetAuthToken {
+                    value: "allocated".to_owned(),
+                    scheme: AuthTokenScheme::Existing,
+                },
                 ModifyAction::RemoveAuthToken,
                 ModifyAction::SetModel("new".to_owned()),
                 ModifyAction::RemoveModel,

@@ -2,7 +2,7 @@
 //! Explicit transport edits and protocol write-backs are applied in plugin order.
 
 use abyss_mitm::{RequestEditor, RequestTransport, RequestView};
-use abyss_plugin_protocol::inspection::{AgentRequestContext, ModifyAction};
+use abyss_plugin_protocol::inspection::{AgentRequestContext, AuthTokenScheme, ModifyAction};
 use serde_json::Value;
 
 use super::auth::AuthBinding;
@@ -15,6 +15,9 @@ pub enum RequestActionError {
     /// The next host is invalid or the connection has already upgraded.
     #[error("Invalid upstream host action")]
     InvalidUpstreamHost,
+    /// Invalid upstream proxy assignment.
+    #[error("Invalid upstream proxy action")]
+    InvalidProxy,
     /// The path is malformed or the HTTP handshake is already complete.
     #[error("Invalid HTTP request path action")]
     InvalidPath,
@@ -121,7 +124,7 @@ impl RequestActions {
     /// # Errors
     /// Returns a value-free error for unavailable or malformed actions.
     pub fn apply(
-        &self,
+        &mut self,
         request: &mut RequestEditor<'_>,
         actions: Box<[ModifyAction]>,
     ) -> Result<(), RequestActionError> {
@@ -131,15 +134,36 @@ impl RequestActions {
                 ModifyAction::SetUpstreamHost(host) => request
                     .set_upstream_host(&host)
                     .map_err(|_| RequestActionError::InvalidUpstreamHost)?,
+                ModifyAction::SetUpstreamProxy(settings) => {
+                    settings
+                        .validate()
+                        .map_err(|_| RequestActionError::InvalidProxy)?;
+                    let proxy = abyss_mitm::outbound::UpstreamProxy::from_endpoint(
+                        settings.endpoint(),
+                        settings.username.zip(settings.password),
+                    )
+                    .map_err(|_| RequestActionError::InvalidProxy)?;
+                    request
+                        .set_upstream_proxy(proxy)
+                        .map_err(|_| RequestActionError::InvalidProxy)?;
+                }
                 ModifyAction::SetRequestPath(path) => request
                     .set_request_path(&path)
                     .map_err(|_| RequestActionError::InvalidPath)?,
-                ModifyAction::SetAuthToken(token) => {
-                    let binding = self.writable_auth()?;
-                    let value = binding
-                        .encode(&token)
+                ModifyAction::SetAuthToken { value, scheme } => {
+                    let old = self.writable_auth()?;
+                    let binding = match scheme {
+                        AuthTokenScheme::Existing => old,
+                        AuthTokenScheme::Bearer => AuthBinding::Bearer,
+                        _ => return Err(RequestActionError::UnsupportedAction),
+                    };
+                    let encoded = binding
+                        .encode(&value)
                         .map_err(|_| RequestActionError::InvalidToken)?;
-                    request.headers_mut().insert(binding.header(), value);
+                    let headers = request.headers_mut();
+                    headers.remove(old.header());
+                    headers.insert(binding.header(), encoded);
+                    self.auth = Some(binding);
                 }
                 ModifyAction::RemoveAuthToken => {
                     let binding = self.writable_auth()?;

@@ -117,7 +117,7 @@ enum RequestDecision {
 }
 
 enum ModifyAction {
-    SetAuthToken(String),
+    SetAuthToken { value: String, scheme: AuthTokenScheme },
     RemoveAuthToken,
     SetModel(String),
     RemoveModel,
@@ -129,7 +129,10 @@ fn agent_request(context: &AgentRequestContext) -> RequestDecision {
     }
 
     RequestDecision::Modify(
-        vec![ModifyAction::SetAuthToken("allocated-token".into())]
+        vec![ModifyAction::SetAuthToken {
+            value: "allocated-token".into(),
+            scheme: AuthTokenScheme::Existing,
+        }]
             .into_boxed_slice(),
     )
 }
@@ -239,7 +242,8 @@ Each `ModifyAction` has one wire form:
 
 | Rust variant | Action object |
 | --- | --- |
-| `SetAuthToken(token)` | `{"op":"set_auth_token","value":"allocated-token"}` |
+| `SetAuthToken { value, scheme: Existing }` | `{"op":"set_auth_token","value":"allocated-token"}` |
+| `SetAuthToken { value, scheme: Bearer }` | `{"op":"set_auth_token","value":"allocated-token","scheme":"bearer"}` |
 | `RemoveAuthToken` | `{"op":"remove_auth_token"}` |
 | `SetModel(model)` | `{"op":"set_model","value":"model-b"}` |
 | `RemoveModel` | `{"op":"remove_model"}` |
@@ -590,7 +594,7 @@ readiness before starting an Agent; this feature does not imply that guarantee.
 
 A credential plugin reads the target, available identity context, and current
 `context.auth_token`. It can preserve an existing token with Allow, or allocate a
-replacement and return `Modify([SetAuthToken(token)])` when auth actions are
+replacement and return `Modify([SetAuthToken { value: token, scheme: AuthTokenScheme::Existing }])` when auth actions are
 supported. Allocation failure can return Block. The SDK serializes the explicit
 action; the plugin does not change context, construct an Authorization header,
 or choose between HTTP and WebSocket mutation types.

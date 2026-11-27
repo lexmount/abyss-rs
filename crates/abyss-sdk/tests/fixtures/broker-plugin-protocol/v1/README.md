@@ -61,6 +61,10 @@ The v1 reply contains exactly one tagged `decision`:
 - `{"action":"block","reason":"safe explanation"}` rejects the request.
 - `{"action":"modify","actions":[...]}` applies explicit semantic actions.
 
+The `set_upstream_proxy` action sets the next hop for this HTTP request or WebSocket upgrade. Its value contains `protocol` (`http`, `https` or `socks5`), `host`, `port` and optionally both `username` and `password`.
+
+The `set_auth_token` action takes a raw token in `value` and an optional `scheme`. Omitting `scheme` or setting it to `"existing"` uses the detected credential header. For example, an incoming `x-api-key` stays an `x-api-key`. With `"scheme":"bearer"`, the broker removes the previous credential header and writes `Authorization: Bearer <value>`. Later actions use this binding. The action requires a writable credential and carries the token on the private inspection channel.
+
 The `set_upstream_host` action selects a DNS hostname for one HTTP request, HTTP/2
 stream or WebSocket upgrade. Scheme, port, path, query and the configured
 network next hop are retained. A new origin receives protocol headers; place
@@ -90,8 +94,7 @@ including its nested `response` form.
 
 `inspect_request.context` carries lossless decoded content (`utf8` text or base64
 binary), complete JSON when available, request-side Agent projection, Harness
-identity/declarations, and available process and destination metadata. Explicit
-proxy flows have `source_process: null`. Authorization, Proxy-Authorization, Cookie,
+identity/declarations, and available process and destination metadata. Recognized local explicit-proxy requests can carry the OS-verified client PID. Other explicit connections have `source_process: null`. Authorization, Proxy-Authorization, Cookie,
 Set-Cookie, provider API-key headers, ChatGPT-Account-Id and headers whose names
 contain `token` are omitted using the shared MITM credential-header predicate.
 `sequence` is 1 for HTTP and counts client data messages on a WebSocket flow;

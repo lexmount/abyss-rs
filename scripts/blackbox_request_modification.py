@@ -108,6 +108,26 @@ def checks(broker, origin, endpoint, proxy):
     finally:
         plugin.close()
 
+    for options, expected in [
+        ({}, b"x-api-key: auth-only-secret"),
+        ({"scheme": "bearer"}, b"authorization: bearer auth-only-secret"),
+    ]:
+        action = {"op": "set_auth_token", "value": "auth-only-secret", **options}
+        plugin = Plugin(endpoint, lambda _, action=action: modify(action))
+        try:
+            assert send(
+                broker,
+                original,
+                b"X-Api-Key: gateway-private\r\n",
+                host="gateway.invalid",
+            ).startswith(b"HTTP/1.1 200")
+            headers = origin.requests[-1].lower().split(b"\r\n")
+            assert [
+                h for h in headers if h.startswith((b"x-api-key:", b"authorization:"))
+            ] == [expected]
+        finally:
+            plugin.close()
+
     plugin = Plugin(
         endpoint, lambda _: modify({"op": "remove_auth_token"}, {"op": "remove_model"})
     )

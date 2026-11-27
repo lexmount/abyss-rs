@@ -4,8 +4,22 @@ import type { Conversation, EventPurpose, ImageAttachment } from "../event.js";
 
 export type ModifyAction =
   | { readonly op: "set_upstream_host"; readonly value: string }
+  | {
+      readonly op: "set_upstream_proxy";
+      readonly value: {
+        readonly protocol: "http" | "https" | "socks5";
+        readonly host: string;
+        readonly port: number;
+        readonly username?: string;
+        readonly password?: string;
+      };
+    }
   | { readonly op: "set_request_path"; readonly value: string }
-  | { readonly op: "set_auth_token"; readonly value: string }
+  | {
+      readonly op: "set_auth_token";
+      readonly value: string;
+      readonly scheme?: "existing" | "bearer";
+    }
   | { readonly op: "remove_auth_token" }
   | { readonly op: "set_model"; readonly value: string }
   | { readonly op: "remove_model" };

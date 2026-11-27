@@ -122,8 +122,14 @@ impl Routes {
         let mut actions = vec![
             ModifyAction::SetUpstreamHost(host.to_owned()),
             ModifyAction::SetRequestPath(format!("{prefix}{version}/{operation}")),
-            ModifyAction::SetAuthToken(route.authentication.to_owned()),
+            ModifyAction::SetAuthToken {
+                value: route.authentication.to_owned(),
+                scheme: route.auth_scheme,
+            },
         ];
+        if let Some(proxy) = route.proxy {
+            actions.push(ModifyAction::SetUpstreamProxy(proxy.clone()));
+        }
         if context.model_writable {
             actions.push(ModifyAction::SetModel(route.model.to_owned()));
         }
@@ -134,6 +140,7 @@ impl Routes {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use abyss_sdk::plugin::AuthTokenScheme;
 
     fn codex_call() -> AgentRequestContext {
         serde_json::from_value(json!({
@@ -204,7 +211,10 @@ mod tests {
             RequestDecision::Modify(Box::new([
                 ModifyAction::SetUpstreamHost("example.org".into()),
                 ModifyAction::SetRequestPath("/v1/responses".into()),
-                ModifyAction::SetAuthToken("fixture-rotated".into()),
+                ModifyAction::SetAuthToken {
+                    value: "fixture-rotated".into(),
+                    scheme: AuthTokenScheme::Existing
+                },
                 ModifyAction::SetModel("model-b".into())
             ]))
         );
@@ -238,7 +248,10 @@ mod tests {
             RequestDecision::Modify(Box::new([
                 ModifyAction::SetUpstreamHost("example.org".into()),
                 ModifyAction::SetRequestPath("/v1/responses".into()),
-                ModifyAction::SetAuthToken("fixture-rotated".into())
+                ModifyAction::SetAuthToken {
+                    value: "fixture-rotated".into(),
+                    scheme: AuthTokenScheme::Existing
+                }
             ]))
         );
         let empty = json!({"harness_providers":{},"providers":{}});

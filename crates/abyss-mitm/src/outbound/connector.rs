@@ -59,15 +59,25 @@ impl UpstreamProxyFactory {
         config: &UpstreamProxyConfig,
     ) -> Result<UpstreamProxy, UpstreamProxyConfigError> {
         config.validate()?;
+        self.prepare_with_credentials(config, config.load_credentials()?.as_ref())
+    }
+
+    fn prepare_with_credentials(
+        &self,
+        config: &UpstreamProxyConfig,
+        credentials: Option<&super::config::ProxyCredentials>,
+    ) -> Result<UpstreamProxy, UpstreamProxyConfigError> {
+        if let Some(credentials) = credentials {
+            credentials.validate(config.protocol)?;
+        }
         let endpoint = config.target()?;
         let transport = ProxyTransport::new(config, &endpoint)?;
-        let credentials = config.load_credentials()?;
         let handshake = match config.protocol {
             UpstreamProxyProtocol::HttpConnect => {
-                ProxyHandshake::Http(HttpConnectHandshake::new(credentials.as_ref()))
+                ProxyHandshake::Http(HttpConnectHandshake::new(credentials))
             }
             UpstreamProxyProtocol::Socks5 => {
-                ProxyHandshake::Socks5(Socks5Handshake::new(credentials.as_ref())?)
+                ProxyHandshake::Socks5(Socks5Handshake::new(credentials)?)
             }
             UpstreamProxyProtocol::Wireguard => {
                 ProxyHandshake::Wireguard(self.wireguard.load(config)?)
@@ -95,6 +105,42 @@ impl UpstreamProxy {
     /// Returns an error when the endpoint, timeouts, CA bundle or credentials are invalid.
     pub fn new(config: &UpstreamProxyConfig) -> Result<Self, UpstreamProxyConfigError> {
         UpstreamProxyFactory::default().prepare(config)
+    }
+
+    /// Creates an HTTP, HTTPS or SOCKS5 next hop with optional inline proxy credentials.
+    ///
+    /// # Errors
+    /// Rejects invalid URLs or credentials. No configuration files are read.
+    pub fn from_endpoint(
+        endpoint: String,
+        credentials: Option<(String, String)>,
+    ) -> Result<Self, UpstreamProxyConfigError> {
+        let protocol = match endpoint.split_once("://").map(|(scheme, _)| scheme) {
+            Some("http" | "https") => UpstreamProxyProtocol::HttpConnect,
+            Some("socks5") => UpstreamProxyProtocol::Socks5,
+            _ => return Err(UpstreamProxyConfigError("unsupported proxy URL scheme")),
+        };
+        let config = UpstreamProxyConfig {
+            protocol,
+            endpoint,
+            ca_file: None,
+            credentials_file: None,
+            wireguard_file: None,
+            connect_timeout_ms: super::config::default_timeout_ms(),
+            handshake_timeout_ms: super::config::default_timeout_ms(),
+        };
+        config.validate()?;
+        let credentials = credentials
+            .map(|(username, password)| super::config::ProxyCredentials { username, password });
+        UpstreamProxyFactory::default().prepare_with_credentials(&config, credentials.as_ref())
+    }
+
+    pub(crate) fn with_flow_constraints(mut self, original: &Self) -> Self {
+        self.socket_initializer
+            .clone_from(&original.socket_initializer);
+        self.excluded_endpoints
+            .clone_from(&original.excluded_endpoints);
+        self
     }
 
     /// Associates this flow's platform state with every next-hop socket before TCP connect.

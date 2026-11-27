@@ -353,9 +353,10 @@ def validate_context(rows, scenario, model):
             "agent_has_marker",
             "json_has_marker",
             "credential_headers_absent",
-            "source_process_absent",
         ):
             assert call[field] is True, f"{scenario}: context check failed: {field}"
+        pid = call["source_pid"]
+        assert type(pid) is int and pid > 0, f"{scenario}: missing local Codex client PID"
         assert call["allow"] == (scenario == "allow"), "wrong SDK decision"
     return len(calls)
 

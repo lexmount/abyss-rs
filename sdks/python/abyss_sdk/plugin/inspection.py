@@ -2,7 +2,7 @@
 
 from collections.abc import Iterable, Mapping
 from dataclasses import dataclass, field
-from typing import Any, Callable, Literal, Optional
+from typing import Any, Callable, Literal, Optional, Union
 
 from ..event import (
     Conversation,
@@ -20,25 +20,33 @@ class ModifyAction:
 
     op: Literal[
         "set_upstream_host",
+        "set_upstream_proxy",
         "set_request_path",
         "set_auth_token",
         "remove_auth_token",
         "set_model",
         "remove_model",
     ]
-    value: Optional[str] = field(default=None, repr=False)
+    value: Union[str, dict[str, Any], None] = field(default=None, repr=False)
+    scheme: Literal["existing", "bearer"] = "existing"
 
     @classmethod
     def set_upstream_host(cls, host: str) -> "ModifyAction":
         return cls("set_upstream_host", host)
 
     @classmethod
+    def set_upstream_proxy(cls, settings: Mapping[str, Any]) -> "ModifyAction":
+        return cls("set_upstream_proxy", dict(settings))
+
+    @classmethod
     def set_request_path(cls, path: str) -> "ModifyAction":
         return cls("set_request_path", path)
 
     @classmethod
-    def set_auth_token(cls, token: str) -> "ModifyAction":
-        return cls("set_auth_token", token)
+    def set_auth_token(
+        cls, token: str, *, scheme: Literal["existing", "bearer"] = "existing"
+    ) -> "ModifyAction":
+        return cls("set_auth_token", token, scheme)
 
     @classmethod
     def remove_auth_token(cls) -> "ModifyAction":
@@ -53,7 +61,9 @@ class ModifyAction:
         return cls("remove_model")
 
     def to_dict(self) -> dict[str, Any]:
-        if self.op in ("set_upstream_host", "set_request_path", "set_auth_token", "set_model"):
+        if self.op == "set_auth_token" and self.scheme != "existing":
+            return {"op": self.op, "value": self.value, "scheme": self.scheme}
+        if self.op not in ("remove_auth_token", "remove_model"):
             return {"op": self.op, "value": self.value}
         return {"op": self.op}
 
@@ -88,7 +98,7 @@ class RequestDecision:
 
 @dataclass(frozen=True)
 class RequestSourceProcess:
-    """Available OS metadata; explicit proxy clients have no source process."""
+    """OS metadata for the source process. Identifiable loopback clients supply a PID."""
 
     pid: Optional[int]
     pid_version: Optional[int]

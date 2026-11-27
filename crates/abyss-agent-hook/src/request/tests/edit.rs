@@ -1,7 +1,7 @@
 //! Semantic writes preserve provider documents and selected credential carriers.
 
 use abyss_mitm::{RequestEditor, RequestTransport};
-use abyss_plugin_protocol::inspection::ModifyAction;
+use abyss_plugin_protocol::inspection::{AuthTokenScheme, ModifyAction};
 use serde_json::json;
 
 use super::*;
@@ -49,7 +49,7 @@ fn ordered_actions_preserve_unknown_fields_and_remove_null_models() {
             json!({"model":null,"messages":[],"input":"hi","unknown":{"keep":[1_u32,2_u32]}});
         let source = EditableRequest::new(path, &original);
         let mut request = RequestEditor::new(source.view(RequestTransport::Http));
-        let actions = RequestActions::new(&request.view());
+        let mut actions = RequestActions::new(&request.view());
         actions
             .apply(
                 &mut request,
@@ -57,7 +57,10 @@ fn ordered_actions_preserve_unknown_fields_and_remove_null_models() {
                     ModifyAction::SetModel("first".into()),
                     ModifyAction::RemoveModel,
                     ModifyAction::SetModel("last".into()),
-                    ModifyAction::SetAuthToken("secret".into()),
+                    ModifyAction::SetAuthToken {
+                        value: "secret".into(),
+                        scheme: AuthTokenScheme::Existing,
+                    },
                 ]),
             )
             .unwrap();
@@ -120,10 +123,13 @@ fn authentication_binding_uses_carrier_or_known_host_without_guessing_from_proto
                 .append(header, value.parse().unwrap());
         }
         let mut request = RequestEditor::new(source.view(RequestTransport::Http));
-        let actions = RequestActions::new(&request.view());
+        let mut actions = RequestActions::new(&request.view());
         let result = actions.apply(
             &mut request,
-            Box::new([ModifyAction::SetAuthToken("allocated".into())]),
+            Box::new([ModifyAction::SetAuthToken {
+                value: "allocated".into(),
+                scheme: AuthTokenScheme::Existing,
+            }]),
         );
         assert_eq!(result.is_ok(), writable, "{host} {header:?}");
         if writable {
@@ -157,7 +163,10 @@ fn authentication_binding_uses_carrier_or_known_host_without_guessing_from_proto
             actions
                 .apply(
                     &mut request,
-                    Box::new([ModifyAction::SetAuthToken("again".into())]),
+                    Box::new([ModifyAction::SetAuthToken {
+                        value: "again".into(),
+                        scheme: AuthTokenScheme::Existing,
+                    }]),
                 )
                 .unwrap();
             assert!(
@@ -176,7 +185,7 @@ fn websocket_edits_preserve_envelope_and_cannot_change_connection_token() {
     );
     let mut request =
         RequestEditor::new(source.view(RequestTransport::WebSocketText { sequence: 1 }));
-    let actions = RequestActions::new(&request.view());
+    let mut actions = RequestActions::new(&request.view());
     actions
         .apply(
             &mut request,
@@ -190,7 +199,10 @@ fn websocket_edits_preserve_envelope_and_cannot_change_connection_token() {
     assert!(matches!(
         actions.apply(
             &mut request,
-            Box::new([ModifyAction::SetAuthToken("private".into())])
+            Box::new([ModifyAction::SetAuthToken {
+                value: "private".into(),
+                scheme: AuthTokenScheme::Existing
+            }])
         ),
         Err(RequestActionError::AuthenticationUnavailable)
     ));
@@ -200,11 +212,14 @@ fn websocket_edits_preserve_envelope_and_cannot_change_connection_token() {
 fn invalid_tokens_have_value_free_errors() {
     let source = EditableRequest::new("/v1/responses", &json!({"model":null,"input":[]}));
     let mut request = RequestEditor::new(source.view(RequestTransport::Http));
-    let actions = RequestActions::new(&request.view());
+    let mut actions = RequestActions::new(&request.view());
     let error = actions
         .apply(
             &mut request,
-            Box::new([ModifyAction::SetAuthToken("private\r\ninjected".into())]),
+            Box::new([ModifyAction::SetAuthToken {
+                value: "private\r\ninjected".into(),
+                scheme: AuthTokenScheme::Existing,
+            }]),
         )
         .unwrap_err();
     assert!(!error.to_string().contains("private"));
@@ -227,7 +242,7 @@ fn unsupported_requests_remain_inspectable() {
     assert!(!format!("{context:?}").contains("readable-secret"));
     assert!(!context.model_writable);
     assert!(context.auth_token_writable);
-    let actions = RequestActions::new(&view);
+    let mut actions = RequestActions::new(&view);
     let mut editor = RequestEditor::new(view);
     assert!(matches!(
         actions.apply(&mut editor, Box::new([ModifyAction::RemoveModel])),
@@ -245,7 +260,7 @@ fn unsupported_requests_remain_inspectable() {
 fn request_path_edits_preserve_authority_and_query() {
     let source = EditableRequest::new("https://relay.example/v1/responses?a=%2F&a=2", &json!({}));
     let mut editor = RequestEditor::new(source.view(RequestTransport::Http));
-    let actions = RequestActions::new(&editor.view());
+    let mut actions = RequestActions::new(&editor.view());
     for path in [
         "relative",
         "//other.example/path",
@@ -292,7 +307,7 @@ fn upstream_host_accepts_only_dns_names_before_upgrade() {
         &json!({}),
     );
     let mut editor = RequestEditor::new(source.view(RequestTransport::Http));
-    let actions = RequestActions::new(&editor.view());
+    let mut actions = RequestActions::new(&editor.view());
     for host in [
         "",
         "https://other.example",
@@ -327,4 +342,46 @@ fn upstream_host_accepts_only_dns_names_before_upgrade() {
         ),
         Err(RequestActionError::InvalidUpstreamHost)
     ));
+}
+
+#[test]
+fn account_bearer_replaces_original_api_key_and_becomes_the_writable_binding() {
+    let mut source = EditableRequest::new("/v1/messages", &json!({"model":"client","messages":[]}));
+    source
+        .head
+        .headers_mut()
+        .insert("host", "api.anthropic.com".parse().unwrap());
+    source
+        .head
+        .headers_mut()
+        .insert("x-api-key", "client-fixture".parse().unwrap());
+    let mut request = RequestEditor::new(source.view(RequestTransport::Http));
+    let mut actions = RequestActions::new(&request.view());
+    actions
+        .apply(
+            &mut request,
+            Box::new([ModifyAction::SetAuthToken {
+                value: "assigned-fixture".into(),
+                scheme: AuthTokenScheme::Bearer,
+            }]),
+        )
+        .unwrap();
+    assert_eq!(
+        request.view().head.headers()["authorization"],
+        "Bearer assigned-fixture"
+    );
+    assert!(!request.view().head.headers().contains_key("x-api-key"));
+    actions
+        .apply(
+            &mut request,
+            Box::new([ModifyAction::SetAuthToken {
+                value: "rotated-fixture".into(),
+                scheme: AuthTokenScheme::Existing,
+            }]),
+        )
+        .unwrap();
+    assert_eq!(
+        request.view().head.headers()["authorization"],
+        "Bearer rotated-fixture"
+    );
 }

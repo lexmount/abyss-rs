@@ -1,11 +1,61 @@
 //! Configured domain replacements, independent of Agent protocols and plugins.
 
+use std::{
+    net::SocketAddr,
+    sync::{Arc, OnceLock},
+};
+
 use http::{HeaderValue, Request, Uri, header, uri::Authority};
 use serde::{Deserialize, Deserializer, Serialize, Serializer, de};
 
 /// Marks a rewritten head so the relay encodes it instead of replaying the original bytes.
 #[derive(Clone)]
 pub(super) struct Redirected;
+
+/// Transport decision scoped to one HTTP request or upgrade.
+#[derive(Clone)]
+pub(super) struct ExchangeRoute {
+    pub(super) host: RedirectTarget,
+    pub(super) proxy: Option<(crate::outbound::UpstreamProxy, RequestProxyHop)>,
+}
+
+impl ExchangeRoute {
+    /// Retain only credential-free diagnostics in captured request heads.
+    pub(super) fn take(head: &mut Request<()>) -> Option<Self> {
+        let route = head.extensions_mut().remove::<Self>()?;
+        if let Some((_, hop)) = &route.proxy {
+            head.extensions_mut().insert(hop.clone());
+        }
+        Some(route)
+    }
+}
+
+/// Credential-free proxy diagnostics for a single HTTP exchange.
+#[derive(Clone)]
+pub struct RequestProxyHop {
+    /// Configured proxy authority, including the port.
+    pub endpoint: String,
+    peer: Arc<OnceLock<SocketAddr>>,
+}
+
+impl RequestProxyHop {
+    pub(super) fn new(proxy: &crate::outbound::UpstreamProxy) -> Self {
+        Self {
+            endpoint: proxy.endpoint().authority(),
+            peer: Arc::default(),
+        }
+    }
+
+    pub(super) fn record_peer(&self, peer: SocketAddr) {
+        self.peer.get_or_init(|| peer);
+    }
+
+    /// Connected socket peer after proxy negotiation succeeds.
+    #[must_use]
+    pub fn peer(&self) -> Option<SocketAddr> {
+        self.peer.get().copied()
+    }
+}
 
 /// A replacement domain. The original protocol, port, path and query are retained.
 #[derive(Debug, Clone, PartialEq)]

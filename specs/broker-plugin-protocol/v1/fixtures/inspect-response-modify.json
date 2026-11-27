@@ -9,6 +9,11 @@
         "value": "fixture-token"
       },
       {
+        "op": "set_auth_token",
+        "value": "fixture-token",
+        "scheme": "bearer"
+      },
+      {
         "op": "remove_auth_token"
       },
       {

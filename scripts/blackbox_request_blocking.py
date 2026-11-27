@@ -6,6 +6,7 @@ import concurrent.futures
 import gzip
 import hashlib
 import json
+import os
 import socket
 import socketserver
 import ssl
@@ -280,10 +281,8 @@ def checks(broker, origin, endpoint):
                 entry["role"] == "developer" and entry["text"] == "PRIVATE KEY"
                 for entry in context["agent"]["conversation"]["entries"]
             )
-            assert (
-                context["harness"]["id"] == "codex"
-                and context["source_process"] is None
-            )
+            assert context["harness"]["id"] == "codex"
+            assert context["source_process"]["pid"] == os.getpid()
             assert all(
                 name not in ("authorization", "cookie")
                 for name, _ in context["headers"]
@@ -309,6 +308,8 @@ def checks(broker, origin, endpoint):
             )
             stream.sendall(private)
             assert read_all(stream).startswith(b"HTTP/1.1 403")
+        assert plugin.contexts[-1]["harness"] is None
+        assert plugin.contexts[-1]["source_process"] is None
         calls = len(plugin.contexts)
         with socket.create_connection(broker.address, timeout=5) as stream:
             stream.sendall(

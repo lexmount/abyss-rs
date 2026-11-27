@@ -172,7 +172,6 @@ Explicit ingress retains `source_process = None`. Rules requiring process name,
 application ID, executable path, or entry point do not match that ingress;
 evaluation continues to later rules and the configured fallback. Destination-only
 rules and fallback actions can still select `Block` using the existing metadata.
-This change does not add local process discovery for explicit proxy clients.
 
 Evaluate at the existing flow policy boundary, after reading any required
 ClientHello metadata and before forwarding client application traffic. Keep the
@@ -694,18 +693,12 @@ declarations. The network matcher consumes OS metadata directly; the broker also
 includes that metadata in Agent plugin context. This shared data does not imply
 a shared policy or dependency on Agent parsing in the network matcher.
 
-Preserve each ingress's current metadata capabilities. macOS/Windows transparent
-ingress already supplies source metadata; explicit ingress keeps
-`source_process = None`, including for local clients and `abyss run`. No
-socket-owner lookup or new platform process-context provider is part of either
-blocking capability.
-
-Network rules requiring an unavailable source field continue not to match, as
-they do today. Other matching rules or fallback actions still decide the flow.
-Agent plugins receive the same absent source fields alongside available target,
-request, and model content; absent process identity alone is not an inspection
-failure. A plugin can inspect the content without process identity. Keep any
-Agent-declared identity separate from OS source metadata.
+macOS and Windows transparent ingress supply source metadata. For explicit
+ingress, network rules evaluate the flow without source metadata. At request
+inspection time, the broker can identify the local client of a recognized
+harness by looking up the loopback socket owner. Agent plugins receive its PID
+when that lookup succeeds and `source_process = None` otherwise. Plugins can
+inspect request content in either case.
 
 ## Agent inspection plugin protocol
 
@@ -1122,8 +1115,8 @@ The Rust, TypeScript, and Python participants all declare both `agent_request`
 and `agent_events` on one connection. For each SDK the runner checks:
 
 - A real Codex request reaches the callback with the decoded JSON, normalized
-  request entries, Codex identity, model, TLS target, absent explicit-proxy process
-  attribution, and credential headers omitted.
+  request entries, Codex identity, model, TLS target, the local client's PID,
+  and credential headers omitted.
 - A marker in the parsed request selects Block. Codex exits with a failed turn,
   HTTP 403, and the plugin's exact reason. Codex displays `error.message`, so its
   console output is not expected to reproduce the complete broker JSON envelope.

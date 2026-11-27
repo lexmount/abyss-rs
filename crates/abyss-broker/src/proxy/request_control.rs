@@ -37,15 +37,30 @@ impl RequestForwardingControl for RequestControl {
     ) -> Result<RequestForwardingResult, LocalRejection> {
         let request_id = uuid::Uuid::new_v4().to_string();
         let mut request = RequestEditor::new(request);
-        let actions = RequestActions::new(&request.view());
+        let mut actions = RequestActions::new(&request.view());
         let config = self.hooks.snapshot();
         let mut parsed = AgentRequestParser::prepare(&request.view());
-        let mut context = Arc::new(AgentRequestParser::parse_prepared(
+        let mut initial = AgentRequestParser::parse_prepared(
             &parsed,
             &request.view(),
             &config.harness_usage.config,
             request_id.clone(),
-        ));
+        );
+        let peer_pid = if initial.harness.is_some()
+            && initial.source_process.is_none()
+            && matches!(
+                request.view().flow.ingress,
+                abyss_mitm::FlowIngress::ExplicitProxy { .. }
+            ) {
+            let flow = request.view().flow;
+            super::explicit_peer::lookup(flow.peer_addr, flow.local_addr).await
+        } else {
+            None
+        };
+        if let Some(pid) = peer_pid {
+            initial.source_process = Some(super::explicit_peer::source(pid));
+        }
+        let mut context = Arc::new(initial);
         let mut participants = plan.participants().peekable();
         while let Some(participant) = participants.next() {
             match self.plugins.inspect(participant, context.clone()).await {
@@ -70,6 +85,9 @@ impl RequestForwardingControl for RequestControl {
                             &config.harness_usage.config,
                             request_id.clone(),
                         );
+                        if let Some(pid) = peer_pid {
+                            updated.source_process = Some(super::explicit_peer::source(pid));
+                        }
                         actions.annotate(&request.view(), &mut updated);
                         context = Arc::new(updated);
                     }

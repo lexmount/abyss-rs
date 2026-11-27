@@ -5,6 +5,7 @@ pub use discovery::{ListedModel, ModelListRequest};
 
 use std::collections::{BTreeMap, BTreeSet};
 
+use abyss_sdk::plugin::{AuthTokenScheme, ProxySettings};
 use serde::{Deserialize, Serialize};
 
 #[derive(Clone, Deserialize, Serialize, Default)]
@@ -16,7 +17,7 @@ pub struct Catalog {
 #[derive(Clone, Deserialize, Serialize)]
 struct Provider {
     base_url: Option<String>,
-    credentials: BTreeMap<String, Credential>,
+    credentials: BTreeMap<String, AssignedCredential>,
     #[serde(default, skip_serializing_if = "<[String]>::is_empty")]
     models: Box<[String]>,
 }
@@ -46,6 +47,14 @@ enum Credential {
     Service(ServiceCredential),
 }
 
+#[derive(Clone, Deserialize, Serialize)]
+struct AssignedCredential {
+    #[serde(flatten)]
+    value: Credential,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    proxy: Option<ProxySettings>,
+}
+
 impl Credential {
     const fn kind(&self) -> CredentialKind {
         match self {
@@ -55,10 +64,21 @@ impl Credential {
         }
     }
 
-    fn authentication(&self) -> Option<&str> {
+    fn authentication(&self, provider_id: &str) -> Option<&str> {
         match self {
             Self::Service(ServiceCredential::ApiKey { api_key }) if !api_key.trim().is_empty() => {
                 Some(api_key)
+            }
+            Self::Service(ServiceCredential::Account { login, secret })
+                if provider_id == "anthropic"
+                    && !login.trim().is_empty()
+                    && secret
+                        .strip_prefix("sk-ant-oat01-")
+                        .is_some_and(|token| !token.is_empty())
+                    && (1..=8192).contains(&secret.len())
+                    && secret.bytes().all(|b| b.is_ascii_graphic()) =>
+            {
+                Some(secret)
             }
             Self::ExplicitHeaders { headers, .. } if headers.len() == 1 => {
                 let (name, value) = headers.first_key_value()?;
@@ -112,8 +132,8 @@ fn valid_model_id(id: &str) -> bool {
 }
 
 impl Provider {
-    fn describe(&self, id: &str) -> Result<Option<ProviderInfo<'_>>, &'static str> {
-        let Some(base_url) = self.endpoint(id)? else {
+    fn describe(&self, provider_id: &str) -> Result<Option<ProviderInfo<'_>>, &'static str> {
+        let Some(base_url) = self.endpoint(provider_id)? else {
             return Ok(None);
         };
         if self.models.iter().any(|m| !valid_model_id(m)) {
@@ -126,11 +146,14 @@ impl Provider {
                 if !identifier(id) {
                     return Err("Invalid credential ID.");
                 }
+                if let Some(proxy) = &value.proxy {
+                    proxy.validate()?;
+                }
                 Ok((
                     id.as_str(),
                     CredentialInfo {
-                        kind: value.kind(),
-                        configured: value.authentication().is_some(),
+                        kind: value.value.kind(),
+                        configured: value.value.authentication(provider_id).is_some(),
                     },
                 ))
             })
@@ -203,6 +226,8 @@ pub struct Selection {
 pub struct SelectedRoute<'a> {
     pub base_url: &'a str,
     pub authentication: &'a str,
+    pub auth_scheme: AuthTokenScheme,
+    pub proxy: Option<&'a ProxySettings>,
     pub model: &'a str,
 }
 
@@ -211,7 +236,7 @@ impl Catalog {
         &self,
         provider_id: &str,
         credential_id: &str,
-    ) -> Result<(&Provider, &Credential), &'static str> {
+    ) -> Result<(&Provider, &AssignedCredential), &'static str> {
         let provider = self
             .providers
             .get(provider_id)
@@ -238,7 +263,8 @@ impl Catalog {
         let (provider, credential) =
             self.provider_credential(&selection.provider, &selection.credential)?;
         let authentication = credential
-            .authentication()
+            .value
+            .authentication(&selection.provider)
             .ok_or("This credential cannot authenticate model requests.")?;
         if selection.model.trim().is_empty() {
             return Err("Enter a model name.");
@@ -248,6 +274,11 @@ impl Catalog {
                 .endpoint(&selection.provider)?
                 .ok_or("Provider endpoint unavailable.")?,
             authentication,
+            auth_scheme: match credential.value {
+                Credential::Service(ServiceCredential::Account { .. }) => AuthTokenScheme::Bearer,
+                _ => AuthTokenScheme::Existing,
+            },
+            proxy: credential.proxy.as_ref(),
             model: &selection.model,
         })
     }

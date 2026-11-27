@@ -33,6 +33,7 @@ enum Routing {
     Original,
     DomainRedirect,
     PerStream,
+    PerRequestProxies,
 }
 
 struct Fixture {
@@ -81,6 +82,9 @@ impl Fixture {
         let mut origins = vec![config];
         if matches!(routing, Routing::PerStream) {
             origins.push(origin_config_for_name(&ca, "localhost").await);
+        }
+        if matches!(routing, Routing::PerRequestProxies) {
+            origins.extend([origins[0].clone(), origins[0].clone()]);
         }
         let origin = spawn_origin(listener, origins, observed);
         let capture = Capture::default();
@@ -826,4 +830,104 @@ async fn preserves_the_origin_reset_reason_for_retryable_streams() {
     fixture.captured(1).await;
     drop(sender);
     fixture.close().await;
+}
+
+struct ProxyPerPath {
+    first: u16,
+    second: u16,
+}
+
+impl RequestForwardingControl for ProxyPerPath {
+    type Plan = ();
+    fn plan(&self) -> Option<()> {
+        Some(())
+    }
+    fn before_forward(
+        &self,
+        (): (),
+        request: RequestView<'_>,
+    ) -> impl Future<Output = Result<RequestForwardingResult, LocalRejection>> + Send {
+        let port = if request.head.uri().path() == "/one" {
+            self.first
+        } else {
+            self.second
+        };
+        let proxy = crate::outbound::UpstreamProxy::from_endpoint(
+            format!("http://127.0.0.1:{port}"),
+            Some(("alice".into(), "abc".into())),
+        )
+        .unwrap();
+        let mut editor = RequestEditor::new(request);
+        editor.set_upstream_proxy(proxy).unwrap();
+        future::ready(Ok(editor.finish(())))
+    }
+}
+
+#[tokio::test]
+async fn same_host_streams_use_and_record_their_own_authenticated_proxies() {
+    use tokio::io::AsyncWriteExt as _;
+    async fn proxy() -> (u16, tokio::task::JoinHandle<()>) {
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let port = listener.local_addr().unwrap().port();
+        let handle = tokio::spawn(async move {
+            let (mut socket, _) = listener.accept().await.unwrap();
+            let head = super::read_http_head(&mut socket).await;
+            assert!(head.contains("Proxy-Authorization: Basic YWxpY2U6YWJj\r\n"));
+            let authority = head.split_whitespace().nth(1).unwrap();
+            let origin_port = authority
+                .strip_prefix("http2.test:")
+                .unwrap()
+                .parse::<u16>()
+                .unwrap();
+            let mut origin = tokio::net::TcpStream::connect(("127.0.0.1", origin_port))
+                .await
+                .unwrap();
+            socket.write_all(b"HTTP/1.1 200 OK\r\n\r\n").await.unwrap();
+            let _closed = tokio::io::copy_bidirectional(&mut socket, &mut origin).await;
+        });
+        (port, handle)
+    }
+    timeout(Duration::from_secs(10), async {
+        let ((first, first_task), (second, second_task)) = tokio::join!(proxy(), proxy());
+        let fixture = Fixture::start_routed(
+            ProxyPerPath { first, second },
+            1024,
+            Routing::PerRequestProxies,
+        )
+        .await;
+        let (a, b) = tokio::join!(
+            fixture.call("/one", Bytes::from_static(b"one")),
+            fixture.call("/two", Bytes::from_static(b"two"))
+        );
+        assert_eq!((a.0, b.0), (StatusCode::OK, StatusCode::OK));
+        assert_eq!(
+            (a.1.as_slice(), b.1.as_slice()),
+            (b"one".as_slice(), b"two".as_slice())
+        );
+        for exchange in fixture.captured(2).await {
+            let hop = exchange
+                .request
+                .extensions()
+                .get::<crate::RequestProxyHop>()
+                .unwrap();
+            let port = if exchange.request.uri().path() == "/one" {
+                first
+            } else {
+                second
+            };
+            assert_eq!(hop.peer().unwrap().port(), port);
+            assert_eq!(hop.endpoint, format!("127.0.0.1:{port}"));
+            assert!(
+                !exchange
+                    .request
+                    .headers()
+                    .contains_key("proxy-authorization")
+            );
+        }
+        fixture.close().await;
+        first_task.await.unwrap();
+        second_task.await.unwrap();
+    })
+    .await
+    .unwrap();
 }

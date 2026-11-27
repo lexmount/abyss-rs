@@ -141,6 +141,9 @@ pub struct LocalRuntimePolicy {
     /// Dynamic Harness usage policy.
     #[serde(default)]
     pub hooks: HooksConfig,
+    /// Preserve the broker's runtime next hop when reading or saving hook policy.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub network: Option<abyss_mitm::outbound::NetworkConfig>,
 }
 
 /// Product defaults for broker-owned MITM behavior.
@@ -549,6 +552,21 @@ mod tests {
                 error.to_string().contains(field),
                 "unexpected error for {field}: {error}"
             );
+        }
+    }
+
+    #[test]
+    fn preserves_runtime_network_override() {
+        for section in [
+            "[network]",
+            "[network.upstream]\nprotocol='socks5'\nendpoint='socks5://127.0.0.1:1080'",
+        ] {
+            let policy: LocalRuntimePolicy =
+                toml::from_str(&format!("schema_version=1\n{section}")).unwrap();
+            let saved = toml::to_string(&policy).unwrap();
+            let loaded: LocalRuntimePolicy = toml::from_str(&saved).unwrap();
+            assert!(loaded.network.is_some());
+            assert_eq!(loaded.network, policy.network);
         }
     }
 
